@@ -29,6 +29,28 @@ if (typeof window !== "undefined" && window.firebase && !window.firebase.apps?.l
   }
 }
 
+(function initAmbientLightField() {
+  if (typeof document === "undefined" || !document.body) return;
+  if (document.querySelector(".ambient-light-field")) return;
+  const field = document.createElement("div");
+  field.className = "ambient-light-field";
+  field.setAttribute("aria-hidden", "true");
+  const colors = ["rgba(0, 210, 255, 0.45)", "rgba(255, 0, 127, 0.35)", "rgba(155, 108, 255, 0.4)"];
+  for (let i = 0; i < 7; i++) {
+    const vertical = i % 2 === 1;
+    const trail = document.createElement("span");
+    trail.className = `ambient-light-trail ambient-light-${vertical ? "vertical" : "horizontal"}`;
+    const offset = `${6 + ((i * 31) % 88)}%`;
+    trail.style[vertical ? "left" : "top"] = offset;
+    trail.style.setProperty("--trail-length", `${120 + ((i * 47) % 140)}px`);
+    trail.style.setProperty("--trail-color", colors[i % colors.length]);
+    trail.style.animationDuration = `${7 + ((i * 17) % 50) / 10}s`;
+    trail.style.animationDelay = `${-((i * 3.1) % 12)}s`;
+    field.appendChild(trail);
+  }
+  document.body.prepend(field);
+})();
+
 // True from the moment someone starts signing in until they are in (or told why not). While it is set, background
 // refreshes leave the page alone, so the sign-in screen is replaced by a loading screen instead of being redrawn.
 let signingIn = false;
@@ -4308,9 +4330,9 @@ pages.home = async (_, query) => {
     if (download && !finishProjectDownload(download)) return {stale:true};
     return setupPage(setupState);
   }
-  const [{ jobs }, waiting, product, archivedList, homeGit, homePreview] = await Promise.all([
+  const [{ jobs }, waiting, product, archivedList, homeGit, homePreview, archSummary] = await Promise.all([
     api("jobs"), api("inbox"), api("product").catch(() => null), api("jobs/archived").catch(() => null),
-    api("git").catch(() => ({})), api("preview").catch(() => null),
+    api("git").catch(() => ({})), api("preview").catch(() => null), api("architecture/summary").catch(() => null),
   ]);
   if (!sameProject()) return {stale: true};
   const archivedJobs = archivedList?.archived || [];
@@ -4423,6 +4445,7 @@ pages.home = async (_, query) => {
     html: `
       ${HomeStatus.render({git: homeGit, jobs, runs: state.runs})}
       ${product ? productStripHtml(product, jobs) : ""}
+      ${archStripHtml(archSummary)}
 
       ${runningBanner}
 
@@ -4489,6 +4512,24 @@ pages.home = async (_, query) => {
     },
   };
 };
+
+// Home: the architecture at a glance, or the one step it needs.
+function archStripHtml(s) {
+  if (!s || state.you?.role === "member" && s.state !== "approved") return "";
+  const link = "#/product?section=architecture";
+  if (s.state === "undecided") return `<section class="card mb-16" id="arch-strip"><div class="card-h"><h2><a class="card-title-link" href="${link}">Architecture</a></h2><span class="pill attention">Not chosen</span></div>
+    <div class="card-b row gap-12 wrap"><span class="muted">${s.proposal_waiting ? "Options are ready for you to compare." : "Choose how this project is built before planning the first feature."}</span><span class="spacer"></span><a class="btn small primary" href="${link}">${s.proposal_waiting ? "Compare options" : "Choose the architecture"}</a></div></section>`;
+  if (s.state === "undescribed") return `<section class="card mb-16" id="arch-strip"><div class="card-h"><h2><a class="card-title-link" href="${link}">Architecture</a></h2><span class="pill neutral">Not described</span></div>
+    <div class="card-b row gap-12 wrap"><span class="muted">${s.proposal_waiting ? "A description of the code is ready to confirm." : "Describe how this project is built, so every job follows it and you can see how it fits your product."}</span><span class="spacer"></span><a class="btn small" href="${link}">${s.proposal_waiting ? "Review it" : "Describe the architecture"}</a></div></section>`;
+  if (s.state === "provisional") return `<section class="card mb-16" id="arch-strip"><div class="card-h"><h2><a class="card-title-link" href="${link}">Architecture</a></h2><span class="pill neutral">Working assumption</span>${s.stale ? `<span class="pill attention">Code changed</span>` : ""}${s.proposal_waiting ? `<span class="pill attention">Change waiting</span>` : ""}</div>
+    <div class="card-b row gap-12 wrap"><span><strong>${esc(s.chosen || "Not decided")}</strong> <span class="muted">· not approved yet</span></span><span class="spacer"></span><a class="btn small" href="${link}">Review</a></div></section>`;
+  const mix = (cat) => (s.profile?.[cat] || []).map((p) => `${p.weight}% ${p.name}`).join(", ");
+  const flags = [s.proposal_waiting ? `<span class="pill attention">Change waiting</span>` : "", s.prd_changed ? `<span class="pill attention">Requirements changed</span>` : "",
+    s.prd_gaps ? `<span class="pill neutral">${plural(s.prd_gaps, "gap")}</span>` : ""].join("");
+  return `<section class="card mb-16" id="arch-strip"><div class="card-h"><h2><a class="card-title-link" href="${link}">Architecture</a></h2>${flags}</div>
+    <div class="card-b stack"><div><strong>${esc(s.chosen)}</strong> <span class="muted">· ${esc([s.language, s.framework].filter(Boolean).join(" / "))} · v${esc(s.version)}</span></div>
+      ${mix("shape") ? `<div class="muted">${esc(mix("shape"))}</div>` : ""}${mix("code") ? `<div class="muted">${esc(mix("code"))}</div>` : ""}</div></section>`;
+}
 
 function jobHeaderActions(s, links = [], ctx = {}) {
   // Grouped by what the person wants (change the job, share it, open something, adjust settings), only what fits the
@@ -8886,7 +8927,9 @@ pages.product = async (_, query) => {
         </div>
         <div class="muted">AI keeps this up to date as jobs finish, and you can review or undo any change in History.</div></div></section>
       <section class="card"><div class="card-h"><h2>History</h2><span class="count">${p.history.length}</span></div>
-        <div class="list">${p.history.length ? historyRows(p.history) : `<div class="empty">Nothing yet. Every change you or the AI makes will be listed here.</div>`}</div></section>`;
+        <div class="list">${p.history.length ? historyRows(p.history) : `<div class="empty">Nothing yet. Every change you or the AI makes will be listed here.</div>`}</div></section>
+      <section class="card mt-16 prd-sec" id="sec-architecture"><div class="card-h"><h2>Architecture</h2></div>
+        <div class="card-b stack" id="arch-section"><div class="muted">Loading…</div></div></section>`;
   return {
     title: "Product",
     sub: "",
@@ -9148,6 +9191,7 @@ pages.product = async (_, query) => {
             toast("References added"); await reload();
           } catch (e) { toast(e.message, true); }
         });
+        mountArchitecture($("#arch-section"));
         if (open.section) { view.querySelector(`#sec-${CSS.escape(open.section)}`)?.scrollIntoView({ block: "start" }); open.section = ""; }
         if (open.history) {
           const row = view.querySelector(`[data-version="${CSS.escape(open.history)}"]`);
@@ -12548,11 +12592,13 @@ pages["new-project"] = async (_, query) => {
       ${githubPending ? `<div class="card card-b stack"><strong>Your project is saved on this computer.</strong>
         <span class="muted">GitHub publishing isn't done yet. Finish it here, or use a local Git workflow from Git setup.</span>${ghPanel()}
         <div class="row"><button class="btn primary" id="np-publish" ${gh.user ? "" : "disabled"}>Create the GitHub repository</button></div></div>` : ""}
-      ${result?.recommend_platform ? `<div class="card card-b stack"><strong>You asked for a platform recommendation.</strong><span class="muted">Your first job's plan will propose platforms with reasons, based on who it's for and the problem it solves.</span></div>` : ""}
+      ${created ? `<section class="card mt-16" id="np-architecture"><div class="card-b stack"><strong>Next: choose the architecture</strong>
+        <span class="muted">${result?.recommend_platform ? "You asked for a platform recommendation. " : ""}A model reads your product requirements${result?.recommend_platform ? "" : ", the platforms you picked"} and the build tools on this Mac, then proposes the language, frameworks, structure and packages that fit this product, with the alternatives it weighed. You approve it before the first feature is planned, so the first job builds on a deliberate choice.</span>
+        <div class="row"><a class="btn primary big" href="#/product?section=architecture">Choose the architecture</a><button type="button" class="btn ghost big" id="np-arch-skip">Skip for now</button></div></div></section>` : ""}
       ${(result?.platform_needs || []).map((n) => `<section class="card mt-16"><div class="card-h"><h2>${esc(n.platform)}: what it needs</h2></div><div class="card-b"><ul class="assumptions">${n.needs.map((t) => `<li>${esc(t)}</li>`).join("")}</ul></div></section>`).join("")}
-      ${offerBreakdown ? `<section class="card mt-16" id="np-breakdown"><div class="card-b stack"><strong>Next: break it down into epics</strong>
+      ${offerBreakdown ? `<section class="card mt-16" id="np-breakdown"><div class="card-b stack"><strong>Then: break it down into epics</strong>
         <span class="muted">Optional. Orchestrator reads what you've told it and suggests the big pieces of the product, as detailed as your answers, using a story map or a top-down work breakdown. You approve the ones you want, and they become jobs that wait until you plan them.</span>
-        <div class="row"><a class="btn primary big" href="#/product?start=1" data-np-breakdown>Break it down</a><a class="btn big" href="#/checkup" data-np-breakdown>Skip for now</a></div></div></section>`
+        <div class="row"><a class="btn big" href="#/product?start=1" data-np-breakdown>Break it down</a><a class="btn ghost big" href="#/checkup" data-np-breakdown>Skip for now</a></div></div></section>`
         : `<div class="row mt-16"><a class="btn primary big" href="#/checkup">Set up this project</a></div>`}`,
     after: () => {
       // Either choice counts as having been asked, so the Product page doesn't ask again.
@@ -12561,6 +12607,13 @@ pages["new-project"] = async (_, query) => {
       }));
       $("#np-recheck")?.addEventListener("click", () => route());
       $("#np-signin")?.addEventListener("click", () => signInToGitHub());
+      $("#np-arch-skip")?.addEventListener("click", async (e) => {
+        e.currentTarget.disabled = true;
+        try {
+          await api("architecture/skip", { method: "POST", body: {} });
+          $("#np-architecture").innerHTML = `<div class="card-b stack"><strong>Architecture: decide later</strong><span class="muted">A working assumption is kept so jobs stay consistent. Choose or change it any time at the bottom of the Product page.</span></div>`;
+        } catch (err) { e.currentTarget.disabled = false; toast(err.message, true); }
+      });
       $("#np-publish")?.addEventListener("click", async (e) => {
         e.target.disabled = true; e.target.textContent = "Creating…";
         try {
@@ -12573,6 +12626,311 @@ pages["new-project"] = async (_, query) => {
     },
   };
 };
+
+// The project's architecture (orchestrator/architecture.py), shown at the bottom of the Product page. A new project gets two or
+// three options in plain words, each with a simple diagram, a fit score for the product and a weighted style mix; an imported
+// project gets a description of what its code is now. The person approves one. Later changes are tweaks (frequent, the stack
+// stays) or overhauls (rare, the foundations move), and every later plan, review and build treats the approval as a constraint.
+const ARCH_SLOW_SECONDS = 150;
+const ARCH_KIND = {
+  initial: ["New architecture", "attention"], described: ["Description of the current code", "attention"],
+  tweak: ["Tweak", "attention"], overhaul: ["Overhaul", "failed"],
+};
+const ARCH_COLUMNS = ["user", "app", "service", "data", "external"];
+
+// A very simple diagram: one column per kind of box (who uses it, what they open, what runs behind it, where data lives,
+// outside services), arrows between them. Plain SVG, so it themes with the page and needs no library.
+function archDiagramSvg(diagram, { title = "Architecture diagram" } = {}) {
+  const nodes = diagram?.nodes || [];
+  if (!nodes.length) return "";
+  const W = 132, H = 38, GX = 52, GY = 22, PAD = 12;
+  const cols = ARCH_COLUMNS.map((k) => nodes.filter((n) => n.kind === k)).filter((c) => c.length);
+  const pos = {};
+  const rows = Math.max(...cols.map((c) => c.length));
+  const height = PAD * 2 + rows * H + (rows - 1) * GY;
+  cols.forEach((col, ci) => {
+    const offset = (height - (col.length * H + (col.length - 1) * GY)) / 2;
+    col.forEach((n, ri) => { pos[n.id] = { x: PAD + ci * (W + GX), y: offset + ri * (H + GY), n }; });
+  });
+  const width = PAD * 2 + cols.length * W + (cols.length - 1) * GX;
+  const wrap = (label) => {
+    const words = String(label).split(/\s+/); const lines = [""];
+    for (const w of words) { if ((lines[lines.length - 1] + " " + w).trim().length > 17 && lines[lines.length - 1]) lines.push(w); else lines[lines.length - 1] = (lines[lines.length - 1] + " " + w).trim(); }
+    return lines.slice(0, 2);
+  };
+  const edges = (diagram.edges || []).map((e) => {
+    const a = pos[e.from], b = pos[e.to]; if (!a || !b) return "";
+    let x1, y1, x2, y2;
+    if (a.x === b.x) { x1 = x2 = a.x + W / 2; [y1, y2] = a.y < b.y ? [a.y + H, b.y] : [a.y, b.y + H]; }
+    else { [x1, x2] = a.x < b.x ? [a.x + W, b.x] : [a.x, b.x + W]; y1 = a.y + H / 2; y2 = b.y + H / 2; }
+    const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
+    return `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" class="arch-edge" marker-end="url(#arch-arrow)"/>${e.label ? `<text x="${mx}" y="${my - 4}" class="arch-edge-label" text-anchor="middle">${esc(e.label)}</text>` : ""}`;
+  }).join("");
+  const boxes = Object.values(pos).map(({ x, y, n }) => {
+    const lines = wrap(n.label);
+    const rx = n.kind === "user" ? H / 2 : n.kind === "data" ? 4 : 8;
+    return `<g class="arch-node arch-node-${esc(n.kind)}"><rect x="${x}" y="${y}" width="${W}" height="${H}" rx="${rx}"/>${lines.map((l, i) => `<text x="${x + W / 2}" y="${y + H / 2 + (i - (lines.length - 1) / 2) * 13 + 4}" text-anchor="middle">${esc(l)}</text>`).join("")}</g>`;
+  }).join("");
+  return `<figure class="arch-diagram"><svg viewBox="0 0 ${width} ${height}" role="img" aria-label="${esc(title)}" preserveAspectRatio="xMidYMid meet" style="max-width:${width}px">
+    <defs><marker id="arch-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" class="arch-arrowhead"/></marker></defs>
+    ${edges}${boxes}</svg>
+    <figcaption class="muted">${ARCH_COLUMNS.filter((k) => cols.some((c) => c[0].kind === k)).map((k) => ({ user: "who uses it", app: "what they open", service: "what runs behind it", data: "where data lives", external: "outside services" })[k]).join(" → ")}</figcaption></figure>`;
+}
+
+// The weighted style mix: one bar per category, segments sized by weight, labelled in plain words.
+function archProfileHtml(profile, categories, styles) {
+  const cats = Object.entries(categories || {}).filter(([id]) => Object.keys(profile?.[id] || {}).length);
+  if (!cats.length) return "";
+  return `<div class="arch-profile">${cats.map(([id, cat]) => {
+    const parts = Object.entries(profile[id]);
+    return `<div class="arch-profile-row"><div class="arch-profile-label"><strong>${esc(cat.title)}</strong> <span class="muted">${esc(cat.question)}</span></div>
+      <div class="arch-bar" role="img" aria-label="${esc(parts.map(([s, w]) => `${w}% ${styles?.[s]?.name || s}`).join(", "))}">${parts.map(([s, w], i) => `<span class="arch-seg arch-seg-${i % 4}" style="width:${w}%" title="${esc(styles?.[s]?.plain || "")}"></span>`).join("")}</div>
+      <div class="arch-profile-legend">${parts.map(([s, w], i) => `<span title="${esc(styles?.[s]?.plain || "")}"><i class="arch-dot arch-seg-${i % 4}"></i>${w}% ${esc(styles?.[s]?.name || s)}</span>`).join("")}</div></div>`;
+  }).join("")}</div>`;
+}
+
+function archList(title, items) {
+  return items?.length ? `<div class="stack"><strong>${esc(title)}</strong><ul class="assumptions">${items.map((i) => `<li>${esc(i)}</li>`).join("")}</ul></div>` : "";
+}
+
+function archPrdHtml(r) {
+  const links = r.prd_links || [], gaps = r.prd_gaps || [];
+  if (!links.length && !gaps.length) return "";
+  return `<div class="stack"><strong>How it serves your product requirements</strong><ul class="assumptions">
+    ${links.map((l) => `<li><strong>${esc(l.requirement)}:</strong> ${esc(l.how)}</li>`).join("")}
+    ${gaps.map((g) => `<li class="arch-gap"><strong>Not covered yet:</strong> ${esc(g)}</li>`).join("")}</ul></div>`;
+}
+
+function archDetails(r, { summary = true, stack = true } = {}) {
+  const s = r.stack || {};
+  const facts = [["Chosen", r.chosen], ["Primary language", s.language], ["Framework", s.framework], ["Build", s.build_command], ["Test", s.test_command]].filter(([, v]) => v);
+  const decisions = (r.decisions || []).map((d) => `<div class="item"><div class="main-col"><div class="title">${esc(d.topic)}: ${esc(d.choice)}</div>
+      <div class="meta">${[d.reason ? `Why: ${esc(d.reason)}` : "", d.alternatives?.length ? `Considered: ${esc(d.alternatives.join(", "))}` : "", d.serves?.length ? `Serves: ${esc(d.serves.join("; "))}` : ""].filter(Boolean).join(" · ")}</div></div></div>`).join("");
+  return `${summary && r.summary ? `<p>${esc(r.summary)}</p>` : ""}
+    ${stack && facts.length ? `<ul class="assumptions">${facts.map(([k, v]) => `<li><strong>${esc(k)}:</strong> ${k === "Build" || k === "Test" ? `<span class="mono">${esc(v)}</span>` : esc(v)}</li>`).join("")}</ul>` : ""}
+    <details><summary>Technical details</summary><div class="stack mt-8">
+    ${archList("Platforms", (r.platforms || []).map((p) => `${p.platform}: ${[p.language, p.framework].filter(Boolean).join(" / ")}${p.notes ? `. ${p.notes}` : ""}`))}
+    ${decisions ? `<div class="stack"><strong>Decisions</strong><div class="list">${decisions}</div></div>` : ""}
+    ${archList("Layers", (r.layers || []).map((l) => `${l.name}: ${l.responsibility}`))}
+    ${archList("Folder structure", r.structure)}
+    ${archList("Packages", (r.packages || []).map((p) => `${p.name}${p.ecosystem ? ` (${p.ecosystem})` : ""}: ${p.purpose || ""}`))}
+    ${archList("Risks", r.risks)}
+    ${archList("Open questions", r.open_questions)}
+    ${archList("Revisit this when", r.revisit_when)}</div></details>`;
+}
+
+// One option, in plain words: what it's best for, how well it fits, a diagram, good and watch-out points, and its style mix.
+function archCandidateHtml(c, { chosen, recommended, owner, categories, styles, selectable }) {
+  const fit = Number.isFinite(c.fit) ? c.fit : null;
+  return `<label class="arch-option ${chosen ? "on" : ""}">
+    ${selectable ? `<input type="radio" name="chosen" value="${esc(c.name)}" ${chosen ? "checked" : ""} ${owner ? "" : "disabled"}>` : ""}
+    <div class="arch-option-head"><strong>${esc(c.name)}</strong>${recommended ? ` <span class="pill done">Recommended</span>` : ""}</div>
+    ${c.best_for ? `<p class="arch-best-for">Best for: ${esc(c.best_for)}</p>` : ""}
+    ${fit !== null ? `<div class="arch-fit"><span class="muted">Fit for your product</span><span class="arch-fit-bar"><span style="width:${fit}%"></span></span><strong>${fit}/100</strong></div>` : ""}
+    ${archDiagramSvg(c.diagram, { title: `Diagram of ${c.name}` })}
+    <div class="arch-proscons">
+      ${c.pros?.length ? `<div><strong class="arch-good">Good</strong><ul>${c.pros.map((t) => `<li>${esc(t)}</li>`).join("")}</ul></div>` : ""}
+      ${c.cons?.length ? `<div><strong class="arch-watch">Watch out</strong><ul>${c.cons.map((t) => `<li>${esc(t)}</li>`).join("")}</ul></div>` : ""}
+    </div>
+    ${archProfileHtml(c.profile, categories, styles)}
+  </label>`;
+}
+
+function archProgressHtml() {
+  return `<div class="card-b row gap-12" id="arch-progress" hidden role="status" aria-live="polite"><span id="arch-stage"></span>
+    <span id="arch-slow" class="muted" hidden>Still working. Weighing several options and checking them on the web can take a few minutes.</span>
+    <span class="spacer"></span><button type="button" class="btn small ghost" id="arch-stop">Stop</button></div>`;
+}
+
+function archSectionHtml(data) {
+  const owner = state.you?.role !== "member";
+  const { decision, proposal, categories, styles } = data;
+  let html = "";
+  if (data.needs_decision && !proposal) {
+    html += `<div class="banner attention"><p><strong>This project has no code yet.</strong> Choose its architecture before planning the first feature, so the first job builds on a deliberate choice instead of guessing one.</p></div>`;
+  }
+  if (decision && !proposal && (data.prd_changed || data.revisit?.length)) {
+    html += `<div class="banner attention"><p><strong>Your product requirements have changed since this architecture was approved.</strong> ${data.revisit?.length ? "They now mention something it said would change the choice:" : "Check it still fits."}</p>
+      ${data.revisit?.length ? `<ul class="assumptions">${data.revisit.map((t) => `<li>${esc(t)}</li>`).join("")}</ul>` : ""}
+      ${owner ? `<div class="row"><button type="button" class="btn small" id="arch-fitcheck">Check it against the requirements</button></div>` : ""}</div>`;
+  }
+  if (proposal) {
+    const kindKey = proposal.mode === "describe" && !decision ? "described" : proposal.kind;
+    const [kindLabel, tone] = ARCH_KIND[kindKey] || ARCH_KIND.initial;
+    const many = (proposal.candidates || []).length > 1;
+    html += `<form class="stack" id="arch-proposal">
+      <div class="row gap-12 wrap"><strong>${decision ? "Proposed change" : proposal.mode === "describe" ? "What this project's architecture looks like" : "Options for this project"}</strong>
+        <span class="pill ${tone}">${esc(kindLabel)}</span><span class="pill attention">Waiting for you</span></div>
+      ${proposal.note ? `<p class="muted">You asked: “${esc(proposal.note)}”</p>` : ""}
+      ${proposal.summary ? `<p>${esc(proposal.summary)}</p>` : ""}
+      ${proposal.kind === "overhaul" && decision ? `<div class="banner attention"><p><strong>This is an overhaul.</strong> It changes the foundations, so existing code may need rebuilding. Approve it only if the reasons outweigh that cost.</p></div>` : ""}
+      ${proposal.changes?.length ? `<div class="stack"><strong>What would change</strong><ul class="assumptions">${proposal.changes.map((t) => `<li>${esc(t)}</li>`).join("")}</ul></div>` : ""}
+      ${many ? `<span class="muted">Pick one. The recommended option is selected.</span>` : ""}
+      <div class="arch-options ${many ? "" : "single"}">${(proposal.candidates || []).map((c) => archCandidateHtml(c, { chosen: c.name === proposal.chosen, recommended: many && c.name === proposal.chosen,
+        owner, categories, styles, selectable: many })).join("")}</div>
+      ${archPrdHtml(proposal)}
+      <details><summary>Stack and commands</summary><div class="stack mt-8">
+        <label class="field"><span>Primary language</span><select name="language" ${owner ? "" : "disabled"}>${(data.languages || []).map((l) => `<option ${l === proposal.stack?.language ? "selected" : ""}>${esc(l)}</option>`).join("")}</select></label>
+        <label class="field"><span>Framework</span><input type="text" name="framework" value="${esc(proposal.stack?.framework || "")}" maxlength="60" ${owner ? "" : "disabled"}></label>
+        <label class="field"><span>Build command</span><input type="text" name="build_command" class="mono" value="${esc(proposal.stack?.build_command || "")}" maxlength="200" spellcheck="false" ${owner ? "" : "disabled"}></label>
+        <label class="field"><span>Test command</span><input type="text" name="test_command" class="mono" value="${esc(proposal.stack?.test_command || "")}" maxlength="200" spellcheck="false" ${owner ? "" : "disabled"}></label>
+      </div></details>
+      ${archDetails(proposal, { summary: false, stack: false })}
+      ${proposal.notes ? `<p class="muted">${esc(proposal.notes)}</p>` : ""}
+      ${proposal.sources?.length ? `<details><summary>Pages the model checked</summary><ul class="assumptions">${proposal.sources.map((u) => `<li><a href="${esc(u)}" target="_blank" rel="noopener noreferrer">${esc(u)}</a></li>`).join("")}</ul></details>`
+        : proposal.searched ? "" : `<p class="muted">The model couldn't search the web for this, so check that the named frameworks and packages are current.</p>`}
+      ${owner ? `<label class="field"><span>Ask for changes <span class="muted">(optional)</span></span>
+        <textarea name="feedback" rows="2" placeholder="For example: keep it to one codebase for iPhone and Android, or avoid running a server for now"></textarea></label>
+      <div class="row wrap"><button type="button" class="btn ghost" id="arch-discard">Discard</button><span class="spacer"></span>
+        <button type="button" class="btn" id="arch-revise">Ask for changes</button>${data.approved ? "" : `<button type="button" class="btn ghost" id="arch-skip" title="Keeps the recommended option as a working assumption. Jobs follow it loosely until you approve one.">Decide later</button>`}<button class="btn primary" type="submit">${proposal.mode === "describe" && !decision ? "Confirm this description" : "Approve architecture"}</button></div>` : ""}
+      ${archProgressHtml()}</form>`;
+  }
+  if (decision) {
+    const when = (decision.approved_at || "").slice(0, 10);
+    const body = `<div class="stack">
+      ${decision.summary ? `<p>${esc(decision.summary)}</p>` : ""}
+      ${archDiagramSvg(decision.diagram, { title: `Diagram of ${decision.chosen}` })}
+      ${archProfileHtml(decision.profile, categories, styles)}
+      ${archPrdHtml(decision)}
+      ${archDetails(decision, { summary: false })}
+      ${decision.history?.length ? `<details><summary>History (${decision.history.length})</summary><div class="list">${decision.history.slice().reverse().map((h) => `<div class="item"><div class="main-col">
+        <div class="title">Version ${esc(h.version)} <span class="pill ${h.kind === "overhaul" ? "failed" : "neutral"}">${esc((ARCH_KIND[h.kind] || [h.kind])[0])}</span></div>
+        <div class="meta">${esc(String(h.at || "").slice(0, 10))}${h.note || h.summary ? ` · ${esc(h.note || h.summary)}` : ""}</div>
+        ${h.changes?.length ? `<ul class="assumptions">${h.changes.map((c) => `<li>${esc(c)}</li>`).join("")}</ul>` : ""}</div></div>`).join("")}</div></details>` : ""}
+      <p class="muted">Written to <a class="mono" href="#/file?path=${encodeURIComponent(data.doc_path)}">${esc(data.doc_path)}</a>. ${data.approved ? "Every plan, review and build reads it as a constraint." : "Every plan, review and build reads it as a working assumption."}</p></div>`;
+    html += `<div class="stack ${proposal ? "mt-16" : ""}"><div class="row gap-12 wrap"><strong>${proposal ? "Current architecture" : esc(decision.chosen)}</strong>
+        ${data.approved ? `<span class="pill done">${decision.origin === "described" ? "Described" : "Approved"} · v${esc(decision.version || "1.0")}${when ? ` · ${esc(when)}` : ""}</span>`
+          : `<span class="pill neutral">Working assumption · v${esc(decision.version || "0.1")}</span>`}</div>
+      ${!data.approved && !proposal ? `<div class="stack"><span class="muted">${decision.origin === "inferred" ? "Inferred from the repository when the step was skipped." : "The recommended option, kept without approval."} Jobs follow it unless a request needs otherwise. Approve it to make it the chosen architecture, or choose another.</span>
+        ${data.stale ? `<span class="arch-gap">The code has changed since this was inferred.</span>` : ""}
+        ${owner ? `<div class="row wrap gap-12">
+          ${decision.origin === "inferred" && data.codeless ? `<button type="button" class="btn primary" id="arch-propose" data-mode="initial" ${data.prd_filled ? "" : "disabled"}>Suggest options</button>` : ""}
+          ${decision.origin === "inferred" && !data.codeless ? `<button type="button" class="btn primary" id="arch-propose" data-mode="describe">Describe the architecture</button>` : ""}
+          ${decision.origin === "inferred" ? `<button type="button" class="btn" id="arch-refresh">Refresh from the code</button>` : ""}
+          ${decision.stack?.language !== "generic" ? `<button type="button" class="btn" id="arch-approve-current">Approve as it is</button>` : ""}</div>` : ""}</div>` : ""}
+      ${proposal ? `<details><summary>Show the current architecture</summary>${body}</details>` : body}
+      ${!proposal && owner ? `<div class="stack arch-change">
+        <label class="field"><span>Add or adjust</span>
+          <textarea id="arch-tweak" rows="2" placeholder="As the product grows: add offline storage, add push notifications, split out a payments module…"></textarea>
+          <small class="hint-text">A tweak keeps the language, framework and overall shape. Nothing changes until you approve it.</small></label>
+        <div class="row"><span class="spacer"></span><button type="button" class="btn" id="arch-tweak-btn">Propose a tweak</button></div>
+        <details><summary>Rethink the architecture (overhaul)</summary><div class="stack mt-8">
+          <span class="muted">Rare and costly: new options are weighed against staying with what you have, and existing code may need rebuilding.</span>
+          <textarea id="arch-overhaul" rows="2" aria-label="Why rethink it" placeholder="Why? For example: we now need Android as well as iPhone, and want one codebase"></textarea>
+          <div class="row"><span class="spacer"></span><button type="button" class="btn" id="arch-overhaul-btn">Propose options</button></div></div></details>
+        ${archProgressHtml()}</div>` : ""}</div>`;
+  }
+  if (!decision && !proposal) {
+    html += data.codeless
+      ? `<div class="stack"><strong>Choose how this project is built</strong>
+        <span class="muted">A model reads your product requirements above, the platforms you picked and the build tools on this Mac. It suggests two or three options in plain words, each with a simple diagram, a fit score for your product, what's good and what to watch out for, and recommends one. You approve it or ask for changes.</span>
+        ${data.prd_filled ? "" : `<span class="muted">Fill in the product requirements first, so the options fit what you're building.</span>`}
+        ${owner ? `<div class="row gap-12 wrap"><button type="button" class="btn primary" id="arch-propose" data-mode="initial" ${data.prd_filled ? "" : "disabled"}>Suggest options</button>
+          <button type="button" class="btn ghost" id="arch-skip">Skip for now</button></div>
+        <small class="hint-text">Skipping keeps a working assumption from what Orchestrator can see, so jobs stay consistent. You can choose any time.</small>` : ""}</div>`
+      : `<div class="stack"><strong>Describe this project's architecture</strong>
+        <span class="muted">A model reads a digest of the code (languages, folders, packages, entry points) and describes the architecture as it is now, with a rough diagram, its style mix, and where it does or doesn't serve your product requirements. You confirm it, and every job follows it from then on. Nothing in the code changes.</span>
+        ${owner ? `<div class="row gap-12 wrap"><button type="button" class="btn primary" id="arch-propose" data-mode="describe">Describe the architecture</button>
+          <button type="button" class="btn ghost" id="arch-skip">Skip for now</button></div>
+        <small class="hint-text">Skipping records what the code shows (languages, packages, folders) as a working assumption, without a model.</small>` : ""}</div>`;
+    html += archProgressHtml();
+  }
+  return html;
+}
+
+async function runArchProposal(container, body, button) {
+  const note = $("#arch-progress"), stage = $("#arch-stage"), slow = $("#arch-slow"), stop = $("#arch-stop");
+  const idle = button.textContent;
+  let started;
+  button.disabled = true; button.setAttribute("aria-busy", "true"); button.textContent = "Working…";
+  note.hidden = false;
+  const show = (r = {}) => {
+    stage.textContent = `${r.stage || "Starting"} · ${clockTime(r.elapsed || 0)}${r.detail ? ` · ${r.detail}` : ""}`;
+    slow.hidden = !(r.elapsed >= ARCH_SLOW_SECONDS);
+  };
+  stop.disabled = false;
+  stop.onclick = async () => {
+    stop.disabled = true;
+    if (started?.task) await api(`product/task/${encodeURIComponent(started.task)}/cancel`, { method: "POST", body: {} }).catch(() => {});
+  };
+  show();
+  try {
+    started = await api("architecture/propose", { method: "POST", body });
+    const view = await waitForTask(started, { onProgress: show, timeoutMs: 9 * 60 * 1000 });
+    toast("Ready to review");
+    mountArchitecture(container, view);
+  } catch (err) {
+    toast(err.name === "AbortError" ? "Stopped. Nothing was changed." : err.message, err.name !== "AbortError");
+    if (button.isConnected) { button.disabled = false; button.removeAttribute("aria-busy"); button.textContent = idle; }
+    note.hidden = true;
+  }
+}
+
+// Fills the Architecture section of the Product page and wires it. Redraws only itself, so the rest of the page keeps its state.
+async function mountArchitecture(container, view) {
+  if (!container) return;
+  let data = view;
+  if (!data) {
+    try { data = await api("architecture"); } catch (err) {
+      if (err.status === 404) { container.closest("section")?.remove(); return; } // an older server without this step
+      container.innerHTML = `<div class="notice">${esc(err.message)}</div>`; return;
+    }
+  }
+  if (!container.isConnected) return;
+  container.innerHTML = archSectionHtml(data);
+  const ask = (body, button) => runArchProposal(container, body, button);
+  $("#arch-propose")?.addEventListener("click", (e) => ask({ mode: e.currentTarget.dataset.mode }, e.currentTarget));
+  const post = async (path, button, done) => {
+    button.disabled = true;
+    try {
+      const view = await api(path, { method: "POST", body: {} });
+      toast(done(view), view.committed === false && view.decision && !view.approved ? "warning" : undefined);
+      mountArchitecture(container, view);
+    } catch (err) { button.disabled = false; toast(err.message, true); }
+  };
+  const saved = (view, what) => view.committed ? `${what} and committed` : `${what}. Commit ${view.doc_path} so jobs see it.`;
+  $("#arch-skip")?.addEventListener("click", (e) => post("architecture/skip", e.currentTarget, (v) => v.approved ? "Proposal discarded" : saved(v, "Kept as a working assumption")));
+  $("#arch-refresh")?.addEventListener("click", (e) => post("architecture/skip", e.currentTarget, (v) => saved(v, "Working assumption refreshed")));
+  $("#arch-approve-current")?.addEventListener("click", (e) => post("architecture/approve", e.currentTarget, (v) => saved(v, "Architecture approved")));
+  $("#arch-fitcheck")?.addEventListener("click", (e) => ask({ mode: "tweak", feedback: "The product requirements have changed since this was approved. Adjust the architecture only where they now need it, and list anything it no longer covers in prd_gaps." }, e.currentTarget));
+  $("#arch-tweak-btn")?.addEventListener("click", (e) => {
+    const note = $("#arch-tweak").value.trim();
+    if (!note) { toast("Say what to add or adjust first.", "warning"); $("#arch-tweak").focus(); return; }
+    ask({ mode: "tweak", feedback: note }, e.currentTarget);
+  });
+  $("#arch-overhaul-btn")?.addEventListener("click", (e) => {
+    const note = $("#arch-overhaul").value.trim();
+    if (!note) { toast("Say why it needs rethinking first.", "warning"); $("#arch-overhaul").focus(); return; }
+    ask({ mode: "overhaul", feedback: note }, e.currentTarget);
+  });
+  const form = $("#arch-proposal");
+  if (!form) return;
+  form.querySelectorAll('input[name="chosen"]').forEach((r) => r.addEventListener("change", () => {
+    form.querySelectorAll(".arch-option").forEach((card) => card.classList.toggle("on", card.contains(r) && r.checked));
+  }));
+  $("#arch-revise")?.addEventListener("click", (e) => {
+    const note = form.feedback.value.trim();
+    if (!note) { toast("Say what to change first.", "warning"); form.feedback.focus(); return; }
+    ask({ feedback: note }, e.currentTarget);
+  });
+  $("#arch-discard")?.addEventListener("click", async () => {
+    try { mountArchitecture(container, await api("architecture/discard", { method: "POST", body: {} })); toast("Discarded"); } catch (err) { toast(err.message, true); }
+  });
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const btn = form.querySelector('button[type="submit"]');
+    const idle = btn.textContent;
+    btn.disabled = true; btn.textContent = "Saving…";
+    const fd = new FormData(form);
+    try {
+      await api("architecture/edit", { method: "POST", body: { chosen: fd.get("chosen") || "", language: fd.get("language"), framework: fd.get("framework"),
+        build_command: fd.get("build_command"), test_command: fd.get("test_command") } });
+      const approved = await api("architecture/approve", { method: "POST", body: {} });
+      toast(approved.committed ? "Architecture saved and committed" : `Architecture saved. Commit ${approved.doc_path} so jobs see it.`, !approved.committed && "warning");
+      mountArchitecture(container, approved);
+    } catch (err) { btn.disabled = false; btn.textContent = idle; toast(err.message, true); }
+  });
+}
 
 function answersSlug(draft) {
   return (draft.answers?.name || "your-project").trim().replace(/[^A-Za-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60) || "your-project";
@@ -14958,6 +15316,7 @@ function resolveRoute() {
   if (parts[0] === "new-project") return { page: "new-project", args: [], nav: "config", query };
   if (["connections", "projects"].includes(parts[0])) return { page: parts[0], args: [], nav: "config", query }; // under Settings
   if (parts[0] === "product") return { page: "product", args: [], nav: "product", query };
+  if (parts[0] === "architecture") return { page: "product", args: [], nav: "product", query: new URLSearchParams("section=architecture") }; // lives on Product
   if (parts[0] === "docs") return { page: "docs", args: parts.slice(1), nav: "docs", query };
   if (pages[parts[0]]) return { page: parts[0], args: [], nav: parts[0], query };
   return { page: "home", args: [], nav: "home", query };
@@ -15214,6 +15573,7 @@ const navigationDrawer = NavigationDrawer.mount({document, window});
 const PALETTE_PAGES = [["Home", "#/", "What needs you, and all jobs"], ["Product", "#/product", "Pitch, who it's for, features, look and feel, what not to build"], ["Epics", "#/product?section=epics", "Break the product down into epics, approve them, and link them to Jira"],
   ["Projects", "#/projects", "Switch, add or start a project"], ["Activity", "#/activity", "Runs and live output"], ["Device logs", "#/devlogs", "Logs from test devices"], ["Tests", "#/tests", "Test cases, suites, coverage"],
   ["Packages", "#/packages", "Libraries and plugins this project uses, and ones worth adding"],
+  ["Architecture", "#/product?section=architecture", "The language, frameworks and structure this project is built with, and why"],
   ["Test cases", "#/tests/cases", "Manage test cases library, coverage and definitions"],
   ["Git setup", "#/git", "Branches and changes"], ["App delivery", "#/delivery", "What's live, with testers, pipeline"], ["Analytics", "#/measure", "Project KPIs, analytics platform, and learning log"], ["Documentation", "#/project-docs", "Project docs, feature specs, job records, and AI gap-filling"], ["Onboarding checklist", "#/checkup", "Project requirements, tools, environment checks, and selected workflows"], ["UX review", "#/ux-review", "Check screens against usability and design principles"],
   ["Connections", "#/connections", "Jira, Trello, Sentry, Figma, Slack alerts"], ["Configuration", "#/config", "Models, keys, machines, alerts"], ["Help", "#/help", "How it works, glossary"], ["New job", "#/new", "Describe work to be done"],

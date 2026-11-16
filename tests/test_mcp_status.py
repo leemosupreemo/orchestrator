@@ -979,3 +979,11 @@ class ProjectDocumentationSectionTests(unittest.TestCase):
         self.assertIn("is-extending", app)
         self.assertIn("@keyframes run-line-extend", css)
         self.assertIn("@keyframes run-step-pop", css)
+
+    def test_ambient_shooting_lines_field_is_present(self):
+        app = APP.read_text(encoding="utf-8")
+        css = (APP.parent / "style.css").read_text(encoding="utf-8")
+        self.assertIn("initAmbientLightField", app)
+        self.assertIn(".ambient-light-field", css)
+        self.assertIn("@keyframes ambientTrailMoveX", css)
+        self.assertIn("@keyframes ambientTrailMoveY", css)

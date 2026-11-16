@@ -3,6 +3,9 @@
   --bg-glow-1: rgba(255, 0, 127, 0.04);
   --bg-glow-2: rgba(0, 180, 220, 0.04);
   --bg-glow-3: rgba(59, 82, 208, 0.03);
+  --trail-length: 160px;
+  --trail-color: rgba(59, 82, 208, 0.38);
+  --trail-peak: 0.22;
   --panel: #ffffff;
   --panel-2: #f0f2f5;
   --border: #e2e5ea;
@@ -109,6 +112,8 @@
     --bg-glow-1: rgba(255, 0, 127, 0.06);
     --bg-glow-2: rgba(0, 240, 255, 0.05);
     --bg-glow-3: rgba(30, 16, 62, 0.35);
+    --trail-color: rgba(0, 210, 255, 0.5);
+    --trail-peak: 0.24;
     --panel: #171a20;
     --panel-2: #1e222a;
     --border: #2a2f39;
@@ -171,7 +176,57 @@ p { margin: 0; }
 code, pre, .mono { font-family: var(--mono); font-size: var(--type-secondary); }
 .icon { width: 21.6px; height: 21.6px; flex: 0 0 auto; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 
-.app { display: grid; grid-template-columns: 256px minmax(0, 1fr); min-height: 100vh; }
+.app { position: relative; z-index: var(--z-raised); display: grid; grid-template-columns: 256px minmax(0, 1fr); min-height: 100vh; }
+
+.ambient-light-field {
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+.ambient-light-trail {
+  position: absolute;
+  opacity: 0;
+  background-repeat: no-repeat;
+  animation-timing-function: linear;
+  animation-iteration-count: infinite;
+  will-change: transform, opacity;
+  backface-visibility: hidden;
+  filter: drop-shadow(0 0 4px var(--trail-color));
+}
+.ambient-light-horizontal {
+  left: 0;
+  width: 100%;
+  height: 1.5px;
+  background-image: linear-gradient(90deg, transparent, var(--trail-color) 70%, rgba(255, 255, 255, 0.75) 100%);
+  background-size: var(--trail-length) 100%;
+  background-position: 100% 0;
+  animation-name: ambientTrailMoveX;
+}
+.ambient-light-vertical {
+  top: 0;
+  height: 100%;
+  width: 1.5px;
+  background-image: linear-gradient(180deg, transparent, var(--trail-color) 70%, rgba(255, 255, 255, 0.75) 100%);
+  background-size: 100% var(--trail-length);
+  background-position: 0 100%;
+  animation-name: ambientTrailMoveY;
+}
+@keyframes ambientTrailMoveX {
+  0% { transform: translate3d(-100%, 0, 0); opacity: 0; }
+  8% { opacity: var(--trail-peak); }
+  85% { opacity: var(--trail-peak); }
+  100% { transform: translate3d(var(--trail-length), 0, 0); opacity: 0; }
+}
+@keyframes ambientTrailMoveY {
+  0% { transform: translate3d(0, -100%, 0); opacity: 0; }
+  8% { opacity: var(--trail-peak); }
+  85% { opacity: var(--trail-peak); }
+  100% { transform: translate3d(0, var(--trail-length), 0); opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ambient-light-field { display: none; }
+}
 
 /* sidebar */
 .mobile-header, .nav-close, .sidebar-backdrop { display: none; }
