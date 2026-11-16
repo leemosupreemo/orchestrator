@@ -2250,6 +2250,27 @@ dialog h2 {
 }
 @media (max-width: 760px) { .live-run .row { width: 100%; } }
 /* Job Lifecycle Stepper */
+.job-stepper ~ section, .job-body section { scroll-margin-top: var(--space-4); }
+.job-step {
+  appearance: none;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  background: transparent;
+  padding: var(--space-2);
+  min-height: var(--control-xl);
+  text-align: left;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background-color 220ms ease, border-color 220ms ease, color 220ms ease;
+}
+.job-step:hover, .job-step.selected { background: var(--accent-soft); }
+.job-step:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.job-step-dot { transition: background-color 220ms ease, border-color 220ms ease, color 220ms ease; }
+@media (prefers-reduced-motion: reduce) {
+  .job-step, .job-step-dot { transition: none; }
+  .highlight-flash { animation: none !important; }
+}
+
 .job-stepper {
   display: flex;
   align-items: center;
@@ -2328,19 +2349,15 @@ dialog h2 {
   font-weight: var(--weight-regular);
 }
 .job-step-arrow {
-  color: var(--border);
-  font-size: var(--type-secondary);
-  flex-shrink: 0;
-  margin: 0 var(--space-1);
-  user-select: none;
+  height: 2px;
+  min-width: 16px;
+  flex: 1 0 16px;
+  background: var(--border);
 }
+.job-step-arrow.done { background: var(--ok); }
 @media (max-width: 760px) {
-  .job-stepper {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: var(--space-2) var(--space-3);
-  }
-  .job-step-arrow { display: none; }
+  .job-stepper { padding: var(--space-2); }
+  .job-step { flex: 0 0 auto; }
 }
 
 .job-hero-next-preview {
@@ -4851,9 +4868,12 @@ a.jira-chip:hover { border-color: var(--accent); color: var(--accent); }
 body[data-page="home"] #page-title { font-size: var(--type-home); }
 /* Product, Activity and Tests need no title: the sidebar and the tab already say where you are */
 body[data-page="product"] #page-title, body[data-page="activity"] #page-title, body[data-page="tests"] #page-title { display: none; }
-.home-project-title { position: relative; display: inline-flex; align-items: center; gap: var(--space-2); max-width: 100%; border-radius: var(--r-md); cursor: pointer; }
+.home-project-title { position: relative; display: inline-flex; align-items: center; gap: var(--space-2); max-width: 100%; border-radius: var(--r-md); cursor: pointer; white-space: nowrap; }
 .home-project-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.home-project-chevron { color: var(--muted); font-size: .7em; }
+.home-project-chevron { flex: none; color: var(--muted); width: 14px; height: 14px; background: currentColor;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m7 15 5 5 5-5'/%3E%3Cpath d='m7 9 5-5 5 5'/%3E%3C/svg%3E") center / contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m7 15 5 5 5-5'/%3E%3Cpath d='m7 9 5-5 5 5'/%3E%3C/svg%3E") center / contain no-repeat; }
+.ask-ai-project .home-project-title { background: var(--panel); border: 1px solid var(--border); min-height: var(--control-md); padding: 0 var(--space-3); gap: var(--space-3); max-width: min(100%, 16rem); font-size: var(--type-body); }
 .home-project-title:hover .home-project-chevron, .home-project-title:focus-within .home-project-chevron { color: var(--text); }
 .home-project-title:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
 .home-project-select { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; font-size: var(--type-body); }

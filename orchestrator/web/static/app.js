@@ -1203,7 +1203,12 @@ document.addEventListener("click", (e) => {
     const targetSelector = scrollTo.dataset.scrollTo;
     const el = document.querySelector(targetSelector);
     if (el) {
-      el.scrollIntoView({ behavior: "smooth" });
+      el.scrollIntoView({ behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth", block: "start" });
+      if (scrollTo.classList.contains("job-step")) {
+        document.querySelectorAll(".job-step").forEach((step) => step.classList.toggle("selected", step === scrollTo));
+        el.setAttribute("tabindex", "-1");
+        el.focus({ preventScroll: true });
+      }
       el.classList.add("highlight-flash");
       setTimeout(() => el.classList.remove("highlight-flash"), 1800);
     } else {
@@ -3521,7 +3526,16 @@ async function openAskAi(opts = {}) {
     <header class="ask-ai-head">
       <span aria-hidden="true"></span>
       <h2 class="ask-ai-project">${homeProjectTitle(state.project || { name: "Project" }).replace('class="home-project-select"', 'class="ask-ai-project-select"')}</h2>
-      <div class="ask-ai-head-actions"><button type="button" class="dialog-close-btn" aria-label="Close" data-ask-ai-close>✕</button></div>
+      <div class="ask-ai-head-actions">
+        <details class="more" data-ask-ai-export-menu hidden>
+          <summary class="btn small ghost icon-only" aria-label="Export chat" title="Export chat"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-download"/></svg></summary>
+          <div class="more-menu">
+            <button type="button" class="btn small" data-ask-ai-export="copy">Copy chat</button>
+            <button type="button" class="btn small" data-ask-ai-export="download">Export chat</button>
+          </div>
+        </details>
+        <button type="button" class="dialog-close-btn" aria-label="Close" data-ask-ai-close>✕</button>
+      </div>
     </header>
     <fieldset class="ask-ai-tiers" aria-label="Kind of AI"><legend class="sr-only">Kind of AI</legend><span class="muted">Loading…</span></fieldset>
     <div class="ask-ai-problems" aria-live="polite" hidden></div>
@@ -3558,8 +3572,12 @@ async function openAskAi(opts = {}) {
   };
   const status = dlg.querySelector(".ask-ai-status");
   const tiersBox = dlg.querySelector(".ask-ai-tiers");
+  const exportMenu = dlg.querySelector("[data-ask-ai-export-menu]");
   let messages = [];
-  const draw = () => { askAiThread(dlg, messages); };
+  const draw = () => {
+    askAiThread(dlg, messages);
+    if (exportMenu) exportMenu.hidden = !messages.length;
+  };
   input.focus();
 
   let data;
@@ -3683,6 +3701,29 @@ async function openAskAi(opts = {}) {
     if (starter) ask(starter.textContent.trim());
   });
   dlg.querySelector("[data-ask-ai-close]").addEventListener("click", () => dlg.close());
+  dlg.querySelectorAll("[data-ask-ai-export]").forEach((btn) => btn.addEventListener("click", async () => {
+    exportMenu?.removeAttribute("open");
+    if (!messages.length) return;
+    const projName = state.project?.name || "project";
+    const text = `# ${projName} — AI Chat\n\n` + messages.map((m) => {
+      const who = m.role === "user" ? "You" : `AI${m.model ? ` (${m.model})` : ""}`;
+      return `### ${who}\n\n${m.text || ""}`;
+    }).join("\n\n---\n\n") + "\n";
+    if (btn.dataset.askAiExport === "copy") {
+      await navigator.clipboard.writeText(text);
+      toast("Chat copied to clipboard.");
+    } else {
+      const slug = projName.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "project";
+      const blob = new Blob([text], { type: "text/markdown;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${slug}-ai-chat.md`;
+      a.click();
+      URL.revokeObjectURL(url);
+      toast("Exported chat.");
+    }
+  }));
   dlg.addEventListener("click", (e) => { if (e.target.closest("[data-ask-ai-fix]")) dlg.close(); }); // the link then opens AI tools behind it
   if (opts?.prompt) {
     if (tiersBox.querySelector("input:checked")?.value) void ask(opts.prompt);
@@ -4351,7 +4392,7 @@ async function yoloAll(input, jobs) {
 // Home's title: the project's name, which opens the same project list as the sidebar's picker (filled in by
 // renderProjectSelect, handled by the same change listener). The menu is an invisible <select> over the name.
 function homeProjectTitle(p) {
-  return `<span class="home-project-title"><span class="home-project-name">${esc(p.name)}</span><span class="home-project-chevron" aria-hidden="true">▾</span>
+  return `<span class="home-project-title"><span class="home-project-name">${esc(p.name)}</span><span class="home-project-chevron" aria-hidden="true"></span>
     <select class="home-project-select" aria-label="Switch project"></select></span>`;
 }
 
@@ -5607,6 +5648,7 @@ pages.job = async ([id]) => {
     ...getStepState(4),
   };
 
+  const phaseTargets = ["#plan-section", "#build-section", "#verify-section", "#document-section", "#finalize-section"];
   const phasesInfo = [planStep, buildStep, verifyStep, docStep, reviewStep];
   ["plan", "build", "verify", "document", "finalize"].forEach((phase, i) => {
     const n = runRel?.per_phase?.[phase] || 0;
@@ -5787,14 +5829,14 @@ pages.job = async ([id]) => {
 
       <nav class="job-stepper" aria-label="Job lifecycle progress">
         ${phasesInfo.map((p, idx) => `
-          <div class="job-step ${p.state}">
-            <div class="job-step-dot" aria-hidden="true">${p.icon}</div>
-            <div class="job-step-meta">
+          <button type="button" class="job-step ${p.state}" data-scroll-to="${idx === 0 && reviewingPlan ? "#plan-section" : phaseTargets[idx]}" ${idx === currentPhaseIndex ? 'aria-current="step"' : ""}>
+            <span class="job-step-dot" aria-hidden="true">${p.icon}</span>
+            <span class="job-step-meta">
               <span class="job-step-title">${esc(p.title)}</span>
               <span class="job-step-sub">${esc(p.subtitle)}</span>
-            </div>
-          </div>
-          ${idx < phasesInfo.length - 1 ? `<div class="job-step-arrow" aria-hidden="true">→</div>` : ""}
+            </span>
+          </button>
+          ${idx < phasesInfo.length - 1 ? `<div class="job-step-arrow ${p.state}" aria-hidden="true"></div>` : ""}
         `).join("")}
       </nav>
 
@@ -5813,7 +5855,7 @@ pages.job = async ([id]) => {
       ${unvalidatedTestsHtml}
       ${defectsHtml}
 
-      ${s.question ? `<section class="card mb-16 clarify-card" id="clarify"><div class="card-h"><h2>${(job.clarification_history || []).length ? "A follow-up question" : "A question before planning"}</h2></div><div class="card-b stack">
+      ${s.question ? `<section class="card mb-16 clarify-card" id="clarify"><div class="card-h"><h2>${(job.clarification_history || []).length ? "A follow-up question" : "A question before planning"}</h2><details class="more"><summary class="btn small ghost icon-only" aria-label="Export chat" title="Export chat"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-download"/></svg></summary><div class="more-menu"><button type="button" class="btn small" data-clarify-export="copy">Copy chat</button><button type="button" class="btn small" data-clarify-export="download">Export chat</button></div></details></div><div class="card-b stack">
         ${clarificationThread(job.clarification_history)}
         <div class="clarify-msg clarify-ai"><span class="clarify-who">AI</span><p class="question">${esc(s.question)}</p></div>
         <form class="clarify-reply" id="clarify-reply" data-job="${esc(s.id)}">
@@ -5827,7 +5869,7 @@ pages.job = async ([id]) => {
           <small class="hint-text">The plan is redone with your answer. You approve it before anything is built.</small>
         </form></div></section>`
         : (job.clarification_history || []).length ? `<section class="card mb-16"><details class="fold"><summary class="card-h"><h2>Questions and answers <span class="count">${job.clarification_history.length}</span></h2></summary>
-          <div class="card-b stack">${clarificationThread(job.clarification_history)}</div></details></section>` : ""}
+          <div class="card-b stack">${clarificationThread(job.clarification_history)}<div class="row gap-8"><button type="button" class="btn small ghost" data-clarify-export="copy">Copy chat</button><button type="button" class="btn small ghost" data-clarify-export="download"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-download"/></svg> Export chat</button></div></div></details></section>` : ""}
 
       ${(data.blockers || []).map((b) => `<div class="banner attention"><p><strong>This job can't start yet.</strong> ${esc(b.text)}${b.route ? ` <a class="btn small" href="${esc(b.route)}">${esc(b.fix)}</a>` : ""}</p></div>`).join("")}
 
@@ -5841,7 +5883,7 @@ pages.job = async ([id]) => {
       ${jobContextRail(s, data.context)}
 
       <div class="job-body">
-      <section class="card mb-16">
+      <section class="card mb-16" id="build-section" tabindex="-1">
         <div class="card-h"><h2>Progress</h2>${tasksTotal ? `<span class="count">${tasksDone}/${tasksTotal} tasks</span>` : ""}</div>
         <div class="card-b stack">
           ${tasksTotal ? `<div class="tasks-progress-wrap">
@@ -5880,7 +5922,13 @@ pages.job = async ([id]) => {
         <div class="md brief-content" data-expandable="320">${briefDoc.text ? Markdown.render(briefDoc.text) : `<p class="muted">No brief yet.</p>`}</div>
       </section>
 
-      <section class="card mb-16"><div class="card-h"><h2>Test cases${testCases.cases.length ? ` <span class="count">${testCases.summary.covered}/${testCases.summary.automated} covered</span>` : ""}</h2>
+      ${!reviewingPlan ? `<section class="card mb-16" id="plan-section" tabindex="-1">
+        <div class="card-h"><h2>Plan</h2></div>
+        ${showSummary ? `<div class="card-b"><p>${esc(planSummary)}</p></div>` : ""}
+        <div class="list">${taskRowsHtml(true)}</div>
+      </section>` : ""}
+
+      <section class="card mb-16" id="verify-section" tabindex="-1"><div class="card-h"><h2>Test cases${testCases.cases.length ? ` <span class="count">${testCases.summary.covered}/${testCases.summary.automated} covered</span>` : ""}</h2>
         ${canEditPlan ? `<div class="card-actions"><button class="btn small" data-job-tc-op="add" title="Add a test case">Add</button></div>` : ""}</div>
         ${testCases.cases.length ? `<div class="card-b">${testCaseSummaryHtml(testCases.summary)}${missingTests ? `<div class="notice bad mt-8">${missingTests} automated case${missingTests === 1 ? "" : "s"} due now ${missingTests === 1 ? "has" : "have"} no test yet.</div>` : ""}${unwrittenCases ? `<div class="notice mt-8">${plural(unwrittenCases, "case")} could not be written as automated ${unwrittenCases === 1 ? "test" : "tests"}. Open ${unwrittenCases === 1 ? "it" : "each"} below for the reason.</div>` : ""}</div>
         <div class="list">${canEditPlan ? testCaseRowsHtml(testCases.cases, { editable: true, actionPrefix: "job-tc" }) : testCaseRowsHtml(testCases.cases)}</div>`
@@ -5901,6 +5949,17 @@ pages.job = async ([id]) => {
         </div>
         ${changes?.hypothesis ? `<div class="card-b card-b-split t-secondary"><strong>Why:</strong> ${esc(changes.hypothesis)}</div>` : ""}
         ${changes?.diffstat ? `<details class="raw diffstat-details"><summary>View full diffstat (${allFiles.length} files)</summary><pre class="file">${esc(changes.diffstat)}</pre></details>` : ""}
+      </section>
+
+      <section class="card mb-16" id="document-section" tabindex="-1">
+        <div class="card-h"><h2>Documentation</h2></div>
+        <div class="card-b stack"><p class="muted">${docFilesChanged.length ? docFilesChanged.map((f) => esc(f)).join(", ") : esc(docStep.subtitle)}</p>
+          <a class="btn small" href="#/project-docs">Open project docs</a></div>
+      </section>
+      <section class="card mb-16" id="finalize-section" tabindex="-1">
+        <div class="card-h"><h2>Finalize</h2></div>
+        <div class="card-b stack"><p class="muted">${isJobComplete ? "Merged" : currentPhase === "review" ? "Ready for review and merge." : "Review and merge follow verification and documentation."}</p>
+          ${currentPhase === "review" ? `<div class="row">${heroAction}</div>` : ""}</div>
       </section>
 
       ${uxReviewCard(s, data.ux_review)}
@@ -5993,6 +6052,28 @@ pages.job = async ([id]) => {
           });
         }
       });
+      view.querySelectorAll("[data-clarify-export]").forEach((btn) => btn.addEventListener("click", async () => {
+        btn.closest("details.more")?.removeAttribute("open");
+        const pairs = [...(job.clarification_history || [])];
+        if (s.question) pairs.push({ question: s.question, answer: reply?.answer?.value?.trim() || "" });
+        const text = `# ${s.title || s.id} — AI Chat\n\n` + pairs.map((h) =>
+          `### AI\n\n${h.question || ""}` + (h.answer ? `\n\n### You\n\n${h.answer}` : "")
+        ).join("\n\n---\n\n") + "\n";
+        if (btn.dataset.clarifyExport === "copy") {
+          await navigator.clipboard.writeText(text);
+          toast("Chat copied to clipboard.");
+        } else {
+          const slug = (s.id || "job").toLowerCase().replace(/[^a-z0-9]+/g, "-");
+          const blob = new Blob([text], { type: "text/markdown;charset=utf-8" });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement("a");
+          a.href = url;
+          a.download = `${slug}-chat.md`;
+          a.click();
+          URL.revokeObjectURL(url);
+          toast("Exported chat.");
+        }
+      }));
       view.querySelectorAll("[data-brief-edit]").forEach((btn) => btn.addEventListener("click", async () => {
         const bodyHtml = `
           <div class="stack gap-12">
