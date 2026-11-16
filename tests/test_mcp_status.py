@@ -987,3 +987,8 @@ class ProjectDocumentationSectionTests(unittest.TestCase):
         self.assertIn(".ambient-light-field", css)
         self.assertIn("@keyframes ambientTrailMoveX", css)
         self.assertIn("@keyframes ambientTrailMoveY", css)
+
+    def test_job_hero_keeps_problem_succinct_with_single_primary_action(self):
+        app = APP.read_text(encoding="utf-8")
+        self.assertIn("Details (${problem.lines.length})", app)
+        self.assertIn('const nextBtnClass = signInAction ? "btn small" : "btn small primary";', app)

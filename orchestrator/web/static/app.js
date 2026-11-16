@@ -5441,14 +5441,18 @@ pages.job = async ([id]) => {
   const next = s.state.next;
   const isStoppingActive = activeRun && (stoppingRuns.has(activeRun.id) || Boolean(activeRun.stopping));
   const recommendFixBtn = !activeRun && job.last_error && next?.action !== "debug" && next?.action !== "answer"
-    ? `<button class="btn" data-attempt-fix="${esc(job.last_error)}" data-attempt-job="${esc(job.job_id)}">Attempt fix</button>`
+    ? `<button class="btn small" data-attempt-fix="${esc(job.last_error)}" data-attempt-job="${esc(job.job_id)}">Attempt fix</button>`
     : "";
+  const signInAction = !activeRun && problem?.sign_in
+    ? `<button type="button" class="btn small primary" ${act("ai_connect", { provider: problem.sign_in.provider, name: problem.sign_in.name })}>Sign in to ${esc(problem.sign_in.name)}</button>`
+    : "";
+  const nextBtnClass = signInAction ? "btn small" : "btn small primary";
   const heroAction = activeRun
     ? (isStoppingActive
-      ? `<button class="btn" data-stop="${esc(activeRun.id)}" disabled aria-busy="true"><span class="spinner inline-spinner" aria-hidden="true"></span>Stopping…</button>`
-      : `<button class="btn" data-stop="${esc(activeRun.id)}" title="Stops the worker. Resume continues from the next task.">Pause</button>`)
-    : `${next ? `<button class="btn primary" ${act(next.action, { job: s.id })}>${esc(next.label)}</button>` : ""}${recommendFixBtn}${next && job.task_growth && data.undoable_task === job.task_growth.task
-      ? `<button class="btn" data-undo-task="${job.task_growth.task}" title="Reverts what that task changed. Then revise the plan to make it smaller.">Undo task ${job.task_growth.task + 1}</button>` : ""}`;
+      ? `<button class="btn small" data-stop="${esc(activeRun.id)}" disabled aria-busy="true"><span class="spinner inline-spinner" aria-hidden="true"></span>Stopping…</button>`
+      : `<button class="btn small" data-stop="${esc(activeRun.id)}" title="Stops the worker. Resume continues from the next task.">Pause</button>`)
+    : `${signInAction}${next ? `<button class="${nextBtnClass}" ${act(next.action, { job: s.id })}>${esc(next.label)}</button>` : ""}${recommendFixBtn}${next && job.task_growth && data.undoable_task === job.task_growth.task
+      ? `<button class="btn small" data-undo-task="${job.task_growth.task}" title="Reverts what that task changed. Then revise the plan to make it smaller.">Undo task ${job.task_growth.task + 1}</button>` : ""}`;
 
   // 5-Phase Lifecycle determination (Plan -> Build -> Verify -> Document -> Review)
   const status = s.status || "";
@@ -5634,15 +5638,18 @@ pages.job = async ([id]) => {
     return sentence.length > 110 ? `${sentence.slice(0, 107).trimEnd()}…` : sentence;
   };
   const architectConcerns = s.question && /architect/i.test(s.question) && /architect/i.test(rawHeroReason);
-  const shortReason = conciseReasonText(rawHeroReason);
+  const shortReason = problem?.sign_in
+    ? `${problem.sign_in.name} sign-in expired. Sign in first, then run fix.`
+    : conciseReasonText(rawHeroReason);
   const hasMoreReason = !architectConcerns && !reviewingPlan && !(s.status === "designing" && nextAction === "approve")
     && rawHeroReason && (rawHeroReason.includes("\n") || rawHeroReason.length > 110);
   const heroReason = architectConcerns ? "The architect raised concerns (below). Answer them, or accept its suggestions and re-plan."
     : reviewingPlan ? `Review <button type="button" class="linklike" data-scroll-to="#plan-section">the plan below</button> (${plural(tasks.length, "task")}) and ${nextAction === "approve" ? "approve or revise." : "start when ready."}`
     : s.status === "designing" && nextAction === "approve" ? `Review <button type="button" class="linklike" data-scroll-to="#brief-section">the design</button>, then approve or request changes.`
     : esc(shortReason);
-  const problemHtml = problem ? `${problem.lines?.length ? `<ul class="hero-problem">${problem.lines.map((l) => `<li>${esc(l)}</li>`).join("")}</ul>` : ""}${problem.sign_in
-      ? `<p><button type="button" class="btn small primary" ${act("ai_connect", { provider: problem.sign_in.provider, name: problem.sign_in.name })}>Sign in to ${esc(problem.sign_in.name)}</button></p>` : ""}` : "";
+  const problemHtml = problem?.lines?.length
+    ? `<details class="hero-error-details"><summary class="linklike muted">Details (${problem.lines.length})</summary><ul class="hero-problem">${problem.lines.map((l) => `<li>${esc(l)}</li>`).join("")}</ul></details>`
+    : "";
   const heroReasonDetails = problem ? problemHtml : hasMoreReason
     ? `<details class="hero-error-details"><summary class="linklike muted">Error details</summary><pre class="hero-error-pre">${esc(rawHeroReason)}</pre></details>`
     : "";

@@ -1314,7 +1314,7 @@ dialog h2 {
   .item:has(.side .btn) .side { width: 100%; justify-content: space-between; }
   .job-hero { padding: var(--container-pad-y) var(--container-pad-x); gap: var(--space-3); }
   .job-hero-action { width: 100%; gap: var(--space-2); flex-wrap: wrap; }
-  .job-hero-action .btn { width: 100%; min-height: var(--control-lg); }
+  .job-hero-action .btn { width: auto; }
   .term-input { display: flex; }
   dialog {
     --dialog-padding: var(--space-4);
