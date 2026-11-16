@@ -7439,6 +7439,7 @@ function analyticsConnectionCards(data, manageOnly = false) {
         </div>
         <div class="muted">${esc(ANALYTICS_BLURBS[p.id] || "Product analytics and event tracking.")}</div>
         <div class="muted t-secondary">Key: ${esc(p.key_label)} · Regions: ${esc((p.regions || []).map((r) => r.toUpperCase()).join(", "))}</div>
+        ${p.id === "mixpanel" ? `<div class="muted t-secondary">Auth: Project token for tracking (no OAuth); Mixpanel MCP (<span class="mono">mcp.mixpanel.com/mcp</span>) uses OAuth.</div>` : ""}
         <p><a href="${esc(p.docs)}" target="_blank" rel="noopener">Official docs ↗</a>${dashboardUrl ? ` · <a href="${esc(dashboardUrl)}" target="_blank" rel="noopener">Open ${esc(p.name)} project ↗</a>` : ""}</p>
         <div class="row" ${manageOnly ? "" : "data-owner-only"}>
           ${manageOnly ? `<a href="#/measure?provider=${encodeURIComponent(p.id)}" class="btn small primary">${isReady ? "Manage" : "Connect"} ${esc(p.name)} ↗</a>` : isReady ? `
@@ -7744,7 +7745,7 @@ pages.measure = async (_, query) => {
           } else {
             const v = await formDialog(`Connect ${p.name}`, `
               <input type="hidden" name="provider" value="${esc(p.id)}">
-              <label class="field"><span>${esc(p.key_label)}</span><input type="password" name="key" autocomplete="off" placeholder="${isCurrent && data.key_set ? "Saved. Leave blank to keep" : ""}"></label>
+              <label class="field"><span>${esc(p.key_label)}</span><input type="password" name="key" autocomplete="off" placeholder="${isCurrent && data.key_set ? "Saved. Leave blank to keep" : ""}">${p.id === "mixpanel" ? "<small>From Mixpanel → Project Settings. Tracking uses a Project token (no OAuth); Mixpanel MCP uses OAuth.</small>" : ""}</label>
               <label class="field"><span>Region</span><select name="region"><option value="us" ${(!isCurrent || data.region !== "eu") ? "selected" : ""}>US</option><option value="eu" ${isCurrent && data.region === "eu" ? "selected" : ""}>EU</option></select></label>`, "Save");
             if (v) {
               try {

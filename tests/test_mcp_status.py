@@ -1009,3 +1009,8 @@ class ProjectDocumentationSectionTests(unittest.TestCase):
         app = APP.read_text(encoding="utf-8")
         self.assertIn('providers: ["sentry", "datadog", "new_relic"]', app)
         self.assertIn('#/connections#connections-plugins-diagnostics', app)
+
+    def test_mixpanel_card_explains_project_token_vs_mcp_oauth(self):
+        app = APP.read_text(encoding="utf-8")
+        self.assertIn("Project token for tracking (no OAuth)", app)
+        self.assertIn("mcp.mixpanel.com/mcp", app)
