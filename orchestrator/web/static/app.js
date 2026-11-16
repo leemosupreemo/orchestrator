@@ -7617,7 +7617,7 @@ pages.packages = async () => {
       ${review.sources?.length ? `<details class="fold"><summary class="np-section-legend">Pages it used (${review.sources.length})</summary><ul class="package-sources">${review.sources.map((u) => `<li><a href="${esc(u)}" target="_blank" rel="noopener">${esc(u.replace(/^https:\/\//, ""))}</a></li>`).join("")}</ul></details>` : ""}` : "";
   return {
     title: "Packages",
-    sub: "The libraries and plugins this project uses, and ones worth adding.",
+    sub: "",
     actions: owner ? `<button type="button" class="btn" id="pkg-add">Add package</button><button type="button" class="btn${data.review_due ? " primary" : ""}" id="pkg-review">Recommend packages</button>` : "",
     html: `
       <section class="card mb-16" id="pkg-review-card"><div class="card-b stack">
