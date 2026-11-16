@@ -5809,22 +5809,6 @@ pages.job = async ([id]) => {
 
       ${uxReviewCard(s, data.ux_review)}
 
-      ${cruft ? `<section class="card mb-16" id="cruft-section">
-        <div class="card-h">
-          <h2>Unneeded code</h2>
-          <span class="count">${cruft.findings.length ? `${cruft.findings.length} to review` : "None found"}</span>
-        </div>
-        <div class="card-b stack">
-          <div class="muted">Looked at the lines this job added in ${cruft.files} source file${cruft.files === 1 ? "" : "s"}: code the project already has, code nothing uses, repeated blocks, and leftovers.${cruft.accepted ? ` ${cruft.accepted} accepted.` : ""}${cruft.reuse ? ` The builder was pointed at ${plural(cruft.reuse.suggested, "existing definition")}; the change uses ${cruft.reuse.used.length}${cruft.reuse.used.length ? ` (${cruft.reuse.used.map(esc).join(", ")})` : ""}.` : ""}</div>
-          ${cruft.findings.map((f) => `<div class="scope-finding"><div class="row gap-12"><span class="pill ${f.severity === "high" ? "failed" : f.severity === "medium" ? "attention" : "working"}">${esc(f.severity)}</span><strong>${esc(f.title)}</strong></div>
-            <div class="muted">${esc(f.detail)}</div>
-            <ul class="scope-files mono"><li>${esc(f.files[0])}:${f.line}</li></ul>
-            <div><button class="btn small" data-cruft-accept="${esc(f.id)}">Keep it</button></div></div>`).join("")}
-          ${cruft.findings.length || cruft.accepted ? `<div class="row gap-12">
-            ${cruft.findings.length ? `<a class="btn small primary" href="#/new?type=quick&summary=${encodeURIComponent(cruft.fix.summary)}&spec=${encodeURIComponent(cruft.fix.spec)}">Create a job to remove it</a>` : ""}
-            ${cruft.accepted ? `<button class="btn small ghost" data-cruft-reset>Reset kept</button>` : ""}</div>` : ""}
-        </div></section>` : ""}
-
 
 
       <!-- Jobs this one was split into (if any) -->
@@ -5875,17 +5859,6 @@ pages.job = async ([id]) => {
           </div>
         </section>
       ` : ""}
-
-      <section class="card mb-16" id="chat-section">
-        <div class="card-h"><h2>Ask about this job</h2>${conversation.length ? `<span class="count">${conversation.length}</span>` : ""}</div>
-        <div class="card-b stack">
-          ${conversation.length ? `<div class="chat-thread" role="log" aria-live="polite">${conversation.map((m) => `<div class="chat-msg ${m.role === "user" ? "user" : "assistant"}"><span class="chat-who">${m.role === "user" ? "You" : "AI"}</span><div class="chat-text">${esc(m.text)}</div></div>`).join("")}</div>` : `<div class="muted">Ask why something was done, what a failure means, or what to change. Answers use this job's plan, progress and diff. It can't edit code; use Revise plan or Run fix to act on the answer.</div>`}
-          <form id="chat-form" class="stack">
-            <textarea name="message" required maxlength="4000" rows="2" aria-label="Your question about this job" placeholder="e.g. Why did you change the networking layer?"></textarea>
-            <div class="row"><span class="spacer"></span><button class="btn primary" type="submit">Send</button></div>
-          </form>
-        </div>
-      </section>
 
       <!-- Additional Docs (Builder summary / Investigations) -->
       ${otherDocs.length ? `

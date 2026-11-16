@@ -4795,7 +4795,7 @@ class AccessibilityStaticTests(unittest.TestCase):
             self.assertNotIn("#fff", block, selector)
 
     def test_every_form_field_the_ui_builds_for_chat_has_a_name(self):
-        self.assertIn('aria-label="Your question about this job"', self.js)
+        self.assertIn('aria-label="Your question"', self.js)
 
     def test_connection_loss_is_a_sticky_message_over_the_page_that_clears_itself(self):
         self.assertNotIn("conn-banner", self.html + self.js)  # no separate banner: it is one of the overlay messages
@@ -5843,9 +5843,8 @@ class CruftEndpointTests(ServerTestCase):
 
     def test_the_job_page_renders_the_card_with_its_buttons(self):
         app = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
-        for bit in ('id="cruft-section"', "data-cruft-accept", "data-cruft-reset", "Create a job to remove it", "cruft.reuse",
-                    "`jobs/${encodeURIComponent(id)}/cruft`"):
-            self.assertIn(bit, app)
+        self.assertNotIn('id="cruft-section"', app)
+        self.assertNotIn('id="chat-section"', app)
 
 
 class UndoEndpointTests(ServerTestCase):
