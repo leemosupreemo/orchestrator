@@ -7761,7 +7761,7 @@ pages.measure = async (_, query) => {
           ${monitoring.map((m) => `<a class="pill ${m.connected ? "done" : ""}" href="#/connections#connections-plugins-diagnostics">${esc(m.name)} · ${m.connected ? "Connected" : "Connect"}</a>`).join("")}
         </div>
       </section>
-      ${features.map(card).join("") || `<section class="card mb-16"><div class="card-b"><p class="field-placeholder">No features yet — define them in <a href="#/product">Product</a> to track KPIs here.</p></div></section>`}
+      ${features.map(card).join("")}
       <section class="card mb-16">
         <div class="card-h"><h2>Analytics Connections</h2></div>
         <div class="card-b stack">
@@ -8217,7 +8217,7 @@ pages["ux-review"] = async (_, query) => {
 
   return {
     title: "UX review",
-    sub: "Review your app and choose what to improve.",
+    sub: "",
     actions: `<button class="btn primary" ${act("ux_pass")} ${running || noInterface ? "disabled" : ""}>${running ? "Review running…" : "Run full review"}</button>`,
     html: `
       ${data.error ? `<div class="notice bad mb-16">Screens: ${esc(data.error)}</div>` : ""}
