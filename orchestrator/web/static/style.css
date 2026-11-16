@@ -174,7 +174,7 @@ h1, h2, h3 { margin: 0; line-height: var(--leading-tight); font-weight: var(--we
 strong, b { font-weight: var(--weight-bold); }
 p { margin: 0; }
 code, pre, .mono { font-family: var(--mono); font-size: var(--type-secondary); }
-.icon { width: 21.6px; height: 21.6px; flex: 0 0 auto; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.icon { width: 18px; height: 18px; flex: 0 0 auto; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 
 .app { position: relative; z-index: var(--z-raised); display: grid; grid-template-columns: 256px minmax(0, 1fr); min-height: 100vh; }
 
@@ -246,7 +246,7 @@ code, pre, .mono { font-family: var(--mono); font-size: var(--type-secondary); }
 }
 .nav a:hover { background: var(--panel-2); }
 .nav a.active { background: var(--accent-soft); color: var(--accent); }
-.nav .icon { opacity: .85; }
+.nav .icon { width: 20px; height: 20px; opacity: .85; }
 /* Phone tab bar: the top destinations, with New job in the middle. Hidden on wider screens, where the sidebar shows. */
 .tabbar { display: none; }
 .badge {
@@ -256,8 +256,8 @@ code, pre, .mono { font-family: var(--mono); font-size: var(--type-secondary); }
 .badge.working { background: var(--accent); color: var(--accent-ink); }
 .sidebar-footer { margin-top: auto; display: flex; flex-direction: column; gap: var(--space-0); padding-top: var(--space-3); border-top: 1px solid var(--border); }
 .sidebar-footer .btn { justify-content: flex-start; gap: var(--space-3); min-height: var(--control-sm); padding: var(--space-2) var(--space-3); border: 0; background: none; box-shadow: none; color: var(--muted); font-weight: var(--weight-medium); font-size: var(--type-secondary); }
-.sidebar-footer .btn:hover { background: var(--panel-2); color: var(--text); }
-.sidebar-footer .icon { width: 19.2px; height: 19.2px; }
+.sidebar-footer .btn:hover:not(:disabled) { background: var(--panel-2); color: var(--text); }
+.sidebar-footer .icon { width: 18px; height: 18px; }
 .nav-secondary { gap: 0; }
 /* Group titles read as subtitles: dark, bold, with a rule above; the links under them sit indented and quieter. */
 .nav-secondary .label { margin-top: var(--space-3); padding: var(--space-3) var(--space-3) var(--space-2); border-top: 1px solid var(--border); color: var(--text); font-weight: var(--weight-bold); letter-spacing: .06em; }
@@ -383,38 +383,46 @@ body.signin-gate .sidebar > .brand { visibility: hidden; }
   padding: var(--space-2) var(--space-4); border-radius: var(--r-md); font: inherit; font-weight: var(--weight-medium); cursor: pointer; white-space: nowrap;
   display: inline-flex; align-items: center; justify-content: center; gap: var(--space-2); min-height: var(--control-md);
   text-align: center;
-  transition: background-color var(--motion-fast) ease, border-color var(--motion-fast) ease, color var(--motion-fast) ease;
+  transition: background-color var(--motion-fast) ease, border-color var(--motion-fast) ease, color var(--motion-fast) ease, transform var(--motion-fast) ease, filter var(--motion-fast) ease;
 }
 /* An icon-only button (Stop, Export log). Not ".icon": that is the glyph's own class (a 21px stroke-only box), and on the button it squashed it. */
 .btn.icon-only { width: var(--control-md); height: var(--control-md); padding: 0; flex: 0 0 auto; }
-.btn.icon-only .icon { width: 20px; height: 20px; }
-.btn:hover, .btn.secondary:hover {
+.btn.icon-only.small { width: var(--control-sm); height: var(--control-sm); min-height: var(--control-sm); }
+.btn.icon-only .icon { width: 18px; height: 18px; }
+.btn.icon-only.small .icon { width: 15px; height: 15px; }
+.btn:hover:not(:disabled):not([aria-disabled="true"]), .btn.secondary:hover:not(:disabled):not([aria-disabled="true"]) {
   background: var(--btn-secondary-hover);
   border-color: var(--btn-secondary-hover-border);
   color: var(--btn-secondary-text);
 }
-.btn:disabled, .btn.secondary:disabled, .btn.primary:disabled {
+.btn:disabled, .btn.secondary:disabled, .btn.primary:disabled, .btn.go:disabled, .btn.danger:disabled, .btn.ghost:disabled,
+.btn[aria-disabled="true"], .ask-ai-btn:disabled, .preview-publish-btn:disabled, .back-link:disabled, .dialog-close-btn:disabled, .nav-toggle:disabled {
   opacity: .45;
   cursor: not-allowed;
   pointer-events: none;
   filter: none;
   box-shadow: none;
+  transform: none;
 }
 .btn:disabled[title],
-.btn[disabled][title] {
+.btn[disabled][title],
+.btn[aria-disabled="true"][title] {
   pointer-events: auto;
 }
 .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
-.btn.primary:hover:not(:disabled) { filter: brightness(1.06); background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.btn.primary:hover:not(:disabled):not([aria-disabled="true"]) { filter: brightness(1.06); background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
 /* Tinted actions: green (go) does the thing a row is asking for (create, add, install, set up); red (danger) stops,
    cancels or removes. Subtle: a tint of the colour, not a solid fill, so the page's one primary button still leads. */
 .btn.go, .btn.danger { --tone: var(--ok); background: color-mix(in srgb, var(--tone) 10%, var(--panel)); border-color: color-mix(in srgb, var(--tone) 35%, var(--border)); color: var(--tone); }
 .btn.danger { --tone: var(--bad); }
-.btn.go:hover:not(:disabled), .btn.danger:hover:not(:disabled) { background: color-mix(in srgb, var(--tone) 16%, var(--panel)); border-color: color-mix(in srgb, var(--tone) 55%, var(--border)); color: var(--tone); }
-.btn.go:active, .btn.danger:active { background: color-mix(in srgb, var(--tone) 20%, var(--panel)); }
+.btn.go:hover:not(:disabled):not([aria-disabled="true"]), .btn.danger:hover:not(:disabled):not([aria-disabled="true"]) { background: color-mix(in srgb, var(--tone) 16%, var(--panel)); border-color: color-mix(in srgb, var(--tone) 55%, var(--border)); color: var(--tone); }
+.btn.go:active:not(:disabled):not([aria-disabled="true"]), .btn.danger:active:not(:disabled):not([aria-disabled="true"]) { background: color-mix(in srgb, var(--tone) 22%, var(--panel)); transform: translateY(1px); }
 .btn.ghost { background: transparent; border-color: var(--border); color: var(--text); }
-.btn.ghost:hover { background: var(--panel-2); border-color: var(--border); }
-.btn.small { padding: var(--space-1) var(--space-3); min-height: var(--control-sm); font-size: var(--type-secondary); }
+.btn.ghost:hover:not(:disabled):not([aria-disabled="true"]) { background: var(--panel-2); border-color: var(--border); }
+.btn.on, .btn.active, .btn[aria-pressed="true"] { background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); color: var(--accent); font-weight: var(--weight-bold); }
+.btn.on:hover:not(:disabled):not([aria-disabled="true"]), .btn.active:hover:not(:disabled):not([aria-disabled="true"]), .btn[aria-pressed="true"]:hover:not(:disabled):not([aria-disabled="true"]) { background: color-mix(in srgb, var(--accent) 18%, var(--panel)); border-color: var(--accent); color: var(--accent); }
+.btn.small { padding: var(--space-1) var(--space-3); min-height: var(--control-sm); font-size: var(--type-secondary); gap: var(--space-1-5); }
+.btn.small .icon, .badge-icon { width: 15px; height: 15px; }
 .btn.big { min-height: var(--control-xl); font-size: var(--type-body); padding: var(--space-3) var(--space-5); }
 
 /* Reference imports, job briefs and Git actions */
@@ -423,9 +431,9 @@ body.signin-gate .sidebar > .brand { visibility: hidden; }
 .import-options { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--space-3); }
 .import-option { display: flex; flex-direction: column; align-items: flex-start; justify-content: center; gap: var(--space-1); padding: var(--space-4); min-height: var(--control-xl); border: 1px solid var(--border); border-radius: var(--r-md); background: var(--panel); color: var(--text); font: inherit; text-align: left; cursor: pointer; }
 .import-option:hover { border-color: var(--accent); background: var(--accent-soft); }
-.btn:active, .btn.secondary:active { background: var(--btn-secondary-active); transform: translateY(1px); }
-.btn.primary:active { background: var(--accent); transform: translateY(1px); }
-.btn.ghost:active { background: var(--panel-2); transform: translateY(1px); }
+.btn:active:not(:disabled):not([aria-disabled="true"]), .btn.secondary:active:not(:disabled):not([aria-disabled="true"]) { background: var(--btn-secondary-active); transform: translateY(1px); }
+.btn.primary:active:not(:disabled):not([aria-disabled="true"]) { filter: brightness(0.93); background: var(--accent); transform: translateY(1px); }
+.btn.ghost:active:not(:disabled):not([aria-disabled="true"]) { background: color-mix(in srgb, var(--text) 10%, var(--panel-2)); transform: translateY(1px); }
 .import-option:active { border-color: var(--accent); background: var(--accent-soft); }
 @media (hover: none) and (pointer: coarse) {
   .btn:hover:not(:active), .btn.secondary:hover:not(:active) { background: var(--btn-secondary-bg); border-color: var(--btn-secondary-border); color: var(--btn-secondary-text); }
@@ -1226,12 +1234,12 @@ dialog h2 {
 .ai-step.is-active { color: var(--text); }
 .ai-step.is-active .ai-step-icon { border-color: var(--accent); border-top-color: transparent; animation: spin 0.9s linear infinite; }
 .ai-step.is-done, .ai-step.is-skipped { color: var(--text); }
-.ai-step.is-done .ai-step-icon { border-color: var(--ok); background: var(--ok); color: #fff; }
+.ai-step.is-done .ai-step-icon { border-color: var(--ok); background: var(--ok); color: var(--ok-solid-ink); }
 .ai-step.is-done .ai-step-icon::before { content: "✓"; }
 .ai-step.is-skipped .ai-step-icon { border-color: var(--ok); color: var(--ok); }
 .ai-step.is-skipped .ai-step-icon::before { content: "✓"; }
 .ai-step.is-failed { color: var(--text); }
-.ai-step.is-failed .ai-step-icon { border-color: var(--bad); background: var(--bad); color: #fff; }
+.ai-step.is-failed .ai-step-icon { border-color: var(--bad); background: var(--bad); color: var(--bad-ink); }
 .ai-step.is-failed .ai-step-icon::before { content: "!"; }
 .ai-free-card { border-color: color-mix(in srgb, var(--accent) 35%, var(--border)); background: color-mix(in srgb, var(--accent) 5%, var(--panel)); }
 .notice.good { border-color: var(--ok); background: var(--ok-soft); }
@@ -3879,9 +3887,13 @@ body[data-page="run"] .topbar-actions {
   flex: 0 0 var(--control-sm);
   transition: color var(--motion-fast) ease, background-color var(--motion-fast) ease;
 }
-.back-link:hover {
+.back-link:hover:not(:disabled) {
   color: var(--text);
   background: var(--panel-2);
+}
+.back-link:active:not(:disabled) {
+  background: var(--btn-secondary-active);
+  transform: translateY(1px);
 }
 .back-link:focus-visible {
   outline: 2px solid var(--accent);
@@ -4980,7 +4992,7 @@ body[data-page="preview"] .job-preview > .card-b { display: flex; flex-direction
 body[data-page="preview"] .job-preview .job-preview-frame { flex: 1; height: auto; min-height: 40dvh; border-radius: 0; }
 .preview-close { margin-left: auto; scale: 1.2; }
 .job-preview-pins { position: absolute; inset: 0; z-index: var(--z-inner); cursor: crosshair; background: color-mix(in srgb, var(--accent) 6%, transparent); outline: 2px dashed var(--accent); outline-offset: -2px; }
-.job-preview-hint { position: absolute; top: var(--space-2); left: 50%; transform: translateX(-50%); padding: var(--space-1) var(--space-3); border-radius: var(--r-pill); background: var(--accent); color: #fff; font-size: var(--type-secondary); pointer-events: none; }
+.job-preview-hint { position: absolute; top: var(--space-2); left: 50%; transform: translateX(-50%); padding: var(--space-1) var(--space-3); border-radius: var(--r-pill); background: var(--accent); color: var(--accent-ink); font-size: var(--type-secondary); pointer-events: none; }
 .job-preview-pin { position: absolute; width: 18px; height: 18px; margin: -9px 0 0 -9px; border-radius: 50%; background: var(--bad); border: 3px solid #fff; box-shadow: var(--shadow); }
 .job-preview-ask { display: flex; flex-direction: column; gap: var(--space-2); }
 .job-preview-ask .field { margin: 0; }
@@ -5160,7 +5172,8 @@ dialog.ask-ai { width: min(34rem, 100vw); max-width: min(34rem, 100vw); height: 
 /* Preview card: one round icon button, top right, for the public link (a dot once something is published). */
 .preview-publish-btn { position: relative; display: inline-flex; align-items: center; justify-content: center; flex: none; width: var(--control-md); height: var(--control-md); padding: 0; border: 1px solid var(--border); border-radius: 50%; background: var(--panel); color: var(--text); box-shadow: var(--shadow); cursor: pointer; transition: transform var(--motion-fast) ease, box-shadow var(--motion-fast) ease, border-color var(--motion-fast) ease; }
 .preview-publish-btn .icon { width: 19px; height: 19px; }
-.preview-publish-btn:hover { transform: translateY(-1px); border-color: var(--accent); box-shadow: var(--shadow-2); }
+.preview-publish-btn:hover:not(:disabled) { transform: translateY(-1px); border-color: var(--accent); box-shadow: var(--shadow-2); }
+.preview-publish-btn:active:not(:disabled) { transform: translateY(0); box-shadow: none; }
 .preview-publish-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .preview-publish-btn.is-published::after { content: ""; position: absolute; top: 4px; right: 4px; width: 8px; height: 8px; border-radius: 50%; background: var(--ok); border: 2px solid var(--panel); }
 .preview-publish-btn.is-busy { color: var(--accent); }

@@ -6331,7 +6331,7 @@ pages.new = async (_, query) => {
           <div class="field">
             <div class="row align-center justify-between">
               <span>Specific test cases${opt("optional")}</span>
-              ${cases.length ? `<button type="button" class="btn small ghost" id="nj-import-tc-btn"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg> Import from test cases</button>` : ""}
+              ${cases.length ? `<button type="button" class="btn small ghost" id="nj-import-tc-btn"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-plus"/></svg> Import from test cases</button>` : ""}
             </div>
             <textarea name="test_cases" id="nj-test-cases" rows="3" maxlength="20000" placeholder="e.g. Login fails with wrong password&#10;Session expires after 30 minutes">${esc(v.test_cases)}</textarea>
           </div>
@@ -10425,7 +10425,7 @@ pages.tests = async (_, query) => {
         const count = typeof p === "object" && p && typeof p.tests === "number" ? `<div class="meta">${plural(p.tests, "test")}</div>` : "";
         const last = typeof p === "object" && p ? `<div class="meta suite-last-run">${suiteLastRun(p.last_run)}</div>` : "";
         return `<div class="item"><div class="main-col"><div class="title">${esc(name)}</div>${count}${last}</div>
-          <div class="side"><button type="button" class="btn small ghost" ${act("test_plan", { name })} aria-label="Run ${esc(name)}" title="Run ${esc(name)}"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-play"/></svg></button></div></div>`;
+          <div class="side"><button type="button" class="btn small ghost icon-only" ${act("test_plan", { name })} aria-label="Run ${esc(name)}" title="Run ${esc(name)}"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-play"/></svg></button></div></div>`;
       }).join("")}</div></section>` : ""}
       ${platformCoverageHtml(data)}
       ${testSetupHtml(testSetup)}
