@@ -14019,10 +14019,18 @@ function runStatus(r, vc = null) {
   if (!r.running && (r.action === "visual_check" || /visual check/i.test(r.title)) && vc?.screenshots?.length) {
     return nextStep(r, vc);
   }
-  if (!r.running && r.stopped) {
+  if (!r.running && (r.stopped || r.exit_code === -15 || r.exit_code === -9 || r.exit_code === 143 || r.exit_code === 130)) {
     const target = r.result_job || r.job;
-    const open = target ? `<a class="btn small primary" href="#/jobs/${encodeURIComponent(target)}">Open job</a>` : "";
-    return `<div class="banner failed attention run-status"><p>Run was stopped.</p>${open}</div>`;
+    const named = ["test_suite", "test_plan", "test_command"].includes(r.action) && r.command ? { name: r.command.trim().split(/\s+/).pop() } : undefined;
+    const canResume = r.action && r.action !== "console" && r.action !== "new_job" && (!["test_suite", "test_plan", "test_command"].includes(r.action) || named?.name);
+    const resume = target
+      ? `<button type="button" class="btn small primary" ${act(canResume ? r.action : "execute", { job: target })}><svg class="icon icon-sm" aria-hidden="true"><use href="#i-play"/></svg> Resume</button>`
+      : canResume
+        ? `<button type="button" class="btn small primary" ${act(r.action, named)}><svg class="icon icon-sm" aria-hidden="true"><use href="#i-play"/></svg> Resume</button>`
+        : "";
+    const open = target ? `<a class="btn small${resume ? "" : " primary"}" href="#/jobs/${encodeURIComponent(target)}">Open job</a>` : "";
+    const actions = resume || open ? `<div class="row gap-8">${resume}${open}</div>` : "";
+    return `<div class="banner failed attention run-status"><div class="row align-center justify-between gap-12 wrap"><p>Run was stopped.</p>${actions}</div></div>`;
   }
   const p = r.progress || {};
   const stopping = stoppingRuns.has(r.id) || Boolean(r.stopping);
@@ -14768,10 +14776,18 @@ function nextStep(r) {
   if (r.action === "console") {
     return `<div class="banner"><p>Console connection was stopped.</p></div>`;
   }
-  if (r.stopped) {
+  if (r.stopped || r.exit_code === -15 || r.exit_code === -9 || r.exit_code === 143 || r.exit_code === 130) {
     const target = r.result_job || r.job;
-    const open = target ? `<a class="btn small primary" href="#/jobs/${encodeURIComponent(target)}">Open job</a>` : "";
-    return `<div class="banner"><p>Run was stopped.</p>${open}</div>`;
+    const named = ["test_suite", "test_plan", "test_command"].includes(r.action) && r.command ? { name: r.command.trim().split(/\s+/).pop() } : undefined;
+    const canResume = r.action && r.action !== "console" && r.action !== "new_job" && (!["test_suite", "test_plan", "test_command"].includes(r.action) || named?.name);
+    const resume = target
+      ? `<button type="button" class="btn small primary" ${act(canResume ? r.action : "execute", { job: target })}><svg class="icon icon-sm" aria-hidden="true"><use href="#i-play"/></svg> Resume</button>`
+      : canResume
+        ? `<button type="button" class="btn small primary" ${act(r.action, named)}><svg class="icon icon-sm" aria-hidden="true"><use href="#i-play"/></svg> Resume</button>`
+        : "";
+    const open = target ? `<a class="btn small${resume ? "" : " primary"}" href="#/jobs/${encodeURIComponent(target)}">Open job</a>` : "";
+    const actions = resume || open ? `<div class="row gap-8">${resume}${open}</div>` : "";
+    return `<div class="banner"><div class="row align-center justify-between gap-12 wrap"><p>Run was stopped.</p>${actions}</div></div>`;
   }
   const failed = r.exit_code !== 0;
   if (!failed && (r.action === "visual_check" || /visual check/i.test(r.title)) && (vc?.screenshots?.length || vc?.video)) {
@@ -14990,8 +15006,9 @@ pages.run = async ([id]) => {
         const fileData = await api(`file?path=${encodeURIComponent(saved.log)}`);
         logText = fileData?.text || "";
       } catch {}
-      const exitMatch = logText.match(/\[exited(?: with code (\d+))?\]/);
+      const exitMatch = logText.match(/\[exited(?: with code (-?\d+))?\]/);
       const exitCode = exitMatch ? parseInt(exitMatch[1] || "0", 10) : 1;
+      const wasStopped = exitCode === -15 || exitCode === -9 || exitCode === 143 || exitCode === 130;
       const cleanLog = plainLog(logText);
       const nonExitedLines = cleanLog.split(/\n/).map((l) => l.trim()).filter((l) => l && !l.startsWith("[exited"));
       const recentLines = nonExitedLines.slice(-40);
@@ -15005,7 +15022,7 @@ pages.run = async ([id]) => {
         started: saved.started,
         ended: saved.started,
         running: false,
-        stopped: false,
+        stopped: wasStopped,
         exit_code: exitCode,
         error_summary: exitCode !== 0 ? extractedError : "",
         last_line: extractedError,
