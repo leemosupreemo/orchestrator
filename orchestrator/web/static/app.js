@@ -10252,7 +10252,7 @@ function frameworkGroupsHtml(groups, suites, { filtering = false } = {}) {
   const frameworks = [...new Set(groups.map((g) => g.framework))];
   const summary = `<div class="fw-summary stack gap-8">
       <p class="m-0"><strong>Test frameworks in this project:</strong> ${frameworks.map((f) => `<span class="pill">${esc(f)}</span>`).join(" ")}</p>
-      <p class="muted t-secondary m-0">A test framework is the library the tests are written with. Each group below is one framework in one folder, with the tests it holds.${movable.length ? " Choose whether a group runs after every job, or only when you press Run." : ""}</p>
+      <p class="muted t-secondary m-0">Groups are organized by framework and folder.${movable.length ? " Set each to run after every job or on demand." : ""}</p>
       ${movable.length && owner ? `<div class="row gap-8 align-center wrap"><span class="muted">All of them:</span>${groupModeControl("all", null, { all: true })}
         <span class="muted t-secondary">${onEveryJob} of ${movable.length} run on every job</span>
         <button type="button" class="btn small ghost" ${act("test_probe", { group: "all" })} title="Asks each test framework to list its tests, which also shows whether they can run here. Builds .NET projects; runs no tests.">Check all</button></div>` : ""}
