@@ -1478,7 +1478,7 @@ function fillComputerSelect(select) {
   const machines = accountMachines || [];
   if (!machines.length) { wrap.hidden = true; return; }
   wrap.hidden = false;
-  const html = machines.map((m) => `<option value="${esc(m.id)}"${m.id === current ? " selected" : ""}>${esc(m.name)}${m.reachable ? "" : " (offline)"}</option>`).join("")
+  const html = machines.map((m) => `<option value="${esc(m.id)}"${m.id === current ? " selected" : ""}>${m.reachable ? "🟢" : "🔴"} ${esc(m.name)}</option>`).join("")
     + `<option value="__manage__" class="manage-projects-option">💻 Manage computers...</option>`;
   if (select.dataset.html !== html) { select.innerHTML = html; select.dataset.html = html; }
   if (current) select.value = current;

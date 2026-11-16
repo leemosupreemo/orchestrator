@@ -825,7 +825,7 @@ class SignInPrivacyTests(unittest.TestCase):
         self.assertIn(".machine-switch { display: flex; flex-direction: column; gap: var(--space-1); padding: 0 var(--space-2) var(--space-4); margin-bottom: var(--space-1); border-bottom: 1px solid var(--border); }", css)
         self.assertLess(html.index('id="project-select"'), html.index('id="computer-select"'))
         fn = js[js.index("function renderComputerSelect"):][:3000]
-        for text in ("Account.active()", 'cpApi("machines")', "Manage computers...", "openAccount({ list: true })", "enterMachine(machine)", "(offline)"):
+        for text in ("Account.active()", 'cpApi("machines")', "Manage computers...", "openAccount({ list: true })", "enterMachine(machine)", "🟢", "🔴"):
             self.assertIn(text, fn)
         self.assertIn('renderComputerSelect($("#computer-select"))', js)
         # Manage computers… keeps the list up: only a list shown because nothing could be opened opens one on its own
