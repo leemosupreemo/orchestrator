@@ -139,6 +139,54 @@ ToolConnect.open(provider, provider, {api, formDialog: () => dialog});
         self.assertTrue(seen["shown"])
         self.assertEqual(seen["input"], ["CODE-123\r"])
 
+    def test_stop_signin_stops_running_and_missing_runs_cleanly(self):
+        script = '''
+const [, modulePath] = process.argv;
+const els = {};
+const make = id => els[id] = els[id] || {id, hidden: false, disabled: false, textContent: "", innerHTML: "", value: "", className: "", open: false, dataset: {},
+  querySelectorAll: () => [], querySelector: () => ({className: "", querySelector: () => ({textContent: ""})})};
+["dialog-ok","connect-agree","connect-continue","connect-stop","connect-input","connect-send","connect-code","connect-code-send","connect-code-row",
+ "connect-status","connect-browser","connect-output","connect-details"].forEach(make);
+const stepRows = ["check","prerequisites","install","sign_in","ready"].map(() => ({className: "ai-step", querySelector: () => ({textContent: ""})}));
+const stepMap = Object.fromEntries(["check","prerequisites","install","sign_in","ready"].map((k, i) => [`[data-connect-step="${k}"]`, stepRows[i]]));
+global.document = {getElementById: make, querySelector: sel => stepMap[sel] || stepRows[0], querySelectorAll: () => stepRows};
+global.Html = {escape: s => String(s)};
+global.atob = s => Buffer.from(s, "base64").toString("binary");
+require(modulePath);
+let stopped = false;
+const api = async (path) => {
+  if (path === "runs") { await new Promise(r => setTimeout(r, 40)); return {run: {id: "r1"}}; }
+  if (path === "runs/r1/stop") { stopped = true; return {ok: true}; }
+  if (path.includes("/output")) {
+    await new Promise(r => setTimeout(r, 20));
+    return {offset: 1, data: "", finished: stopped, exit_code: stopped ? -15 : null};
+  }
+  return {};
+};
+let close; const dialog = new Promise(resolve => close = resolve);
+const done = ToolConnect.open("claude", "Claude", {api, formDialog: () => dialog});
+(async () => {
+  await new Promise(r => setTimeout(r, 10));
+  await els["connect-stop"].onclick();
+  const whileStopping = {disabled: els["connect-stop"].disabled, text: els["connect-stop"].textContent, status: els["connect-status"].textContent};
+  await done;
+  close();
+  console.log(JSON.stringify({whileStopping, stopped, stopHidden: els["connect-stop"].hidden, okHidden: els["dialog-ok"].hidden, status: els["connect-status"].textContent, stepClass: stepRows[0].className}));
+  process.exit(0);
+})();
+'''
+        result = subprocess.run(["node", "-e", script, str(MODULE)], capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        data = json.loads(result.stdout.strip().splitlines()[-1])
+        self.assertTrue(data["whileStopping"]["disabled"])
+        self.assertEqual(data["whileStopping"]["text"], "Stopping…")
+        self.assertEqual(data["whileStopping"]["status"], "Stopping sign-in…")
+        self.assertTrue(data["stopped"])
+        self.assertTrue(data["stopHidden"])
+        self.assertFalse(data["okHidden"])
+        self.assertEqual(data["status"], "Sign-in stopped.")
+        self.assertEqual(data["stepClass"], "ai-step")
+
     def test_malformed_markers_do_not_break_progress_or_turn_into_instructions(self):
         result=self.state('@@ORCHESTRATOR_CONNECT@@bad json\n@@ORCHESTRATOR_CONNECT@@{"step":"shell","detail":"run me"}\n')
         self.assertEqual(result['step'],'check')
