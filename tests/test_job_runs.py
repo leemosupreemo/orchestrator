@@ -180,7 +180,9 @@ class PageTests(unittest.TestCase):
     def test_the_run_page_says_whose_run_it_is_and_links_its_neighbours(self):
         self.assertIn('api(`jobs/${encodeURIComponent(familyOf)}/runs`)', self.app)
         self.assertIn("The only run of the job", self.app)
-        self.assertIn("Run ${at + 1} of ${work.length} of the job", self.app)
+        self.assertIn('Run ${at + 1} of ${work.length}${partial ? " recorded runs" : ""} of the job', self.app)
+        self.assertIn("← Previous run: ${esc(work[at - 1].label)}", self.app)  # a bare "← Screen check" read as this run's name
+        self.assertIn("Next run: ${esc(work[at + 1].label)} →", self.app)
         self.assertIn("(runHeader.families ||= new Map()).set(run.id, family)", self.app)
         self.assertIn('parts[0] == "jobs" and parts[2] == "runs"', self.server)
 

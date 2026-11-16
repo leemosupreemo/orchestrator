@@ -508,6 +508,33 @@ class WorkerRunTests(unittest.TestCase):
                     runpy.run_module('worker_run', run_name='__main__')
                 scoped.assert_called_once_with(path)
 
+    def test_committing_finished_work_clears_a_leftover_git_lock_and_retries(self):
+        # a status check that timed out left .git/index.lock: the job's tests passed, so the commit retries instead of failing
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / '.git').mkdir()
+            lock = root / '.git' / 'index.lock'
+            lock.write_text('')
+            calls = []
+
+            def fake_shell(cmd, cwd=None, check=True, **kwargs):
+                calls.append(cmd)
+                if lock.exists():
+                    raise worker.subprocess.CalledProcessError(128, cmd, '', f"fatal: Unable to create '{lock}': File exists.")
+                return SimpleNamespace(returncode=0, stdout='', stderr='')
+
+            with patch.object(worker, 'ROOT', root), patch.object(worker, 'run_shell', side_effect=fake_shell), \
+                 patch.object(worker, '_try_clear_stale_index_lock', side_effect=lambda r: lock.unlink() or True):
+                worker._git_commit_step("git add a.txt")
+            self.assertEqual(calls, ["git add a.txt", "git add a.txt"])
+
+            lock.write_text('')  # held by a live git command throughout: a plain-words error, not "exit status 128"
+            with patch.object(worker, 'ROOT', root), patch.object(worker, 'run_shell', side_effect=fake_shell), \
+                 patch.object(worker, '_try_clear_stale_index_lock', return_value=False), patch.object(worker.time, 'sleep'):
+                with self.assertRaises(RuntimeError) as err:
+                    worker._git_commit_step("git add a.txt")
+            self.assertIn("its tests passed, but committing it failed", str(err.exception))
+
     def test_prepare_git_branch_autocorrects_checkout_failures(self):
         config = SimpleNamespace(base_branch='main', git_remote=None)
         with tempfile.TemporaryDirectory() as tmp:

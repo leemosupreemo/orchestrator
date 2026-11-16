@@ -148,6 +148,13 @@ class PageTests(unittest.TestCase):
         timeline = app[app.index("function wireRunTimeline"):][:2500]
         self.assertIn('s.status === "failed" || s.errors > 0', timeline)
 
+    def test_timeline_omits_top_running_duration_and_step_count_banner(self):
+        app = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
+        timeline = app[app.index("function wireRunTimeline"):][:2500]
+        self.assertNotIn("run-timeline-meta", timeline)
+        family = app[app.index("function runFamilyHtml"):app.index("function runHeader")]
+        self.assertNotIn('<span class="pill neutral">Run</span>', family)
+
 
 if __name__ == "__main__":
     unittest.main()

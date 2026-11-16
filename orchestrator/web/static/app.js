@@ -4414,6 +4414,26 @@ function homeProjectTitle(p) {
 }
 
 let homeRemoteSnaps = { key: null, at: 0, snaps: [] }; // other computers' snapshots as Home last fetched them
+// What holds paused jobs up that no code change can fix (orchestrator/blockers.py): one row per blocker, with the jobs
+// it holds and the one thing that clears it. Cleared blockers resume their jobs by themselves (the POST above).
+function blockersCard(groups) {
+  if (!groups.length) return "";
+  const row = (g) => {
+    const jobs = g.jobs.map((j) => `<a href="#/jobs/${encodeURIComponent(j.id)}">${esc(j.title)}</a>`).join(", ");
+    const fix = g.cleared ? `<span class="pill ok">Cleared · resuming</span>`
+      : g.kind === "git_lock" ? `<button type="button" class="btn small primary" data-clear-git-lock>Clear the lock</button>`
+      : g.kind === "sign_in" && g.provider && g.provider !== "ai" ? `<button type="button" class="btn small primary" ${act("ai_connect", { provider: g.provider, name: g.name })}>Sign in to ${esc(g.name)}</button>`
+      : "";
+    return `<div class="item blocker-row"><div class="main-col"><div class="title">${esc(g.title)}</div>
+      <div class="meta">${esc(g.detail || "")} ${g.cleared ? "" : esc((g.steps || []).join(" "))}</div>
+      <div class="meta">Waiting: ${jobs}</div></div><div class="side">${fix}</div></div>`;
+  };
+  const waiting = groups.reduce((n, g) => n + g.jobs.length, 0);
+  return `<section class="card mb-16" id="home-blockers"><div class="card-h"><h2>Blocked</h2><span class="count">${waiting}</span></div>
+    <div class="card-b muted">These jobs stopped on something outside the code. Once it's cleared they resume by themselves.</div>
+    <div class="list">${groups.map(row).join("")}</div></section>`;
+}
+
 pages.home = async (_, query) => {
   const download = projectDownloads.pending();
   if (download && (download.phase !== "loading" || state.project?.root !== download.project?.root)) return projectDownloadPage(download);
@@ -4425,10 +4445,13 @@ pages.home = async (_, query) => {
     if (download && !finishProjectDownload(download)) return {stale:true};
     return setupPage(setupState);
   }
-  const [{ jobs }, waiting, product, archivedList, homeGit, homePreview] = await Promise.all([
+  const [{ jobs }, waiting, product, archivedList, homeGit, homePreview, homeBlockers] = await Promise.all([
     api("jobs"), api("inbox"), api("product").catch(() => null), api("jobs/archived").catch(() => null),
     api("git").catch(() => ({})), api("preview").catch(() => null),
+    // POST also resumes the jobs whose blocker has cleared since; someone who can't start runs just reads the list
+    api("blockers", { method: "POST", body: {} }).catch(() => api("blockers").catch(() => null)),
   ]);
+  if (homeBlockers?.resumed?.length) toast(`${plural(homeBlockers.resumed.length, "blocked job")} resumed: what stopped ${homeBlockers.resumed.length === 1 ? "it" : "them"} is cleared.`);
   if (!sameProject()) return {stale: true};
   const archivedJobs = archivedList?.archived || [];
   if (!p.branches) { // server predates the project-state branch list: use the Git endpoint
@@ -4541,6 +4564,7 @@ pages.home = async (_, query) => {
       ${HomeStatus.render({git: homeGit, jobs, runs: state.runs})}
       ${product ? productStripHtml(product, jobs) : ""}
 
+      ${blockersCard(homeBlockers?.blockers || [])}
       ${runningBanner}
 
       <section class="card" id="home-jobs">
@@ -6798,6 +6822,14 @@ document.addEventListener("click", (e) => {
       })
       .catch((err) => toast(err?.status === 404 ? "No saved log for this run yet." : err.message, true))
       .finally(() => { logAction.disabled = false; });
+    return;
+  }
+  const clearLock = e.target.closest("[data-clear-git-lock]");
+  if (clearLock) { // Home's Blocked card: remove a leftover git lock nothing has open, then resume the jobs it held up
+    clearLock.disabled = true;
+    api("blockers/clear-lock", { method: "POST", body: {} })
+      .then((res) => { toast(res.resumed?.length ? `Lock cleared. Resumed ${plural(res.resumed.length, "job")}.` : "Lock cleared."); return route(); })
+      .catch((err) => { clearLock.disabled = false; toast(err.message, true); });
     return;
   }
   const all = e.target.closest("[data-show-all]");
@@ -13528,12 +13560,14 @@ function runFamilyHtml(r, family) {
   const at = work.findIndex((x) => x.id === r.id);
   const me = (family.job_runs || []).find((x) => x.id === r.id);
   const job = `<a href="#/jobs/${encodeURIComponent(family.job.id)}">${esc(family.job.title)}</a>`;
+  // A job whose first kept run isn't its planning started before runs were kept: say "recorded" so the count isn't taken as all of them.
+  const partial = work.length && work[0].phase !== "plan";
   const where = me?.side ? `A side errand for the job ${job}`
-    : work.length <= 1 ? `The only run of the job ${job}`
-    : `Run ${at + 1} of ${work.length} of the job ${job}`;
-  const prev = at > 0 ? `<a href="#/runs/${encodeURIComponent(work[at - 1].id)}">← ${esc(work[at - 1].label)}</a>` : "";
-  const next = at >= 0 && at < work.length - 1 ? `<a href="#/runs/${encodeURIComponent(work[at + 1].id)}">${esc(work[at + 1].label)} →</a>` : "";
-  return `<span class="status-line run-family"><span class="pill neutral">Run</span><span>${where}</span>${prev ? `<span class="sep">·</span>${prev}` : ""}${next ? `<span class="sep">·</span>${next}` : ""}</span>`;
+    : work.length <= 1 ? (partial ? `The only recorded run of the job ${job}` : `The only run of the job ${job}`)
+    : `Run ${at + 1} of ${work.length}${partial ? " recorded runs" : ""} of the job ${job}`;
+  const prev = at > 0 ? `<a href="#/runs/${encodeURIComponent(work[at - 1].id)}">← Previous run: ${esc(work[at - 1].label)}</a>` : "";
+  const next = at >= 0 && at < work.length - 1 ? `<a href="#/runs/${encodeURIComponent(work[at + 1].id)}">Next run: ${esc(work[at + 1].label)} →</a>` : "";
+  return `<span class="status-line run-family"><span>${where}</span>${prev ? `<span class="sep">·</span>${prev}` : ""}${next ? `<span class="sep">·</span>${next}` : ""}</span>`;
 }
 
 function runHeader(r, family = null) {
@@ -15086,11 +15120,9 @@ function wireRunTimeline(id, { saved = false } = {}) {
   const draw = () => {
     if (!data) return;
     const steps = data.steps || [];
-    const total = steps.reduce((sum, s) => sum + (s.seconds || 0), 0);
     const nearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
     const enteringIds = initialized ? new Set(steps.filter((s) => !seenSteps.has(s.id)).map((s) => s.id)) : new Set();
-    box.innerHTML = steps.length ? `<div class="run-timeline-meta">${data.running ? `${runningMark}Running` : "Ran"}${total ? ` for ${secondsText(total)}` : ""} · ${plural(steps.length, "step")}</div>
-      <ol class="run-steps">${steps.map((s, idx) => {
+    box.innerHTML = steps.length ? `<ol class="run-steps">${steps.map((s, idx) => {
         const next = steps[idx + 1];
         const entering = enteringIds.has(s.id);
         const extending = Boolean(next && enteringIds.has(next.id) && !entering);

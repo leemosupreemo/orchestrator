@@ -921,6 +921,16 @@ def job_state(job: dict[str, Any], root: Path | None = None) -> dict[str, Any]:
         return state("needs_you", "attention", f"Task {growth['task'] + 1} grew past its plan",
                      f"{growth.get('text') or ''} Keep going if that's fine, or undo the task and revise the plan to make it smaller.".strip(),
                      "resume", "Keep going")
+    blocker = job.get("blocker")
+    if status == "human-needed" and isinstance(blocker, dict) and blocker.get("kind"):
+        # Stopped by the machine, not the code (blockers.py): say what blocks it, checked now, not when it stopped.
+        from orchestrator import blockers
+        if root is not None and blockers.is_cleared(blocker, root):
+            return state("needs_you", "attention", "Blocker cleared",
+                         f"{blocker.get('title')}: that's fixed now. Resume carries on from where it stopped.", "resume", "Resume")
+        blocked = state("needs_you", "failed", str(blocker.get("title") or "Blocked"), str(blocker.get("detail") or ""), "resume", "Try again")
+        sign_in = {"provider": blocker.get("provider"), "name": blocker.get("name")} if blocker.get("kind") == "sign_in" and blocker.get("provider") != "ai" else None
+        return {**blocked, "steps": blockers.steps(blocker, root or Path(".")), "sign_in": sign_in, "blocker_kind": blocker.get("kind")}
     if status == "human-needed":
         question = str(job.get("human_clarification_question") or "").strip()
         if question and question_is_blocker(question):
@@ -1008,6 +1018,22 @@ def job_state(job: dict[str, Any], root: Path | None = None) -> dict[str, Any]:
     if remaining:
         return state("working", "working", status.replace("-", " ").capitalize(), f"{remaining} task(s) left.", "resume", "Resume")
     return state("working", "working", status.replace("-", " ").capitalize(), "")
+
+
+def blocked_jobs(root: Path) -> list[tuple[str, Path, dict[str, Any]]]:
+    """Paused jobs that wait on a blocker (blockers.py): (id, path, job)."""
+    out = []
+    folder = jobs_dir(root)
+    for path in sorted(folder.glob("*.json")) if folder.is_dir() else []:
+        job = read_json_file(path)
+        if job.get("status") == "human-needed" and isinstance(job.get("blocker"), dict) and job["blocker"].get("kind"):
+            out.append((path.stem, path, job))
+    return out
+
+
+def blocker_groups(root: Path) -> list[dict[str, Any]]:
+    from orchestrator import blockers
+    return blockers.groups(root, [(job_id, job) for job_id, _, job in blocked_jobs(root)])
 
 
 def write_json_file(path: Path, data: dict[str, Any]) -> None:
@@ -8107,6 +8133,17 @@ class UIHandler(BaseHTTPRequestHandler):
             # The short version for Home: style mix, version, and whether the requirements have moved on since approval.
             self._json({**architecture.summary(root, prd_doc.Prd(root, runtime_dir(root)).read() or ""),
                         "proposal_waiting": architecture.load_proposal(runtime_dir(root)) is not None})
+        elif parts == ["blockers"] or parts == ["blockers", "clear-lock"]:
+            # What holds paused jobs up (blockers.py), once per blocker. POST also resumes the jobs whose blocker is cleared
+            # (Home posts it as it refreshes); clear-lock first removes a leftover git lock that nothing has open.
+            from orchestrator import blockers
+            resumed: list[str] = []
+            if method == "POST":
+                self._require_owner("resume blocked jobs")
+                if parts[-1] == "clear-lock" and not blockers.clear_git_lock(root):
+                    raise UIError("Git is still using that lock. Wait a moment, then try again.", HTTPStatus.CONFLICT)
+                resumed = self._resume_cleared_jobs(root, force=parts[-1] == "clear-lock")
+            self._json({"blockers": blocker_groups(root), "resumed": resumed})
         elif method == "POST" and parts == ["architecture", "propose"]:
             self._require_owner("decide the architecture")
             # A model proposes candidate stacks for this product and picks one, in the background; feedback revises the last proposal.
@@ -8999,6 +9036,26 @@ class UIHandler(BaseHTTPRequestHandler):
         s_type, s_label, g_repo = detect_project_source(candidate, p_cfg)
         remember_project(candidate, active=True, source_type=s_type, source_label=s_label, github_repo=g_repo)
         self._json({"project": project_state(candidate)})
+
+    def _resume_cleared_jobs(self, root: Path, force: bool = False) -> list[str]:
+        """Resumes the paused jobs whose blocker is cleared now: each at most once an hour (`force`, after Clear the lock,
+        skips that wait), so a blocker that comes straight back pauses the job again instead of looping."""
+        from orchestrator import blockers
+        running = self.server.sessions.running_job_ids()
+        resumed = []
+        for job_id, path, job in blocked_jobs(root):
+            blocker = job["blocker"]
+            if job_id in running or not blockers.is_cleared(blocker, root) or not (force or blockers.due_for_auto_resume(blocker)):
+                continue
+            job["blocker"] = {**blocker, "auto_resumed_at": time.time()}
+            write_json_file(path, job)
+            try:
+                self._launch_run("resume", {"job": job_id}, root)
+            except UIError:
+                continue
+            self._audit("blocked_job_resumed", job=job_id, blocker=blocker.get("kind"))
+            resumed.append(job_id)
+        return resumed
 
     def _launch_run(self, key: str, params: dict[str, Any], root: Path, cols: int = 110, rows: int = 32,
                     ask_about_duplicates: bool = False) -> PtySession:

@@ -54,7 +54,7 @@ from open_or_update_pr import open_or_update_pr, push_branch_for_review
 from run_builder import BuilderClarificationNeeded, run_builder
 from llm import extract_json_block
 from orchestrator.project_config import PROJECT_CONFIG
-from orchestrator import reuse_brief, scope_check, task_growth
+from orchestrator import blockers, reuse_brief, scope_check, task_growth
 from model_router import builder_for_task
 
 
@@ -347,6 +347,35 @@ def _remove_identical_untracked_files(root: Path, branch: str, paths: list[str])
 
 def _is_index_lock_error(detail: str) -> bool:
     return "index.lock" in detail or "Another git process seems to be running" in detail
+
+
+def _git_commit_step(cmd: str) -> None:
+    """One git command committing the job's finished work. A leftover .git/index.lock (a git command that was killed, often a
+    tool's status check that timed out) is cleared and the command retried, instead of failing a job whose tests passed."""
+    try:
+        run_shell(cmd, cwd=ROOT)
+        return
+    except subprocess.CalledProcessError as exc:
+        res = exc
+    detail = f"{res.stderr or ''}\n{res.stdout or ''}"
+    if _is_index_lock_error(detail):
+        for _ in range(3):  # a live git command finishes in moments; wait out the clear-by-age rule and retry
+            if _try_clear_stale_index_lock(ROOT) or not (_resolve_git_dir(ROOT) / "index.lock").exists():
+                try:
+                    run_shell(cmd, cwd=ROOT)
+                    return
+                except subprocess.CalledProcessError as retry_exc:
+                    res = retry_exc
+                detail = f"{res.stderr or ''}\n{res.stdout or ''}"
+                if not _is_index_lock_error(detail):
+                    break
+            time.sleep(10)
+        if _is_index_lock_error(detail):
+            raise RuntimeError(
+                "The work is done and its tests passed, but committing it failed: another git command is holding this project's "
+                f"git lock ({_resolve_git_dir(ROOT) / 'index.lock'}).\n\nHow to fix:\n- Wait for other git tools (an IDE, Codex, a "
+                "status line) to finish, then Resume.\n- If nothing is running git, delete that file, then Resume.")
+    raise res
 
 
 def _pull_branch_with_recovery(branch: str, *, allow_missing_remote: bool = False) -> None:
@@ -764,10 +793,38 @@ def no_change_stop(job: dict, changed_now: list[str], *, debug_attempt: bool = F
     return f"{what} finished without changing any files, so nothing was built.{reason}"
 
 
+def blocker_in_logs(job: dict) -> Optional[dict]:
+    """A blocker named in this run's build or test log (a git lock, a sign-in, a missing tool, a full disk), if any."""
+    out_dir = OUTPUT_DIR / str(job.get("job_id") or "")
+    text = ""
+    for name in ("build.log", "test.log", "environment_failure.md"):
+        try:
+            text += (out_dir / name).read_text(encoding="utf-8", errors="replace")[-200_000:] + "\n"
+        except OSError:
+            pass
+    return blockers.detect(text)
+
+
+def pause_on_blocker(job_path: Path, job: dict, blocker: dict, issue_number: Optional[int]) -> None:
+    print(f"\n⚠️ {blocker['title']}. {blocker['detail']} This isn't a code problem, so no fix attempt is started; "
+          "the job resumes once it's cleared.")
+    blockers.record(job, blocker)
+    job["status"] = "human-needed"
+    job["last_error"] = f"{blocker['title']}. {blocker['detail']}"
+    job["worker_pid"] = None
+    job["updated_at"] = now_iso()
+    write_json(job_path, job)
+    update_issue_status(issue_number, "status:human-needed", ["status:executing"])
+    send_notifications(job, f"Job Paused: {blocker['title']}", f"{blocker['detail']}\nTitle: {job['title']}")
+
+
 def execute_job(job_path: Path, resume: bool = False) -> None:
     start_epoch = time.time()
     remove_task_views(job_path)  # left over from a run that was stopped part way
     job = read_json(job_path)
+    if isinstance(job.get("blocker"), dict):  # running again: what it waited on is cleared (or the person chose to try)
+        job["last_blocker"] = job.pop("blocker")  # kept so a blocker that comes straight back isn't auto-resumed again
+        write_json(job_path, job)
 
     if resume and job.get("worker_pid"):
         old_pid = job["worker_pid"]
@@ -1129,13 +1186,13 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
         if ai_modified or ai_untracked:
             print(f"      - Committing {len(ai_modified)} modified and {len(ai_untracked)} untracked files...")
             for f in ai_modified + ai_untracked:
-                run_shell(f"git add {shlex.quote(f)}", cwd=ROOT)
+                _git_commit_step(f"git add {shlex.quote(f)}")
             
             commit_msg = f"feat: {job['title']} (AI generated)"
             if job.get("type") == "bug-fix":
                 commit_msg = f"fix: {job['title']} (AI generated)"
             
-            run_shell(f"git commit -m '{commit_msg}'", cwd=ROOT)
+            _git_commit_step(f"git commit -m {shlex.quote(commit_msg)}")
 
         tasks = job.get("plan", {}).get("tasks", [])
         completed = job.get("completed_task_indices", [])
@@ -1159,6 +1216,10 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
         write_json(job_path, job)
 
         if not build_ok or not test_ok:
+            blocker = blocker_in_logs(job)
+            if blocker:  # the machine, not the code: a fix attempt can't help, so pause on it (Home resumes it once cleared)
+                pause_on_blocker(job_path, job, blocker, issue_number)
+                return
             # Set job status to debugging to trigger an automatic iteration
             job["status"] = "debugging"
             job["debug_phase"] = "propose"
@@ -1409,6 +1470,8 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
         job["status"] = "human-needed"
         job["updated_at"] = now_iso()
         job["last_error"] = str(e)
+        if blocker := blockers.detect(f"{e}\n{getattr(e, 'stderr', '') or ''}"):
+            blockers.record(job, blocker)
         job["worker_pid"] = None
         write_json(job_path, job)
 
