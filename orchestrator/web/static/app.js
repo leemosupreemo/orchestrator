@@ -7745,7 +7745,8 @@ pages.measure = async (_, query) => {
           <div class="stat"><div class="k">With a recorded result</div><div class="v">${measuredKpis.length}</div></div>
           <div class="stat"><div class="k">Analytics platform</div><div class="v">${data.provider ? esc(data.provider_name || data.provider) : "None connected"}</div></div>
         </div>
-        <div class="card-b row gap-12 wrap align-center analytics-provider-row">${data.provider ? `<span class="muted">${esc((data.region || "us").toUpperCase())} region · ${connected ? "Connected" : "Key not configured"}</span>${connected && data.dashboard_url ? `<a class="btn small" href="${esc(data.dashboard_url)}" target="_blank" rel="noopener">Open ${esc(data.provider_name || "provider")} dashboard ↗</a>` : ""}` : `<span class="muted">Provider setup is optional. Results can be recorded here by hand.</span>`}</div>
+        <div class="card-b row gap-12 wrap align-center analytics-provider-row">${data.provider ? `<span class="muted">${esc((data.region || "us").toUpperCase())} region · ${connected ? "Connected" : "Key not configured"}</span>${connected && data.dashboard_url ? `<a class="btn small" href="${esc(data.dashboard_url)}" target="_blank" rel="noopener">Open ${esc(data.provider_name || "provider")} dashboard ↗</a>` : ""}` : `<span class="muted">Provider setup is optional. Results can be recorded here by hand.</span>`}<span class="spacer"></span><button type="button" class="btn small" id="edit-success-measures">${data.success_measures?.trim() ? "Edit success measures" : "Add success measures"}</button></div>
+        ${data.success_measures?.trim() ? `<div class="card-b card-b-split md">${Markdown.render(data.success_measures)}</div>` : ""}
       </section>
       <section class="card mb-16" id="analytics-performance">
         <div class="card-h"><h2>Performance metrics</h2></div>
@@ -7760,9 +7761,6 @@ pages.measure = async (_, query) => {
           <span class="muted">Monitoring:</span>
           ${monitoring.map((m) => `<a class="pill ${m.connected ? "done" : ""}" href="#/connections#connections-plugins-diagnostics">${esc(m.name)} · ${m.connected ? "Connected" : "Connect"}</a>`).join("")}
         </div>
-      </section>
-      <section class="card mb-16"><div class="card-h"><h2>Project success measures</h2><button type="button" class="btn small" id="edit-success-measures">Edit</button></div>
-        <div class="card-b">${data.success_measures?.trim() ? `<div class="md">${Markdown.render(data.success_measures)}</div>` : `<p class="field-placeholder">Add project-wide outcomes and targets…</p>`}</div>
       </section>
       ${features.map(card).join("") || `<section class="card mb-16"><div class="card-b"><p class="field-placeholder">No features yet — define them in <a href="#/product">Product</a> to track KPIs here.</p></div></section>`}
       <section class="card mb-16">

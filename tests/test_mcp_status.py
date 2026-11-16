@@ -1025,6 +1025,5 @@ class ProjectDocumentationSectionTests(unittest.TestCase):
         app = APP.read_text(encoding="utf-8")
         css = (APP.parent / "style.css").read_text(encoding="utf-8")
         self.assertIn(".field-placeholder", css)
-        self.assertIn('class="field-placeholder">Add project-wide outcomes and targets…', app)
         self.assertIn('class="field-placeholder">No KPIs yet', app)
         self.assertIn('class="field-placeholder">${esc(s.hint)}', app)
