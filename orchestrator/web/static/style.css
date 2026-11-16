@@ -2276,16 +2276,16 @@ dialog h2 {
 
 .job-stepper {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: var(--space-2);
+  gap: var(--space-1-5) var(--space-2);
   padding: var(--space-3) var(--space-4);
   margin-bottom: var(--space-4);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--panel);
   box-shadow: var(--shadow);
-  overflow-x: auto;
 }
 .job-step {
   display: flex;
@@ -2294,8 +2294,9 @@ dialog h2 {
   color: var(--muted);
   font-size: var(--type-secondary);
   white-space: nowrap;
-  flex: 1 1 0;
-  min-width: fit-content;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
 }
 .job-step.active {
   color: var(--text);
@@ -2340,6 +2341,7 @@ dialog h2 {
   display: flex;
   flex-direction: column;
   gap: 1px;
+  min-width: 0;
 }
 .job-step-title {
   font-size: var(--type-tag);
@@ -2350,6 +2352,8 @@ dialog h2 {
   font-size: var(--type-tag);
   color: var(--muted);
   font-weight: var(--weight-regular);
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .job-step-arrow {
   height: 2px;
@@ -2358,9 +2362,26 @@ dialog h2 {
   background: var(--border);
 }
 .job-step-arrow.done { background: var(--ok); }
+@container (max-width: 840px) {
+  .job-stepper {
+    justify-content: flex-start;
+    padding: var(--space-2) var(--space-3);
+  }
+  .job-step {
+    padding: var(--space-1-5) var(--space-2);
+  }
+  .job-step-arrow { display: none; }
+}
 @media (max-width: 760px) {
-  .job-stepper { padding: var(--space-2); }
-  .job-step { flex: 0 0 auto; }
+  .job-stepper {
+    justify-content: flex-start;
+    padding: var(--space-2);
+  }
+  .job-step {
+    flex: 0 1 auto;
+    padding: var(--space-1-5) var(--space-2);
+  }
+  .job-step-arrow { display: none; }
 }
 
 .job-hero-next-preview {
@@ -3945,7 +3966,7 @@ body[data-page="run"] .topbar-actions {
 
 /* Job page: the context rail beside the job on wide screens, under its top section on narrow ones */
 .job-layout { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-areas: "top" "rail" "body"; }
-.job-top { grid-area: top; min-width: 0; }
+.job-top { grid-area: top; min-width: 0; container-type: inline-size; }
 .job-body { grid-area: body; min-width: 0; }
 .job-rail { grid-area: rail; min-width: 0; display: flex; flex-direction: column; gap: var(--space-3); margin-bottom: var(--space-4); }
 @media (min-width: 1100px) {

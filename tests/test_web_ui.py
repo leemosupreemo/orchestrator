@@ -8121,6 +8121,9 @@ after();
         self.assertIn('<nav class="job-stepper"', self.job_page)
         self.assertIn(".job-stepper {", css)
         self.assertIn(".job-step-dot {", css)
+        stepper_block = css[css.index(".job-stepper {"):css.index("}", css.index(".job-stepper {")) + 1]
+        self.assertIn("flex-wrap: wrap", stepper_block)
+        self.assertNotIn("overflow-x: auto", stepper_block)
         self.assertIn(".job-hero-next-preview {", css)
         self.assertIn('job-hero-next-preview', self.job_page)
         # The stepper shows the stage and the hero's title and button say what's needed: no badge row repeating them.
