@@ -652,7 +652,7 @@ function addProjectsDialog(trackedProjects) {
     </div>
     <div id="panel-custom" role="tabpanel" aria-labelledby="tab-custom" class="dialog-tab-panel stack" hidden>
       <label class="field"><span>Project Directory Path</span>
-        <input type="text" name="root" placeholder="e.g. /Users/.../my-app or ~/Projects/my-app" autocomplete="off" spellcheck="false">
+        <input type="text" name="root" placeholder="e.g. /Users/.../my-app or ~/Projects/my-app" required autocomplete="off" spellcheck="false">
         <small>Path to the folder containing your Xcode project, Package.swift, or Git repository.</small>
       </label>
       <label class="field"><span>Display Name <span class="muted">(optional)</span></span>
@@ -691,6 +691,7 @@ function addProjectsDialog(trackedProjects) {
       pendingAdds -= 1;
       done.disabled = pendingAdds > 0;
       cancel.disabled = pendingAdds > 0;
+      done.dataset.why = cancel.dataset.why = "Wait for the uploads to finish.";
     });
   };
   // The scan answers within about 20 seconds (see scan_for_projects); past a minute something is wrong, so it stops
@@ -1899,7 +1900,7 @@ function getPreviewRecovery() {
           <p>${!progress.done ? `<span class="spinner inline-spinner" aria-hidden="true"></span> ` : ""}${esc(progress.message)}</p>
         </div><div class="dialog-actions">${progress.done
           ? `${progress.canRetry ? `<button type="button" class="btn" data-preview-update-retry>Try update again</button>` : ""}<a class="btn" href="#/computers" data-preview-update-close>Computers</a><button type="button" class="btn primary" data-preview-update-close>Close</button>`
-          : `<button type="button" class="btn" data-preview-update-cancel${progress.canCancel ? "" : " disabled"}>${progress.state === "cancelling" ? "Cancelling…" : "Cancel update"}</button>`}</div>`;
+          : `<button type="button" class="btn" data-preview-update-cancel data-why="Can't cancel at this stage."${progress.canCancel ? "" : " disabled"}>${progress.state === "cancelling" ? "Cancelling…" : "Cancel update"}</button>`}</div>`;
       if (!dialog.open) dialog.showModal();
     },
   });
@@ -2376,6 +2377,7 @@ async function showSnapshotScreen(machineId, machine) {
       const openBtn = view.querySelector('[data-account-action="open"]');
       if (!openBtn) return;
       openBtn.disabled = busy;
+      openBtn.dataset.why = "Opening… wait a moment.";
       if (busy) {
         openBtn.setAttribute("aria-busy", "true");
         openBtn.textContent = "Connecting…";
@@ -3418,7 +3420,7 @@ function liveRunCard(r) {
     <div class="row">
       <a class="btn small" href="#/runs/${encodeURIComponent(r.id)}">Details</a>
       ${target ? `<a class="btn small" href="#/jobs/${encodeURIComponent(target)}">Job</a>` : ""}
-      <button class="btn small danger" data-stop="${esc(r.id)}" ${isStopping ? 'disabled aria-busy="true"' : ""}>${isStopping ? "Stopping…" : "Stop"}</button></div></div>`;
+      <button class="btn small danger" data-stop="${esc(r.id)}" data-why="Already stopping." ${isStopping ? 'disabled aria-busy="true"' : ""}>${isStopping ? "Stopping…" : "Stop"}</button></div></div>`;
 }
 
 function runItem(r) {
@@ -3552,6 +3554,7 @@ async function openAskAi(opts = {}) {
     checkBox.innerHTML = askAiCheckLine(data, checking);
     checkBox.hidden = !checking;
     input.disabled = send.disabled = !tiersBox.querySelector("input:checked");
+    send.dataset.why = "Choose at least one model first.";
   };
   // Check the models before relying on them: the first time, and when it's been a while (project_chat.CHECK_FRESH).
   let checking = false;
@@ -4070,7 +4073,7 @@ document.addEventListener("click", async (e) => {
       const values = await formDialog("Create GitHub repository", `
         <p class="muted">Create a new repository on GitHub and connect it as the remote origin.</p>
         <label class="field"><span>Repository name</span>
-          <input type="text" name="name" value="${esc(projectName)}" placeholder="my-project" maxlength="80">
+          <input type="text" name="name" value="${esc(projectName)}" placeholder="my-project" required maxlength="80">
         </label>
         <label class="field"><span>Visibility</span>
           <select name="visibility">
@@ -4773,7 +4776,7 @@ function previewCard(p, runs) {
       </div>
       <div class="job-preview-pickbar row gap-8 align-center wrap" id="job-preview-pickbar" hidden>
         <span class="t-secondary" id="job-preview-picked" aria-live="polite"></span>
-        <button type="button" class="btn small go" id="job-preview-describe" disabled>Add to message</button>
+        <button type="button" class="btn small go" id="job-preview-describe" data-why="Pick something on the page first." disabled>Add to message</button>
       </div>
       <form class="job-preview-ask" id="job-preview-ask">
         <div class="preview-chips" id="preview-chips" hidden></div>
@@ -4809,6 +4812,7 @@ async function openPublishDialog(branch) {
   const label = publishing ? "Publishing…" : !hosted ? "Publish" : p.hosted_current ? "Publish again" : "Update link";
   const done = formDialog("Public link", body, p.gaps.length ? "Close" : label, { cancelLabel: p.gaps.length ? "Cancel" : "Close" });
   if (publishing || p.gaps.length) $("#dialog-ok").disabled = Boolean(publishing);
+  if (publishing) $("#dialog-ok").dataset.why = "Already publishing.";
   $("#publish-auto")?.addEventListener("change", setAutoPreview);
   const answer = await done;
   if (answer && !p.gaps.length && !publishing) runAction("web_preview", { branch, title: `Public link · ${branch}` });
@@ -5494,7 +5498,7 @@ pages.job = async ([id]) => {
   const nextBtnClass = signInAction ? "btn small" : "btn small primary";
   const heroAction = activeRun
     ? (isStoppingActive
-      ? `<button class="btn small" data-stop="${esc(activeRun.id)}" disabled aria-busy="true"><span class="spinner inline-spinner" aria-hidden="true"></span>Stopping…</button>`
+      ? `<button class="btn small" data-stop="${esc(activeRun.id)}" data-why="Already stopping." disabled aria-busy="true"><span class="spinner inline-spinner" aria-hidden="true"></span>Stopping…</button>`
       : `<button class="btn small" data-stop="${esc(activeRun.id)}" title="Stops the worker. Resume continues from the next task.">Pause</button>`)
     : `${signInAction}${next ? `<button class="${nextBtnClass}" ${act(next.action, { job: s.id })}>${esc(next.label)}</button>` : ""}${recommendFixBtn}${next && job.task_growth && data.undoable_task === job.task_growth.task
       ? `<button class="btn small" data-undo-task="${job.task_growth.task}" title="Reverts what that task changed. Then revise the plan to make it smaller.">Undo task ${job.task_growth.task + 1}</button>` : ""}`;
@@ -5655,8 +5659,8 @@ pages.job = async ([id]) => {
     const files = withDetail && typeof t === "object" ? listOf(t.likely_files) : [];
     const controls = canEditPlan && !isDone ? `<div class="side task-controls"><details class="more task-more"><summary class="btn small ghost" aria-label="Task actions: ${esc(title)}">⋯</summary><div class="more-menu">
         <button class="btn small" data-task-op="edit" data-i="${i}">Edit</button>
-        <button class="btn small" data-task-op="up" data-i="${i}" ${i === 0 || done.has(String(i - 1)) ? "disabled" : ""}>Move up</button>
-        <button class="btn small" data-task-op="down" data-i="${i}" ${i === tasks.length - 1 ? "disabled" : ""}>Move down</button>
+        <button class="btn small" data-task-op="up" data-i="${i}" data-why="${i === 0 ? "Already first." : "Can't move above a finished task."}" ${i === 0 || done.has(String(i - 1)) ? "disabled" : ""}>Move up</button>
+        <button class="btn small" data-task-op="down" data-i="${i}" data-why="Already last." ${i === tasks.length - 1 ? "disabled" : ""}>Move down</button>
         <hr><button class="btn small" data-task-op="remove" data-i="${i}">Remove</button></div></details></div>` : "";
     const undo = data.undoable_task === i && !activeRun ? `<div class="side task-controls"><button class="btn small ghost" data-undo-task="${i}" aria-label="Undo task: ${esc(title)}">Undo</button></div>` : "";
     const marker = `<span class="task-number${isDone ? " is-done" : ""}" role="img" aria-label="${isDone ? "Done" : "To do"}">${isDone ? "✓" : i + 1}</span>`;
@@ -6759,6 +6763,7 @@ async function signingSetupDialog(ios) {
   const body = $("#dialog-body");
   const valid = () => Boolean(body.querySelector('input[name="file"]:checked')) && ISSUER_PATTERN.test(body.querySelector('input[name="issuer"]')?.value.trim() || "");
   const wire = () => {
+    ok.dataset.why = "Choose the key file and enter the issuer ID first.";
     ok.disabled = !valid();
     body.querySelectorAll('input[name="issuer"], input[name="file"]').forEach((el) => el.addEventListener("input", () => { ok.disabled = !valid(); }));
     body.querySelectorAll("[data-issuer]").forEach((b) => b.addEventListener("click", () => { body.querySelector('input[name="issuer"]').value = b.dataset.issuer; ok.disabled = !valid(); }));
@@ -6793,7 +6798,7 @@ async function signingGetDialog(item, view) {
         <li>It goes over SSH between your two computers. It doesn't pass through the browser, Orchestrator's servers or GitHub.</li>
         <li>It's saved owner-only${ios ? ", and you can revoke the key any time in App Store Connect" : ""}. If a different file is already there, nothing is replaced.</li></ul>
       <label class="row gap-8"><input type="checkbox" id="signing-understood"> I understand and want to copy it</label>
-      <div class="row"><button type="button" class="btn danger" id="signing-copy-go" disabled>Copy ${ios ? "key" : "files"} here</button><button type="button" class="btn ghost" id="signing-copy-cancel">Not now</button></div></div>`;
+      <div class="row"><button type="button" class="btn danger" id="signing-copy-go" data-why="Tick the confirmation first." disabled>Copy ${ios ? "key" : "files"} here</button><button type="button" class="btn ghost" id="signing-copy-cancel">Not now</button></div></div>`;
   const render = () => `<p class="m-0">${esc(ios ? item.file || "The key" : "The signing files")} ${ios ? "isn't" : "aren't"} on this computer. Two ways to carry on:</p>
     <div class="signing-option"><strong>Use the computer that has it</strong>
       <p class="muted t-secondary m-0">Open Orchestrator on that computer and send the build from there. Nothing is copied.</p>
@@ -8221,7 +8226,7 @@ pages["ux-review"] = async (_, query) => {
   return {
     title: "UX review",
     sub: "",
-    actions: `<button class="btn primary" ${act("ux_pass")} ${running || noInterface ? "disabled" : ""}>${running ? "Review running…" : "Run full review"}</button>`,
+    actions: `<button class="btn primary" ${act("ux_pass")} data-why="${running ? "A review is already running." : "No interface to review yet."}" ${running || noInterface ? "disabled" : ""}>${running ? "Review running…" : "Run full review"}</button>`,
     html: `
       ${data.error ? `<div class="notice bad mb-16">Screens: ${esc(data.error)}</div>` : ""}
       ${noInterface ? `<div class="notice mb-16">No interface files or screens found yet, so there is nothing to review. Once the project has some UI, you can run the review.</div>` : ""}
@@ -9321,7 +9326,7 @@ pages.product = async (_, query) => {
                   <div class="card-h">
                     <h3 class="proposal-sec-title">${esc(s.title)}</h3>
                     <div class="row gap-12 align-center">
-                      <button type="button" class="btn small ghost" data-revert-sec="${esc(s.id)}" ${canRevert ? "" : "disabled"}>Revert</button>
+                      <button type="button" class="btn small ghost" data-revert-sec="${esc(s.id)}" data-why="No change to revert." ${canRevert ? "" : "disabled"}>Revert</button>
                       <button type="button" class="btn small" data-edit-sec="${esc(s.id)}">Edit</button>
                     </div>
                   </div>
@@ -9457,7 +9462,7 @@ pages.product = async (_, query) => {
           <input type="file" id="prd-import-input" accept=".md,.markdown,.txt,.docx,.pdf" hidden>
           <p class="muted">The fields above get a short summary of it, and the whole document stays attached so jobs can read the detail.</p>
           <label class="field"><span>Or paste it</span><textarea id="prd-import-text" rows="6" aria-label="Paste your PRD"></textarea></label>
-          <div class="row gap-12"><button type="button" class="btn primary" id="prd-import-go" disabled>Submit</button><button type="button" class="btn ghost" id="prd-import-cancel">Cancel</button></div></div></section>`;
+          <div class="row gap-12"><button type="button" class="btn primary" id="prd-import-go" data-why="Choose a file or paste text first." disabled>Submit</button><button type="button" class="btn ghost" id="prd-import-cancel">Cancel</button></div></div></section>`;
         const input = $("#prd-import-input"), zone = $("#prd-drop"), goBtn = $("#prd-import-go"), textEl = $("#prd-import-text");
         let picked = null;
         const sync = () => {
@@ -9549,7 +9554,7 @@ pages.product = async (_, query) => {
           ${prdModelField(p, "prd-reverse-model")}
           <div id="prd-rea-status" aria-live="polite"><small class="muted">Checking which AI tools have REA…</small></div>
           <div class="row gap-12">
-            <button type="button" class="btn primary" id="prd-reverse-go" disabled>Reverse engineer</button>
+            <button type="button" class="btn primary" id="prd-reverse-go" data-why="Choose a file or enter a target first." disabled>Reverse engineer</button>
             <button type="button" class="btn ghost" id="prd-reverse-cancel">Cancel</button>
           </div>
         </div></section>`;
@@ -9761,7 +9766,7 @@ function epicsSection(initial, { onPrdChanged }) {
       ? `<form class="row gap-12 end wrap" id="epic-jira-project"><label class="field"><span>Jira project key</span><input name="project" placeholder="ABC" maxlength="10" autocomplete="off" required></label>
           <button type="submit" class="btn primary">Save</button></form>
          <span class="muted">The project epics are created in, and imported from. It's the letters in your ticket numbers (ABC-123).</span>`
-      : `<div class="row gap-12 wrap"><button type="button" class="btn primary" id="epic-jira-send" ${ov.epics.some((e) => e.status === "approved" && !e.jira) ? "" : "disabled"}>Send approved epics to Jira</button>
+      : `<div class="row gap-12 wrap"><button type="button" class="btn primary" id="epic-jira-send" data-why="No approved epics left to send." ${ov.epics.some((e) => e.status === "approved" && !e.jira) ? "" : "disabled"}>Send approved epics to Jira</button>
           <button type="button" class="btn" id="epic-jira-load">Import epics from Jira</button></div>
          <span class="muted">Epics are created in ${esc(j.project)} on ${esc(j.site)}, and each approved epic then shows its Jira key. Nothing is sent until you press the button.</span>
          <div id="epic-jira-panel">${jiraList ? FeaturePlan.renderJiraImport(jiraList, j.project) : ""}</div>`;
@@ -9787,6 +9792,7 @@ function epicsSection(initial, { onPrdChanged }) {
     box.innerHTML = busy = `<div class="prd-busy" role="status" aria-live="polite"><div class="spinner" aria-hidden="true"></div>
       <div><strong>Reading your requirements and breaking them down…</strong><div class="prd-busy-sub">This can take a minute. It carries on if you leave this page.</div></div>
       <button type="button" class="btn small danger" id="epic-break-cancel">Cancel</button></div>`;
+    $("#epic-break")?.setAttribute("data-why", "Already breaking it down.");
     $("#epic-break")?.setAttribute("disabled", "");
     const mine = working;
     try {
@@ -9920,8 +9926,8 @@ pages.devlogs = async () => {
   const ok = !sessions.error;
   return {
     ...base,
-    actions: `<button class="btn primary" ${act("logs_pull")} ${ok ? "" : "disabled"}>Pull newest launch</button>
-              <button class="btn" ${act("logs_tail")} ${ok ? "" : "disabled"}>Follow live</button>`,
+    actions: `<button class="btn primary" ${act("logs_pull")} data-why="Device logs aren't reachable right now." ${ok ? "" : "disabled"}>Pull newest launch</button>
+              <button class="btn" ${act("logs_tail")} data-why="Device logs aren't reachable right now." ${ok ? "" : "disabled"}>Follow live</button>`,
     html: `
       ${sessions.error ? `<div class="notice bad">${esc(sessions.error)}<div class="row" data-owner-only><a class="btn small" href="#/connections?connect=sentry">Reconnect Sentry</a></div></div>` : ""}
       <section class="card"><div class="card-h"><h2>App launches, last 24h</h2></div>
@@ -10132,7 +10138,7 @@ function testSetupHtml(found) {
   const notes = (found.notes || []).map((n) => `<p class="muted t-secondary">${esc(n)}</p>`).join("");
   return `<section class="card mb-16" id="test-setup"><div class="card-h"><h2>Set up testing for this project</h2></div>
     <form id="test-setup-form" class="card-b stack gap-12">
-      <p>Tests are automatic checks that catch mistakes early. Orchestrator looked through your project and found the pieces below. <strong>Not sure? Leave the ticks as they are and press “Add what's ticked” at the bottom.</strong> The recommended choices are safe, and you can change everything later under Extra test commands.</p>
+      <p>Select the checks to run automatically. Recommended options are pre-selected and safe to change anytime.</p>
       <details class="setup-legend"><summary>What do these words mean?</summary>
         <dl class="stack gap-8 muted">
           <div><dt><strong>Unit test</strong></dt><dd>A small check that one piece of your code gives the right answer. Quick, and needs nothing else running.</dd></div>
@@ -10830,8 +10836,8 @@ pages.git = async (_, query) => {
   const reviewLinks = /GitLab|Bitbucket/.test(g.provider || "") ? "Finished branches link to a review request." : "";
   const branchCard = `<section class="card">
     <div class="card-h git-sync-header"><h2>Branch and sync</h2><div class="card-actions">
-      <button type="button" class="btn small ghost" id="git-pull" aria-describedby="git-sync-reason" ${!g.can_pull ? "disabled" : ""}>Pull</button>
-      <button type="button" class="btn small ghost" id="git-push" aria-describedby="git-sync-reason" ${!g.can_push ? "disabled" : ""}>Push</button>
+      <button type="button" class="btn small ghost" id="git-pull" aria-describedby="git-sync-reason" data-why="${esc(g.pull_reason || "Nothing to pull.")}" ${!g.can_pull ? "disabled" : ""}>Pull</button>
+      <button type="button" class="btn small ghost" id="git-push" aria-describedby="git-sync-reason" data-why="${esc(g.push_reason || "Nothing to push.")}" ${!g.can_push ? "disabled" : ""}>Push</button>
     </div></div>
     <div class="card-caption git-sync-caption">${esc(sync)}</div>
     <div class="card-b git-branch-fields">
@@ -10839,7 +10845,7 @@ pages.git = async (_, query) => {
         <label class="field" for="git-branch-select"><span>Current branch</span></label>
         <div class="git-branch-controls"><select id="git-branch-select" name="branch" class="mono" ${!(g.branches.length || g.download_branches?.length) ? "disabled" : ""}>
           ${branchOptions(g.branches, g.branch, g.elsewhere, g.download_branches || [], g.recent_branch, state.project?.last_branch)}
-        </select><button type="button" class="btn small ghost" ${act("git_new_branch")} ${!g.is_repo ? "disabled" : ""}>New branch…</button></div>
+        </select><button type="button" class="btn small ghost" ${act("git_new_branch")} data-why="Not a Git repository yet." ${!g.is_repo ? "disabled" : ""}>New branch…</button></div>
       </div>
       ${g.has_commits && g.branch && (g.can_fetch || g.remote_branches?.length) ? `<div class="git-branch-field"><span class="git-field-label">Tracking branch</span><div class="git-tracking-value"><span class="mono">${esc(g.upstream || "Not set")}</span>
         ${owner ? `<button type="button" class="btn small ghost" id="git-tracking" title="Choose tracking branch" ${!g.remote_branches?.length ? 'disabled aria-describedby="git-tracking-hint"' : ""}>${g.upstream ? "Change" : "Choose"}</button>` : ""}</div>
@@ -10847,7 +10853,7 @@ pages.git = async (_, query) => {
     </div>
     <div class="git-sync-note" id="git-sync-reason" ${!blockers.length ? "hidden" : ""}>${blockers.map(reason => `<p>${esc(reason)}</p>`).join("")}</div>
     <div class="git-fetch-row"><span class="muted">${g.last_fetch ? `Last fetched ${esc(ago(g.last_fetch))} · cached remote status` : "Remote status uses cached branches."}</span>
-      <button type="button" class="btn small ghost" id="git-fetch" ${!g.can_fetch ? "disabled" : ""}>Fetch updates</button></div>
+      <button type="button" class="btn small ghost" id="git-fetch" data-why="No remote to fetch from." ${!g.can_fetch ? "disabled" : ""}>Fetch updates</button></div>
     ${g.last_commit ? `<div class="card-caption git-commit-caption"><span>Last commit</span><span>${clamped(g.last_commit, 100)}</span></div>` : ""}
   </section>`;
   const changesCard = `<section class="card" id="git-changes">
@@ -10910,12 +10916,12 @@ pages.git = async (_, query) => {
   const problemCard = problemCount ? `<section class="card git-problems-card" id="git-problems-card"><div class="card-h"><h2>Needs attention <span class="count">${problemCount}</span></h2></div><dl class="git-settings-list">
     ${problems.map(check => { const [issue, remedy] = problemCopy(check); return row(esc(issue), `<span>${esc(remedy)}</span>`, check.id === "issues" && g.web_url ? external(`${g.web_url}/settings`, "Settings") : ""); }).join("")}
     ${missingLabels.length ? row("Job labels", `<span>${missingLabels.length} missing</span>`, owner ? '<button type="button" class="btn small go" id="git-repair-labels">Create missing</button>' : "") : ""}
-    ${publishing.problems.map(job => `<div class="git-job-row">${row(esc(job.title), `<span>${clamped(job.detail, 120)}</span>`, `<div class="card-actions"><a class="btn small ghost" href="#/jobs/${encodeURIComponent(job.id)}">Open job</a><button type="button" class="btn small ghost" data-git-publish="${esc(job.id)}" ${!g.origin ? "disabled" : ""}>Retry</button></div>`)}</div>`).join("")}
+    ${publishing.problems.map(job => `<div class="git-job-row">${row(esc(job.title), `<span>${clamped(job.detail, 120)}</span>`, `<div class="card-actions"><a class="btn small ghost" href="#/jobs/${encodeURIComponent(job.id)}">Open job</a><button type="button" class="btn small ghost" data-git-publish="${esc(job.id)}" data-why="Connect a Git remote first." ${!g.origin ? "disabled" : ""}>Retry</button></div>`)}</div>`).join("")}
   </dl></section>` : "";
   const configuration = health.configuration || {};
   const integrationCard = g.is_repo ? `<section class="card"><div class="card-h"><h2>Job integration</h2></div><dl class="git-settings-list">
     ${row("Job workflow", `<span>${workflow}</span>${reviewLinks ? `<small>${reviewLinks}</small>` : ""}`, editButton("git-workflow", "Change", "Change job workflow"))}
-    ${row("Base branch", `<form id="git-base-branch-form" class="git-base-branch-form"><div class="git-base-branch-controls"><label class="sr-only" for="git-base-branch">Base branch for jobs</label><select id="git-base-branch" name="branch" aria-label="Base branch for jobs" ${!g.branches.length ? "disabled" : ""}>${baseBranchOptions}</select><button type="submit" class="btn small ghost" ${!g.branches.length ? "disabled" : ""}>Save</button></div></form>`)}
+    ${row("Base branch", `<form id="git-base-branch-form" class="git-base-branch-form"><div class="git-base-branch-controls"><label class="sr-only" for="git-base-branch">Base branch for jobs</label><select id="git-base-branch" name="branch" aria-label="Base branch for jobs" ${!g.branches.length ? "disabled" : ""}>${baseBranchOptions}</select><button type="submit" class="btn small ghost" data-why="No branches to switch to." ${!g.branches.length ? "disabled" : ""}>Save</button></div></form>`)}
     ${row("Publishing", `<span>${g.mode === "github" ? "Finished work becomes a draft pull request." : g.origin ? "Finished job branches are pushed to origin." : "Finished work stays on local job branches."}</span>`)}
     ${row("Project configuration", `<span>${esc(configuration.detail || "Fetch to compare with the base branch.")}</span>`, configuration.url ? external(configuration.url, "View committed file") : "")}
   </dl>
@@ -11030,7 +11036,7 @@ pages.git = async (_, query) => {
           if (!o) { detail.innerHTML = `<p class="muted">Pick one to see what it's good and bad at, and the steps to set it up.</p>`; return; }
           const here = o.key === sc.current, off = !owner ? "disabled" : "";
           if (here) { detail.innerHTML = ""; return; } // in use already: the header says so; the pros, cons and steps are for comparing
-          const button = (id, label, primary = false, disabled = false) => `<button type="button" class="btn small ${primary ? "primary" : ""}" data-sc="${id}" ${off || disabled ? "disabled" : ""}>${label}</button>`;
+          const button = (id, label, primary = false, disabled = false) => `<button type="button" class="btn small ${primary ? "primary" : ""}" data-sc="${id}" data-why="Only the project owner can change this." ${off || disabled ? "disabled" : ""}>${label}</button>`;
           const actions = here ? `<span class="muted">This is what the project uses now.</span>`
             : !g.is_repo ? `${button("init", "Initialize repository", true)}<span class="muted">Do this first: it turns this folder into a Git repository.</span>`
             : o.action === "github" ? `${needsSignIn || !g.github?.user ? button("signin", "Sign in to GitHub", true) : ""}${g.origin ? button("connect", "Switch to a GitHub repository", !(needsSignIn || !g.github?.user)) : `${button("create", "Create a GitHub repository", !(needsSignIn || !g.github?.user))}${button("connect", "Connect an existing one")}`}`
@@ -11381,6 +11387,7 @@ pages.config = async (args = []) => {
               }
             }
             if (submitBtn) {
+              submitBtn.dataset.why = "No changes to save.";
               submitBtn.disabled = !dirty;
               if (dirty) {
                 submitBtn.removeAttribute("title");
@@ -12137,7 +12144,7 @@ pages.connections = async (_, query) => {
             ${hasLogin ? `<details class="advanced conn-manual" id="conn-manual"><summary>${p.id === "sentry" ? "Advanced: use a token instead (self-hosted Sentry)" : `Advanced: enter ${p.id === "figma" ? "a personal access token" : "a key and token"} by hand`}</summary><div class="stack">` : ""}
             ${p.fields.map((f) => `
             <label class="field"><span>${esc(f.label)}</span>
-              <input ${f.secret ? 'type="password"' : 'type="text"'} name="${esc(f.key)}" autocomplete="off" autocapitalize="off" spellcheck="false"
+              <input ${f.secret ? 'type="password"' : 'type="text"'} name="${esc(f.key)}" autocomplete="off" autocapitalize="off" spellcheck="false"${f.required && !p.connected ? ' aria-required="true"' : ""}
                 value="${esc(!f.secret && p.suggest?.[f.key] ? p.suggest[f.key] : "")}"
                 placeholder="${esc(p.connected && f.secret ? "saved: leave blank to keep" : f.placeholder)}">
               <small class="hint-text">${esc(f.help)}</small></label>`).join("")}
@@ -12175,11 +12182,13 @@ pages.connections = async (_, query) => {
               }
             }
             if (okBtn) {
+              okBtn.dataset.why = "Fill in the required fields first.";
               okBtn.disabled = !manualValid;
             }
             if (quickFigma) {
               const idInput = dialogBody?.querySelector("input[name='figma_client_id']");
               const cid = (idInput?.value || p.authorize_key || "").trim();
+              quickFigma.dataset.why = "Enter the Figma client ID first.";
               quickFigma.disabled = !cid;
             }
             // The Trello button stays clickable: without a key it says what's missing and goes to the field.
@@ -12453,7 +12462,7 @@ function npQuestion(q, value) {
   if (q.kind === "area") return `<label class="field">${label}<textarea name="${q.key}" rows="3" ${q.required ? "required" : ""}>${esc(value)}</textarea>${help}</label>`;
   if (q.kind === "multi") {
     const chosen = new Set(value.split(",").map((v) => v.trim()).filter(Boolean));
-    return `<fieldset class="field np-multi"><span>${esc(q.label)}</span>${q.options.map((o) => `<label class="check"><input type="checkbox" name="${q.key}" value="${esc(o)}" ${chosen.has(o) ? "checked" : ""}><span>${esc(o)}</span></label>`).join("")}${help}</fieldset>`;
+    return `<fieldset class="field np-multi${q.required ? " is-required" : ""}"${q.required ? ' aria-required="true"' : ""}><span>${esc(q.label)}</span>${q.options.map((o) => `<label class="check"><input type="checkbox" name="${q.key}" value="${esc(o)}" ${chosen.has(o) ? "checked" : ""}><span>${esc(o)}</span></label>`).join("")}${help}</fieldset>`;
   }
   if (q.kind === "choice") return `<label class="field">${label}<select name="${q.key}" required><option value="" disabled ${value ? "" : "selected"}>Choose…</option>${q.options.map((o) => `<option ${o === value ? "selected" : ""}>${esc(o)}</option>`).join("")}</select>${help}</label>`;
   return `<label class="field">${label}<input type="text" name="${q.key}" value="${esc(value)}" maxlength="200" ${q.required ? "required" : ""}>${help}</label>`;
@@ -12603,11 +12612,11 @@ pages["new-project"] = async (_, query) => {
         </div>
         ${host === "github" ? `${ghPanel()}
           <label class="field"><span>Who can see the repository?</span><select name="visibility"><option value="private" ${draft.visibility !== "public" ? "selected" : ""}>Only me (private)</option><option value="public" ${draft.visibility === "public" ? "selected" : ""}>Anyone (public)</option></select></label>` : ""}
-        <label class="field"><span>Where on this computer?</span><input type="text" name="parent" value="${esc(draft.parent)}" spellcheck="false" autocapitalize="off">
+        <label class="field"><span>Where on this computer?</span><input type="text" name="parent" value="${esc(draft.parent)}" required spellcheck="false" autocapitalize="off">
           <small class="hint-text">A folder named “${esc(answersSlug(draft))}” is created inside this one.</small></label>
         <div class="row"><button type="button" class="btn ghost" id="np-back">Back</button><span class="spacer"></span>
           ${host === "github" && !ready ? `<button type="button" class="btn" id="np-local">Use local only for now</button>` : ""}
-          <button class="btn primary" type="submit" ${ready ? "" : "disabled"}>Create project</button></div>
+          <button class="btn primary" type="submit" data-why="Sign in to GitHub first." ${ready ? "" : "disabled"}>Create project</button></div>
         ${host === "github" && !ready ? `<small class="hint-text">Create is available once GitHub is signed in.</small>` : ""}</form>`,
       after: () => {
         wireIdeaChoice();
@@ -12656,7 +12665,7 @@ pages["new-project"] = async (_, query) => {
         ${created ? `<a class="btn small" href="#/product">Review product requirements</a>` : ""}</section>
       ${githubPending ? `<div class="card card-b stack"><strong>Your project is saved on this computer.</strong>
         <span class="muted">GitHub publishing isn't done yet. Finish it here, or use a local Git workflow from Git setup.</span>${ghPanel()}
-        <div class="row"><button class="btn primary" id="np-publish" ${gh.user ? "" : "disabled"}>Create the GitHub repository</button></div></div>` : ""}
+        <div class="row"><button class="btn primary" id="np-publish" data-why="Sign in to GitHub first." ${gh.user ? "" : "disabled"}>Create the GitHub repository</button></div></div>` : ""}
       ${created ? `<section class="card mt-16" id="np-architecture"><div class="card-b stack"><strong>Next: choose the architecture</strong>
         <span class="muted">${result?.recommend_platform ? "You asked for a platform recommendation. " : ""}A model reads your product requirements${result?.recommend_platform ? "" : ", the platforms you picked"} and the build tools on this Mac, then proposes the language, frameworks, structure and packages that fit this product, with the alternatives it weighed. You approve it before the first feature is planned, so the first job builds on a deliberate choice.</span>
         <div class="row"><a class="btn primary big" href="#/product?section=architecture">Choose the architecture</a><button type="button" class="btn ghost big" id="np-arch-skip">Skip for now</button></div></div></section>` : ""}
@@ -12869,7 +12878,7 @@ function archSectionHtml(data) {
       ${!data.approved && !proposal ? `<div class="stack"><span class="muted">${decision.origin === "inferred" ? "Inferred from the repository when the step was skipped." : "The recommended option, kept without approval."} Jobs follow it unless a request needs otherwise. Approve it to make it the chosen architecture, or choose another.</span>
         ${data.stale ? `<span class="arch-gap">The code has changed since this was inferred.</span>` : ""}
         ${owner ? `<div class="row wrap gap-12">
-          ${decision.origin === "inferred" && data.codeless ? `<button type="button" class="btn primary" id="arch-propose" data-mode="initial" ${data.prd_filled ? "" : "disabled"}>Suggest options</button>` : ""}
+          ${decision.origin === "inferred" && data.codeless ? `<button type="button" class="btn primary" id="arch-propose" data-mode="initial" data-why="Fill in the product requirements first." ${data.prd_filled ? "" : "disabled"}>Suggest options</button>` : ""}
           ${decision.origin === "inferred" && !data.codeless ? `<button type="button" class="btn primary" id="arch-propose" data-mode="describe">Describe the architecture</button>` : ""}
           ${decision.origin === "inferred" ? `<button type="button" class="btn" id="arch-refresh">Refresh from the code</button>` : ""}
           ${decision.stack?.language !== "generic" ? `<button type="button" class="btn" id="arch-approve-current">Approve as it is</button>` : ""}</div>` : ""}</div>` : ""}
@@ -12890,7 +12899,7 @@ function archSectionHtml(data) {
       ? `<div class="stack"><strong>Choose how this project is built</strong>
         <span class="muted">A model reads your product requirements above, the platforms you picked and the build tools on this Mac. It suggests two or three options in plain words, each with a simple diagram, a fit score for your product, what's good and what to watch out for, and recommends one. You approve it or ask for changes.</span>
         ${data.prd_filled ? "" : `<span class="muted">Fill in the product requirements first, so the options fit what you're building.</span>`}
-        ${owner ? `<div class="row gap-12 wrap"><button type="button" class="btn primary" id="arch-propose" data-mode="initial" ${data.prd_filled ? "" : "disabled"}>Suggest options</button>
+        ${owner ? `<div class="row gap-12 wrap"><button type="button" class="btn primary" id="arch-propose" data-mode="initial" data-why="Fill in the product requirements first." ${data.prd_filled ? "" : "disabled"}>Suggest options</button>
           <button type="button" class="btn ghost" id="arch-skip">Skip for now</button></div>
         <small class="hint-text">Skipping keeps a working assumption from what Orchestrator can see, so jobs stay consistent. You can choose any time.</small>` : ""}</div>`
       : `<div class="stack"><strong>Describe this project's architecture</strong>
@@ -13182,7 +13191,7 @@ pages["import-project"] = async (_, query) => {
       html: `
         <div class="card card-b stack">
           <label class="field"><span>Project Directory Path</span>
-            <input type="text" id="ip-path" placeholder="e.g. /Users/.../my-app or ~/Projects/my-app" autocomplete="off" spellcheck="false" value="${esc(path)}">
+            <input type="text" id="ip-path" placeholder="e.g. /Users/.../my-app or ~/Projects/my-app" required autocomplete="off" spellcheck="false" value="${esc(path)}">
             <small>Path to the folder containing your project (or Git repository).</small>
           </label>
           <label class="check">
@@ -13193,7 +13202,7 @@ pages["import-project"] = async (_, query) => {
             <input type="checkbox" id="ip-active">
             <span>Switch to this project when import is done</span>
           </label>
-          <div class="row mt-8"><button class="btn primary" id="ip-detect" ${path ? "" : "disabled"}>Detect stack</button></div>
+          <div class="row mt-8"><button class="btn primary" id="ip-detect" data-why="Enter a folder path first." ${path ? "" : "disabled"}>Detect stack</button></div>
         </div>
         ${path ? `<div class="card card-b stack" id="ip-result"><p class="muted">Detecting…</p></div>` : ""}`,
       after: () => {
@@ -13232,7 +13241,7 @@ pages["import-project"] = async (_, query) => {
           <div class="row gap-8"><span class="pill ${info?.uses_xcode ? "attention" : "done"}">${esc(info?.display_name || "?")}</span></div>
           <fieldset class="np-section-card stack">
             <legend class="np-section-legend">Project settings</legend>
-            <label class="field"><span>Project name</span><input type="text" id="ip-name" value="${esc(name)}"></label>
+            <label class="field"><span>Project name</span><input type="text" id="ip-name" value="${esc(name)}" required></label>
             <label class="field"><span>Path</span><input type="text" id="ip-path-confirm" value="${esc(path)}" readonly></label>
           </fieldset>
           <fieldset class="np-section-card stack">
@@ -14833,7 +14842,7 @@ function runStepHtml(step, open, lines, { entering = false, extending = false } 
   return `<li class="run-step is-${esc(step.status)}${open ? " is-open" : ""}${entering ? " is-entering" : ""}${extending ? " is-extending" : ""}" data-step="${step.id}">
     <span class="run-step-icon" aria-hidden="true">${step.status === "failed" ? `<svg class="icon"><use href="#i-alert"/></svg>` : `<svg class="icon"><use href="#${icon}"/></svg>`}</span>
     <div class="run-step-main">
-      <button type="button" class="run-step-head" data-step-toggle="${step.id}" aria-expanded="${open}"${step.lines ? "" : " disabled"}>
+      <button type="button" class="run-step-head" data-step-toggle="${step.id}" aria-expanded="${open}" data-why="No output for this step."${step.lines ? "" : " disabled"}>
         <span class="run-step-title">${esc(step.title)}${step.of ? ` <span class="run-step-of">${esc(step.of)}</span>` : ""}</span>
         <span class="run-step-meta">${step.errors ? `<span class="run-step-errors">${plural(step.errors, "error")}</span>` : ""}${running ? runningMark : ""}${step.seconds != null ? `<span>${secondsText(step.seconds)}</span>` : ""}${step.lines ? `<svg class="icon run-step-chevron" aria-hidden="true"><use href="#i-chevron"/></svg>` : ""}</span>
       </button>
@@ -15121,7 +15130,7 @@ pages["auto-improve"] = async (_, query) => {
                     <div class="row gap-8 align-center push-right">
                       <a class="btn small ghost" href="#/jobs/${encodeURIComponent(j.id)}">Open</a>
                       ${submitted ? `
-                        <button type="button" class="btn small ghost" disabled>Submitted</button>
+                        <button type="button" class="btn small ghost" data-why="Already submitted." disabled>Submitted</button>
                       ` : `
                         <button type="button" class="btn small prize-btn" data-submit-job="${esc(j.id)}" data-job-title="${esc(j.title)}" data-job-branch="${esc(j.branch || '')}">Submit for prize 🏆</button>
                       `}
