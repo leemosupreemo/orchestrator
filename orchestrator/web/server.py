@@ -1501,7 +1501,17 @@ def performance_metrics(root: Path) -> dict[str, Any]:
 
 
 def analytics_overview(root: Path) -> dict[str, Any]:
-    state = analytics_state(read_settings(root))
+    settings = read_settings(root)
+    state = analytics_state(settings)
+    saved_integrations = settings.get("integrations") if isinstance(settings.get("integrations"), dict) else {}
+    monitoring = [
+        {
+            "id": pid,
+            "name": integrations.PROVIDERS[pid].name,
+            "connected": bool(saved_integrations.get(pid)),
+        }
+        for pid in ("sentry", "datadog", "new_relic") if pid in integrations.PROVIDERS
+    ]
     provider = analytics.PROVIDERS.get(state["provider"], {})
     region = state.get("region", "us")
     dashboard_url = provider.get("dashboards", {}).get(region, "")
@@ -1511,6 +1521,7 @@ def analytics_overview(root: Path) -> dict[str, Any]:
             "dashboard_url": dashboard_url,
             "success_measures": success_measures,
             "performance": performance_metrics(root),
+            "monitoring": monitoring,
             "features": feature_store.rollup(feature_store.load(runtime_dir(root)), []),
             "mixpanel_mcp": analytics.probe_mixpanel_mcp(),
             "provider_mcp": {p: analytics.probe_provider_mcp(p) for p in analytics.PROVIDERS}}

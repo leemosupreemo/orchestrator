@@ -568,6 +568,105 @@ class Sentry(Provider):
         return out
 
 
+class Datadog(Provider):
+    id, name = "datadog", "Datadog"
+    blurb = "Connect Datadog for APM latency, error tracking, and performance monitors."
+    fields = [
+        ("site", "Datadog site", False, "datadoghq.com", "e.g. datadoghq.com, us5.datadoghq.com, datadoghq.eu"),
+        ("api_key", "API key", True, "", "Datadog API key (DD-API-KEY)."),
+        ("app_key", "Application key", True, "", "Datadog Application key (DD-APPLICATION-KEY)."),
+    ]
+    token_url = "https://app.datadoghq.com/organization-settings/api-keys"
+
+    def _api_base(self) -> str:
+        raw = str(self.c.get("site") or "datadoghq.com").strip().lower()
+        raw = re.sub(r"^https?://", "", raw).strip("/")
+        if raw.startswith("app."):
+            raw = raw[4:]
+        if not raw.startswith("api."):
+            raw = f"api.{raw}"
+        return f"https://{raw}"
+
+    def _headers(self) -> dict[str, str]:
+        return {
+            "DD-API-KEY": str(self.c.get("api_key") or ""),
+            "DD-APPLICATION-KEY": str(self.c.get("app_key") or ""),
+        }
+
+    def describe(self) -> str:
+        return str(self.c.get("site") or "datadoghq.com").strip()
+
+    def test(self) -> str:
+        if not self.c.get("api_key") or not self.c.get("app_key"):
+            raise IntegrationError("API key and Application key are required.")
+        data = http_json(f"{self._api_base()}/api/v1/validate", self._headers(), self.secrets())
+        if isinstance(data, dict) and data.get("valid") is False:
+            raise IntegrationError("Datadog rejected the API key.")
+        return self.describe()
+
+    def search(self, query: str) -> list[Item]:
+        q = urllib.parse.urlencode({"query": query.strip()})
+        data = http_json(f"{self._api_base()}/api/v1/monitor/search?{q}", self._headers(), self.secrets())
+        monitors = data.get("monitors") or [] if isinstance(data, dict) else []
+        site = str(self.c.get("site") or "datadoghq.com").strip()
+        return [
+            Item("datadog", str(m.get("id", "")), str(m.get("name") or ""),
+                 f"https://app.{site}/monitors/{m.get('id', '')}", str(m.get("status") or ""))
+            for m in monitors[:10] if m.get("id")
+        ]
+
+    def lookup(self, ref: str) -> Context:
+        mid = ref.strip().rstrip("/").rsplit("/", 1)[-1]
+        if not mid.isdigit():
+            raise IntegrationError("Use a Datadog monitor ID or monitor link.")
+        m = http_json(f"{self._api_base()}/api/v1/monitor/{mid}", self._headers(), self.secrets())
+        site = str(self.c.get("site") or "datadoghq.com").strip()
+        url = f"https://app.{site}/monitors/{mid}"
+        name = str(m.get("name") or mid)
+        body = _clip(f"## Datadog monitor {mid}: {name}\n- State: {m.get('overall_state', '?')}\n- Query: `{m.get('query', '')}`\n- Message: {m.get('message', '')}")
+        return Context(Item("datadog", mid, name, url, str(m.get("overall_state") or "")), body)
+
+
+class NewRelic(Provider):
+    id, name = "new_relic", "New Relic"
+    blurb = "Connect New Relic for APM throughput, latency metrics, and error traces."
+    fields = [
+        ("region", "Region", False, "us", "Use 'us' (api.newrelic.com) or 'eu' (api.eu.newrelic.com)."),
+        ("account_id", "Account ID", False, "1234567", "Numeric New Relic account ID."),
+        ("api_key", "User API key", True, "", "New Relic User API key (NRAK-...)."),
+    ]
+    token_url = "https://one.newrelic.com/api-keys"
+
+    def _graphql_url(self) -> str:
+        region = str(self.c.get("region") or "us").strip().lower()
+        return "https://api.eu.newrelic.com/graphql" if region == "eu" else "https://api.newrelic.com/graphql"
+
+    def describe(self) -> str:
+        acct = str(self.c.get("account_id") or "").strip()
+        region = str(self.c.get("region") or "us").strip().upper()
+        return f"Account {acct} ({region})" if acct else region
+
+    def test(self) -> str:
+        key = str(self.c.get("api_key") or "").strip()
+        if not key:
+            raise IntegrationError("User API key is required.")
+        data = http_json(
+            self._graphql_url(),
+            {"API-Key": key},
+            self.secrets(),
+            "POST",
+            {"query": "{ actor { user { email } } }"},
+        )
+        email = (((data or {}).get("data") or {}).get("actor") or {}).get("user", {}).get("email")
+        return email or self.describe()
+
+    def search(self, query: str) -> list[Item]:
+        return []
+
+    def lookup(self, ref: str) -> Context:
+        raise IntegrationError("Link a New Relic alert or entity URL directly in job notes.")
+
+
 class Figma(Provider):
     id, name = "figma", "Figma"
     blurb = "Turn a Figma frame into a text spec (and a PNG) the AI can build from."
@@ -766,7 +865,7 @@ class UnityBuild(Provider):
         return Context(item, _clip("\n".join(lines)))
 
 
-PROVIDERS: dict[str, type[Provider]] = {p.id: p for p in (Jira, Trello, Sentry, Figma, UnityBuild)}
+PROVIDERS: dict[str, type[Provider]] = {p.id: p for p in (Jira, Trello, Sentry, Datadog, NewRelic, Figma, UnityBuild)}
 
 
 def provider_for(provider_id: str, creds: dict[str, str]) -> Provider:

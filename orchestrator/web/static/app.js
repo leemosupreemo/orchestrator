@@ -7667,6 +7667,9 @@ pages.measure = async (_, query) => {
   const measuredKpis = allKpis.filter((k) => k.measurements?.length);
   const perf = data.performance || {};
   const perfLatency = perf.api_p50_ms != null ? `${perf.api_p50_ms} ms / ${perf.api_p95_ms} ms` : "—";
+  const monitoring = Array.isArray(data.monitoring) && data.monitoring.length
+    ? data.monitoring
+    : [{ id: "sentry", name: "Sentry", connected: false }, { id: "datadog", name: "Datadog", connected: false }, { id: "new_relic", name: "New Relic", connected: false }];
   const kpiRow = (f, k) => {
     const st = k.status, [label, tone] = KPI_STATE[st.state];
     const trend = st.trend === "better" ? "▲ better" : st.trend === "worse" ? "▼ worse" : st.trend === "flat" ? "▬ flat" : "";
@@ -7703,6 +7706,10 @@ pages.measure = async (_, query) => {
           <div class="stat"><div class="k">Avg fix attempts</div><div class="v">${perf.avg_debug_attempts ?? 0}</div></div>
         </div>
         <div class="card-caption muted">Computed from local job history (${perf.jobs_total ?? 0} total jobs) and ${perf.api_samples ?? 0} recent UI API requests.</div>
+        <div class="card-b row wrap gap-8 align-center">
+          <span class="muted">Monitoring:</span>
+          ${monitoring.map((m) => `<a class="pill ${m.connected ? "done" : ""}" href="#/connections#connections-plugins-diagnostics">${esc(m.name)} · ${m.connected ? "Connected" : "Connect"}</a>`).join("")}
+        </div>
       </section>
       <section class="card mb-16"><div class="card-h"><h2>Project success measures</h2><a class="btn small" href="#/product?section=success">Edit in Product ↗</a></div>
         <div class="card-b">${data.success_measures?.trim() ? `<div class="md">${Markdown.render(data.success_measures)}</div>` : `<p class="muted">Optional project-wide outcomes and targets live in the Product requirements. Add them when you know what success should look like.</p>`}</div>
@@ -11923,7 +11930,7 @@ pages.connections = async (_, query) => {
   const pluginGroups = [
     { id: "design", name: "Design", providers: ["figma"] },
     { id: "planning", name: "Planning / tracking", providers: ["jira", "trello"] },
-    { id: "diagnostics", name: "Errors / diagnostics", providers: ["sentry"] },
+    { id: "diagnostics", name: "Errors / diagnostics", providers: ["sentry", "datadog", "new_relic"] },
     { id: "builds", name: "Builds", providers: ["unity"] },
   ];
   const knownPlugins = new Set(pluginGroups.flatMap((group) => group.providers));

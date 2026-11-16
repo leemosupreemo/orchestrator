@@ -1001,3 +1001,11 @@ class ProjectDocumentationSectionTests(unittest.TestCase):
         self.assertIn("API latency (p50 / p95)", app)
         self.assertIn("def performance_metrics(", srv)
         self.assertIn('"performance": performance_metrics(root)', srv)
+
+    def test_datadog_new_relic_sentry_in_performance_and_connections(self):
+        from orchestrator import integrations
+        for pid in ("sentry", "datadog", "new_relic"):
+            self.assertIn(pid, integrations.PROVIDERS)
+        app = APP.read_text(encoding="utf-8")
+        self.assertIn('providers: ["sentry", "datadog", "new_relic"]', app)
+        self.assertIn('#/connections#connections-plugins-diagnostics', app)
