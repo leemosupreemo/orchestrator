@@ -76,45 +76,38 @@ class WhichSignInsLandOnHomeTests(unittest.TestCase):
 
 
 @unittest.skipUnless(shutil.which("node"), "node is required")
-class ReloadTests(unittest.TestCase):
-    """A reload starts on Home. A link opened fresh still goes where it points, and an email sign-in link keeps what it carries."""
+class InitialLoadTests(unittest.TestCase):
+    """Loading the app always starts on Home; only email sign-in, pairing, and alert-notification links keep what they carry."""
 
-    def run_load(self, kind: str, hash_value: str, timing: str = "ok"):
-        reload_fn = function_source("function landOnHomeAfterReload()")
+    def run_load(self, hash_value: str, search: str = ""):
+        load_fn = function_source("function landOnHomeOnLoad()")
         home_fn = function_source("function landOnHome()")
         script = f"""
-const location = {{hash: {json.dumps(hash_value)}, pathname: '/app/', search: ''}};
+const location = {{hash: {json.dumps(hash_value)}, pathname: '/app/', search: {json.dumps(search)}}};
 const history = {{replaceState: (...a) => {{ location.hash = '#/'; }}}};
-const performance = {{ getEntriesByType: () => {{ if ({json.dumps(timing)} === 'throws') throw new Error('no timing'); return {json.dumps(timing)} === 'empty' ? [] : [{{type: {json.dumps(kind)}}}]; }} }};
 {home_fn}
-{reload_fn}
-landOnHomeAfterReload();
+{load_fn}
+landOnHomeOnLoad();
 console.log(JSON.stringify(location.hash));
 """
         return json.loads(subprocess.run(["node", "-e", script], capture_output=True, text=True, check=True).stdout)
 
-    def test_a_reload_on_any_page_goes_home(self):
-        for page in ("#/tests", "#/jobs/abc", "#/config/ai", "#/delivery?branch=main"):
+    def test_loading_any_page_goes_home(self):
+        for page in ("#/tests", "#/jobs/abc", "#/config/ai", "#/delivery?branch=main", "#/product", "#/computers"):
             with self.subTest(page=page):
-                self.assertEqual(self.run_load("reload", page), "#/")
+                self.assertEqual(self.run_load(page), "#/")
 
-    def test_a_link_opened_fresh_or_the_back_button_stays_where_it_points(self):
-        for kind in ("navigate", "back_forward", "prerender"):
-            with self.subTest(kind=kind):
-                self.assertEqual(self.run_load(kind, "#/jobs/abc"), "#/jobs/abc")
-
-    def test_an_email_sign_in_link_is_not_stripped_by_a_reload(self):
+    def test_an_email_sign_in_link_is_not_stripped_on_load(self):
         for link in ("#/?apiKey=abc&oobCode=def&mode=signIn", "#/x?oobCode=1", "#/?mode=signIn"):
             with self.subTest(link=link):
-                self.assertEqual(self.run_load("reload", link), link)
+                self.assertEqual(self.run_load(link), link)
 
-    def test_a_browser_without_navigation_timing_changes_nothing(self):
-        for timing in ("throws", "empty"):
-            with self.subTest(timing=timing):
-                self.assertEqual(self.run_load("reload", "#/tests", timing), "#/tests")
+    def test_a_pairing_link_or_alert_notification_link_keeps_its_route(self):
+        self.assertEqual(self.run_load("#/connect?code=ABCD-2345"), "#/connect?code=ABCD-2345")
+        self.assertEqual(self.run_load("#/jobs/abc", search="?machine=mac-1"), "#/jobs/abc")
 
     def test_it_runs_before_the_sign_in_handling_so_that_starts_from_home(self):
-        self.assertLess(APP.index("landOnHomeAfterReload();"), APP.index("window.firebase.auth().getRedirectResult()"))
+        self.assertLess(APP.index("landOnHomeOnLoad();"), APP.index("window.firebase.auth().getRedirectResult()"))
 
 
 if __name__ == "__main__":

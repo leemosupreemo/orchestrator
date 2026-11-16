@@ -75,14 +75,16 @@ function endSigningIn(resume = false) {
   if (resume) refreshState().then(route);
 }
 
-// A reload starts on Home, like a sign-in does. Only a reload: a link opened fresh (a notification, a shared address) still goes where it
-// points, and the address of an email sign-in link keeps what it carries.
-function landOnHomeAfterReload() {
-  let kind = "";
-  try { kind = performance.getEntriesByType("navigation")[0]?.type || ""; } catch { /* no navigation timing */ }
-  if (kind === "reload" && !/[?&](apiKey|oobCode|mode)=/.test(location.hash)) landOnHome();
+// Loading the app always starts on Home, not on a stale address from a reload, bookmark, or reopened tab. Keep only
+// email sign-in links, computer-pairing links, and tapped push-notification links (?machine=…).
+function landOnHomeOnLoad() {
+  if (typeof location === "undefined") return;
+  if (/[?&](apiKey|oobCode|mode)=/.test(location.hash)) return;
+  if (/^#\/connect(?:[?]|$)/.test(location.hash)) return;
+  if (/[?&]machine=/.test(location.search)) return;
+  landOnHome();
 }
-landOnHomeAfterReload();
+landOnHomeOnLoad();
 
 if (typeof window !== "undefined" && window.firebase?.auth) {
   try {
@@ -5844,7 +5846,7 @@ pages.job = async ([id]) => {
       ${unvalidatedTestsHtml}
       ${defectsHtml}
 
-      ${s.question ? `<section class="card mb-16 clarify-card" id="clarify"><div class="card-h"><h2>${(job.clarification_history || []).length ? "A follow-up question" : "A question before planning"}</h2><details class="more"><summary class="btn small ghost icon-only" aria-label="Export chat" title="Export chat"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-download"/></svg></summary><div class="more-menu"><button type="button" class="btn small" data-clarify-export="copy">Copy chat</button><button type="button" class="btn small" data-clarify-export="download">Export chat</button></div></details></div><div class="card-b stack">
+      ${s.question ? `<section class="card mb-16 clarify-card" id="clarify"><div class="card-h"><h2>${(job.clarification_history || []).length ? "A follow-up question" : String(job.last_error || "").startsWith("Builder clarification needed") ? "A question during the build" : "A question before planning"}</h2><details class="more"><summary class="btn small ghost icon-only" aria-label="Export chat" title="Export chat"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-download"/></svg></summary><div class="more-menu"><button type="button" class="btn small" data-clarify-export="copy">Copy chat</button><button type="button" class="btn small" data-clarify-export="download">Export chat</button></div></details></div><div class="card-b stack">
         ${clarificationThread(job.clarification_history)}
         <div class="clarify-msg clarify-ai"><span class="clarify-who">AI</span><p class="question">${esc(s.question)}</p></div>
         <form class="clarify-reply" id="clarify-reply" data-job="${esc(s.id)}">
