@@ -5365,11 +5365,53 @@ pages["remote-job"] = async ([machineId, jobId]) => {
   };
 };
 
+// A job and its runs (orchestrator/job_runs.py). A job is the whole piece of work: plan, build, verify, document, finalize.
+// A run is one go at part of it, started from the app: planning, a build, one fix attempt, a merge. A small job is often one
+// run end to end; a bigger one has a run per stage and several fix attempts. The job page lists them all; each run's page
+// shows its live steps and output and says which job it is part of.
+const RUN_STATUS = { running: ["Running", "working"], waiting: ["Waiting for you", "attention"], succeeded: ["Finished", "done"],
+  failed: ["Failed", "failed"], stopped: ["Stopped", "neutral"], unknown: ["Ended unseen", "neutral"] };
+const runSeconds = (sec) => sec == null ? "" : sec < 60 ? `${sec}s` : `${Math.floor(sec / 60)}m ${String(sec % 60).padStart(2, "0")}s`;
+
+function jobRunRow(r) {
+  const [label, tone] = RUN_STATUS[r.status] || RUN_STATUS.unknown;
+  const meta = [r.started ? ago(r.started) : "", runSeconds(r.seconds), r.status === "running" && r.now ? `Now: ${r.now}` : r.headline || ""].filter(Boolean);
+  return `<a class="item job-run-row${r.side ? " is-side" : ""}" href="#/runs/${encodeURIComponent(r.id)}" data-run-row="${esc(r.id)}">
+    <div class="main-col"><div class="title">${esc(r.label)}${r.side ? ` <span class="muted">(side errand)</span>` : ""}</div>
+      <div class="meta">${meta.map(esc).join(" · ")}</div></div>
+    <div class="side"><span class="pill ${tone}">${esc(label)}</span></div></a>`;
+}
+
+function jobRunsCard(runs, rel) {
+  if (!runs) return "";
+  const work = runs.filter((r) => !r.side);
+  const stages = Object.entries(rel?.per_phase || {}).filter(([, n]) => n).map(([phase, n]) => `${phase[0].toUpperCase()}${phase.slice(1)} ${n}`);
+  const intro = !work.length ? "Nothing has run for this job yet."
+    : rel?.single ? "This job ran in one go: a single run did the work. Open it for its steps and full output."
+    : "Each run is one go at part of this job: planning, a build, a fix attempt. Newest first; open one for its steps and full output.";
+  return `<section class="card mb-16" id="job-runs"><div class="card-h"><h2>${rel?.single ? "Run" : "Runs"}</h2>${work.length > 1 ? `<span class="count">${work.length}</span>` : ""}</div>
+    <div class="card-b stack"><span class="muted">${esc(intro)}</span>${stages.length > 1 ? `<span class="muted">By stage: ${esc(stages.join(" · "))}</span>` : ""}</div>
+    ${runs.length ? `<div class="list" id="job-run-list">${runs.map((r, n) => n < 8 ? jobRunRow(r) : jobRunRow(r).replace('<a class="item', '<a hidden class="item')).join("")}</div>
+      ${runs.length > 8 ? `<div class="card-b"><button type="button" class="btn small" data-show-all="job-run-list">Show all ${runs.length}</button></div>` : ""}` : ""}</section>`;
+}
+
+// The run working on the job right now, labelled as a run of this job, with its latest steps.
+function activeRunCard(r, labelled, timeline) {
+  const steps = (timeline?.steps || []).slice(-5);
+  const icon = (st) => st.status === "failed" ? "✕" : st.status === "done" || st.status === "ok" ? "✓" : "…";
+  return `<section class="card mb-16 job-active-run"><div class="card-h"><h2>${esc(labelled?.label || "Run")} <span class="muted">· run in progress</span></h2>
+      <a class="btn small ghost" href="#/runs/${encodeURIComponent(r.id)}">Open live run</a></div>
+    <div class="list">${liveRunCard(r)}</div>
+    ${steps.length ? `<ol class="job-run-steps" aria-label="Latest steps of this run">${steps.map((st) => `<li class="${esc(st.status || "")}"><span aria-hidden="true">${icon(st)}</span> ${esc(st.title)}${st.seconds != null ? ` <span class="muted">${runSeconds(st.seconds)}</span>` : ""}</li>`).join("")}</ol>` : ""}</section>`;
+}
+
 pages.job = async ([id]) => {
   const data = await api(`jobs/${encodeURIComponent(id)}`);
   const { summary: s, job, outputs, runs, docs, changes, links, test_summary: testSummary, pipeline: pipe, tasks: jobTasks, completed_tasks: jobCompleted, next_task: jobNextTask } = data;
 
   const activeRun = runs.find((r) => r.running && !SIDE_RUNS.has(r.action)); // an export or preview isn't work on the job
+  const jobRuns = data.job_runs || null, runRel = data.run_relationship || null;
+  const activeTimeline = activeRun ? await api(`runs/${encodeURIComponent(activeRun.id)}/timeline`).catch(() => null) : null;
   if (s.status === "backlog") return waitingEpicPage({ id, s, job, runs, docs, links });
   const summary = { ...s, active_run: !!activeRun };
 
@@ -5528,6 +5570,11 @@ pages.job = async ([id]) => {
   };
 
   const phasesInfo = [planStep, buildStep, verifyStep, docStep, reviewStep];
+  ["plan", "build", "verify", "document", "finalize"].forEach((phase, i) => {
+    const n = runRel?.per_phase?.[phase] || 0;
+    if (runRel?.active?.phase === phase) phasesInfo[i].subtitle = `${runRel.active.label} running`;
+    else if (n > 1) phasesInfo[i].subtitle = `${phasesInfo[i].subtitle} · ${n} runs`;
+  });
 
 
   // Test files a Tests job wrote are on disk even when checking them stopped, so say so and name them.
@@ -5571,7 +5618,7 @@ pages.job = async ([id]) => {
   let nextExecutionPreview = "";
   const tasksLeft = Math.max(0, tasksTotal - tasksDone);
   if (activeRun) {
-    nextExecutionPreview = `<span class="job-hero-next-label">Now:</span> <strong>${esc(nextTask || "working")}</strong>`;
+    nextExecutionPreview = `<span class="job-hero-next-label">Now:</span> <strong>${esc(runRel?.active?.now || nextTask || "working")}</strong>${runRel?.active ? ` <span class="muted">(${esc(runRel.active.label)} run)</span>` : ""}`;
   } else if (s.state.next?.action === "approve" || s.state.next?.action === "schedule" || s.state.next?.action === "execute") {
     nextExecutionPreview = `<span class="job-hero-next-label">Next:</span> start <strong>${esc(nextTask || "Task 1")}</strong>`;
   } else if (s.state.next?.action === "resume" && ["environment", "pending", "unregistered"].includes(job.test_validation?.kind)) {
@@ -5679,7 +5726,7 @@ pages.job = async ([id]) => {
     sub: subParts.length ? `<span class="status-line">${subParts.join('<span class="sep">·</span>')}</span>` : "",
     actions: jobHeaderActions(summary, links, { canSplinter, planShown: reviewingPlan }),
     html: `<div class="job-layout"><div class="job-top">
-      ${runs.filter((r) => r.running && !isPreviewRun(r)).map((r) => `<section class="card mb-16"><div class="list">${liveRunCard(r)}</div></section>`).join("")}
+      ${runs.filter((r) => r.running && !isPreviewRun(r)).map((r) => activeRunCard(r, (jobRuns || []).find((x) => x.id === r.id), r.id === activeRun?.id ? activeTimeline : null)).join("")}
 
       ${isAutoImprove ? `
         <div class="banner info improve-banner mb-16 row align-center justify-between">
@@ -5718,6 +5765,7 @@ pages.job = async ([id]) => {
           <h2 class="job-hero-title">${(activeRun && !activeRun.waiting) || s.state.label === "Building" ? runningMark : ""}${esc(s.state.label || s.status)}</h2>
           <p class="job-hero-reason">${heroReason}</p>
           ${heroReasonDetails}
+          ${runRel?.unreported ? `<p class="job-hero-reason run-unreported">The last run (${esc(runRel.unreported.label)}) ${runRel.unreported.status === "failed" ? "failed" : "ended without reporting back"} before it could update this job. <a href="#/runs/${encodeURIComponent(runRel.unreported.id)}">Open its log</a> to see what happened.</p>` : ""}
           ${nextExecutionPreview ? `<div class="job-hero-next-preview">${nextExecutionPreview}</div>` : ""}
           ${uxWarning ? `<p class="job-hero-reason"><button type="button" class="linklike" data-scroll-to="#ux-section">UX and design check: ${plural(uxWarning, "major finding")}. Look before you ${s.state.next?.action === "merge" ? "merge" : "finish"}.</button></p>` : ""}
         </div>
@@ -5805,6 +5853,7 @@ pages.job = async ([id]) => {
         <div class="card-b"><ul class="assumptions">${assumptions.map((t) => `<li>${esc(t)}</li>`).join("")}</ul>
         <div class="muted">Wrong about something? Use Revise plan in the menu.</div></div></section>` : ""}
 
+      ${jobRunsCard(jobRuns, runRel)}
       <section class="card mb-16" id="changes-section">
         <div class="card-h"><h2>Changes</h2>${changes?.base ? `<span class="count">vs ${esc(changes.base)}</span>` : ""}</div>
         <div class="card-b delta-summary-line">
@@ -7687,7 +7736,7 @@ pages.measure = async (_, query) => {
     <div class="list">${f.kpis.map((k) => kpiRow(f, k)).join("") || `<div class="empty">No KPIs yet. What would tell you "${esc(f.name)}" is working? Add one, or ask AI to suggest one.</div>`}</div></section>`;
   return {
     title: "Analytics",
-    sub: "See how features are measured, which analytics platform is connected, and what results you've recorded.",
+    sub: "",
     actions: features.some((f) => f.kpis.length) ? `<button class="btn" id="export-plan">Export tracking plan</button>` : "",
     html: `
       <section class="card mb-16 analytics-summary">
