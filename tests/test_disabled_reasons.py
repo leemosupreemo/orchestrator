@@ -80,7 +80,8 @@ class DisabledReasonTests(unittest.TestCase):
             return False
         ident, attr = found[-1].groups()
         mark = f'id="{ident}"' if ident else f"{attr}="
-        return any(mark in tag and "data-why=" in tag for _, tag in button_tags(src))
+        markup = src + (STATIC / "index.html").read_text(encoding="utf-8")  # page-wide buttons live in index.html
+        return any(mark in tag and "data-why=" in tag for _, tag in button_tags(markup))
 
     def test_the_watcher_loads_before_the_page_scripts(self):
         html = (STATIC / "index.html").read_text(encoding="utf-8")

@@ -40,6 +40,7 @@ TYPE_NAME[".tsx"] = TYPE_NAME[".ts"]
 WORD = re.compile(r"[A-Za-z_]\w{3,}")
 PY_IMPORT = re.compile(r"^\s*(?:from\s+([\w.]+)\s+import|import\s+([\w., ]+))", re.M)
 MIN_NAME = 5
+MAX_GAP_PATHS = 300
 MAX_FILES_PER_NAME = 3  # a name shared by more files than this (Zone, Item, Manager...) says nothing about any one of them
 MAX_FILES = 20_000
 GAP_FILES = 5
@@ -314,6 +315,7 @@ def analyze(root: Path, config: dict[str, Any], suites: list[dict[str, Any]] | N
         row["tests"] = credit.get(index, 0)
         row["gaps"] = sorted(row["gaps"], key=lambda g: -g["lines"])
         row["untested_files"] = len(row["gaps"])
+        row["gap_paths"] = [g["path"] for g in row["gaps"]][:MAX_GAP_PATHS]  # every untested file, for "Add tests for all"
         row["gaps"] = row["gaps"][:GAP_FILES]
         row["percent"] = round(100 * row["tested_lines"] / row["lines"]) if row["lines"] else 0
         row["languages"] = [{"name": k, "lines": v} for k, v in sorted(row["languages"].items(), key=lambda kv: -kv[1])]

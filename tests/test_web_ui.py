@@ -5543,7 +5543,7 @@ class AccessibilityStaticTests(unittest.TestCase):
         page = self.js[self.js.index("const importPanel"):self.js.index("An existing project: read what is there")]
         for part in ('id="prd-drop"', '"dragover"', '"drop"', "e.dataTransfer?.files?.[0]", "if (f) setFile(f)", "e.preventDefault()", 'zone.addEventListener("keydown"'):
             self.assertIn(part, page, part)
-        self.assertIn('id="prd-import-go" disabled>Submit</button>', page)
+        self.assertIn('id="prd-import-go" data-why="Choose a file or paste text first." disabled>Submit</button>', page)
         self.assertIn("goBtn.disabled = !picked && !textEl.value.trim()", page)
         read = self.js[self.js.index("const readPrd"):self.js.index("const importPanel")]
         self.assertIn("NJ_UPLOAD_LIMIT", read)  # a dropped file is checked like a chosen one

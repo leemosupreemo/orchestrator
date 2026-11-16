@@ -3096,6 +3096,22 @@ def package_review_job(server: Any, root: Path, research: Callable[[Path, str], 
     return work, commit
 
 
+def test_gap_brief(root: Path, path: str, platform_name: str = "", uncovered: str = "") -> dict[str, Any]:
+    """Everything to prefill a test job for one untested file: its area, a spec built from the file and the tests around it,
+    matching test cases and the feature it belongs to."""
+    from orchestrator import gap_brief, platforms as platform_view
+    config = read_json_file(runtime_dir(root) / "project.json")
+    platform = next((p for p in platform_view.detect(root, config) if p.get("name") == platform_name), None)
+    if platform:
+        platform = {**platform, "label": platform_view.KIND_LABEL.get(platform.get("kind"), "")}
+    try:
+        return gap_brief.brief(root, path, platform=platform, test_command=str(config.get("test_command") or ""),
+                               cases=test_case_lib.load_library(root), features=feature_store.load(runtime_dir(root)),
+                               uncovered=int(uncovered) if uncovered.isdigit() else None)
+    except ValueError as exc:
+        raise UIError(str(exc), HTTPStatus.NOT_FOUND)
+
+
 def architecture_view(root: Path) -> dict[str, Any]:
     """What the Architecture page shows: the approved decision, a proposal waiting for approval, and whether one is needed."""
     rt = runtime_dir(root)
@@ -8008,6 +8024,10 @@ class UIHandler(BaseHTTPRequestHandler):
                 return {"option": key, "text": text[:4000]}
 
             self._json({"task": self.server.tasks.start(work)}, HTTPStatus.ACCEPTED)
+        elif method == "GET" and parts == ["tests", "gap-brief"]:
+            # "Add tests" on an untested file: a test job prefilled from the file itself (orchestrator/gap_brief.py).
+            self._json(test_gap_brief(root, (query.get("path") or [""])[0], (query.get("platform") or [""])[0],
+                                      (query.get("uncovered") or [""])[0]))
         elif method == "GET" and parts == ["architecture"]:
             self._json(architecture_view(root))
         elif method == "GET" and parts == ["architecture", "summary"]:
