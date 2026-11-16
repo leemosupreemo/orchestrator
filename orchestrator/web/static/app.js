@@ -7741,8 +7741,7 @@ pages.measure = async (_, query) => {
     html: `
       <section class="card mb-16 analytics-summary">
         <div class="stats">
-          <div class="stat"><div class="k">Feature KPIs</div><div class="v">${allKpis.length}</div></div>
-          <div class="stat"><div class="k">With a recorded result</div><div class="v">${measuredKpis.length}</div></div>
+          <div class="stat stat-hero"><div class="k">Feature KPIs</div><div class="v">${allKpis.length}</div></div>
           <div class="stat"><div class="k">Analytics platform</div><div class="v">${data.provider ? esc(data.provider_name || data.provider) : "None connected"}</div></div>
         </div>
         <div class="card-b row gap-12 wrap align-center analytics-provider-row">${data.provider ? `<span class="muted">${esc((data.region || "us").toUpperCase())} region · ${connected ? "Connected" : "Key not configured"}</span>${connected && data.dashboard_url ? `<a class="btn small" href="${esc(data.dashboard_url)}" target="_blank" rel="noopener">Open ${esc(data.provider_name || "provider")} dashboard ↗</a>` : ""}` : `<span class="muted">Provider setup is optional. Results can be recorded here by hand.</span>`}<span class="spacer"></span><button type="button" class="btn small" id="edit-success-measures">${data.success_measures?.trim() ? "Edit success measures" : "Add success measures"}</button></div>

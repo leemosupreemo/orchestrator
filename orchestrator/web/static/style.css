@@ -278,6 +278,8 @@ pre.doc { margin: 0; padding: 0 var(--space-4) var(--space-4); white-space: pre-
   font-style: italic;
   background: var(--panel-2);
 }
+.analytics-summary .stat-hero .k { font-size: var(--type-section); font-weight: var(--weight-bold); color: var(--text); }
+.analytics-summary .stat-hero .v { font-size: var(--type-display); font-weight: var(--weight-bold); }
 
 /* main */
 .main { min-width: 0; padding: var(--space-6) var(--space-7) var(--space-8); }
