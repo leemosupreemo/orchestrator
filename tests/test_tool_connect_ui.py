@@ -98,7 +98,7 @@ ToolConnect.open(provider, provider, {api, formDialog: () => dialog});
   }
   await new Promise(r => setTimeout(r, 50));
   close();
-  console.log(JSON.stringify({shown, link: els["connect-browser"].innerHTML.includes("readonly"), input: calls.filter(c => c[0].endsWith("/input")).map(c => c[1].data), field: els["connect-code"].value, started: calls[0]}));
+  console.log(JSON.stringify({shown, browser: els["connect-browser"].innerHTML, link: els["connect-browser"].innerHTML.includes("readonly"), input: calls.filter(c => c[0].endsWith("/input")).map(c => c[1].data), field: els["connect-code"].value, started: calls[0]}));
   process.exit(0);
 })();
 '''
@@ -122,6 +122,22 @@ ToolConnect.open(provider, provider, {api, formDialog: () => dialog});
         result=self.state('@@ORCHESTRATOR_CONNECT@@{"step":"install","detail":"Installing"}\nAgree to terms? [Y/n]')
         self.assertTrue(result['needsAgreement'])
         self.assertEqual(result['step'],'install')
+
+    def test_claude_osc8_claude_com_url_and_code_prompt_are_detected(self):
+        url = "https://claude.com/cai/oauth/authorize?code=true&client_id=abc&state=xyz"
+        raw = (
+            '@@ORCHESTRATOR_CONNECT@@{"step":"sign_in","detail":"Signing in"}\n'
+            f"If the browser didn't open, visit: \x1b]8;;{url}\x07\x1b[94m{url}\x1b[39m\x1b]8;;\x07\n"
+            "Paste code here if prompted > "
+        )
+        result = self.state(raw, "claude")
+        self.assertEqual(result["urls"], [url])
+        self.assertTrue(result["needsCode"])
+        self.assertNotIn("\x1b]8;;", result["output"])
+        seen = self.drive_dialog("claude", raw)
+        self.assertIn(url, seen["browser"])
+        self.assertTrue(seen["shown"])
+        self.assertEqual(seen["input"], ["CODE-123\r"])
 
     def test_malformed_markers_do_not_break_progress_or_turn_into_instructions(self):
         result=self.state('@@ORCHESTRATOR_CONNECT@@bad json\n@@ORCHESTRATOR_CONNECT@@{"step":"shell","detail":"run me"}\n')

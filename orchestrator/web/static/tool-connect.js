@@ -1,7 +1,7 @@
 (function (root) {
   "use strict";
   const steps = [["check", "Check this computer"], ["prerequisites", "Prepare the installer"], ["install", "Install the AI tool"], ["sign_in", "Sign in through your browser"], ["ready", "Ready for jobs"]];
-  const hosts = ["openai.com", "chatgpt.com", "claude.ai", "anthropic.com", "poolside.ai", "poolside.com", "openrouter.ai", "antigravity.google", "google.com"];
+  const hosts = ["openai.com", "chatgpt.com", "claude.ai", "claude.com", "anthropic.com", "poolside.ai", "poolside.com", "openrouter.ai", "antigravity.google", "google.com"];
   // Every AI tool that has a sign-in (ai_providers.SIGN_IN_COMMANDS keeps the same ids; a test checks they match).
   // `match` finds the tool in a failed job's log; `paste` is for tools whose sign-in ends by asking for a code from the browser.
   const providers = {
@@ -17,7 +17,7 @@
   };
   // The tool's own prompt for a code, so any tool that asks gets the paste box, not only the ones listed above.
   const codePrompt = /paste.{0,40}code|enter.{0,30}(?:authori[sz]ation |verification )?code|code from (?:the|your) browser/i;
-  const clean = s => s.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "").replace(/\r/g, "\n");
+  const clean = s => s.replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, "").replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "").replace(/\r/g, "\n");
   function progressState(text, previous = {step: "check", detail: "Starting…", urls: []}, provider = "") {
     const output = clean(text);
     let step = previous.step, detail = previous.detail, signInOffset = 0, position = 0;
@@ -53,11 +53,11 @@
 
   async function open(provider, name, {api, formDialog, onClose = () => {}}) {
     const doc = root.document, esc = root.Html.escape;
-    let closed = false, finished = false, runId, log = "", offset = 0;
+    let closed = false, finished = false, checkingCode = false, runId, log = "", offset = 0;
     const promise = formDialog(`Connect ${name}`, `<p>Orchestrator prepares this computer and guides you through sign-in. Approve access in your browser when asked.</p>
       <ol class="ai-steps" id="connect-steps">${steps.map(([id,label]) => `<li class="ai-step" data-connect-step="${id}"><span class="ai-step-icon" aria-hidden="true"></span><span class="ai-step-text"><strong>${esc(label)}</strong><small class="muted" data-step-detail></small></span></li>`).join("")}</ol>
       <div id="connect-status" role="status" aria-live="polite"></div><div id="connect-browser" class="stack"></div>
-      <div id="connect-code-row" class="stack" hidden><label class="field"><span>After approving in your browser, paste the code it shows here</span><input id="connect-code" autocomplete="off" required spellcheck="false" placeholder="Paste code"></label><div><button type="button" class="btn primary" id="connect-code-send">Submit code</button></div></div>
+      <div id="connect-code-row" class="stack" hidden><label class="field"><span>After approving in your browser, paste the code it shows here</span><input id="connect-code" autocomplete="off" spellcheck="false" placeholder="Paste code"></label><div><button type="button" class="btn primary" id="connect-code-send">Submit code</button></div></div>
       <div class="row gap-8 wrap"><button type="button" class="btn primary" id="connect-agree" hidden>Agree and continue</button><button type="button" class="btn" id="connect-continue" hidden>Continue</button><button type="button" class="btn danger" id="connect-stop">Stop sign-in</button></div>
       <details id="connect-details"><summary>Sign-in details and advanced input</summary><pre id="connect-output" class="doc" style="max-height:240px;overflow:auto;white-space:pre-wrap"></pre><label class="field"><span>If the sign-in asks for an answer or code</span><input id="connect-input" autocomplete="off"></label><button type="button" class="btn small" id="connect-send">Send answer</button></details>
       <p class="muted">Closing this dialog keeps sign-in running. You can find it under Running now.</p>`, "Done", {cancelLabel: "Close"});
@@ -73,7 +73,7 @@
     el("connect-continue").onclick = () => send("\r");
     const sendAnswer = () => {const input=el("connect-input");if(input?.value){send(input.value+"\r");input.value="";}};
     el("connect-send").onclick = sendAnswer;
-    const sendCode = () => {const input=el("connect-code"),value=input?.value.trim();if(value){send(value+"\r");input.value="";if(el("connect-status"))el("connect-status").textContent="Checking the code…";}};
+    const sendCode = () => {const input=el("connect-code"),value=input?.value.trim();if(value){checkingCode=true;send(value+"\r");input.value="";if(el("connect-status"))el("connect-status").textContent="Checking the code…";}};
     el("connect-code-send").onclick = sendCode;
     el("connect-code").onkeydown = event => {if(event.key==="Enter"){event.preventDefault();sendCode();}};
     el("connect-input").onkeydown = event => {if(event.key==="Enter"){event.preventDefault();sendAnswer();}};
@@ -90,6 +90,7 @@
         const out=await api(`runs/${encodeURIComponent(runId)}/output?offset=${offset}&wait=1`);
         offset=out.offset;
         const bytes=Uint8Array.from(root.atob(out.data||""), c=>c.charCodeAt(0));
+        if(bytes.length)checkingCode=false;
         log=(log+decoder.decode(bytes,{stream:!out.finished})).slice(-100000);
         if(closed)break;
         const state=progressState(log,lastProgress,provider), at=steps.findIndex(([id])=>id===state.step);
@@ -101,7 +102,7 @@
           row.querySelector("[data-step-detail]").textContent=i===reached?state.detail:"";
         }
         el("connect-output").textContent=state.output;
-        el("connect-status").textContent=state.detail;
+        el("connect-status").textContent=checkingCode?"Checking the code…":state.detail;
         const links=JSON.stringify([state.code,state.urls]);
         if(links!==shownLinks){ // only when it changes: the page is redrawn twice a second and would drop a half-pasted link
           shownLinks=links;
@@ -125,7 +126,7 @@
         }
         await new Promise(resolve=>setTimeout(resolve,500));
       }
-    }catch(error){showError(error.message);if(ok&&!closed)ok.hidden=false;}
+    }catch(error){finished=true;for(const id of ["connect-agree","connect-continue","connect-stop","connect-code-row"])if(el(id))el(id).hidden=true;showError(error.message);if(ok&&!closed)ok.hidden=false;}
   }
   root.ToolConnect={steps,providers,providerFromText,progressState,open};
 })(typeof globalThis!=="undefined"?globalThis:this);
