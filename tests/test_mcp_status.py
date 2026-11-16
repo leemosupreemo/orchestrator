@@ -922,6 +922,7 @@ class ProjectDocumentationSectionTests(unittest.TestCase):
             'fullText.includes("re-authenticate to continue")',
             'act("ai_connect", { provider: oauthProvider, title: `Connect ${oauthLabel}` })',
             'Sign in to ${oauthLabel}',
+            'detail: "Your login session expired. Sign in again, then rerun."',
         ):
             self.assertIn(snippet, app)
 

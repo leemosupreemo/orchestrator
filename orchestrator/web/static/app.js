@@ -13091,18 +13091,15 @@ function runFailureGuidance(r) {
     const rerunBtn = targetJob
       ? `<button type="button" class="btn small" ${act(r.action || "execute", { job: targetJob })}><svg class="icon icon-sm" aria-hidden="true"><use href="#i-play"/></svg> Rerun job</button>`
       : "";
-    const backBtn = targetJob
-      ? `<a class="btn small" href="#/jobs/${encodeURIComponent(targetJob)}">Back to job</a>`
-      : "";
     const signInBtn = oauthProvider
       ? `<button type="button" class="btn small primary" ${act("ai_connect", { provider: oauthProvider, title: `Connect ${oauthLabel}` })}>Sign in to ${oauthLabel}</button>`
       : `<a class="btn small primary" href="#/config/ai">Open AI tools</a>`;
     const aiToolsBtn = oauthProvider ? `<a class="btn small" href="#/config/ai">Open AI tools</a>` : "";
     return {
       title: "AI sign-in expired",
-      detail: "The AI tool's login session expired and could not be refreshed automatically. Sign in again on the spot (or pick another model in the job's Settings) and rerun.",
+      detail: "Your login session expired. Sign in again, then rerun.",
       action: signInBtn,
-      secondary: `${aiToolsBtn}${rerunBtn}${backBtn}`,
+      secondary: `${aiToolsBtn}${rerunBtn}`,
     };
   }
 
