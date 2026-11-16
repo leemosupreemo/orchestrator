@@ -7733,7 +7733,7 @@ pages.measure = async (_, query) => {
     </div>`;
   };
   const card = (f) => `<section class="card mb-16" id="analytics-feature-${esc(f.id)}"><div class="card-h"><h2>${esc(f.name)}</h2><div class="row"><button class="btn small" data-kpi="autofill" data-f="${esc(f.id)}" title="A model suggests the one metric that best shows this feature is working">Suggest a KPI</button><button class="btn small" data-kpi="add" data-f="${esc(f.id)}">Add KPI</button></div></div>
-    <div class="list">${f.kpis.map((k) => kpiRow(f, k)).join("") || `<div class="empty">No KPIs yet. What would tell you "${esc(f.name)}" is working? Add one, or ask AI to suggest one.</div>`}</div></section>`;
+    ${f.kpis.length ? `<div class="list">${f.kpis.map((k) => kpiRow(f, k)).join("")}</div>` : `<div class="card-b"><p class="field-placeholder">No KPIs yet — add one or let AI suggest one.</p></div>`}</section>`;
   return {
     title: "Analytics",
     sub: "",
@@ -7762,9 +7762,9 @@ pages.measure = async (_, query) => {
         </div>
       </section>
       <section class="card mb-16"><div class="card-h"><h2>Project success measures</h2><button type="button" class="btn small" id="edit-success-measures">Edit</button></div>
-        <div class="card-b">${data.success_measures?.trim() ? `<div class="md">${Markdown.render(data.success_measures)}</div>` : `<p class="muted">Optional project-wide outcomes and targets live in the Product requirements. Add them when you know what success should look like.</p>`}</div>
+        <div class="card-b">${data.success_measures?.trim() ? `<div class="md">${Markdown.render(data.success_measures)}</div>` : `<p class="field-placeholder">Add project-wide outcomes and targets…</p>`}</div>
       </section>
-      ${features.map(card).join("") || `<section class="card"><div class="empty">Feature KPIs are optional. Define product features on <a href="#/product">Product</a>, then add KPIs here when you know how to measure them.</div></section>`}
+      ${features.map(card).join("") || `<section class="card mb-16"><div class="card-b"><p class="field-placeholder">No features yet — define them in <a href="#/product">Product</a> to track KPIs here.</p></div></section>`}
       <section class="card mb-16">
         <div class="card-h"><h2>Analytics Connections</h2></div>
         <div class="card-b stack">
@@ -8932,8 +8932,7 @@ pages.product = async (_, query) => {
         <span class="prd-sec-state">${s.filled ? "Filled in" : "To fill in"}</span>
         <button type="button" class="btn small" data-prd-edit="${s.id}">Edit</button></div>
       <div class="card-b stack" data-prd-body="${s.id}">
-        <div class="muted">${esc(s.hint)}</div>
-        ${s.filled ? `<div class="md" data-expandable="280">${Markdown.render(s.body)}</div>` : ""}
+        ${s.filled ? `<div class="md" data-expandable="280">${Markdown.render(s.body)}</div>` : `<p class="field-placeholder">${esc(s.hint)}</p>`}
         ${designs.length ? `<div class="prd-designs">${designs.map((d) => `<figure class="prd-design"><img alt="${esc(d.replace("designs/", ""))}" data-auth-src="product/design/${esc(d.replace("designs/", ""))}"></figure>`).join("")}</div>` : ""}
       </div>
       ${s.id === "look" ? `<div class="reference-imports"><div class="label">Import references</div><div class="import-options">

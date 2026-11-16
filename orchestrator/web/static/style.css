@@ -268,6 +268,17 @@ pre.doc { margin: 0; padding: 0 var(--space-4) var(--space-4); white-space: pre-
 .brief-path-chip { font-size: var(--type-secondary); color: var(--muted); user-select: all; overflow-wrap: anywhere; }
 .brief-content { padding: var(--space-3) var(--space-4) var(--space-4); line-height: 1.6; }
 
+.field-placeholder {
+  margin: 0;
+  padding: var(--space-3);
+  border: 1px dashed var(--border);
+  border-radius: var(--r-md);
+  color: var(--muted);
+  font-size: var(--type-secondary);
+  font-style: italic;
+  background: var(--panel-2);
+}
+
 /* main */
 .main { min-width: 0; padding: var(--space-6) var(--space-7) var(--space-8); }
 .topbar { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-4); margin-bottom: var(--space-5); }
@@ -5273,3 +5284,11 @@ dialog.ask-ai { width: min(34rem, 100vw); max-width: min(34rem, 100vw); height: 
 .arch-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 4px; vertical-align: middle; }
 .arch-change { border-top: 1px solid var(--border); padding-top: 12px; }
 @media (max-width: 560px) { .arch-proscons { grid-template-columns: 1fr; } }
+
+/* A job and its runs: the live run labelled as this job's run, its latest steps, the runs list, and the run page's job line. */
+.job-run-steps { list-style: none; margin: 0; padding: 8px 16px 12px; display: flex; flex-direction: column; gap: 4px; font-size: var(--type-secondary); }
+.job-run-steps li.failed { color: var(--bad); }
+.job-run-steps li:last-child { font-weight: var(--weight-medium); }
+.job-run-row.is-side .title { color: var(--muted); }
+.run-family { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.run-unreported { color: var(--bad); }
