@@ -407,7 +407,7 @@ if __name__ == "__main__":
 
 
 class PageTests(unittest.TestCase):
-    """The architecture lives at the bottom of the Product page, shows on Home, and is the new-project wizard's next step."""
+    """The architecture lives on the Product page, above History, and is the new-project wizard's next step."""
     STATIC = Path(__file__).resolve().parents[1] / "orchestrator" / "web" / "static"
 
     def setUp(self):
@@ -420,9 +420,10 @@ class PageTests(unittest.TestCase):
         self.assertNotIn("pages.architecture", self.app)
         self.assertNotIn('href="#/architecture"', (self.STATIC / "index.html").read_text(encoding="utf-8"))
 
-    def test_home_and_the_new_project_wizard_point_to_it(self):
-        self.assertIn('api("architecture/summary")', self.app)
-        self.assertIn("${archStripHtml(archSummary)}", self.app)
+    def test_only_the_product_page_shows_it_above_history_and_the_wizard_points_there(self):
+        self.assertNotIn("archStripHtml", self.app)  # not on Home
+        self.assertNotIn('api("architecture/summary")', self.app)
+        self.assertLess(self.app.index('id="sec-architecture"'), self.app.index("<h2>History</h2>"))
         self.assertIn('href="#/product?section=architecture">Choose the architecture</a>', self.app)
 
     def test_tweaks_and_overhauls_are_separate_actions(self):
@@ -587,7 +588,6 @@ class SkipPageTests(PageTests):
         self.assertIn("Working assumption · v", self.app)
         self.assertIn('id="arch-approve-current"', self.app)
         self.assertIn('id="arch-refresh"', self.app)
-        self.assertIn('s.state === "provisional"', self.app)
 
 
 class DocumentationTests(unittest.TestCase):

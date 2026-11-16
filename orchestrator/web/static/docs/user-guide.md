@@ -605,7 +605,7 @@ GitHub, GitLab, Bitbucket, Azure DevOps, another Git host, or on this computer o
 
 ## Architecture
 
-Every project has one approved architecture: the language, frameworks, structure and packages it is built with, and why. It lives in a section at the bottom of the **Product** page, a card on **Home** summarises it, and it is saved in the project as `docs/architecture.json` (the record) and `docs/architecture.md` (the same decision written out, with a diagram). Every plan, plan review and build reads it as a constraint, so jobs stop re-guessing the stack.
+Every project has one approved architecture: the language, frameworks, structure and packages it is built with, and why. It lives in a section of the **Product** page, above History, and it is saved in the project as `docs/architecture.json` (the record) and `docs/architecture.md` (the same decision written out, with a diagram). Every plan, plan review and build reads it as a constraint, so jobs stop re-guessing the stack.
 
 **New projects.** After **Start a new project**, the next step is **Choose the architecture**. A model reads the product requirements, the platforms you picked and the build tools on this Mac, then suggests two or three options in plain words. Each option shows:
 

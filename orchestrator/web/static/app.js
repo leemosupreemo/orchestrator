@@ -4413,9 +4413,9 @@ pages.home = async (_, query) => {
     if (download && !finishProjectDownload(download)) return {stale:true};
     return setupPage(setupState);
   }
-  const [{ jobs }, waiting, product, archivedList, homeGit, homePreview, archSummary] = await Promise.all([
+  const [{ jobs }, waiting, product, archivedList, homeGit, homePreview] = await Promise.all([
     api("jobs"), api("inbox"), api("product").catch(() => null), api("jobs/archived").catch(() => null),
-    api("git").catch(() => ({})), api("preview").catch(() => null), api("architecture/summary").catch(() => null),
+    api("git").catch(() => ({})), api("preview").catch(() => null),
   ]);
   if (!sameProject()) return {stale: true};
   const archivedJobs = archivedList?.archived || [];
@@ -4528,7 +4528,6 @@ pages.home = async (_, query) => {
     html: `
       ${HomeStatus.render({git: homeGit, jobs, runs: state.runs})}
       ${product ? productStripHtml(product, jobs) : ""}
-      ${archStripHtml(archSummary)}
 
       ${runningBanner}
 
@@ -4595,24 +4594,6 @@ pages.home = async (_, query) => {
     },
   };
 };
-
-// Home: the architecture at a glance, or the one step it needs.
-function archStripHtml(s) {
-  if (!s || state.you?.role === "member" && s.state !== "approved") return "";
-  const link = "#/product?section=architecture";
-  if (s.state === "undecided") return `<section class="card mb-16" id="arch-strip"><div class="card-h"><h2><a class="card-title-link" href="${link}">Architecture</a></h2><span class="pill attention">Not chosen</span></div>
-    <div class="card-b row gap-12 wrap"><span class="muted">${s.proposal_waiting ? "Options are ready for you to compare." : "Choose how this project is built before planning the first feature."}</span><span class="spacer"></span><a class="btn small primary" href="${link}">${s.proposal_waiting ? "Compare options" : "Choose the architecture"}</a></div></section>`;
-  if (s.state === "undescribed") return `<section class="card mb-16" id="arch-strip"><div class="card-h"><h2><a class="card-title-link" href="${link}">Architecture</a></h2><span class="pill neutral">Not described</span></div>
-    <div class="card-b row gap-12 wrap"><span class="muted">${s.proposal_waiting ? "A description of the code is ready to confirm." : "Describe how this project is built, so every job follows it and you can see how it fits your product."}</span><span class="spacer"></span><a class="btn small" href="${link}">${s.proposal_waiting ? "Review it" : "Describe the architecture"}</a></div></section>`;
-  if (s.state === "provisional") return `<section class="card mb-16" id="arch-strip"><div class="card-h"><h2><a class="card-title-link" href="${link}">Architecture</a></h2><span class="pill neutral">Working assumption</span>${s.stale ? `<span class="pill attention">Code changed</span>` : ""}${s.proposal_waiting ? `<span class="pill attention">Change waiting</span>` : ""}</div>
-    <div class="card-b row gap-12 wrap"><span><strong>${esc(s.chosen || "Not decided")}</strong> <span class="muted">· not approved yet</span></span><span class="spacer"></span><a class="btn small" href="${link}">Review</a></div></section>`;
-  const mix = (cat) => (s.profile?.[cat] || []).map((p) => `${p.weight}% ${p.name}`).join(", ");
-  const flags = [s.proposal_waiting ? `<span class="pill attention">Change waiting</span>` : "", s.prd_changed ? `<span class="pill attention">Requirements changed</span>` : "",
-    s.prd_gaps ? `<span class="pill neutral">${plural(s.prd_gaps, "gap")}</span>` : ""].join("");
-  return `<section class="card mb-16" id="arch-strip"><div class="card-h"><h2><a class="card-title-link" href="${link}">Architecture</a></h2>${flags}</div>
-    <div class="card-b stack"><div><strong>${esc(s.chosen)}</strong> <span class="muted">· ${esc([s.language, s.framework].filter(Boolean).join(" / "))} · v${esc(s.version)}</span></div>
-      ${mix("shape") ? `<div class="muted">${esc(mix("shape"))}</div>` : ""}${mix("code") ? `<div class="muted">${esc(mix("code"))}</div>` : ""}</div></section>`;
-}
 
 function jobHeaderActions(s, links = [], ctx = {}) {
   // One plain list, split by dividers instead of headings: work on the job, share or open it, its settings, then ending it.
@@ -9099,10 +9080,10 @@ pages.product = async (_, query) => {
           </select>
         </div>
         <div class="muted">AI keeps this up to date as jobs finish, and you can review or undo any change in History.</div></div></section>
-      <section class="card"><div class="card-h"><h2>History</h2><span class="count">${p.history.length}</span></div>
-        <div class="list">${p.history.length ? historyRows(p.history) : `<div class="empty">Nothing yet. Every change you or the AI makes will be listed here.</div>`}</div></section>
-      <section class="card mt-16 prd-sec" id="sec-architecture"><div class="card-h"><h2>Architecture</h2></div>
-        <div class="card-b stack" id="arch-section"><div class="muted">Loading…</div></div></section>`;
+      <section class="card prd-sec" id="sec-architecture"><div class="card-h"><h2>Architecture</h2></div>
+        <div class="card-b stack" id="arch-section"><div class="muted">Loading…</div></div></section>
+      <section class="card mt-16"><div class="card-h"><h2>History</h2><span class="count">${p.history.length}</span></div>
+        <div class="list">${p.history.length ? historyRows(p.history) : `<div class="empty">Nothing yet. Every change you or the AI makes will be listed here.</div>`}</div></section>`;
   return {
     title: "Product",
     sub: "",
@@ -13011,10 +12992,9 @@ function archSectionHtml(data) {
           <button type="button" class="btn ghost" id="arch-skip">Skip for now</button></div>
         <small class="hint-text">Skipping keeps a working assumption from what Orchestrator can see, so jobs stay consistent. You can choose any time.</small>` : ""}</div>`
       : `<div class="stack"><strong>Describe this project's architecture</strong>
-        <span class="muted">A model reads a digest of the code (languages, folders, packages, entry points) and describes the architecture as it is now, with a rough diagram, its style mix, and where it does or doesn't serve your product requirements. You confirm it, and every job follows it from then on. Nothing in the code changes.</span>
+        <span class="muted">AI sketches how your code is built today. Once you confirm it, every job follows it. Your code isn't changed.</span>
         ${owner ? `<div class="row gap-12 wrap"><button type="button" class="btn primary" id="arch-propose" data-mode="describe">Describe the architecture</button>
-          <button type="button" class="btn ghost" id="arch-skip">Skip for now</button></div>
-        <small class="hint-text">Skipping records what the code shows (languages, packages, folders) as a working assumption, without a model.</small>` : ""}</div>`;
+          <button type="button" class="btn ghost" id="arch-skip">Skip for now</button></div>` : ""}</div>`;
     html += archProgressHtml();
   }
   return html;

@@ -108,7 +108,7 @@ SVG in columns by kind, themed with the page; `docs/architecture.md` carries it 
 - Each decision lists the requirements it **serves**. **prd_links** maps each core need to how the architecture meets it,
   and **prd_gaps** lists needs it doesn't meet yet. The planner also sees the gaps.
 - Approving and skipping store the requirements' fingerprint (`prd_fingerprint`, whitespace-insensitive). When they change
-  afterwards (`prd_changed`), the Product page and the Home card say so, and **Check it against the requirements**
+  afterwards (`prd_changed`), the Product page says so, and **Check it against the requirements**
   proposes a tweak limited to what the new requirements need.
 - `revisit_reasons` flags `revisit_when` triggers that the current requirements now mention. It only flags.
 - Platforms and technology preferences chosen in the new-project wizard are read back from the pitch (`platforms_from_prd`).
@@ -153,11 +153,9 @@ tree are left alone. If the commit can't be made, the page says to commit them.
 ## Where people see it
 
 - **New project**: after creation, "Next: choose the architecture", with **Skip for now**.
-- **Product page**: the Architecture section at the bottom. It shows options side by side with diagrams, fit, Good and
+- **Product page**: the Architecture section, above History. It shows options side by side with diagrams, fit, Good and
   Watch out, and style bars; then the current architecture with its diagram, style mix, requirement links, technical
   details and history; then **Add or adjust** (tweak) and **Rethink the architecture** (overhaul). `#/architecture` links here.
-- **Home**: a card with the chosen option, its style mix and version, or the one step it needs, with flags for a waiting
-  change, changed requirements, gaps, or code that changed since an inference.
 - Proposing, editing, approving, skipping and discarding are for the project's owner; members can read everything.
 
 ## API
@@ -165,7 +163,7 @@ tree are left alone. If the commit can't be made, the page says to commit them.
 | Route | Does |
 |---|---|
 | `GET /api/architecture` | The page's view: the record, a waiting proposal with its change kind and changes, the catalog, and flags |
-| `GET /api/architecture/summary` | The Home card's view |
+| `GET /api/architecture/summary` | A short view: the chosen option, its style mix and version, or the one step it needs |
 | `POST /api/architecture/propose` | Starts a background proposal; body `mode` (optional) and `feedback` |
 | `POST /api/architecture/edit` | Changes the waiting proposal's chosen option, language, framework, commands or summary |
 | `POST /api/architecture/approve` | Approves the waiting proposal, or the working assumption as it is, and commits |
