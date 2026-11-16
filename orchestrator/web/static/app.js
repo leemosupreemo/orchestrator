@@ -1532,7 +1532,11 @@ function fillComputerSelect(select) {
   const machines = accountMachines || [];
   if (!machines.length) { wrap.hidden = true; return; }
   wrap.hidden = false;
-  const html = machines.map((m) => `<option value="${esc(m.id)}"${m.id === current ? " selected" : ""}>${m.reachable ? "🟢" : "🔴"} ${esc(m.name)}</option>`).join("")
+  // Status indicator (🟢 reachable / 🔴 offline) renders as a compact CSS dot on #computer-select.
+  const activeMachine = machines.find((m) => m.id === current) || machines[0];
+  if (activeMachine) select.dataset.status = activeMachine.reachable ? "online" : "offline";
+  else delete select.dataset.status;
+  const html = machines.map((m) => `<option value="${esc(m.id)}"${m.id === current ? " selected" : ""}>${esc(m.name)}${m.reachable ? "" : " (offline)"}</option>`).join("")
     + `<option value="__manage__" class="manage-projects-option">💻 Manage computers...</option>`;
   if (select.dataset.html !== html) { select.innerHTML = html; select.dataset.html = html; }
   if (current) select.value = current;
@@ -5559,6 +5563,7 @@ pages.job = async ([id]) => {
     ? `${previewFiles.map((f) => `<span class="delta-file-chip mono">${esc(f.split("/").pop() || f)}</span>`).join(", ")}${remainingFiles > 0 ? ` <span class="muted">(+${remainingFiles} more)</span>` : ""}`
     : `<span class="muted">No modified files</span>`;
 
+  const problem = s.state.next?.action === "debug" && data.problem ? data.problem : null; // what needs fixing, in words
   const next = s.state.next;
   const isStoppingActive = activeRun && (stoppingRuns.has(activeRun.id) || Boolean(activeRun.stopping));
   const recommendFixBtn = !activeRun && job.last_error && next?.action !== "debug" && next?.action !== "answer"
@@ -5764,7 +5769,6 @@ pages.job = async ([id]) => {
       ${notes.length ? `<details class="fold plan-notes"><summary class="card-h"><h2>Assumptions and risks <span class="count">${notes.reduce((n, [, l]) => n + l.length, 0)}</span></h2></summary>
         <div class="card-b stack">${notes.map(([label, list]) => `<div><div class="label">${label}</div><ul class="assumptions">${list.map((x) => `<li>${esc(x)}</li>`).join("")}</ul></div>`).join("")}</div></details>` : ""}
     </section>`;
-  const problem = s.state.next?.action === "debug" && data.problem ? data.problem : null; // what needs fixing, in words
   const rawHeroReason = String(problem?.summary || s.state.reason || "").trim();
   const conciseReasonText = (raw) => {
     let text = raw.replace(/^It stopped with an error:\s*/i, "").replace(/^Paused:\s*/i, "").trim();

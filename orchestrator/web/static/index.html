@@ -73,12 +73,14 @@
     <aside class="sidebar" id="sidebar" aria-label="Navigation">
       <div class="brand">
         <span class="brand-mark" role="img" aria-label="Orchestrator"></span>
-        <button type="button" class="nav-close" id="nav-close" aria-label="Close navigation">✕</button>
       </div>
-      <label class="project-switch">
-        <span class="label">Project <span id="project-kind"></span></span>
+      <div class="project-switch">
+        <div class="project-switch-head">
+          <label class="label" for="project-select">Project <span id="project-kind"></span></label>
+          <button type="button" class="nav-close" id="nav-close" aria-label="Close navigation">✕</button>
+        </div>
         <select id="project-select" aria-label="Project"></select>
-      </label>
+      </div>
       <div class="machine-switch" id="machine-switch" hidden>
         <span class="label">Primary machine</span>
         <select id="computer-select" aria-label="Primary machine" hidden></select>
