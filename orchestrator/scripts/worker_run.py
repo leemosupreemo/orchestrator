@@ -926,6 +926,7 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
         pre_state = get_repo_state()
         pre_hashes = dirty_file_hashes(ROOT)
         touched_this_run: set[str] = set()  # files the plan's tasks changed in this run, committed or not
+        committing_only = False  # set below when only the commit is left to do
 
         if job.get("type") == "feature-plan" and job.get("approved"):
             tasks = job.get("plan", {}).get("tasks", [])
@@ -1109,7 +1110,12 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
             test_ok = all_ok
         else:
             # Original single-task execution
-            while True:
+            # Done and tested last time, only the commit failed (a git lock): commit it now instead of running the builder again.
+            committing_only = bool(resume and isinstance(job.get("passed_uncommitted"), dict))
+            if committing_only:
+                print("      - The work was done and its tests passed last time; only saving it to git failed. Committing it now...")
+                build_ok, test_ok = True, True
+            while not committing_only:
                 try:
                     build_ok, test_ok, _summary_path, task_output = unpack_builder_result(run_builder(job_path, resume=resume))
                     break
@@ -1144,6 +1150,10 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
         # Identify files changed/added by AI
         ai_modified = [f for f in post_state["modified"] if f not in pre_state["modified"]]
         ai_untracked = [f for f in post_state["untracked"] if f not in pre_state["untracked"]]
+        if committing_only:  # the files the passing run changed, if still uncommitted
+            saved = set(job["passed_uncommitted"].get("files") or [])
+            ai_modified = [f for f in post_state["modified"] if f in saved]
+            ai_untracked = [f for f in post_state["untracked"] if f in saved]
 
         # Re-read job to get updates from run_builder (like test_command_override)
         job = read_json(job_path)
@@ -1183,6 +1193,13 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
             write_json(job_path, job)
 
         # Commit changes if any
+        if build_ok and test_ok and (ai_modified or ai_untracked):
+            # Say it passed before committing: if the commit fails, the job shows "Tests passed, not committed" and Resume
+            # commits it, rather than "debug failing tests" from the previous attempt.
+            job["passed_uncommitted"] = {"files": sorted(set(ai_modified) | set(ai_untracked)), "at": now_iso()}
+            if job.get("debug_history") and job["debug_history"][-1].get("result") == "pending":
+                job["debug_history"][-1]["result"] = {"build_ok": True, "tests_ok": True, "notes": "Tests passed"}
+            write_json(job_path, job)
         if ai_modified or ai_untracked:
             print(f"      - Committing {len(ai_modified)} modified and {len(ai_untracked)} untracked files...")
             for f in ai_modified + ai_untracked:
@@ -1193,6 +1210,8 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
                 commit_msg = f"fix: {job['title']} (AI generated)"
             
             _git_commit_step(f"git commit -m {shlex.quote(commit_msg)}")
+        if job.pop("passed_uncommitted", None) is not None:
+            write_json(job_path, job)
 
         tasks = job.get("plan", {}).get("tasks", [])
         completed = job.get("completed_task_indices", [])

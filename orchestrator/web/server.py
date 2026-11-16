@@ -931,6 +931,13 @@ def job_state(job: dict[str, Any], root: Path | None = None) -> dict[str, Any]:
         blocked = state("needs_you", "failed", str(blocker.get("title") or "Blocked"), str(blocker.get("detail") or ""), "resume", "Try again")
         sign_in = {"provider": blocker.get("provider"), "name": blocker.get("name")} if blocker.get("kind") == "sign_in" and blocker.get("provider") != "ai" else None
         return {**blocked, "steps": blockers.steps(blocker, root or Path(".")), "sign_in": sign_in, "blocker_kind": blocker.get("kind")}
+    if status == "human-needed" and isinstance(job.get("passed_uncommitted"), dict):
+        # The work is done and tested; only saving it to git failed (worker_run). Resume commits it without building again.
+        files = len(job["passed_uncommitted"].get("files") or [])
+        error = str(job.get("last_error") or "").strip()
+        return state("needs_you", "attention", "Tests passed, not committed",
+                     f"The work is done and its tests passed ({plural_count(files, 'file')} changed), but saving it to git failed"
+                     f"{': ' + error if error else ''}. Resume commits it; nothing is built again.", "resume", "Commit the work")
     if status == "human-needed":
         question = str(job.get("human_clarification_question") or "").strip()
         if question and question_is_blocker(question):

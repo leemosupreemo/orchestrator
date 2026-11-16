@@ -4414,27 +4414,26 @@ function homeProjectTitle(p) {
 }
 
 let homeRemoteSnaps = { key: null, at: 0, snaps: [] }; // other computers' snapshots as Home last fetched them
-// What holds paused jobs up that no code change can fix (orchestrator/blockers.py): one row per blocker, with the jobs
-// it holds and the one thing that clears it. Cleared blockers resume their jobs by themselves (the POST above).
-function blockersCard(groups) {
-  if (!groups.length) return "";
-  const row = (g) => {
-    const jobs = g.jobs.map((j) => `<a href="#/jobs/${encodeURIComponent(j.id)}">${esc(j.title)}</a>`).join(", ");
-    const fix = g.cleared ? `<span class="pill ok">Cleared · resuming</span>`
-      : g.kind === "git_lock" ? `<button type="button" class="btn small primary" data-clear-git-lock>Clear the lock</button>`
-      : g.kind === "sign_in" && g.provider && g.provider !== "ai" ? `<button type="button" class="btn small primary" ${act("ai_connect", { provider: g.provider, name: g.name })}>Sign in to ${esc(g.name)}</button>`
-      : "";
-    return `<div class="item blocker-row"><div class="main-col"><div class="title">${esc(g.title)}</div>
-      <div class="meta">${esc(g.detail || "")} ${g.cleared ? "" : esc((g.steps || []).join(" "))}</div>
-      <div class="meta">Waiting: ${jobs}</div></div><div class="side">${fix}</div></div>`;
-  };
-  const waiting = groups.reduce((n, g) => n + g.jobs.length, 0);
-  return `<section class="card mb-16" id="home-blockers"><div class="card-h"><h2>Blocked</h2><span class="count">${waiting}</span></div>
-    <div class="card-b muted">These jobs stopped on something outside the code. Once it's cleared they resume by themselves.</div>
-    <div class="list">${groups.map(row).join("")}</div></section>`;
-}
-
 pages.home = async (_, query) => {
+  // What holds paused jobs up that no code change can fix (orchestrator/blockers.py): one row per blocker, with the jobs
+  // it holds and the one thing that clears it. Cleared blockers resume their jobs by themselves (the POST to blockers below).
+  const blockersCard = (groups) => {
+    if (!groups.length) return "";
+    const row = (g) => {
+      const jobs = g.jobs.map((j) => `<a href="#/jobs/${encodeURIComponent(j.id)}">${esc(j.title)}</a>`).join(", ");
+      const fix = g.cleared ? `<span class="pill ok">Cleared · resuming</span>`
+        : g.kind === "git_lock" ? `<button type="button" class="btn small primary" data-clear-git-lock>Clear the lock</button>`
+        : g.kind === "sign_in" && g.provider && g.provider !== "ai" ? `<button type="button" class="btn small primary" ${act("ai_connect", { provider: g.provider, name: g.name })}>Sign in to ${esc(g.name)}</button>`
+        : "";
+      return `<div class="item blocker-row"><div class="main-col"><div class="title">${esc(g.title)}</div>
+        <div class="meta">${esc(g.detail || "")} ${g.cleared ? "" : esc((g.steps || []).join(" "))}</div>
+        <div class="meta">Waiting: ${jobs}</div></div><div class="side">${fix}</div></div>`;
+    };
+    const waiting = groups.reduce((n, g) => n + g.jobs.length, 0);
+    return `<section class="card mb-16" id="home-blockers"><div class="card-h"><h2>Blocked</h2><span class="count">${waiting}</span></div>
+      <div class="card-b muted">These jobs stopped on something outside the code. Once it's cleared they resume by themselves.</div>
+      <div class="list">${groups.map(row).join("")}</div></section>`;
+  };
   const download = projectDownloads.pending();
   if (download && (download.phase !== "loading" || state.project?.root !== download.project?.root)) return projectDownloadPage(download);
   const p = state.project, homeBackend = getBackendUrl();
@@ -5817,6 +5816,8 @@ pages.job = async ([id]) => {
     nextExecutionPreview = `<span class="job-hero-next-label">Now:</span> <strong>${esc(runRel?.active?.now || nextTask || "working")}</strong>${runRel?.active ? ` <span class="muted">(${esc(runRel.active.label)} run)</span>` : ""}`;
   } else if (s.state.next?.action === "approve" || s.state.next?.action === "schedule" || s.state.next?.action === "execute") {
     nextExecutionPreview = `<span class="job-hero-next-label">Next:</span> start <strong>${esc(nextTask || "Task 1")}</strong>`;
+  } else if (s.state.next?.action === "resume" && job.passed_uncommitted) {
+    nextExecutionPreview = `<span class="job-hero-next-label">Next:</span> commit the finished work`;
   } else if (s.state.next?.action === "resume" && ["environment", "pending", "unregistered"].includes(job.test_validation?.kind)) {
     nextExecutionPreview = `<span class="job-hero-next-label">Next:</span> re-run saved tests`;
   } else if (s.state.next?.action === "resume") {
