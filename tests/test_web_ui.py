@@ -7959,6 +7959,22 @@ for (const issue of [null, {sign_in: {provider: 'claude', name: 'Claude'}}]) {
         result = subprocess.run(["node", "-e", script], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_job_after_hook_handles_absent_optional_forms(self):
+        match = re.search(r"    after: \(\) => \{\n(.*?)\n    \},\n  \};\n\};", self.job_page, re.S)
+        self.assertIsNotNone(match)
+        script = """
+const hydrateAuthImages = () => {};
+const wireImagePreviews = () => {};
+const view = { querySelector: () => null, querySelectorAll: () => [] };
+const $ = () => null;
+const after = () => {
+""" + match.group(1) + """
+};
+after();
+"""
+        result = subprocess.run(["node", "-e", script], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_no_hotkey_labels_or_terminal_hints(self):
         self.assertNotIn("data-key=", self.job_page)
         self.assertNotIn("Press '", self.job_page)

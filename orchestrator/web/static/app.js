@@ -5516,7 +5516,6 @@ pages.job = async ([id]) => {
   const kindUpper = (s.type || s.kind || "FEATURE").toUpperCase();
   const testsDisplay = formatJobTests(testSummary);
   const scope = data.scope || null;
-  const cruft = data.cruft || null;
   const actionableFindings = (scope?.findings || []).filter((f) => f.id !== "no_plan_files");
   const hasNoPlanFiles = (scope?.findings || []).some((f) => f.id === "no_plan_files");
   const phone = matchMedia("(max-width: 760px)").matches;
@@ -5530,7 +5529,6 @@ pages.job = async ([id]) => {
   let featureName = "";
   if (s.feature) { try { featureName = ((await api("features")).features.find((f) => f.id === s.feature) || {}).name || ""; } catch { /* chip falls back to the id */ } }
   const assumptions = (Array.isArray(job.plan?.assumptions) ? job.plan.assumptions : []).filter((t) => typeof t === "string" && t.trim());
-  const conversation = Array.isArray(job.conversation) ? job.conversation.filter((m) => m && m.text) : [];
   const briefDoc = (docs || []).find((d) => d.name === "brief.md" || (d.title && d.title.toLowerCase() === "brief")) || {
     title: "Brief",
     name: "brief.md",
@@ -6190,29 +6188,8 @@ pages.job = async ([id]) => {
           btn.disabled = false;
         }
       }));
-      view.querySelectorAll("[data-cruft-accept]").forEach((btn) => btn.addEventListener("click", async () => {
-        try { await api(`jobs/${encodeURIComponent(id)}/cruft`, { method: "POST", body: { op: "accept", ids: [btn.dataset.cruftAccept] } }); toast("Kept"); route(); } catch (e) { toast(e.message, true); }
-      }));
-      $("[data-cruft-reset]")?.addEventListener("click", async () => {
-        try { await api(`jobs/${encodeURIComponent(id)}/cruft`, { method: "POST", body: { op: "reset" } }); route(); } catch (e) { toast(e.message, true); }
-      });
       $("[data-scope-reset]")?.addEventListener("click", async () => {
         try { await api(`jobs/${encodeURIComponent(id)}/scope`, { method: "POST", body: { op: "reset" } }); route(); } catch (e) { toast(e.message, true); }
-      });
-      const form = $("#chat-form");
-      form.addEventListener("submit", async (e) => {
-        e.preventDefault();
-        const button = form.querySelector("button");
-        const message = new FormData(form).get("message");
-        button.disabled = true; button.textContent = "Thinking…";
-        try {
-          await api(`jobs/${encodeURIComponent(id)}/chat`, { method: "POST", body: { message } });
-          await route();
-          $("#chat-section")?.scrollIntoView({ block: "end" });
-        } catch (err) {
-          toast(err.message, true);
-          button.disabled = false; button.textContent = "Send";
-        }
       });
     },
   };
