@@ -6290,8 +6290,7 @@ pages.new = async (_, query) => {
               <span>Specific test cases${opt("optional")}</span>
               ${cases.length ? `<button type="button" class="btn small ghost" id="nj-import-tc-btn"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg> Import from test cases</button>` : ""}
             </div>
-            <textarea name="test_cases" id="nj-test-cases" rows="3" maxlength="20000" placeholder="e.g. TC-1: Rejoin after timeout&#10;TC-4: Seat reservation failure">${esc(v.test_cases)}</textarea>
-            <small class="hint-text">List individual test cases to implement or expand, or import them from your test library.</small>
+            <textarea name="test_cases" id="nj-test-cases" rows="3" maxlength="20000" placeholder="e.g. Login fails with wrong password&#10;Session expires after 30 minutes">${esc(v.test_cases)}</textarea>
           </div>
           ${logPicker()}` };
       }
