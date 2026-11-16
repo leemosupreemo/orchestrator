@@ -9062,6 +9062,8 @@ pages.product = async (_, query) => {
         <div class="list">${p.sources.map((d) => `<div class="item"><div class="main-col"><div class="title">${esc(d.label)}</div><div class="meta mono">docs/product/${esc(d.target)}</div></div>
           <div class="side"><button type="button" class="btn small ghost" data-prd-source="${esc(d.target.replace("source/", ""))}">Download</button></div></div>`).join("")}</div></div></section>` : ""}
       ${epics ? epics.html() : ""}
+      <section class="card mb-16 prd-sec" id="sec-architecture"><div class="card-h"><h2>Architecture</h2></div>
+        <div class="card-b stack" id="arch-section"><div class="muted">Loading…</div></div></section>
       <section class="card mb-16"><div class="card-h"><h2>Keeping it up to date</h2></div><div class="card-b stack">
         <label class="check"><input type="checkbox" id="prd-auto" ${p.auto_update ? "checked" : ""}> <span>Update this automatically when jobs finish</span></label>
         <div class="row gap-12 align-center wrap" id="prd-auto-model"${p.auto_update ? "" : " hidden"}>
@@ -9080,9 +9082,7 @@ pages.product = async (_, query) => {
           </select>
         </div>
         <div class="muted">AI keeps this up to date as jobs finish, and you can review or undo any change in History.</div></div></section>
-      <section class="card prd-sec" id="sec-architecture"><div class="card-h"><h2>Architecture</h2></div>
-        <div class="card-b stack" id="arch-section"><div class="muted">Loading…</div></div></section>
-      <section class="card mt-16"><div class="card-h"><h2>History</h2><span class="count">${p.history.length}</span></div>
+      <section class="card"><div class="card-h"><h2>History</h2><span class="count">${p.history.length}</span></div>
         <div class="list">${p.history.length ? historyRows(p.history) : `<div class="empty">Nothing yet. Every change you or the AI makes will be listed here.</div>`}</div></section>`;
   return {
     title: "Product",

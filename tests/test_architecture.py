@@ -423,7 +423,8 @@ class PageTests(unittest.TestCase):
     def test_only_the_product_page_shows_it_above_history_and_the_wizard_points_there(self):
         self.assertNotIn("archStripHtml", self.app)  # not on Home
         self.assertNotIn('api("architecture/summary")', self.app)
-        self.assertLess(self.app.index('id="sec-architecture"'), self.app.index("<h2>History</h2>"))
+        self.assertLess(self.app.index('id="sec-architecture"'), self.app.index("<h2>Keeping it up to date</h2>"))
+        self.assertLess(self.app.index("<h2>Keeping it up to date</h2>"), self.app.index("<h2>History</h2>"))
         self.assertIn('href="#/product?section=architecture">Choose the architecture</a>', self.app)
 
     def test_tweaks_and_overhauls_are_separate_actions(self):
