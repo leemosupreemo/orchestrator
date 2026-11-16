@@ -7761,7 +7761,7 @@ pages.measure = async (_, query) => {
           ${monitoring.map((m) => `<a class="pill ${m.connected ? "done" : ""}" href="#/connections#connections-plugins-diagnostics">${esc(m.name)} · ${m.connected ? "Connected" : "Connect"}</a>`).join("")}
         </div>
       </section>
-      <section class="card mb-16"><div class="card-h"><h2>Project success measures</h2><a class="btn small" href="#/product?section=success">Edit in Product ↗</a></div>
+      <section class="card mb-16"><div class="card-h"><h2>Project success measures</h2><button type="button" class="btn small" id="edit-success-measures">Edit</button></div>
         <div class="card-b">${data.success_measures?.trim() ? `<div class="md">${Markdown.render(data.success_measures)}</div>` : `<p class="muted">Optional project-wide outcomes and targets live in the Product requirements. Add them when you know what success should look like.</p>`}</div>
       </section>
       ${features.map(card).join("") || `<section class="card"><div class="empty">Feature KPIs are optional. Define product features on <a href="#/product">Product</a>, then add KPIs here when you know how to measure them.</div></section>`}
@@ -7808,6 +7808,15 @@ pages.measure = async (_, query) => {
         });
       });
       $("#export-plan")?.addEventListener("click", async () => { try { const r = await api("analytics/plan", { method: "POST", body: {} }); toast(`Wrote ${r.path}. Commit it with your next change.`); } catch (e) { toast(e.message, true); } });
+      $("#edit-success-measures")?.addEventListener("click", async () => {
+        const v = await formDialog("Project success measures", `
+          <label class="field">
+            <span>Success measures &amp; targets</span>
+            <textarea name="body" rows="5" maxlength="8000" placeholder="e.g. DAU retention > 40%, checkout conversion > 3%, p95 latency < 200 ms">${esc(data.success_measures || "")}</textarea>
+            <small>Saved to your Product requirements (PRD) and shown here.</small>
+          </label>`, "Save");
+        if (v) call("product", { section: "success", body: v.body || "", source: "you" }, "Success measures saved");
+      });
       view.querySelectorAll("[data-kpi]").forEach((btn) => btn.addEventListener("click", async () => {
         const fid = btn.dataset.f, f = features.find((x) => x.id === fid), k = f?.kpis.find((x) => x.id === btn.dataset.k), op = btn.dataset.kpi;
         const path = `features/${encodeURIComponent(fid)}/kpis`;
@@ -13299,14 +13308,34 @@ const KEYS = [
 
 // A terminal transcript as plain text: no colour codes or cursor moves.
 const plainLog = (text) => String(text || "").replace(/\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[()][AB0-2]|[78=>cM])/g, "").replace(/\r\n?/g, "\n");
-function runHeader(r) {
+// Where a run sits in its job: "Fix attempt 2 · run 3 of 5 of the job <title>", with the runs before and after it.
+function runFamilyHtml(r, family) {
+  if (!family?.job) return "";
+  const work = (family.job_runs || []).filter((x) => !x.side).slice().reverse(); // oldest first
+  const at = work.findIndex((x) => x.id === r.id);
+  const me = (family.job_runs || []).find((x) => x.id === r.id);
+  const job = `<a href="#/jobs/${encodeURIComponent(family.job.id)}">${esc(family.job.title)}</a>`;
+  const where = me?.side ? `A side errand for the job ${job}`
+    : work.length <= 1 ? `The only run of the job ${job}`
+    : `Run ${at + 1} of ${work.length} of the job ${job}`;
+  const prev = at > 0 ? `<a href="#/runs/${encodeURIComponent(work[at - 1].id)}">← ${esc(work[at - 1].label)}</a>` : "";
+  const next = at >= 0 && at < work.length - 1 ? `<a href="#/runs/${encodeURIComponent(work[at + 1].id)}">${esc(work[at + 1].label)} →</a>` : "";
+  return `<span class="status-line run-family"><span class="pill neutral">Run</span><span>${where}</span>${prev ? `<span class="sep">·</span>${prev}` : ""}${next ? `<span class="sep">·</span>${next}` : ""}</span>`;
+}
+
+const runFamilies = new Map(); // run id -> its job's runs, so a header redrawn while the run goes on keeps saying whose run it is
+
+function runHeader(r, family = null) {
+  family = family || runFamilies.get(r.id) || null;
   // The top-left Back returns to the job (or wherever you came from); opened directly, it falls back to the job.
-  if (r.job && current.page === "run") current.parent = `#/jobs/${encodeURIComponent(r.job)}`;
+  const jobId = r.job || r.result_job || family?.job?.id;
+  if (jobId && current.page === "run") current.parent = `#/jobs/${encodeURIComponent(jobId)}`;
+  const me = (family?.job_runs || []).find((x) => x.id === r.id);
   const isStopping = stoppingRuns.has(r.id) || Boolean(r.stopping);
   const log = `logs/ui/${r.id}-${r.action}.log`; // every run is saved here, so the full log is there even after a restart
   return {
-    title: r.title,
-    sub: "",
+    title: me ? `${me.label} run` : r.title,
+    sub: runFamilyHtml(r, family),
     actions: ((typeof state !== "undefined" && state.you?.role === "member") ? "" // logs are private to owners
       : `<details class="more"><summary class="btn icon-only" aria-label="Export log" title="Export log"><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg></summary><div class="more-menu">`
         + `<button class="btn small" data-run-log="copy" data-path="${esc(log)}">Copy log</button>`
@@ -14935,6 +14964,7 @@ pages.run = async ([id]) => {
         progress: {},
         saved_log_text: logText,
         is_saved: true,
+        job: saved.job || null, // kept when the run ended (orchestrator/job_runs.py), so an old run still says whose it is
       };
     }
   }
@@ -14946,8 +14976,11 @@ pages.run = async ([id]) => {
   if (!run.running && (run.action === "visual_check" || /visual check/i.test(run.title))) {
     vc = await getVisualCheckForRun(run);
   }
+  const familyOf = run.job || run.result_job;
+  const family = familyOf ? await api(`jobs/${encodeURIComponent(familyOf)}/runs`).catch(() => null) : null;
+  if (family) runFamilies.set(run.id, family);
   return {
-    ...runHeader(run),
+    ...runHeader(run, family),
     html: `
       <div id="next-step">${runStatus(run, vc)}</div>
       <div class="run-stream">
