@@ -7621,7 +7621,7 @@ pages.packages = async () => {
     actions: owner ? `<button type="button" class="btn" id="pkg-add">Add package</button><button type="button" class="btn${data.review_due ? " primary" : ""}" id="pkg-review">Recommend packages</button>` : "",
     html: `
       <section class="card mb-16" id="pkg-review-card"><div class="card-b stack">
-        <p>Good packages mean less to build and fewer bugs: proven code for things like sign-in, payments and charts. Orchestrator suggests some whenever your product requirements change in a big way. Add the ones you want. Nothing is installed until you do.</p>
+        <p>Suggested packages match your PRD. Nothing is installed unless you add it.</p>
         ${running ? `<p class="muted" id="pkg-running" role="status"><span class="spinner inline-spinner" aria-hidden="true"></span>Reviewing your requirements for packages…</p>` : ""}
         ${review?.error ? `<div class="notice bad">${esc(review.error)}</div>` : ""}
         <div class="pkg-progress" id="pkg-progress" role="status" aria-live="polite" hidden>

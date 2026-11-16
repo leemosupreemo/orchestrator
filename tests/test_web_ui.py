@@ -2199,7 +2199,7 @@ process.stdout.write(JSON.stringify({
 
     def test_run_detail_can_copy_and_export_its_log(self):
         app = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
-        header = app[app.index("function runHeader(r)"):app.index("function openImageModal")]
+        header = app[app.index("function runHeader(r"):app.index("function openImageModal")]
         self.assertIn('data-run-log="copy"', header)
         self.assertIn('data-run-log="export"', header)
         self.assertIn('state.you?.role === "member") ? ""', header)  # logs stay private to owners
@@ -5300,7 +5300,7 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertIn('"Bring in designs and tickets from Figma, Jira or Trello."', page)  # nothing connected: no "None connected", just the button
         self.assertNotIn("None connected", page[page.index('id="prd-apps-section"'):][:1200])
         pkgs = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
-        self.assertIn("Good packages mean less to build and fewer bugs", pkgs)
+        self.assertIn("Suggested packages match your PRD. Nothing is installed unless you add it.", pkgs)
         self.assertIn('providerIcon(a.id)', page)
         self.assertIn('href="#/connections"', page)
         self.assertIn('Connect more', page)
