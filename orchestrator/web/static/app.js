@@ -6229,7 +6229,7 @@ pages.new = async (_, query) => {
       <span>${esc(l.label)}<small>${esc(ago(l.mtime))} · ${esc(formatBytes(l.size))}${l.kind === "device" ? " · from a phone" : ""}${i === 0 ? " · newest" : ""}</small></span></label>`).join("");
     return `<fieldset class="field nj-logs"><span>Attach logs</span>
       ${st.recent === null ? `<small class="muted">Looking for recent logs…</small>` : rows}
-      ${uploadBox("Upload logs or screenshots", "A crash log, a console dump, a screenshot of the problem. We read the end of each log.", "image/*,.log,.txt,.json,.md,.crash,.ips")}</fieldset>`;
+      ${uploadBox("Upload logs or screenshots", "A crash log, a console dump, a screenshot of the problem.", "image/*,.log,.txt,.json,.md,.crash,.ips")}</fieldset>`;
   };
   const featureSelect = () => features.length ? `${field(`Part of a feature${opt("optional")}`, `<select name="feature" id="nj-feature-select"><option value="">None</option>${features.map((f) => `<option value="${esc(f.id)}" ${query.get("feature") === f.id ? "selected" : ""}>${esc(f.name)}${f.kpis?.length ? ` · ${plural(f.kpis.length, "KPI")}` : ""}</option>`).join("")}</select>`)}<div id="nj-feature-measurement" class="muted t-secondary" aria-live="polite"></div>` : "";
 
@@ -6440,14 +6440,6 @@ pages.new = async (_, query) => {
       </div>
       <details class="advanced"><summary>Advanced</summary>
         <div class="stack">
-          <label class="field"><span>Where to work</span>
-            <select name="branch_mode">
-              <option value="current" selected>Use the current branch</option>
-              <option value="new">Create a new branch for this job</option>
-              <option value="manual">Don't create or switch branches</option>
-            </select>
-            <small class="hint-text">Jobs share the current branch by default. For parallel jobs touching the same files, separate branches and worktrees keep changes isolated.</small>
-          </label>
           <label class="check"><input type="checkbox" name="no_dispatch"><span>Plan only<small>Stop after planning so you can review the plan first.</small></span></label>
           <small class="hint-text" id="nj-mode-note" hidden>With both on, planning runs without stopping, then the job waits for you. Once you start it, it builds in YOLO.</small>
           <label class="check"><input type="checkbox" name="free"><span>Use free AI only</span></label>
