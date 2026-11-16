@@ -1366,8 +1366,25 @@ async function refreshState({ opening = false, isCurrent = () => true, switching
     return;
   }
   try {
-    const newState = await api("state", opening ? { signal: AbortSignal.timeout(8000) } : undefined);
+    let newState = await api("state", opening ? { signal: AbortSignal.timeout(8000) } : undefined);
     if (!isCurrent() || (projectSwitch && !switching)) return;
+    if (!switching && !projectSwitch && newState.project) {
+      const savedRoot = getSavedProject();
+      const targetRoot = state.project?.root || savedRoot;
+      if (targetRoot && targetRoot !== newState.project.root) {
+        if ((newState.project.recent || []).some((p) => p.root === targetRoot)) {
+          try {
+            await api("projects/switch", { method: "POST", body: { root: targetRoot } });
+            newState = await api("state", opening ? { signal: AbortSignal.timeout(8000) } : undefined);
+            if (!isCurrent() || (projectSwitch && !switching)) return;
+          } catch { /* keep server project if switch fails */ }
+        } else if (!state.project?.root && savedRoot) {
+          saveLastProject(newState.project.root || "");
+        }
+      } else if (!savedRoot && newState.project.root) {
+        saveLastProject(newState.project.root);
+      }
+    }
     for (const event of [...Notifications.events(lastRuns, newState.runs), ...Notifications.inboxEvents(lastInbox, newState.inbox)]) Notifications.show(event);
     for (const r of newState.runs || []) {
       const prev = (lastRuns || []).find((x) => x.id === r.id);
@@ -1675,6 +1692,19 @@ document.addEventListener("change", async (e) => {
   if (!projectSwitch && state.project) e.target.value = state.project.root; // a switch that failed puts the picker back
 });
 
+function lastProjectKey() {
+  return `orchestrator.last_project:${getBackendUrl() || "local"}`;
+}
+function getSavedProject() {
+  try { return localStorage.getItem(lastProjectKey()) || ""; } catch { return ""; }
+}
+function saveLastProject(root) {
+  try {
+    if (root) localStorage.setItem(lastProjectKey(), root);
+    else localStorage.removeItem(lastProjectKey());
+  } catch {}
+}
+
 async function switchProject(root, then = "#/") {
   const choice = {root, backend:getBackendUrl()};
   projectSwitch = choice;
@@ -1694,6 +1724,7 @@ async function switchProject(root, then = "#/") {
     if (!chosen || !chosen.isCurrent() || !isCurrent()) return;
     const res = chosen.response;
     if (res?.project) state.project = res.project;
+    saveLastProject(res?.project?.root || root);
     resetSetup();
     await refreshState({switching:true, isCurrent:() => isCurrent() && chosen.isCurrent()});
     if (!isCurrent() || !chosen.isCurrent()) return;
@@ -6207,6 +6238,16 @@ pages.new = async (_, query) => {
   const st = { type: JOB_TYPE_INFO.some(([v]) => v === wanted) ? wanted : "bug", uploads: {}, uploading: 0, logs: new Set(), recent: null, testCases: null,
     v: { summary: query.get("summary") || query.get("area") || "", details: query.get("spec") || "", audience: "", outcome: "", acceptance: "", constraints: "", repro: "", expected: "", vibe: "minimalist", customVibe: "", subsystems: "", test_cases: query.get("test_cases") || "", url: "" } };
 
+  // "Add tests" on an untested file (Tests page): prefill the job from the file itself (orchestrator/gap_brief.py).
+  if (query.get("gap")) {
+    try {
+      st.gap = await api(`tests/gap-brief?path=${encodeURIComponent(query.get("gap"))}&platform=${encodeURIComponent(query.get("platform") || "")}&uncovered=${encodeURIComponent(query.get("uncovered") || "")}`);
+      st.type = "coverage";
+      Object.assign(st.v, { summary: st.gap.area, details: st.gap.spec, test_cases: st.gap.test_cases });
+      if (st.gap.feature && !query.get("feature")) query.set("feature", st.gap.feature);
+    } catch (err) { toast(`Couldn't prefill from ${query.get("gap")}: ${err.message}`, "warning"); st.v.summary = `Add tests for ${query.get("gap")}`; }
+  }
+
   const loadTestCases = async () => {
     if (st.testCases !== null) return st.testCases;
     try {
@@ -6281,10 +6322,12 @@ pages.new = async (_, query) => {
       case "coverage": {
         const cases = await loadTestCases();
         const areas = [...new Set(cases.map((c) => c.area).filter(Boolean))];
+        const gapNote = st.gap ? `<div class="notice">Prefilled for <span class="mono">${esc(st.gap.path)}</span>: what it is, how to test it, the tests to follow, where new ones go and when it's done${st.gap.test_cases ? ", plus matching test cases" : ""}${st.gap.feature ? " and its feature" : ""}. Change anything you like.</div>` : "";
         return { picker: null, html: `
+          ${gapNote}
           ${field("Choose area to test", `<input type="text" name="summary" list="nj-area-list" required maxlength="500" value="${esc(v.summary)}" placeholder="e.g. Lobby, Authentication, or Checkout">`, "Pick an existing area or type a new one to focus coverage on.")}
           ${areas.length ? `<datalist id="nj-area-list">${areas.map((a) => `<option value="${esc(a)}">`).join("")}</datalist>` : ""}
-          ${field(`What should be covered?${opt("optional")}`, `<textarea name="spec" rows="3" maxlength="20000" placeholder="Describe scenarios, edge cases, failure modes, or specific behaviors to test...">${esc(v.details)}</textarea>`, "Be as descriptive as you like: scenarios, edge cases, or expected behaviors.")}
+          ${field(`What should be covered?${opt("optional")}`, `<textarea name="spec" rows="${st.gap ? 14 : 3}" maxlength="20000" placeholder="Describe scenarios, edge cases, failure modes, or specific behaviors to test...">${esc(v.details)}</textarea>`, "Be as descriptive as you like: scenarios, edge cases, or expected behaviors.")}
           <div class="field">
             <div class="row align-center justify-between">
               <span>Specific test cases${opt("optional")}</span>
@@ -6498,7 +6541,8 @@ pages.new = async (_, query) => {
         if (st.type === "bug") Object.assign(params, { repro: v.repro, expected: v.expected, logs: [...st.logs] });
         if (st.type === "feature") params.spec = featureSpec(v);
         if (st.type === "design") Object.assign(params, { spec: v.details, vibe: v.vibe === "other" ? (v.customVibe.trim() || "minimalist") : v.vibe, urls: v.url.trim() ? [v.url.trim()] : [] });
-        if (st.type === "coverage") Object.assign(params, { subsystems: v.subsystems || v.summary, spec: v.details, test_cases: v.test_cases, logs: [...st.logs], title: "Coverage expanding" });
+        if (st.type === "coverage") Object.assign(params, { subsystems: v.subsystems || v.summary, spec: v.details, test_cases: v.test_cases, logs: [...st.logs],
+          title: st.gap && v.summary === st.gap.area ? st.gap.summary : "Coverage expanding" });
         if (st.type === "bug" && looksLikeSeveralBugs(v.summary)) {
           const outcome = await splitBugsAndCreate(params, form().querySelector('button[type="submit"]'));
           if (outcome !== "single") return;
@@ -10071,7 +10115,7 @@ function gapList(p) {
   const title = measured ? `Biggest gaps: lines no test runs` : `Biggest gaps: files with no test (${p.untested_files})`;
   return `<details class="fw-tests"><summary class="muted t-secondary">${title}</summary>
     <div class="list">${rows.map((g) => `<div class="item"><div class="main-col"><div class="title mono">${esc(g.path)}</div><div class="meta">${measured ? `${g.uncovered.toLocaleString()} of ${plural(g.lines, "line")} never run` : plural(g.lines, "line")}</div></div>
-      <div class="side"><a class="btn small" href="#/new?type=coverage&summary=${encodeURIComponent(`Add tests for ${g.path}`)}">Add tests</a></div></div>`).join("")}</div></details>`;
+      <div class="side"><a class="btn small" href="#/new?type=coverage&gap=${encodeURIComponent(g.path)}&platform=${encodeURIComponent(p.name)}${measured ? `&uncovered=${g.uncovered}` : ""}" title="Opens a test job prefilled for this file">Add tests</a></div></div>`).join("")}</div></details>`;
 }
 
 function platformCoverageHtml(data) {
