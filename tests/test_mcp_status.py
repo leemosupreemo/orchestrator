@@ -1012,7 +1012,7 @@ class ProjectDocumentationSectionTests(unittest.TestCase):
 
     def test_mixpanel_card_explains_project_token_vs_mcp_oauth(self):
         app = APP.read_text(encoding="utf-8")
-        self.assertIn("Project token for tracking (no OAuth)", app)
+        self.assertIn("Token auth (no OAuth)", app)
         self.assertIn("mcp.mixpanel.com/mcp", app)
 
     def test_analytics_success_measures_edits_in_modal_and_updates_prd(self):

@@ -7424,9 +7424,9 @@ function improveKpiSummary(k, st) {
 }
 
 const ANALYTICS_BLURBS = {
-  mixpanel: "Connect Orchestrator to your Mixpanel project and open its dashboard. Feature events are implemented with your project's analytics SDK; KPI results are entered here by hand.",
-  amplitude: "Connect Orchestrator to your Amplitude project and open its dashboard. Feature events are implemented with your project's analytics SDK; KPI results are entered here by hand.",
-  posthog: "Connect Orchestrator to PostHog Cloud or a self-hosted instance. Feature events are implemented with your project's analytics SDK; KPI results are entered here by hand."
+  mixpanel: "Event tracking and dashboard link (Mixpanel SDK).",
+  amplitude: "Event tracking and dashboard link (Amplitude SDK).",
+  posthog: "Event tracking and dashboard link (PostHog Cloud or self-hosted)."
 };
 function providerMcpTree(providerId, providerName, list) {
   const pkg = `${providerId}-mcp`;
@@ -7488,7 +7488,7 @@ function analyticsConnectionCards(data, manageOnly = false) {
         </div>
         <div class="muted">${esc(ANALYTICS_BLURBS[p.id] || "Product analytics and event tracking.")}</div>
         <div class="muted t-secondary">Key: ${esc(p.key_label)} · Regions: ${esc((p.regions || []).map((r) => r.toUpperCase()).join(", "))}</div>
-        ${p.id === "mixpanel" ? `<div class="muted t-secondary">Auth: Project token for tracking (no OAuth); Mixpanel MCP (<span class="mono">mcp.mixpanel.com/mcp</span>) uses OAuth.</div>` : ""}
+        ${p.id === "mixpanel" ? `<div class="muted t-secondary">Token auth (no OAuth) · MCP (<span class="mono">mcp.mixpanel.com/mcp</span>) uses OAuth.</div>` : ""}
         <p><a href="${esc(p.docs)}" target="_blank" rel="noopener">Official docs ↗</a>${dashboardUrl ? ` · <a href="${esc(dashboardUrl)}" target="_blank" rel="noopener">Open ${esc(p.name)} project ↗</a>` : ""}</p>
         <div class="row" ${manageOnly ? "" : "data-owner-only"}>
           ${manageOnly ? `<a href="#/measure?provider=${encodeURIComponent(p.id)}" class="btn small primary">${isReady ? "Manage" : "Connect"} ${esc(p.name)} ↗</a>` : isReady ? `
@@ -7768,7 +7768,7 @@ pages.measure = async (_, query) => {
       <section class="card mb-16">
         <div class="card-h"><h2>Analytics Connections</h2></div>
         <div class="card-b stack">
-          <p class="muted">Connect Mixpanel, Amplitude or PostHog to identify the platform used for event tracking and open its dashboard. The connection test sends a setup event; Orchestrator does not import KPI results from the provider.</p>
+          <p class="muted">Event tracking via SDK; KPI results are logged above.</p>
           <div class="conn-grid">
             ${analyticsConnectionCards(data)}
           </div>
@@ -13322,10 +13322,10 @@ function runFamilyHtml(r, family) {
   return `<span class="status-line run-family"><span class="pill neutral">Run</span><span>${where}</span>${prev ? `<span class="sep">·</span>${prev}` : ""}${next ? `<span class="sep">·</span>${next}` : ""}</span>`;
 }
 
-const runFamilies = new Map(); // run id -> its job's runs, so a header redrawn while the run goes on keeps saying whose run it is
-
 function runHeader(r, family = null) {
-  family = family || runFamilies.get(r.id) || null;
+  // run id -> its job's runs, kept on the function so a header redrawn while the run goes on keeps saying whose run it is
+  const families = (runHeader.families ||= new Map());
+  family = family || families.get(r.id) || null;
   // The top-left Back returns to the job (or wherever you came from); opened directly, it falls back to the job.
   const jobId = r.job || r.result_job || family?.job?.id;
   if (jobId && current.page === "run") current.parent = `#/jobs/${encodeURIComponent(jobId)}`;
@@ -13334,7 +13334,7 @@ function runHeader(r, family = null) {
   const log = `logs/ui/${r.id}-${r.action}.log`; // every run is saved here, so the full log is there even after a restart
   return {
     title: me ? `${me.label} run` : r.title,
-    sub: runFamilyHtml(r, family),
+    sub: family ? runFamilyHtml(r, family) : "",
     actions: ((typeof state !== "undefined" && state.you?.role === "member") ? "" // logs are private to owners
       : `<details class="more"><summary class="btn icon-only" aria-label="Export log" title="Export log"><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg></summary><div class="more-menu">`
         + `<button class="btn small" data-run-log="copy" data-path="${esc(log)}">Copy log</button>`
@@ -14977,7 +14977,7 @@ pages.run = async ([id]) => {
   }
   const familyOf = run.job || run.result_job;
   const family = familyOf ? await api(`jobs/${encodeURIComponent(familyOf)}/runs`).catch(() => null) : null;
-  if (family) runFamilies.set(run.id, family);
+  if (family) (runHeader.families ||= new Map()).set(run.id, family);
   return {
     ...runHeader(run, family),
     html: `
