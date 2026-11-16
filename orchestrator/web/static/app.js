@@ -6228,7 +6228,7 @@ pages.new = async (_, query) => {
     const rows = (st.recent || []).map((l, i) => `<label class="check"><input type="checkbox" data-nj-log="${esc(l.path)}" ${st.logs.has(l.path) ? "checked" : ""}>
       <span>${esc(l.label)}<small>${esc(ago(l.mtime))} · ${esc(formatBytes(l.size))}${l.kind === "device" ? " · from a phone" : ""}${i === 0 ? " · newest" : ""}</small></span></label>`).join("");
     return `<fieldset class="field nj-logs"><span>Attach logs</span>
-      ${st.recent === null ? `<small class="muted">Looking for recent logs…</small>` : rows || `<small class="muted">No recent logs found. Upload one below, or pull device logs first.</small>`}
+      ${st.recent === null ? `<small class="muted">Looking for recent logs…</small>` : rows}
       ${uploadBox("Upload logs or screenshots", "A crash log, a console dump, a screenshot of the problem. We read the end of each log.", "image/*,.log,.txt,.json,.md,.crash,.ips")}</fieldset>`;
   };
   const featureSelect = () => features.length ? `${field(`Part of a feature${opt("optional")}`, `<select name="feature" id="nj-feature-select"><option value="">None</option>${features.map((f) => `<option value="${esc(f.id)}" ${query.get("feature") === f.id ? "selected" : ""}>${esc(f.name)}${f.kpis?.length ? ` · ${plural(f.kpis.length, "KPI")}` : ""}</option>`).join("")}</select>`)}<div id="nj-feature-measurement" class="muted t-secondary" aria-live="polite"></div>` : "";
