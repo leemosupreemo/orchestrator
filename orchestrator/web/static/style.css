@@ -306,6 +306,9 @@ body.signin-gate .sidebar > .brand { visibility: hidden; }
   text-align: center;
   transition: background-color var(--motion-fast) ease, border-color var(--motion-fast) ease, color var(--motion-fast) ease;
 }
+/* An icon-only button (Stop, Export log). Not ".icon": that is the glyph's own class (a 21px stroke-only box), and on the button it squashed it. */
+.btn.icon-only { width: var(--control-md); height: var(--control-md); padding: 0; flex: 0 0 auto; }
+.btn.icon-only .icon { width: 20px; height: 20px; }
 .btn:hover, .btn.secondary:hover {
   background: var(--btn-secondary-hover);
   border-color: var(--btn-secondary-hover-border);
@@ -5005,7 +5008,7 @@ dialog.ask-ai { width: min(34rem, 100vw); max-width: min(34rem, 100vw); height: 
 /* The question box is one rounded field with the send/stop button inside it, at the bottom right (like Claude's own). */
 .ask-ai-compose { position: relative; border: 1px solid var(--border); border-radius: var(--r-lg); background: var(--panel); box-shadow: var(--shadow); }
 .ask-ai-compose:focus-within { border-color: var(--accent); outline: 1px solid var(--accent); outline-offset: 0; }
-.ask-ai-form .ask-ai-compose textarea { display: block; width: 100%; box-sizing: border-box; min-height: 72px; max-height: 30vh; resize: none; border: 0; background: transparent; box-shadow: none; outline: none; border-radius: var(--r-lg); padding: var(--space-3) calc(32px + var(--space-3) * 2) var(--space-3) var(--space-3); }
+.ask-ai-form .ask-ai-compose textarea { display: block; width: 100%; box-sizing: border-box; min-height: var(--control-lg); max-height: 30vh; resize: none; border: 0; background: transparent; box-shadow: none; outline: none; border-radius: var(--r-lg); padding: var(--space-3) calc(32px + var(--space-3) * 2) var(--space-3) var(--space-3); }
 .ask-ai-send { position: absolute; right: var(--space-2); bottom: var(--space-2); width: 32px; height: 32px; min-height: 0; padding: 0; border-radius: 50%; display: inline-grid; place-items: center; }
 .ask-ai-send .icon { width: 18px; height: 18px; }
 .ask-ai-send.is-stop { background: var(--text); border-color: var(--text); color: var(--panel); }

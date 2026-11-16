@@ -841,6 +841,10 @@ function addProjectsDialog(trackedProjects) {
 }
 
 const dialogs = {
+  // Sign in to an AI tool on the spot (from a failed job's card): the same modal as the AI tools page, not a new run.
+  ai_connect(params) {
+    ToolConnect.open(params.provider, params.name || params.provider, {api, formDialog, onClose: () => { refreshState(); }});
+  },
 
   async fix(params) {
     const values = await formDialog("Still broken?", `
@@ -3462,7 +3466,7 @@ async function openAskAi(opts = {}) {
     <div class="ask-ai-thread" role="log" aria-live="polite"></div>
     <form class="ask-ai-form">
       <div class="ask-ai-compose">
-        <textarea name="message" rows="2" maxlength="4000" placeholder="Ask about the product, the code, its history…" aria-label="Your question"></textarea>
+        <textarea name="message" rows="1" maxlength="4000" placeholder="Ask about the product, the code, its history…" aria-label="Your question"></textarea>
         <button type="submit" class="btn primary ask-ai-send" aria-label="Send" title="Send"><svg class="icon" aria-hidden="true"><use href="#i-arrow-up"/></svg></button>
       </div>
       <span class="muted t-secondary ask-ai-status">Enter to send · Shift+Enter for a new line</span>
@@ -8951,7 +8955,7 @@ pages.product = async (_, query) => {
             row.className = "prd-feature-row";
             row.innerHTML = `<span class="prd-feature-bullet" aria-hidden="true">&bull;</span>
               <input type="text" class="prd-feature-input" value="${esc(val)}" placeholder="Describe a feature…" aria-label="Feature item">
-              <button type="button" class="btn icon ghost prd-feature-del" title="Remove feature" aria-label="Remove feature">&times;</button>`;
+              <button type="button" class="btn ghost prd-feature-del" title="Remove feature" aria-label="Remove feature">&times;</button>`;
             const input = row.querySelector(".prd-feature-input");
             const delBtn = row.querySelector(".prd-feature-del");
             input.addEventListener("keydown", (e) => {
@@ -12922,12 +12926,12 @@ function runHeader(r) {
     title: r.title,
     sub: "",
     actions: ((typeof state !== "undefined" && state.you?.role === "member") ? "" // logs are private to owners
-      : `<details class="more"><summary class="btn icon" aria-label="Export log" title="Export log"><svg class="icon" aria-hidden="true"><use href="#i-arrow-up"/></svg></summary><div class="more-menu">`
+      : `<details class="more"><summary class="btn icon-only" aria-label="Export log" title="Export log"><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg></summary><div class="more-menu">`
         + `<button class="btn small" data-run-log="copy" data-path="${esc(log)}">Copy log</button>`
         + `<button class="btn small" data-run-log="export" data-path="${esc(log)}" data-name="${esc(r.title)}">Export log</button>`
         + `</div></details>`)
       + (r.running
-        ? `<button class="btn icon danger" data-stop="${esc(r.id)}" aria-label="${isStopping ? "Stopping" : "Stop"}" title="${isStopping ? "Stopping…" : "Stop"}" ${isStopping ? 'disabled aria-busy="true"' : ""}>${isStopping ? '<span class="spinner inline-spinner" aria-hidden="true"></span>' : '<svg class="icon" aria-hidden="true"><use href="#i-stop"/></svg>'}</button>`
+        ? `<button class="btn icon-only danger" data-stop="${esc(r.id)}" aria-label="${isStopping ? "Stopping" : "Stop"}" title="${isStopping ? "Stopping…" : "Stop"}" ${isStopping ? 'disabled aria-busy="true"' : ""}>${isStopping ? '<span class="spinner inline-spinner" aria-hidden="true"></span>' : '<svg class="icon" aria-hidden="true"><use href="#i-stop"/></svg>'}</button>`
         : ""),
   };
 }
@@ -13076,23 +13080,14 @@ function runFailureGuidance(r) {
     || (fullText.includes("session expired") && fullText.includes("refresh"));
 
   if (isAiOAuthExpired) {
-    let oauthProvider = "";
-    let oauthLabel = "";
-    if (fullText.includes("claude") || fullText.includes("anthropic")) {
-      oauthProvider = "claude";
-      oauthLabel = "Claude";
-    } else if (fullText.includes("codex") || fullText.includes("openai")) {
-      oauthProvider = "codex";
-      oauthLabel = "Codex";
-    } else if (fullText.includes("pool")) {
-      oauthProvider = "pool";
-      oauthLabel = "Pool";
-    }
+    const oauthTool = ToolConnect.providerFromText(fullText);
+    const oauthProvider = oauthTool?.id || "";
+    const oauthLabel = oauthTool?.label || "";
     const rerunBtn = targetJob
       ? `<button type="button" class="btn small" ${act(r.action || "execute", { job: targetJob })}><svg class="icon icon-sm" aria-hidden="true"><use href="#i-play"/></svg> Rerun job</button>`
       : "";
     const signInBtn = oauthProvider
-      ? `<button type="button" class="btn small primary" ${act("ai_connect", { provider: oauthProvider, title: `Connect ${oauthLabel}` })}>Sign in to ${oauthLabel}</button>`
+      ? `<button type="button" class="btn small primary" ${act("ai_connect", { provider: oauthProvider, name: oauthLabel })}>Sign in to ${oauthLabel}</button>`
       : `<a class="btn small primary" href="#/config/ai">Open AI tools</a>`;
     const aiToolsBtn = oauthProvider ? `<a class="btn small" href="#/config/ai">Open AI tools</a>` : "";
     return {
