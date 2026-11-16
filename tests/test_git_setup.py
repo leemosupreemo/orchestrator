@@ -1,5 +1,6 @@
 """Git setup behavior against isolated repositories; no external hosts are contacted."""
 import json
+import re
 import subprocess
 from unittest.mock import patch
 import shutil
@@ -477,7 +478,8 @@ console.log(JSON.stringify(select.innerHTML));
 
     def test_a_shared_sync_blocker_is_explained_once(self):
         page = self.render(push_reason="Connect a remote before syncing.", pull_reason="Connect a remote before syncing.")
-        self.assertEqual(page["html"].count("Connect a remote before syncing."), 1)
+        visible = re.sub(r'\sdata-why="[^"]*"', "", page["html"])  # disabled buttons repeat it as a hover tooltip, not as text
+        self.assertEqual(visible.count("Connect a remote before syncing."), 1)
         self.assertNotIn("Connect a remote before syncing.", page["sub"])
 
     def test_non_origin_remotes_still_offer_tracking_selection(self):

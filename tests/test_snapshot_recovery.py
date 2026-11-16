@@ -41,6 +41,7 @@ const context = {
   showPrdUpdate() {}, showModelsUpdate() {}, checkRunnerVersion() {}, restoreLastBranch() {}, renderSlackBtn() {}, renderPackagesBadge() {},
   ConfigurationPages: {applyRole() {}}, configurationMenu: null, $: () => null,
   renderSessionComputer() {}, renderComputerSelect() {}, renderProjectSelect() {},
+  getSavedProject: () => null, saveLastProject() {},  // the last project this browser had open; none here
   cpApi: async (path, options) => {
     if (path === 'machine/snapshot') {snapshots++; return {snapshot: {machine_id: 'mac', machine_name: 'Mac', projects: [{name: 'Cached project', root: '/project', jobs_count: 0}], recent_jobs: []}};}
     if (path === 'machines') {if (resets) machine = {...machine, last_seen: now / 1000}; return {machines: [machine]};}

@@ -318,10 +318,12 @@ def write_tests(job: dict, job_path: Path, out: Path, design: bool, cases: list[
     clar_kind, clar_text = classify_clarification(result.get("clarification_needed"))
     if clar_kind == "blocking":
         raise RuntimeError(f"Builder blocked: {clar_text}")
+    if cases and clar_text and (clar_kind == "question" or not result.get("files")):
+        # The tests are already there: these extra cases just can't be written without a production change. A plain statement
+        # ("these need the view model split out") explains that as well as a question does.
+        job["skipped_cases"] = clean_skipped([{"case": c["id"], "reason": clar_text} for c in cases], job.get("skipped_cases"))
+        return
     if clar_kind == "question":
-        if cases:  # the tests are already there: these extra cases just can't be written without a production change
-            job["skipped_cases"] = clean_skipped([{"case": c["id"], "reason": clar_text} for c in cases], job.get("skipped_cases"))
-            return
         job["human_clarification_question"] = clar_text
         raise ValueError(clar_text)
     if not design:

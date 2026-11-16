@@ -57,6 +57,9 @@ def main(argv: list[str]) -> int:
         print("github.com\n  ✓ Logged in to github.com account e2e-bot")
         save(state)
         return 0
+    if args[:2] == ["auth", "setup-git"]:  # setup makes git use gh's sign-in for HTTPS; nothing to configure here
+        save(state)
+        return 0
     if args[:2] == ["repo", "view"]:
         emit({"url": REPO_URL, "name": "dummy"}, args)
         save(state)

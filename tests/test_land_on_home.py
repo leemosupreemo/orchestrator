@@ -64,7 +64,8 @@ class WhichSignInsLandOnHomeTests(unittest.TestCase):
         self.assertLess(form.index("landOnHome();"), form.index("route();"))
 
     def test_reconnecting_a_page_that_is_already_open_stays_where_it_is(self):
-        reconnect = APP[APP.index("const reconnect = async (manual = false)"):][:900]
+        start = APP.index("const reconnect = async (manual = false)")
+        reconnect = APP[start:APP.index("reconnecting = task;", start)]
         self.assertIn("await unlockWith(res.token, `Opened ${current.name}`, { isCurrent });", reconnect)
         self.assertNotIn("home: true", reconnect)
         quiet = function_source("async function reconnectQuietly(")
