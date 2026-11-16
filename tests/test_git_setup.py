@@ -462,12 +462,11 @@ console.log(JSON.stringify(select.innerHTML));
         self.assertEqual(result["effects"]["routed"], 1)
         self.assertEqual(result["effects"]["calls"][-1], {"path": "git/fetch", "body": {}})
 
-    def test_connected_repository_prioritizes_work_and_folds_setup_settings(self):
+    def test_connected_repository_surfaces_git_controls_and_setup_settings(self):
         page = self.render(origin="git@gitlab.com:team/app.git", provider="GitLab", can_push=True)
         html = page["html"]
         self.assertLess(html.index("Connection"), html.index("Job integration"))
-        self.assertLess(html.index("Job integration"), html.index("Advanced Git tools"))
-        self.assertRegex(html, r'<details class="git-advanced-tools">')
+        self.assertNotIn("git-advanced-tools", html)
         self.assertIn('<label class="field" for="git-branch-select">', html)
 
     def test_local_repository_keeps_connection_choices_expanded(self):
@@ -495,12 +494,10 @@ console.log(JSON.stringify(select.innerHTML));
         self.assertIn("data-clamp-toggle", html)
         self.assertIn("data-clamp-full hidden", html)
 
-    def test_normal_view_leads_with_connection_and_job_integration(self):
+    def test_normal_view_surfaces_branch_controls_before_connection_and_job_integration(self):
         html = self.render(origin="git@gitlab.com:team/app.git", provider="GitLab")["html"]
+        self.assertLess(html.index('id="git-push"'), html.index("Connection"))
         self.assertLess(html.index("Connection"), html.index("Job integration"))
-        self.assertLess(html.index("Job integration"), html.index("Advanced Git tools"))
-        self.assertRegex(html, r'<details class="git-advanced-tools">')
-        self.assertGreater(html.index('id="git-push"'), html.index("Advanced Git tools"))
 
     def test_github_label_problems_offer_missing_only_repair_and_host_links(self):
         html = self.render(origin="git@github.com:team/app.git", web_url="https://github.com/team/app", mode="github", provider="GitHub",

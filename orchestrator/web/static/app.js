@@ -856,7 +856,13 @@ const dialogs = {
   },
   async debug(params) {
     const hasLogs = state.project?.remote_logs;
+    let problem = null;
+    try { problem = (await api(`jobs/${encodeURIComponent(params.job)}`)).problem || null; } catch { /* the dialog still works without it */ }
+    const problemBlock = problem ? `<div class="notice warn debug-problem"><strong>What needs fixing</strong><p>${esc(problem.summary)}</p>
+      ${problem.lines?.length ? `<ul>${problem.lines.map((l) => `<li>${esc(l)}</li>`).join("")}</ul>` : ""}</div>
+      <p class="muted">Run fix asks the AI to work on this and checks the tests again.</p>` : "";
     const values = await formDialog("Run fix", `
+      ${problemBlock}
       ${hasLogs ? `<label class="check"><input type="checkbox" name="device_logs" checked>
         <span>Include newest device logs<small>Pulled fresh from the last app launch on a tester's phone.</small></span></label>` :
         `<p class="hint-text">Tip: set up Device logs to include what the app logged on your phone.</p>`}
@@ -5577,7 +5583,8 @@ pages.job = async ([id]) => {
       ${notes.length ? `<details class="fold plan-notes"><summary class="card-h"><h2>Assumptions and risks <span class="count">${notes.reduce((n, [, l]) => n + l.length, 0)}</span></h2></summary>
         <div class="card-b stack">${notes.map(([label, list]) => `<div><div class="label">${label}</div><ul class="assumptions">${list.map((x) => `<li>${esc(x)}</li>`).join("")}</ul></div>`).join("")}</div></details>` : ""}
     </section>`;
-  const rawHeroReason = String(s.state.reason || "").trim();
+  const problem = s.state.next?.action === "debug" && data.problem ? data.problem : null; // what needs fixing, in words
+  const rawHeroReason = String(problem?.summary || s.state.reason || "").trim();
   const conciseReasonText = (raw) => {
     let text = raw.replace(/^It stopped with an error:\s*/i, "").replace(/^Paused:\s*/i, "").trim();
     const firstLine = (text.split(/\r?\n/)[0] || "").trim();
@@ -5593,7 +5600,9 @@ pages.job = async ([id]) => {
     : reviewingPlan ? `Review <button type="button" class="linklike" data-scroll-to="#plan-section">the plan below</button> (${plural(tasks.length, "task")}) and ${nextAction === "approve" ? "approve or revise." : "start when ready."}`
     : s.status === "designing" && nextAction === "approve" ? `Review <button type="button" class="linklike" data-scroll-to="#brief-section">the design</button>, then approve or request changes.`
     : esc(shortReason);
-  const heroReasonDetails = hasMoreReason
+  const problemHtml = problem ? `${problem.lines?.length ? `<ul class="hero-problem">${problem.lines.map((l) => `<li>${esc(l)}</li>`).join("")}</ul>` : ""}${problem.sign_in
+      ? `<p><button type="button" class="btn small primary" ${act("ai_connect", { provider: problem.sign_in.provider, name: problem.sign_in.name })}>Sign in to ${esc(problem.sign_in.name)}</button></p>` : ""}` : "";
+  const heroReasonDetails = problem ? problemHtml : hasMoreReason
     ? `<details class="hero-error-details"><summary class="linklike muted">Error details</summary><pre class="hero-error-pre">${esc(rawHeroReason)}</pre></details>`
     : "";
 
@@ -5647,7 +5656,6 @@ pages.job = async ([id]) => {
           ${heroReasonDetails}
           ${nextExecutionPreview ? `<div class="job-hero-next-preview">${nextExecutionPreview}</div>` : ""}
           ${uxWarning ? `<p class="job-hero-reason"><button type="button" class="linklike" data-scroll-to="#ux-section">UX and design check: ${plural(uxWarning, "major finding")}. Look before you ${s.state.next?.action === "merge" ? "merge" : "finish"}.</button></p>` : ""}
-          ${scopeWarning ? `<p class="job-hero-reason"><button type="button" class="linklike" data-scroll-to="#scope-section">Scope check: ${scopeWarning} beyond the plan. Look before you ${s.state.next?.action === "merge" ? "merge" : "finish"}.</button></p>` : ""}
         </div>
         <div class="job-hero-action">${heroAction}</div>
       </section>`}
@@ -5733,10 +5741,11 @@ pages.job = async ([id]) => {
         <div class="card-b"><ul class="assumptions">${assumptions.map((t) => `<li>${esc(t)}</li>`).join("")}</ul>
         <div class="muted">Wrong about something? Use Revise plan in the menu.</div></div></section>` : ""}
 
-      <section class="card mb-16">
+      <section class="card mb-16" id="changes-section">
         <div class="card-h"><h2>Changes</h2>${changes?.base ? `<span class="count">vs ${esc(changes.base)}</span>` : ""}</div>
         <div class="card-b delta-summary-line">
           ${deltaUnsaved ? `<div class="delta-line unsaved">${esc(deltaUnsaved)}</div>` : ""}
+          <div class="row wrap gap-8 muted t-secondary"><span>${state.project?.dirty_files ? `${plural(state.project.dirty_files, "uncommitted file")} in workspace.` : "Working tree clean."}</span><a href="#/git?show=changes">Open Git setup</a></div>
           <div class="diff-files">${allFiles.slice(0, 12).map((f) => `<details class="diff-file" data-diff-path="${esc(f)}"><summary class="mono">${esc(f)}</summary><pre class="diff" aria-live="polite">Loading…</pre></details>`).join("") || `<span class="muted">No modified files</span>`}${allFiles.length > 12 ? `<div class="muted">+${allFiles.length - 12} more (see the full diffstat below)</div>` : ""}</div>
         </div>
         ${changes?.hypothesis ? `<div class="card-b card-b-split t-secondary"><strong>Why:</strong> ${esc(changes.hypothesis)}</div>` : ""}
@@ -5744,31 +5753,6 @@ pages.job = async ([id]) => {
       </section>
 
       ${uxReviewCard(s, data.ux_review)}
-
-      ${scope ? `<section class="card mb-16" id="scope-section">
-        <div class="card-h">
-          <h2>Scope check</h2>
-          <span class="count">${scope.flagged ? `${scope.flagged} beyond the plan` : (actionableFindings.length ? `${actionableFindings.length} to review` : "Within the plan")}</span>
-        </div>
-        <div class="card-b stack">
-          <div class="muted">${scope.files} file${scope.files === 1 ? "" : "s"} changed, +${scope.added} lines${scope.accepted ? ` · ${scope.accepted} accepted as in scope` : ""}.${scope.clear ? " Everything changed is something the plan called for." : (hasNoPlanFiles && !actionableFindings.length ? " Open scope · diff size monitored." : "")}</div>
-          ${hasNoPlanFiles && !actionableFindings.length ? `
-            <div class="scope-notice-clean">
-              <div class="row gap-8 align-center">
-                <svg class="icon muted"><use href="#i-activity"/></svg>
-                <span>No files were pre-specified in the plan. All changes stay within the size budget with no dependency or build setting changes.</span>
-              </div>
-              ${allFiles.length ? `<button type="button" class="btn small" data-scope-adopt='${esc(JSON.stringify(allFiles))}'>Adopt current files as plan scope</button>` : ""}
-            </div>
-          ` : ""}
-          ${actionableFindings.map((f) => `<div class="scope-finding"><div class="row gap-12"><span class="pill ${f.severity === "high" ? "failed" : f.severity === "medium" ? "attention" : "working"}">${esc(f.severity)}</span><strong>${esc(f.title)}</strong></div>
-            <div class="muted">${esc(f.detail)}</div>
-            ${f.files.length ? `<ul class="scope-files mono">${f.files.slice(0, 12).map((p) => `<li>${esc(p)}</li>`).join("")}${f.files.length > 12 ? `<li class="muted">+${f.files.length - 12} more</li>` : ""}</ul>
-              <div><button class="btn small" data-scope-accept='${esc(JSON.stringify(f.files))}'>Accept as in scope</button></div>` : ""}</div>`).join("")}
-          ${actionableFindings.some((f) => f.files.length) || scope.accepted ? `<div class="row gap-12">
-            ${actionableFindings.some((f) => f.files.length) ? `<a class="btn small primary" href="#/new?type=quick&summary=${encodeURIComponent(scope.trim.summary)}&spec=${encodeURIComponent(scope.trim.spec)}">Create a job to trim it</a>` : ""}
-            ${scope.accepted ? `<button class="btn small ghost" data-scope-reset>Reset accepted</button>` : ""}</div>` : ""}
-        </div></section>` : ""}
 
       ${cruft ? `<section class="card mb-16" id="cruft-section">
         <div class="card-h">
@@ -10833,18 +10817,14 @@ pages.git = async (_, query) => {
   ${publishing.recent.length ? `<details class="git-publishing-details"><summary>Recent job publishing</summary><dl class="git-settings-list">${publishing.recent.map(job => `<div class="git-job-row">${row(esc(job.title), `<span>${esc(job.detail)}</span>${job.last_published_at ? `<small>Published ${esc(ago(job.last_published_at))}</small>` : ""}`, `<div class="card-actions"><a class="btn small ghost" href="#/jobs/${encodeURIComponent(job.id)}">Open job</a>${job.pr_url ? external(job.pr_url, "Pull request") : job.issue_url ? external(job.issue_url, "Issue") : ""}</div>`)}</div>`).join("")}</dl></details>` : ""}
   ${(health.links || []).some(link => link.label !== "Repository") ? `<div class="card-caption git-host-links" aria-label="GitHub repository pages">${health.links.filter(link => link.label !== "Repository").map(link => external(link.url, esc(link.label))).join("")}</div>` : ""}
   </section>` : "";
-  const advancedCard = g.is_repo ? `<section class="card"><details class="git-advanced-tools"><summary class="card-h"><h2>Advanced Git tools</h2><span class="git-disclosure" aria-hidden="true">⌄</span></summary><div class="git-advanced-content">
-    <p class="git-section-note">Manual maintenance. Jobs manage their own branches.</p>${branchCard}${changesCard}
-  </div></details></section>` : "";
+  const gitControls = g.is_repo ? `${branchCard}${changesCard}` : "";
   return {
     title: "Git setup",
     sub: !g.is_repo || !g.has_commits ? esc(branchLabel) : "", // the Source control dropdown says what's in use; only a repo that isn't ready needs a line here
-    html: `<div class="git-page">${problemCard}${sourceControlCard}${connectionCard}${integrationCard}${advancedCard}</div>`,
+    html: `<div class="git-page">${problemCard}${gitControls}${sourceControlCard}${connectionCard}${integrationCard}</div>`,
     after: () => {
-      // "N uncommitted" links here: open Advanced Git tools and bring the changed files into view (one file opens on its own).
+      // "N uncommitted" links here: bring the changed files into view (one file opens on its own).
       if (query?.get("show") === "changes") {
-        const tools = $(".git-advanced-tools");
-        if (tools) tools.open = true;
         const files = document.querySelectorAll("#git-changes details.diff-file");
         if (files.length === 1) files[0].open = true;
         $("#git-changes")?.scrollIntoView({ block: "start" });
