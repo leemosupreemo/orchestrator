@@ -188,6 +188,11 @@ def run_builder(job_path: Path, resume: bool = False) -> tuple[bool, bool, Path]
     output = None
     actual_builder = job.get("actual_builder_used")
 
+    from orchestrator import builder_check
+    if resume and summary_file.exists() and builder_check.writes_blocked(summary_file.read_text(encoding="utf-8", errors="replace")):
+        # That run changed nothing (its writes were refused), so there is nothing to resume from: build it again.
+        print(f"      - The saved builder summary says its writes were blocked, so nothing was built. Running the builder again.")
+        resume = False
     if resume and summary_file.exists():
         print(f"      - Resuming: Found existing builder summary at {summary_file.name}")
         output = summary_file.read_text(encoding="utf-8")
@@ -245,8 +250,8 @@ If you are unsure between two valid approaches, pick the safest, most convention
 
         from test_cases import prompt_block
         test_case_block = prompt_block(job.get("plan", {}).get("test_cases") or [])
-        from orchestrator import prd
-        product_context = prd.context_block(ROOT, "builder")
+        from orchestrator import architecture, prd
+        product_context = prd.context_block(ROOT, "builder") + architecture.context_block(ROOT, "builder")
 
         # What the project already has that matches this task, so the builder reuses it instead of writing a second copy.
         # Bug fixes edit existing code by nature. A failed search just means no suggestions, never a failed build.
@@ -289,6 +294,7 @@ Brief:
 
         print_phase("agent_thinking")
         status_bar.render()
+        tree_before = builder_check.tree_fingerprint(ROOT)
         output, actual_builder, session_id = run_llm(
             resolve_builder_model(job), 
             full_prompt, 
@@ -297,6 +303,13 @@ Brief:
             allowed_models=job.get("allowed_models"),
             role=ModelRole.BUILDER
         )
+
+        if builder_check.writes_blocked(output) and not builder_check.changed(tree_before, builder_check.tree_fingerprint(ROOT)):
+            # Its own report says the AI tool refused every write, and the working tree agrees. Building and testing now would only
+            # test the old code against tests it never wrote, so stop here and say why.
+            write_text(summary_file, output)
+            raise RuntimeError("The builder could not change any files: its writes were blocked, most likely by the AI tool's permission mode. "
+                               "Nothing was built. Check that tool's permissions, then rerun the job.")
 
         # Track session IDs in the job
         if "llm_sessions" not in job:

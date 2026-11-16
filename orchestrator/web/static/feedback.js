@@ -386,6 +386,7 @@
         const emailOk = !improve || (contactEmail.trim().length > 0 && contactEmail.includes("@"));
         const ready = has && emailOk && !submitting;
         if (sendBtn) {
+          sendBtn.dataset.why = submitting ? "Sending…" : !has ? "Write your feedback first." : "Enter your email first.";
           sendBtn.disabled = !ready;
           if (ready) {
             sendBtn.removeAttribute("title");

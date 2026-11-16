@@ -291,7 +291,9 @@ orchestrator check-config
 
 ## Configure AI Providers
 
-On **Manage AI tools**, **Connect** shows a guided checklist for Claude, Codex, Poolside and Antigravity. It installs the tool if needed, prepares user-local Node.js/npm for Codex when missing, and shows the browser approval link and any code. Installer terms require your explicit agreement. **Sign-in details and advanced input** is available when a provider asks an additional question. Closing the dialog keeps the sign-in running under Running now.
+On **Manage AI tools**, **Connect** shows a guided checklist for Claude, Codex, Poolside and Antigravity. It installs the tool if needed, prepares user-local Node.js/npm for Codex when missing, and shows the browser approval link and any code. Installer terms require your explicit agreement. When a tool's sign-in ends by asking for a code (Claude's does), the dialog also shows the **full sign-in link** to open or copy, and a **Paste code** box with a **Submit code** button: sign in on any device, paste the code back, and no terminal is involved. **Sign-in details and advanced input** is still there for anything else a provider asks. Closing the dialog keeps the sign-in running under Running now.
+
+**When a job stops because an AI tool's sign-in expired**, its failure card (titled *AI sign-in expired*) has a **Sign in to Claude** button, or Codex, Antigravity or Pool, whichever tool the job was using. It opens this same dialog over the job, without starting a new job, and works the same way for every tool that has a sign-in: the full link, the approval code or **Paste code** box, and the sign-in details. When it says the tool is connected, close the dialog and press **Rerun job**.
 
 The orchestrator can use model provider CLIs or API keys. The setup check looks for common CLIs and environment keys:
 
@@ -443,6 +445,25 @@ orchestrator script schedule_job.py .orchestrator/jobs/JOB.json
 ```
 
 Generated job files are written under `.orchestrator/jobs/`. Logs and review output are written under `.orchestrator/logs/` and `.orchestrator/output/`.
+
+### Jobs and runs
+
+A **job** is a whole piece of work and its five stages: Plan, Build, Verify, Document and Finalize. A **run** is one go at part of it, started from the app: planning, a build, one fix attempt, a merge. A small job is often a single run from start to finish; a larger one has a run per stage and perhaps several fix attempts.
+
+- **On the job page**, the run working now sits at the top, labelled as this job's run ("Fix attempt 2 · run in progress") with its latest steps. The **Runs** card lists every run of the job, newest first, with what it did, how it ended and how long it took. A job done in one go says so.
+- **The job's stages show its runs.** The stage a run is working on says so ("Fix attempt 2 running"), a stage that took several runs shows how many, and the hero says which step the run is on. If a run fails before it can update the job, the job page says so and links to that run's log.
+- **On a run's page**, the line under the title says which job it belongs to and where it sits ("Run 3 of 5 of the job …", or "The only run of the job …"), with links to the runs before and after it. Back returns to the job.
+- Runs are remembered after they end and after Orchestrator restarts, so a job keeps its full list.
+
+### When the build changes nothing
+
+The Build step only counts as done when the builder changed files. If it finishes without changing any, the job stops as **Nothing was built**: it doesn't go on to test unchanged code or start fix attempts. The timeline marks Build with "No files changed", and **Run the build again** retries it. The usual cause is an AI tool that refused to edit files; the message says so when the builder reported it. Claude, when building or fixing, is allowed to edit files in the project (its other roles stay read-only). A fix attempt that changes nothing stops the same way, and an investigation may change nothing.
+
+### When the tests still fail after a run
+
+If the build or tests fail, the job goes into **Needs a fix** (its status is *debugging*). Each fix attempt is its own run, and **nothing retries by itself**. When a run ends this way its page says **Needs your next step** and gives the reason (the failing tests, or "No tests ran" when the test command found nothing to run, which is a test-selection problem rather than a code failure), with one button: **Run another fix**. It opens the same dialog as **Run a fix…** on the job page. The job page and that dialog both say **what needs fixing** before you press anything: the most important problem first (for example *your Claude sign-in expired*, *the AI's file edits were blocked*, *No tests ran*, which tests fail, or that the project doesn't build), then a few lines of context such as the last attempt's diagnosis. When the cause is an expired sign-in, the job page has a **Sign in** button for that tool. Add what you saw, or leave it blank for another automatic attempt. The job stays open on its branch, so nothing is lost. After several attempts without progress, automatic fixing pauses and the page says why.
+
+If a builder reports that its file writes were blocked (the AI tool's permission mode refused them), the job stops with that reason instead of building and testing code that didn't change. A test command that names files that don't exist, or runs no tests, is ignored and the project's own tests run instead.
 
 ## Running Several Jobs
 
@@ -643,6 +664,35 @@ GitHub, GitLab, Bitbucket, Azure DevOps, another Git host, or on this computer o
 - **Help me set this up with AI** is optional. A model reads where the project is now (a repository or not, commits, remote, GitHub sign-in) and writes steps from there.
 - GitHub gets the fullest workflow (an issue and a draft pull request per job). The others use plain Git: jobs work on branches and merge on this computer, with a link
   to open a review request.
+
+## Architecture
+
+Every project has one approved architecture: the language, frameworks, structure and packages it is built with, and why. It lives in a section at the bottom of the **Product** page, a card on **Home** summarises it, and it is saved in the project as `docs/architecture.json` (the record) and `docs/architecture.md` (the same decision written out, with a diagram). Every plan, plan review and build reads it as a constraint, so jobs stop re-guessing the stack.
+
+**New projects.** After **Start a new project**, the next step is **Choose the architecture**. A model reads the product requirements, the platforms you picked and the build tools on this Mac, then suggests two or three options in plain words. Each option shows:
+
+- **Best for:** the kind of product it suits, in one sentence.
+- **Fit for your product:** a score out of 100 against your requirements.
+- **A simple diagram:** who uses it, what they open, what runs behind it, where data lives, and outside services.
+- **Good and Watch out:** everyday pros and cons.
+- **Style mix:** weighted percentages in three fixed categories (system shape, code organisation and UI pattern), because real architectures are mixtures.
+
+The recommended option is selected. Pick another if you prefer, adjust the language, framework or build and test commands under **Stack and commands**, or **Ask for changes** with a note. **Approve architecture** saves it and commits just those two files, leaving any other changes alone. None of this is required: every step can be skipped.
+
+**Imported projects.** For a project that already has code, **Describe the architecture** reads a digest of the repository (languages, folders, manifests, packages, entry points and the README) and describes the architecture as it is now, with an approximate diagram and style mix. Nothing in the code changes. Confirm the description, and jobs follow it from then on.
+
+**Tied to the product requirements.** Each decision lists the requirements it serves, and **How it serves your product requirements** maps each core need to the part of the architecture that meets it. **Not covered yet** lists needs it doesn't meet. When the requirements change after approval, the section and the Home card say so. **Check it against the requirements** then proposes only the adjustments the new requirements need.
+
+**Skipping it.** **Skip for now** (or **Decide later** on a proposal) never leaves the project without an architecture. Orchestrator keeps a *working assumption*. With a proposal, that is the recommended option. Without one, it is read from the code, with no model involved. Working assumptions are versioned 0.1, 0.2 and so on, are saved and committed like an approved decision, and jobs follow them unless a request clearly needs otherwise. **Approve as it is** makes the assumption the chosen architecture, version 1.0, and so does approving any proposal. **Refresh from the code** updates an inferred assumption after the code changes, and Home flags when that has happened. A new project with nothing recorded at all only gets a note in its plans not to pick a stack silently.
+
+**Changing it later.** Most changes are small and frequent; a few are large and rare:
+
+- **Add or adjust (tweak):** a package, a module, a storage choice. The language, framework and overall shape stay. The version goes from 1.3 to 1.4.
+- **Rethink the architecture (overhaul):** new options are weighed against staying with what you have. The version goes from 1.3 to 2.0, and the page warns that existing code may need rebuilding.
+
+Orchestrator decides which kind a proposal is from what it changes, not from what the model calls it. A change to the primary language, the framework, the chosen option or the dominant system shape is an overhaul. Before you approve, **What would change** lists every difference, and **History** keeps each version with its changes.
+
+The complete reference, including the style catalog, file formats and API, is `docs/architecture-step.md` in the Orchestrator repository.
 
 ## Packages
 

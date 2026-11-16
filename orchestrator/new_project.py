@@ -205,7 +205,7 @@ def render_prd(a: dict[str, str]) -> str:
     if chosen:
         pitch.append("Built for: " + ", ".join(chosen))
     elif recommend:
-        pitch.append("Built for: not decided yet. The AI should recommend platforms, with reasons, in its first plan.")
+        pitch.append("Built for: not decided yet. The architecture step should recommend platforms, with reasons.")
     if a.get("stack", "").strip():
         pitch.append(f"Technology preferences: {a['stack'].strip()}")
     pitch = [part for part in pitch if part]

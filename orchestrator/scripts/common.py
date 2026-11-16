@@ -880,6 +880,39 @@ def get_repo_state() -> dict[str, list[str]]:
         return {"modified": modified, "untracked": untracked}
     except: return {"modified": [], "untracked": []}
 
+def dirty_file_hashes(root: Path | None = None) -> dict[str, str]:
+    """Every modified or untracked file in the working tree with a hash of its contents. Comparing two of these shows what
+    a builder changed, including edits to files that were already uncommitted before it ran (which git status alone misses)."""
+    import hashlib
+    base = Path(root or ROOT)
+    out: dict[str, str] = {}
+    try:
+        listing = subprocess.check_output(["git", "status", "--porcelain", "-uall", "-z"], cwd=str(base)).decode("utf-8", "replace")
+    except Exception:
+        return out
+    entries = listing.split("\0")
+    i = 0
+    while i < len(entries):
+        entry = entries[i]
+        i += 1
+        if len(entry) < 4:
+            continue
+        status, rel = entry[:2], entry[3:]
+        if status[0] in "RC":
+            i += 1  # a rename or copy is followed by its old path
+        path = base / rel
+        try:
+            out[rel] = hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else "deleted" if not path.exists() else "dir"
+        except OSError:
+            out[rel] = "unreadable"
+    return out
+
+
+def files_changed_between(before: dict[str, str], after: dict[str, str]) -> list[str]:
+    """Paths that appeared, changed, or went back to their committed state between two `dirty_file_hashes` snapshots."""
+    return sorted(p for p in set(before) | set(after) if before.get(p) != after.get(p))
+
+
 # Branches Orchestrator creates for jobs: `ai/issue-<n>-…` with GitHub, `ai/job-<ref>-…` with plain git. Only these
 # are deleted when a job is merged or discarded; a branch you named yourself is kept.
 AI_BRANCH_PREFIXES = ("ai/issue-", "ai/job-")

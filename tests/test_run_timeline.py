@@ -136,7 +136,7 @@ class EndpointTests(ServerTestCase):
 class PageTests(unittest.TestCase):
     def test_the_run_page_has_a_timeline_and_keeps_the_terminal(self):
         app = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
-        page = app[app.index("pages.run = async"):][:4000]
+        page = app[app.index("pages.run = async"):][:5000]
         for bit in ('id="next-step"', 'data-run-tab="timeline"', 'data-run-tab="terminal"', 'id="run-timeline"', 'id="term-wrap" hidden',
                     "wireRunTimeline(id", "attachTerminal(id)"):
             self.assertIn(bit, page)

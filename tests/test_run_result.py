@@ -246,5 +246,44 @@ class TestsJobOutcomeTests(unittest.TestCase):
         self.assertEqual(failed["headline"], "boom")
 
 
+
+class FixAttemptOutcomeTests(unittest.TestCase):
+    """A fix attempt that ends with the tests still failing leaves the job in debugging: say so, and offer the next step."""
+    JOB = {"job_id": "job-7", "status": "debugging", "iteration": 3, "max_iterations": 8, "debug_phase": "propose"}
+    TAIL = "⚠️ The tests still fail after this fix attempt. The job stays open on its branch and nothing is lost.\n"
+
+    def test_it_says_where_the_job_stands_and_offers_another_fix(self):
+        out = rr.summarize("resume", "FAIL: test_slope (tests.T)\nAssertionError: 3 != 4\n" + self.TAIL, 0, job=dict(self.JOB), root=Path("."))
+        self.assertEqual(out["headline"], "The tests still fail after this fix attempt")
+        self.assertEqual(out["tone"], "warn")
+        self.assertEqual(out["next"], {"label": "Run another fix", "action": "debug", "params": {"job": "job-7"}})
+        self.assertIn("test_slope", out["details"][0])
+        self.assertIn("does not retry by itself", out["details"][-1])
+
+    def test_a_run_that_found_no_tests_says_it_is_a_test_setup_problem(self):
+        out = rr.summarize("execute", "Ran 0 tests in 0.000s\n\nNO TESTS RAN\n" + self.TAIL, 0, job=dict(self.JOB), root=Path("."))
+        self.assertIn("No tests ran", out["details"][0])
+        self.assertIn("not with the code", out["details"][0])
+        self.assertEqual(out["next"]["action"], "debug")
+
+    def test_a_paused_loop_says_why(self):
+        job = dict(self.JOB, debug_phase="paused", debug_pause_reason="Loop/Stall detected: same hypothesis three times")
+        out = rr.summarize("debug", "", 0, job=job, root=Path("."))
+        self.assertTrue(out["headline"].startswith("Automatic fixing paused"))
+        self.assertIn("Loop/Stall detected", " ".join(out["details"]))
+
+    def test_other_runs_and_other_states_are_left_alone(self):
+        text = "✅ done\n"
+        self.assertNotIn("next", rr.summarize("resume", text, 0, job=dict(self.JOB, status="review-needed"), root=Path(".")) or {})
+        self.assertNotIn("next", rr.summarize("export_job_bundle", text, 0, job=dict(self.JOB), root=Path(".")) or {})  # not a run that tests the job
+        self.assertNotIn("next", rr.summarize("resume", "❌ Build failed\n", 1, job=dict(self.JOB), root=Path(".")) or {})  # a failed run keeps its own failure card
+
+    def test_the_run_page_shows_the_status_headline_and_button(self):
+        app = (Path(__file__).resolve().parents[1] / "orchestrator" / "web" / "static" / "app.js").read_text()
+        self.assertIn('doneNext ? "Needs your next step"', app)
+        self.assertIn('doneNext ? "Not finished: the job needs another fix attempt"', app)
+        self.assertIn('${act(doneNext.action, doneNext.params || {})}>${esc(doneNext.label)}</button>', app)
+
+
 if __name__ == "__main__":
     unittest.main()

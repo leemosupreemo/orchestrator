@@ -37,7 +37,7 @@ from orchestrator.run_check import models_machines_can_run
 from manual_run import capture_logs
 import test_cases as tc
 from orchestrator.project_config import PROJECT_CONFIG
-from orchestrator import prd, project_docs
+from orchestrator import architecture, prd, project_docs
 from orchestrator import new_job_form
 from orchestrator import plan_size, slice_check
 
@@ -845,6 +845,10 @@ def main(args_override: list[str] | None = None) -> None:
             product_context = prd.context_block(ROOT)
             if product_context:
                 prompt_template = f"{prompt_template}\n{product_context}"
+            # The approved architecture is a constraint on every plan; an undecided new project gets a warning instead of a silent pick.
+            arch_context = architecture.context_block(ROOT, "planner")
+            if arch_context:
+                prompt_template = f"{prompt_template}\n{arch_context}"
             docs_context = project_docs.context_block(ROOT)
             if docs_context:
                 prompt_template = f"{prompt_template}\n{docs_context}"
@@ -1053,7 +1057,7 @@ def main(args_override: list[str] | None = None) -> None:
                     verifier_prompt = (PROMPTS_DIR / "verifier.md").read_text(encoding="utf-8")
                     if needs_test_cases:
                         verifier_prompt = f"{verifier_prompt}\n{tc.VERIFIER_INSTRUCTIONS}"
-                    verifier_prompt = f"{verifier_prompt}\n{prd.context_block(ROOT, 'verifier')}"
+                    verifier_prompt = f"{verifier_prompt}\n{prd.context_block(ROOT, 'verifier')}{architecture.context_block(ROOT, 'verifier')}"
                     verifier_input = f"{verifier_prompt}\n\n### ORIGINAL REQUEST ###\n{raw_input_text}\n\n### GENERATED PLAN ###\n{llm_output}"
                 
                     try:

@@ -92,6 +92,7 @@ from orchestrator import cruft_check, scope_check
 from orchestrator.stack_detection import detect_project_stack
 from orchestrator.scripts import test_cases as test_case_lib
 from orchestrator import job_chat
+from orchestrator import job_runs
 from orchestrator import new_project
 from orchestrator.runtime_control import ActivityGate, BusyError, InstanceLease
 from orchestrator.web.run_progress import RunProgress
@@ -381,6 +382,17 @@ class PtySession:
             self.ended = time.time()
             self._timeline.finish(code)
             self._cond.notify_all()
+        if self.job_id or self.result_job:  # so the job still lists this run after it's dropped from memory or the app restarts
+            try:
+                job_runs.record(runtime_dir(self.cwd), self.summary())
+            except Exception:
+                pass
+
+    def now(self) -> str:
+        """The step this run is on, for the job page while it works."""
+        with self._cond:
+            steps = self._timeline.view(running=self.running).get("steps") or []
+        return steps[-1]["title"] if steps else ""
 
     def _append(self, chunk: bytes) -> None:
         with self._cond:
@@ -1673,13 +1685,15 @@ def with_last_runs(root: Path, suites: list[dict[str, Any]]) -> list[dict[str, A
 def run_history(root: Path, limit: int = 50) -> list[dict[str, Any]]:
     """Runs started from the web app, read back from their saved transcripts, so the list outlives a restart."""
     folder = runtime_dir(root) / "logs" / "ui"
+    jobs_of = {r["id"]: r for r in job_runs.recorded(runtime_dir(root))}  # which job each run was for, kept when it ended
     runs = []
     for path in folder.glob("*.log") if folder.is_dir() else []:
         match = RUN_LOG.fullmatch(path.name)
         if not match:
             continue
         stamp, token, action = match.groups()
-        runs.append({"id": f"{stamp}-{token}", "action": action,
+        known = jobs_of.get(f"{stamp}-{token}") or {}
+        runs.append({"id": f"{stamp}-{token}", "action": action, "job": known.get("job"), "exit_code": known.get("exit_code"),
                      "title": ACTIONS[action].title if action in ACTIONS else action.replace("_", " ").capitalize(),
                      "started": datetime.strptime(stamp, "%Y%m%d-%H%M%S").timestamp(),
                      "log": f"logs/ui/{path.name}", "size": path.stat().st_size})
@@ -8112,7 +8126,13 @@ class UIHandler(BaseHTTPRequestHandler):
         elif method == "GET" and len(parts) == 2 and parts[0] == "jobs":
             detail = job_detail(root, parts[1])
             detail["runs"] = self._sessions_view(job_id=parts[1])
+            detail.update(self._job_runs_view(root, parts[1], detail["runs"], detail["job"]))
             self._json(detail)
+        elif method == "GET" and len(parts) == 3 and parts[0] == "jobs" and parts[2] == "runs":
+            # A job's runs on their own, for the run page: the job it belongs to and its sibling runs.
+            job = read_json_file(resolve_job_path(root, parts[1]))
+            self._json({"job": {"id": parts[1], "title": job.get("title") or parts[1], "status": job.get("status")},
+                        **self._job_runs_view(root, parts[1], self._sessions_view(job_id=parts[1]), job)})
         elif method == "POST" and len(parts) == 3 and parts[0] == "jobs" and parts[2] == "attach":
             if parts[1] in self.server.sessions.running_job_ids():
                 raise UIError("This job is running right now. Attach things once it stops.", HTTPStatus.CONFLICT)
@@ -9602,6 +9622,16 @@ class UIHandler(BaseHTTPRequestHandler):
             )
         self._audit("git_auth", {"mode": "store"})
         self._json({"ok": True, "message": "Saved GitHub HTTPS credentials."})
+
+    def _job_runs_view(self, root: Path, job_id: str, live: list[dict[str, Any]], job: dict[str, Any]) -> dict[str, Any]:
+        """Every run of a job (live and recorded), labelled, and what they add up to (orchestrator/job_runs.py)."""
+        for run in live:
+            if run.get("running") and self.server.sessions.has(run["id"]):
+                run["now"] = self.server.sessions.get(run["id"]).now()
+        runs = job_runs.for_job(runtime_dir(root), job_id, live)
+        if not self._is_owner():
+            runs = [r for r in runs if r.get("action") not in OWNER_ONLY_ACTIONS]
+        return {"job_runs": runs, "run_relationship": job_runs.relationship(runs, job)}
 
     def _sessions_view(self, job_id: str | None = None) -> list[dict[str, Any]]:
         sessions = self.server.sessions.list(job_id=job_id)

@@ -215,8 +215,14 @@ def run_main_build_and_tests(job: dict, summary_file: Path) -> tuple[bool, bool]
         # Robust N/A check
         is_na = o in NO_TESTS_NEEDED
         
+        from orchestrator import builder_check
+        missing_targets = [] if is_na else builder_check.missing_test_targets(override, ROOT)
         if is_na:
             test_cmd = None
+        elif missing_targets:
+            # The builder named a test it never wrote (or wrote elsewhere). Running it finds nothing, so run the project's own tests instead.
+            print(f"      - Warning: ignoring the builder's test command, {', '.join(missing_targets)} doesn't exist. Running the project's tests instead.")
+            test_cmd = raw_test_cmd
         elif "python3" in override or "pytest" in override or "sh " in override or "./" in override:
             test_cmd = override
             is_standalone_test = True
@@ -309,7 +315,9 @@ def run_main_build_and_tests(job: dict, summary_file: Path) -> tuple[bool, bool]
     # Retry loop for disk full during test execution
     max_retries = 1
     test_ok = False
-    for attempt in range(max_retries + 1):
+    from orchestrator import builder_check
+    own_test_cmd = resolve_command(raw_test_cmd)
+    for attempt in range(max_retries + 2):  # one extra pass, for the fall back to the project's own tests below
         print(f"      - Running tests: {final_test_cmd} (Attempt {attempt + 1})")
         test_limit = command_timeout("test")
         test_result = run_shell(final_test_cmd, cwd=ROOT, check=False, capture=True, timeout=test_limit)
@@ -348,6 +356,11 @@ def run_main_build_and_tests(job: dict, summary_file: Path) -> tuple[bool, bool]
         write_text(out_dir / f"test_{ts}.log", full_test_output)
         write_text(out_dir / "test.log", full_test_output)
 
+        if builder_check.no_tests_ran(full_test_output) and own_test_cmd and final_test_cmd != own_test_cmd:
+            print("      - The builder's test command found no tests. Running the project's own tests instead.")
+            final_test_cmd = own_test_cmd
+            continue
+
         if test_result.returncode == 0:
             print("      - Tests passed.")
             return True, True
@@ -380,7 +393,13 @@ def run_main_build_and_tests(job: dict, summary_file: Path) -> tuple[bool, bool]
                 print(f"  ... and {len(failures) - 10} more")
             print("-----------------------\n")
 
-        analysis = analyze_failure("test", full_test_output)
+        if builder_check.no_tests_ran(full_test_output):
+            # A test-setup problem, not a code failure: say so directly instead of asking a model to guess from an empty run.
+            analysis = (f"## No tests ran\n\nThe test command `{final_test_cmd}` found no tests to run, so nothing was checked. "
+                        "This is a problem with which tests were selected, not with the code: the named test files don't exist, "
+                        "or the discovery path or pattern matches nothing. Fix the test command (Settings, or the job's test selection), or create the tests.")
+        else:
+            analysis = analyze_failure("test", full_test_output)
         
         print(f"--- AI Analysis Summary ---")
         # Print first few lines of analysis to provide immediate context

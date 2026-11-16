@@ -319,6 +319,12 @@ def web_capable(model: str) -> bool:
     return False
 
 
+def _claude_edit_mode(role: str | None) -> str:
+    """Claude Code in print mode refuses file edits unless something allows them, so a builder or debugger would finish having
+    written nothing. Those two roles may edit files (as the other CLIs' builders already can); every other role stays read-only."""
+    return " --permission-mode acceptEdits" if role in (ModelRole.BUILDER, ModelRole.DEBUGGER) else ""
+
+
 def get_llm_command(model: str, prompt_file: str, role: str | None = None, session_id: str | None = None, images: list[Path] | None = None, web: bool = False) -> str:
     # Resolve actual model ID
     m_meta = get_model(model)
@@ -377,13 +383,13 @@ def get_llm_command(model: str, prompt_file: str, role: str | None = None, sessi
             if session_id:
                 cmd_base += f" --session-id {session_id}"
     elif model_id.startswith("claude-"):
-        cmd_base = f"claude -p --model {model_id}"
+        cmd_base = f"claude -p --model {model_id}{_claude_edit_mode(role)}"
         if session_id:
             cmd_base += f" --session-id {session_id}"
         if web:
             cmd_base += ' --allowedTools "WebSearch,WebFetch"'
     elif model_id == "claude":
-        cmd_base = "claude -p --model claude-sonnet-4-6"
+        cmd_base = f"claude -p --model claude-sonnet-4-6{_claude_edit_mode(role)}"
         if session_id:
             cmd_base += f" --session-id {session_id}"
         if web:

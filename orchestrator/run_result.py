@@ -322,6 +322,31 @@ def job_outcome(job: dict[str, Any], root: Path) -> dict[str, Any] | None:
     return result
 
 
+FIX_RUNS = {"execute", "resume", "debug", "fix"}  # the runs that work on a job's code and end by testing it
+
+
+def fix_attempt_outcome(job: dict[str, Any], text: str, action: str, code: int | None) -> dict[str, Any] | None:
+    """A run that finished with its job still in debugging: the tests failed again. Each fix attempt is its own run and nothing carries on by
+    itself, so say where the job stands and give the one thing to press next ("next": the action the run's page offers as its main button)."""
+    if code or action not in FIX_RUNS or job.get("status") != "debugging" or not job.get("job_id"):
+        return None
+    from orchestrator import builder_check
+    paused = job.get("debug_phase") == "paused"
+    headline = "Automatic fixing paused: the tests still fail" if paused else "The tests still fail after this fix attempt"
+    if builder_check.no_tests_ran(text):
+        why = "No tests ran. The test command found nothing to run, so this is a problem with which tests were chosen, not with the code."
+    else:
+        failed = failed_tests(clean_lines(text), 3)
+        why = ("Failing: " + "; ".join(failed)) if failed else "The build or tests did not pass. The saved test log in the job's output has the details."
+    details = [why]
+    if paused and job.get("debug_pause_reason"):
+        details.append(str(job["debug_pause_reason"])[:MAX_LINE])
+    details.append("The job is still open on its branch and nothing is lost. It does not retry by itself: press Run another fix, or open the job and describe what you saw.")
+    result = _result(headline, details, "warn")
+    result["next"] = {"label": "Run another fix", "action": "debug", "params": {"job": job["job_id"]}}
+    return result
+
+
 SUITE_MARKERS = {
     ".swift": r"^\s*(?:final\s+)?(?:class|struct)\s+(\w+)\s*:[^{\n]*XCTestCase|@Suite[^\n]*\n\s*(?:final\s+)?(?:class|struct)\s+(\w+)",
     ".py": r"^class\s+(\w+)\s*\([^)\n]*Test[^)\n]*\)", ".kt": r"^\s*class\s+(\w+)", ".java": r"^\s*(?:public\s+)?class\s+(\w+)",
@@ -423,6 +448,9 @@ def summarize(action: str, text: str, exit_code: int | None, job_title: str = ""
         outcome = job_outcome(job, root) if job and root else None
         if outcome and not exit_code:
             return outcome
+        fix = fix_attempt_outcome(job, text, action, exit_code) if job else None
+        if fix:
+            return fix
         found = plan_epic(lines, exit_code, job_title) if action == "plan_epic" else reader(lines, exit_code) if reader else None
         if found and exit_code and found["tone"] == "ok":
             found["tone"] = "bad"  # a reader found a good-looking line, but the run still failed

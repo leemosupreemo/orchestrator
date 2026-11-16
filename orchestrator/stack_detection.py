@@ -329,7 +329,16 @@ def _detect_project_stack(root: Path) -> DetectedStack:
         except Exception:
             pass
 
-    # 8. Inferred from Product Requirements (new project created from idea)
+    # 8. The approved architecture decision (a new project before its first slice is scaffolded)
+    try:
+        from orchestrator import architecture
+        fields = architecture.detected_stack_fields(root)
+        if fields:
+            return DetectedStack(uses_xcode=False, **fields)
+    except Exception:
+        pass
+
+    # 9. Inferred from Product Requirements (new project created from idea, no architecture approved yet)
     from orchestrator import prd
     for prd_path in (prd.document_path(root), root / "docs" / "product" / "prd.md", root / "docs" / "prd.md"):
         if prd_path.exists():
@@ -368,7 +377,7 @@ def _detect_project_stack(root: Path) -> DetectedStack:
             except Exception:
                 pass
 
-    # 9. Generic / Unknown Stack
+    # 10. Generic / Unknown Stack
     return DetectedStack(
         language="generic",
         framework=None,

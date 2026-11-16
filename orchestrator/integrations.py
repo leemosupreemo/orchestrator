@@ -973,7 +973,7 @@ def public_catalog(saved: dict[str, dict[str, str]], options: dict[str, dict[str
             "searchable": pid != "figma",
             "can_write": cls.can_write, "move_label": cls.move_label, "move_default": cls.move_default,
             "options": writeback_options((options or {}).get(pid)),
-            "fields": [{"key": k, "label": label, "secret": secret, "placeholder": ph, "help": hlp}
+            "fields": [{"key": k, "label": label, "secret": secret, "placeholder": ph, "help": hlp, "required": field_required(k, label)}
                        for k, label, secret, ph, hlp in cls.fields],
             "token_url": cls.token_url, "token_max_days": cls.token_max_days,
             "expiry": expiry_view(creds.get("expires", "")) if connected else None,
@@ -985,6 +985,12 @@ def public_catalog(saved: dict[str, dict[str, str]], options: dict[str, dict[str
             **({"authorize_key": _sentry_client_id(settings)} if pid == "sentry" and _sentry_client_id(settings) else {}),
         })
     return out
+
+
+def field_required(key: str, label: str) -> bool:
+    """Whether a connection field must be filled in: the same rule `connect` enforces and the form marks with an asterisk.
+    Optional fields say so in their label; a Sentry address left blank means sentry.io."""
+    return "optional" not in label.lower() and key != "host"
 
 
 def connect(provider_id: str, values: dict[str, str], previous: dict[str, str] | None = None,
@@ -1020,8 +1026,7 @@ def connect(provider_id: str, values: dict[str, str], previous: dict[str, str] |
     creds: dict[str, str] = {}
     for key, label, secret, _, _ in cls.fields:
         value = str(values.get(key) or "").strip() or (previous or {}).get(key, "")
-        optional = "optional" in label.lower()
-        if not value and not optional and not (key == "host"):
+        if not value and field_required(key, label):
             raise IntegrationError(f"{label} is required.")
         if value:
             creds[key] = value

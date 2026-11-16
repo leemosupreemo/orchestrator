@@ -5302,3 +5302,15 @@ dialog.ask-ai { width: min(34rem, 100vw); max-width: min(34rem, 100vw); height: 
 .job-run-row.is-side .title { color: var(--muted); }
 .run-family { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .run-unreported { color: var(--bad); }
+
+/* Required fields: a red asterisk after the label. The field's own required (or aria-required) attribute tells assistive
+   technology, so the asterisk itself is hidden from it where the browser supports alternative text. */
+label.field:has(:is(input, select, textarea):is([required], [aria-required="true"])) > span:first-child::after,
+fieldset.field:has(:is(input, select, textarea):is([required], [aria-required="true"])) > span:first-child::after,
+fieldset.field:has(:is(input, select, textarea):is([required], [aria-required="true"])) > legend::after,
+.field.is-required > span:first-child::after {
+  content: " *";
+  content: " *" / "";
+  color: var(--bad);
+  font-weight: var(--weight-bold);
+}

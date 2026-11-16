@@ -51,7 +51,7 @@ const sections = (filledCount, bodies = {}) => JSON.parse(process.argv[2]).map((
         out = self.run_js('''console.log(JSON.stringify({html: productStripHtml({sections: sections(3, {0: "A word game for two friends."}), updated: {at: 1794600000, source: "you", job: ""}}, [])}));''')
         html = out["html"]
         self.assertIn("Partially completed", html)
-        self.assertIn('class="pill attention"', html)
+        self.assertIn('class="pill partial"', html)
         self.assertIn("3 of 6 sections filled in. Still to fill in: Look and feel, What to exclude, Success measures.", html)
         self.assertIn('class="product-pitch" href="#/product"', html)
         self.assertIn("A word game for two friends.", html)
@@ -245,12 +245,18 @@ console.log(JSON.stringify(prdStatusPill(Array.from({length: total}, (_, i) => (
     def test_none_some_and_all_sections_give_three_different_statuses(self):
         none, some, every = self.pill(0), self.pill(1), self.pill(6)
         self.assertIn("Needs completion", none)
-        self.assertIn('class="pill failed"', none)
+        self.assertIn('class="pill attention"', none)  # yellow: the same yellow as every other "needs attention"
         self.assertIn("Partially completed", some)
-        self.assertIn('class="pill attention"', some)
+        self.assertIn('class="pill partial"', some)  # blue, so it never looks like Needs completion
         self.assertIn("Completed", every)
         self.assertIn('class="pill done"', every)
         self.assertIn("1 of 6 sections filled in", some)
+
+    def test_needs_completion_is_yellow_and_partially_completed_is_not(self):
+        css = (APP.parent / "style.css").read_text()
+        self.assertRegex(css, r"\.pill\.attention, \.pill\.warn \{ background: var\(--warn-soft\); color: var\(--warn\); \}")
+        self.assertRegex(css, r"\.pill\.partial[^{]*\{ background: var\(--accent-soft\)")
+        self.assertNotIn("partial", css.split(".pill.attention")[1].split("\n")[0])
 
     def test_the_edges_between_the_states(self):
         self.assertIn("Partially completed", self.pill(5))

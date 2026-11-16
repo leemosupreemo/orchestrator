@@ -30,6 +30,7 @@
       if (!media.matches || locked) close({restoreFocus: false});
       sidebar.inert = media.matches && !opened;
       toggle.disabled = locked;
+      toggle.dataset.why = "Sign in to open the menu.";
     }
 
     toggle.addEventListener("click", () => {

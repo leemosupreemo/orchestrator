@@ -44,7 +44,7 @@ class WorkerRunTests(unittest.TestCase):
                 'push_branch_for_review': {'return_value': 'https://example.com/merge'},
                 'update_product_requirements': {}, 'print_status_report': {}, 'print_clarification_report': {},
                 'interactive': {'return_value': interactive},
-                'get_repo_state': {'side_effect': states or [{'modified': [], 'untracked': []}] * 20},
+                'get_repo_state': {'side_effect': states or [{'modified': [], 'untracked': []}, {'modified': ['app.py'], 'untracked': []}] * 10},  # the builder changed a file
                 'run_builder': {'side_effect': results or [(True, True, Path('summary'), {'summary': 'Done', 'hypothesis': 'Cause'})]},
             }.items():
                 mocks[name] = stack.enter_context(patch.object(worker, name, **kwargs))

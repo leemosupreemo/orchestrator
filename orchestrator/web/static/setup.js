@@ -71,7 +71,7 @@ window.DesktopSetup = {
                   <div class="card-b stack gap-12">
                     <label class="field">
                       <span>Base branch</span>
-                      <input type="text" name="base_branch" value="${esc(values.base_branch || "main")}">
+                      <input type="text" name="base_branch" value="${esc(values.base_branch || "main")}" required>
                     </label>
                     <label class="field">
                       <span>Build command</span>

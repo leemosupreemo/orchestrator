@@ -94,7 +94,7 @@
         <div class="configuration-menu-heading" id="configuration-menu-${escapeHtml(group.id)}">${escapeHtml(group.label)}</div>
         ${group.entries.map((entry) => entry.enabled
           ? `<button type="button" role="menuitem" data-config-route="${escapeHtml(entry.route)}"><span>${escapeHtml(entry.label)}</span><small>${escapeHtml(entry.description)}</small></button>`
-          : `<button type="button" role="menuitem" disabled aria-disabled="true"><span>${escapeHtml(entry.label)}</span><small>${escapeHtml(entry.status)}</small></button>`
+          : `<button type="button" role="menuitem" data-why="${escapeHtml(entry.status)}" disabled aria-disabled="true"><span>${escapeHtml(entry.label)}</span><small>${escapeHtml(entry.status)}</small></button>`
         ).join("")}
       </div>
     `).join("");
@@ -177,7 +177,7 @@
         <div class="configuration-chooser-list">
           ${group.entries.map((entry) => entry.enabled
             ? `<a class="configuration-choice" href="${escapeHtml(entry.route)}"><strong>${escapeHtml(entry.label)}</strong><span>${escapeHtml(entry.description)}</span></a>`
-            : `<button type="button" class="configuration-choice" disabled><strong>${escapeHtml(entry.label)}</strong><span>${escapeHtml(entry.description)}</span><small>${escapeHtml(entry.status)}</small></button>`
+            : `<button type="button" class="configuration-choice" data-why="${escapeHtml(entry.status)}" disabled><strong>${escapeHtml(entry.label)}</strong><span>${escapeHtml(entry.description)}</span><small>${escapeHtml(entry.status)}</small></button>`
           ).join("")}
         </div>
       </section>

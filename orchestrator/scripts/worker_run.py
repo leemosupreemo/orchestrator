@@ -36,6 +36,8 @@ from common import (
     find_latest_runtime_log,
     format_job_id,
     get_repo_state,
+    dirty_file_hashes,
+    files_changed_between,
     gh_comment,
     is_firebase_configured,
     now_iso,
@@ -739,6 +741,29 @@ def unpack_builder_result(result):
     return result
 
 
+# Job types whose whole point is to change code. An investigation may rightly change nothing.
+NO_CHANGE_EXEMPT_TYPES = {"bug-investigate"}
+BLOCKED_EDIT_WORDS = ("permission", "blocked", "not allowed", "denied", "read-only", "read only")
+
+
+def no_change_stop(job: dict, changed_now: list[str], *, debug_attempt: bool = False) -> str:
+    """Why the job must stop because the builder changed no files, or "" to carry on. The build step only counts as done
+    when files changed: a job that has never changed a file stops; a fix attempt that changed nothing stops too, since
+    running the same failing tests again can't tell anyone anything new."""
+    if job.get("type") in NO_CHANGE_EXEMPT_TYPES or changed_now:
+        return ""
+    # Finished tasks count: each was only marked done after it changed files, and those were committed then (checkpoint_task).
+    ever_changed = bool(job.get("ai_modified_files") or job.get("ai_untracked_files") or job.get("completed_task_indices"))
+    if ever_changed and not debug_attempt:
+        return ""
+    summary = str(job.get("builder_summary") or "")
+    blocked = any(w in summary.lower() for w in BLOCKED_EDIT_WORDS)
+    what = "The fix attempt" if debug_attempt and ever_changed else "The build"
+    reason = (" The AI said its file edits were blocked, so check that its tool may edit files, then run the job again."
+              if blocked else " If the change was already in place, close the job; otherwise run it again, or describe the change more specifically.")
+    return f"{what} finished without changing any files, so nothing was built.{reason}"
+
+
 def execute_job(job_path: Path, resume: bool = False) -> None:
     start_epoch = time.time()
     remove_task_views(job_path)  # left over from a run that was stopped part way
@@ -842,6 +867,8 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
         task_output = {}
         # Capture state before builder
         pre_state = get_repo_state()
+        pre_hashes = dirty_file_hashes(ROOT)
+        touched_this_run: set[str] = set()  # files the plan's tasks changed in this run, committed or not
 
         if job.get("type") == "feature-plan" and job.get("approved"):
             tasks = job.get("plan", {}).get("tasks", [])
@@ -934,6 +961,7 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
                 task_modified = [f for f in task_post_state["modified"] if f not in pre_state["modified"]]
                 task_untracked = [f for f in task_post_state["untracked"] if f not in pre_state["untracked"]]
                 files_touched = task_modified + task_untracked
+                touched_this_run.update(files_touched)
 
                 # run_builder records which model it used on the per-task copy; keep that on the real job.
                 try:
@@ -1074,6 +1102,29 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
         job["ai_untracked_files"] = sorted(set(job.get("ai_untracked_files") or []) | set(ai_untracked))
         write_json(job_path, job)
 
+        # A build that changed nothing hasn't built anything, whatever its tests say: stop here rather than verify untouched code
+        # or start a fix loop that can't help (the usual cause is the AI's tool refusing file edits, which a fix attempt hits too).
+        changed_now = sorted(set(ai_modified) | set(ai_untracked) | touched_this_run | set(files_changed_between(pre_hashes, dirty_file_hashes(ROOT))))
+        # The task loop may already have stopped the job with a more specific reason (phantom completion, unrelated tests).
+        already_stopped = job.get("type") == "feature-plan" and job.get("status") == "human-needed"
+        stop = "" if already_stopped else no_change_stop(job, changed_now, debug_attempt=os.environ.get("AI_DEBUG_CHILD") == "1")
+        if stop:
+            print(f"\n⚠️ {stop}")
+            job["build_no_changes"] = True
+            job["status"] = "human-needed"
+            job["last_error"] = stop
+            job["worker_pid"] = None
+            job["updated_at"] = now_iso()
+            if job.get("debug_history") and job["debug_history"][-1].get("result") == "pending":
+                job["debug_history"][-1]["result"] = {"build_ok": build_ok, "tests_ok": test_ok, "notes": "The fix attempt changed no files"}
+            write_json(job_path, job)
+            update_issue_status(issue_number, "status:human-needed", ["status:executing"])
+            send_notifications(job, "Job Paused: nothing was built", f"{stop}\nTitle: {job['title']}")
+            return
+        if changed_now:
+            job.pop("build_no_changes", None)
+            write_json(job_path, job)
+
         # Commit changes if any
         if ai_modified or ai_untracked:
             print(f"      - Committing {len(ai_modified)} modified and {len(ai_untracked)} untracked files...")
@@ -1129,7 +1180,8 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
             write_json(job_path, job)
 
             if os.environ.get("AI_DEBUG_CHILD") == "1":
-                print("\n⚠️ Tests failed during debug implementation. Leaving job ready for the next debug iteration.")
+                print("\n⚠️ The tests still fail after this fix attempt. The job stays open on its branch and nothing is lost. "
+                      "It does not retry by itself: press Run another fix (or open the job and describe what you saw) to try again.")
                 return
 
             # Trigger debug_job.py automatically
