@@ -2448,6 +2448,7 @@ dialog h2 {
 .job-hero-main { display: flex; flex-direction: column; align-items: flex-start; gap: var(--space-1); min-width: 0; flex: 1 1 260px; }
 .job-hero-title { margin: 0; font-size: var(--type-body); font-weight: var(--weight-bold); line-height: 1.3; color: var(--text); }
 .job-hero-reason { margin: 0; font-size: var(--type-body); line-height: 1.45; overflow-wrap: anywhere; }
+.blocker-steps { padding-left: 20px; }
 .hero-error-details { width: 100%; margin-top: 2px; font-size: var(--type-secondary); }
 .hero-error-details > summary { cursor: pointer; display: inline-flex; align-items: center; gap: 4px; list-style: none; }
 .hero-error-pre { margin: var(--space-2) 0 0; padding: var(--space-2) var(--space-3); border-radius: var(--r-sm); background: var(--panel-2); border: 1px solid var(--border); font-family: var(--mono); font-size: var(--type-secondary); line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 220px; overflow: auto; }

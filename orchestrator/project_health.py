@@ -31,7 +31,7 @@ def evaluate(f: dict[str, Any]) -> dict[str, Any]:
                            route="#/product", label="Define your product"))
     else:
         updates = "It updates itself as jobs finish." if f.get("prd_auto_update") else "Automatic updates are off."
-        items.append(_item("prd", "Product requirements", "ok", f"{len(written)} of 5 sections written. {updates}"))
+        items.append(_item("prd", "Product requirements", "ok", f"{len(written)} of {len(sections)} sections written. {updates}"))
 
     if f["recommend_pending"]:
         items.append(_item("platforms", "Platforms", "warn", "Platforms are still undecided. Ask for a recommendation in your next plan, then record the choice in the product requirements.",

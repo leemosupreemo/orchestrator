@@ -21,10 +21,76 @@ MAX_FILE_CHARS = 200_000
 MAX_PROJECT_FILES = 300
 SKIP_DIRS = {".git", ".orchestrator", "node_modules", "build", "dist", "target", "venv", ".venv", "__pycache__", "Pods", "DerivedData", "designs"}
 ROOT_NOTES = ("README.md", "AGENTS.md", "CLAUDE.md", "GEMINI.md", "CONTRIBUTING.md", "CHANGELOG.md")
+ROOT_DOC_NAME = re.compile(r"^(?!\.)(?=.*(?:architecture|audit|design|requirement|spec|guide|handoff|roadmap|overview|notes|status|setup|security|plan))", re.I)
+
+
+# How the Documentation page groups a project's files: the few documents people and the AI rely on first, then the reference
+# material by kind. Matched on the path, first rule wins.
+CATEGORIES = (("core", "Core docs"), ("requirements", "Requirements and specs"), ("plans", "Plans"), ("verification", "Verification"),
+              ("research", "Research and findings"), ("releases", "Releases"), ("other", "Other docs"))
+CORE_DOCS = {"docs/architecture.md", "docs/build-test-commands.md", "docs/coding-standards.md", "docs/ui-conventions.md", "docs/product/prd.md"}
+_CATEGORY_RULES = (
+    ("requirements", re.compile(r"(^|/)specs?/|requirement", re.I)),  # a specs folder is specs, whatever a file's name mentions
+    ("plans", re.compile(r"(^|/)plans?/|plan|handoff|roadmap", re.I)),
+    ("releases", re.compile(r"release|changelog", re.I)),
+    ("verification", re.compile(r"verification|acceptance|validation|(^|/)qa/", re.I)),
+    ("research", re.compile(r"finding|investigation|research|audit|baseline|status", re.I)),
+    ("requirements", re.compile(r"requirement|spec|design|vision|brief|scope", re.I)),
+)
+STALE_README_COMMITS = 15  # this many commits since README.md last changed: worth a look
+_STATUS_LINE = re.compile(r"^\s*(?:\*\*)?status(?:\*\*)?\s*[:\-]|^#+\s*status\b|^\s*[-*]\s*\[[ xX]\]", re.I | re.M)
 
 
 class DocsError(ValueError):
     pass
+
+
+def category(rel: str) -> str:
+    """Which group a markdown file belongs to on the Documentation page."""
+    if "/" not in rel or rel in CORE_DOCS:
+        return "core"
+    return next((cat for cat, rule in _CATEGORY_RULES if rule.search(rel)), "other")
+
+
+def plans_without_status(root: Path, files: list[dict[str, Any]]) -> list[str]:
+    """Plans that never say whether they are done (no status line, no checklist): a reader can't tell finished from abandoned."""
+    out = []
+    for f in files:
+        if f.get("category") != "plans":
+            continue
+        try:
+            head = "\n".join((Path(root) / f["path"]).read_text(encoding="utf-8", errors="replace").splitlines()[:60])
+        except OSError:
+            continue
+        if not _STATUS_LINE.search(head):
+            out.append(f["path"])
+    return out
+
+
+def gaps(files: list[dict[str, Any]], product: dict[str, Any], *, has_architecture: bool, has_test_commands: bool,
+         readme_behind: int = 0, unmarked_plans: int = 0) -> list[dict[str, Any]]:
+    """What the project's documentation is missing, most useful first, each with the fix: a page to open, or a job to run."""
+    out: list[dict[str, Any]] = []
+    def add(gid: str, text: str, label: str, route: str = "") -> None:
+        out.append({"id": gid, "text": text, "fix": {"label": label, **({"route": route} if route else {"job": True})}})
+    written, total = int(product.get("written") or 0), int(product.get("total") or 0)
+    if not product.get("exists") or (total and written < total):
+        add("prd", f"Product requirements: {written} of {total} sections written" if product.get("exists") else "No product requirements yet",
+            "Draft from your docs", "#/product?draft=1")  # the draft reads the project's requirement docs first (prd.requirement_docs)
+    if not has_architecture:
+        add("architecture", "No architecture recorded", "Describe it", "#/product?section=architecture")
+    if not any(f["path"].lower() == "readme.md" for f in files):
+        add("readme", "No README.md", "Write it with AI")
+    elif readme_behind >= STALE_README_COMMITS:
+        add("readme_stale", f"README.md hasn't changed in {readme_behind} commits", "Update it with AI")
+    if not has_test_commands:
+        add("commands", "No build and test commands doc (docs/build-test-commands.md)", "Write it with AI")
+    if unmarked_plans:
+        add("plans", f"{unmarked_plans} plan{'' if unmarked_plans == 1 else 's'} don't say whether {'it is' if unmarked_plans == 1 else 'they are'} done",
+            "Mark them with AI")
+    if not any(f["path"].startswith("docs/") for f in files):
+        add("docs", "No markdown files under docs/", "Write them with AI")
+    return out
 
 
 def _clip(text: str, n: int) -> str:
@@ -157,6 +223,10 @@ def project_files(root: Path) -> list[dict[str, Any]]:
     from orchestrator import prd
     root = Path(root)
     found: list[Path] = [root / n for n in ROOT_NOTES if (root / n).is_file()]
+    try:  # other top-level markdown whose name says it is documentation (an architecture audit, a handoff), never just any file
+        found += sorted(f for f in root.glob("*.md") if f.is_file() and f.name not in ROOT_NOTES and ROOT_DOC_NAME.search(f.stem))
+    except OSError:
+        pass
     docs = root / "docs"
     if docs.is_dir():
         for f in sorted(docs.rglob("*.md")):
@@ -170,11 +240,12 @@ def project_files(root: Path) -> list[dict[str, Any]]:
         parent = Path(rel).parent.as_posix()
         shared = prd.document_path(root) if rel == prd.PATH else f
         shown = shared if shared.is_file() else f
-        out.append({"path": rel, "title": _file_title(shown, rel), "size": shown.stat().st_size, "group": "Project notes" if parent == "." else parent})
+        out.append({"path": rel, "title": _file_title(shown, rel), "size": shown.stat().st_size, "group": "Project notes" if parent == "." else parent,
+                    "category": category(rel)})
     if not any(f["path"] == prd.PATH for f in out):
         shared = prd.document_path(root)
         if shared.is_file():
-            out.append({"path": prd.PATH, "title": "Product requirements", "size": shared.stat().st_size, "group": "docs/product"})
+            out.append({"path": prd.PATH, "title": "Product requirements", "size": shared.stat().st_size, "group": "docs/product", "category": "core"})
     return out
 
 

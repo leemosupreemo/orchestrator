@@ -903,6 +903,11 @@ const dialogs = {
   },
   async answer(params) {
     const job = await api(`jobs/${encodeURIComponent(params.job)}`);
+    const fix = job.summary?.state?.next;
+    if (job.summary?.state?.blocker && fix) { // not a question: do its fix instead
+      const fixParams = { job: params.job, ...(fix.params || {}) };
+      return dialogs[fix.action] ? dialogs[fix.action](fixParams) : runAction(fix.action, fixParams);
+    }
     const question = job.summary?.question || job.job?.human_clarification_question || "";
     const asker = String(job.job?.last_error || "").startsWith("Builder clarification needed") ? "builder" : "planner";
     const values = await formDialog(`Answer the ${asker}`, `
@@ -912,6 +917,7 @@ const dialogs = {
     if (values?.answer.trim()) runAction("answer", { job: params.job, answer: values.answer });
   },
   async revise(params) {
+    if (params?.change) return runAction("revise", { job: params.job, change: params.change }); // a fix that already knows what to say (blocker_fix)
     const values = await formDialog("Revise plan", `
       <label class="field"><span>What should change?</span>
         <textarea name="change" required placeholder="e.g. Keep the layout, but show retry details in the failed state"></textarea></label>
@@ -3348,7 +3354,7 @@ function jobItem(j, { withAction = false } = {}) {
   const bits = [jobKind(j), j.tasks_total ? `${j.tasks_done}/${j.tasks_total} tasks` : "", ago(j.updated)].filter(Boolean);
   const meta = withAction && j.state.reason ? j.state.reason : bits.join(" · ");
   const next = withAction && j.state.next && !j.active_run
-    ? `<button class="btn small ${["failed", "attention"].includes(j.state.tone) ? "primary" : ""}" ${act(j.state.next.action, { job: j.id })}>${esc(j.state.next.label)}</button>` : "";
+    ? `<button class="btn small ${["failed", "attention"].includes(j.state.tone) ? "primary" : ""}" ${act(j.state.next.action, { job: j.id, ...(j.state.next.params || {}) })}>${esc(j.state.next.label)}</button>` : "";
   return `<div class="item${testsClass(j)}">
     <a class="main-col" href="#/jobs/${encodeURIComponent(j.id)}"><div class="title">${esc(j.title)}</div><div class="meta">${esc(meta)}</div></a>
     <div class="side">${jobPill(j)}${next}</div></div>`;
@@ -5649,15 +5655,16 @@ pages.job = async ([id]) => {
   const recommendFixBtn = !activeRun && job.last_error && next?.action !== "debug" && next?.action !== "answer"
     ? `<button class="btn small" ${act("debug", { job: s.id, feedback: String(job.last_error).slice(0, 2000) })}>Run a fix…</button>`
     : "";
-  const signInAction = !activeRun && problem?.sign_in
-    ? `<button type="button" class="btn small primary" ${act("ai_connect", { provider: problem.sign_in.provider, name: problem.sign_in.name })}>Sign in to ${esc(problem.sign_in.name)}</button>`
+  const signIn = problem?.sign_in || s.state.sign_in; // a failed fix's sign-in, or a blocker that needs one
+  const signInAction = !activeRun && signIn
+    ? `<button type="button" class="btn small primary" ${act("ai_connect", { provider: signIn.provider, name: signIn.name })}>Sign in to ${esc(signIn.name)}</button>`
     : "";
   const nextBtnClass = signInAction ? "btn small" : "btn small primary";
   const heroAction = activeRun
     ? (isStoppingActive
       ? `<button class="btn small" data-stop="${esc(activeRun.id)}" data-why="Already stopping." disabled aria-busy="true"><span class="spinner inline-spinner" aria-hidden="true"></span>Stopping…</button>`
       : `<button class="btn small" data-stop="${esc(activeRun.id)}" title="Stops the worker. Resume continues from the next task.">Pause</button>`)
-    : `${signInAction}${next ? `<button class="${nextBtnClass}" ${act(next.action, { job: s.id })}>${esc(next.label)}</button>` : ""}${recommendFixBtn}${next && job.task_growth && data.undoable_task === job.task_growth.task
+    : `${signInAction}${next ? `<button class="${nextBtnClass}" ${act(next.action, { job: s.id, ...(next.params || {}) })}>${esc(next.label)}</button>` : ""}${recommendFixBtn}${next && job.task_growth && data.undoable_task === job.task_growth.task
       ? `<button class="btn small" data-undo-task="${job.task_growth.task}" title="Reverts what that task changed. Then revise the plan to make it smaller.">Undo task ${job.task_growth.task + 1}</button>` : ""}`;
 
   // 5-Phase Lifecycle determination (Plan -> Build -> Verify -> Document -> Review)
@@ -5930,6 +5937,8 @@ pages.job = async ([id]) => {
           <h2 class="job-hero-title">${(activeRun && !activeRun.waiting) || s.state.label === "Building" ? runningMark : ""}${esc(s.state.label || s.status)}</h2>
           <p class="job-hero-reason">${heroReason}</p>
           ${heroReasonDetails}
+          ${s.state.steps?.length ? `<ol class="job-hero-reason blocker-steps">${s.state.steps.map((step) => `<li>${esc(step)}</li>`).join("")}</ol>` : ""}
+          ${s.state.blocker ? `<details class="fold"><summary class="linklike muted">What the AI said</summary><p class="muted">${esc(s.state.blocker)}</p></details>` : ""}
           ${runRel?.unreported ? `<p class="job-hero-reason run-unreported">The last run (${esc(runRel.unreported.label)}) ${runRel.unreported.status === "failed" ? "failed" : "ended without reporting back"} before it could update this job. <a href="#/runs/${encodeURIComponent(runRel.unreported.id)}">Open its log</a> to see what happened.</p>` : ""}
           ${nextExecutionPreview ? `<div class="job-hero-next-preview">${nextExecutionPreview}</div>` : ""}
           ${uxWarning ? `<p class="job-hero-reason"><button type="button" class="linklike" data-scroll-to="#ux-section">UX and design check: ${plural(uxWarning, "major finding")}. Look before you ${s.state.next?.action === "merge" ? "merge" : "finish"}.</button></p>` : ""}
@@ -5951,7 +5960,6 @@ pages.job = async ([id]) => {
               <button type="button" class="btn primary clarify-btn clarify-start-btn" data-clarify-start aria-label="Start" title="Start"><svg class="icon" aria-hidden="true"><use href="#i-play"/></svg></button>
             </div>
           </div>
-          <small class="hint-text">The plan is redone with your answer. You approve it before anything is built.</small>
         </form></div></section>`
         : (job.clarification_history || []).length ? `<section class="card mb-16"><details class="fold"><summary class="card-h"><h2>Questions and answers <span class="count">${job.clarification_history.length}</span></h2></summary>
           <div class="card-b stack">${clarificationThread(job.clarification_history)}<div class="row gap-8"><button type="button" class="btn small ghost" data-clarify-export="copy">Copy chat</button><button type="button" class="btn small ghost" data-clarify-export="download"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-download"/></svg> Export chat</button></div></div></details></section>` : ""}

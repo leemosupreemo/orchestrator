@@ -879,7 +879,19 @@ def plural_count(n: int, word: str) -> str:
     return f"{n} {word}{'' if n == 1 else 's'}"
 
 
-def job_state(job: dict[str, Any]) -> dict[str, Any]:
+def question_is_blocker(text: Any) -> bool:
+    """A saved "question" that is really a blocker (no write access, an expired sign-in, a missing tool): an answer can't fix it.
+    The workers already stop on these; this also catches one saved by an older version or another path."""
+    if not text:
+        return False
+    try:
+        from orchestrator.scripts.common import classify_clarification
+        return classify_clarification(text)[0] == "blocking"
+    except Exception:
+        return False
+
+
+def job_state(job: dict[str, Any], root: Path | None = None) -> dict[str, Any]:
     """What the job is waiting on, in plain words, and the one action that moves
     it forward. `group` is needs_you | working | done; `tone` drives colour:
     attention (amber) = your move, working (blue), done (green), failed (red)."""
@@ -910,8 +922,18 @@ def job_state(job: dict[str, Any]) -> dict[str, Any]:
                      f"{growth.get('text') or ''} Keep going if that's fine, or undo the task and revise the plan to make it smaller.".strip(),
                      "resume", "Keep going")
     if status == "human-needed":
-        if job.get("human_clarification_question"):
-            return state("needs_you", "attention", "Question for you", "The planner needs an answer to continue.", "answer", "Answer")
+        question = str(job.get("human_clarification_question") or "").strip()
+        if question and question_is_blocker(question):
+            # Not a question: the AI hit something an answer can't fix. blocker_fix checks whether it's fixed already (or never
+            # needed fixing) and gives the one button that retries with what's needed, plus the steps when something is left to do.
+            from orchestrator import blocker_fix
+            fix = blocker_fix.diagnose(question, job, root)
+            blocked = state("needs_you", "failed", "The AI couldn't continue", fix["reason"], fix["action"], fix["label"])
+            blocked["next"]["params"] = fix["params"]
+            return {**blocked, "steps": fix["steps"], "sign_in": fix["sign_in"], "blocker": question}
+        if question:
+            asker = "builder" if str(job.get("last_error") or "").startswith("Builder clarification needed") else "planner"
+            return state("needs_you", "attention", "Question for you", f"The {asker} needs an answer to continue.", "answer", "Answer")
         error = str(job.get("last_error") or "").strip()
         if job.get("build_no_changes"):  # the builder changed no files (worker_run.no_change_stop): the build isn't done
             return state("needs_you", "failed", "Nothing was built", error or "The build finished without changing any files.", "resume", "Run the build again")
@@ -1020,7 +1042,7 @@ def job_summary(path: Path, job: dict[str, Any], feature_names: dict[str, str] |
         "kind": "Freestyle" if job.get("freestyle") else KIND_LABELS.get(str(kind), str(kind or "Job").replace("-", " ").capitalize()),
         "status": job.get("status") or "unknown",
         "approach": approach,
-        "state": job_state(job),
+        "state": job_state(job, path.parents[2] if path.parent.name == "jobs" and len(path.parents) > 2 else None),
         "feature": job.get("feature") or None,
         "feature_name": (feature_names or {}).get(job.get("feature") or "") if job.get("feature") else None,
         "epic": job.get("epic") or None,
@@ -1031,7 +1053,8 @@ def job_summary(path: Path, job: dict[str, Any], feature_names: dict[str, str] |
         "base_branch": job.get("base_branch") or "main",
         "issue_number": issue_num,
         "pr_number": job.get("pr_number"),
-        "question": job.get("human_clarification_question") if job.get("status") == "human-needed" else None,
+        "question": job.get("human_clarification_question") if job.get("status") == "human-needed"
+                    and not question_is_blocker(job.get("human_clarification_question")) else None,  # a blocker isn't asked as a question
         "tasks_total": len(tasks) if isinstance(tasks, list) else 0,
         "tasks_done": len(completed) if isinstance(completed, list) else 0,
         "updated": path.stat().st_mtime,
@@ -2677,11 +2700,31 @@ def docs_index(root: Path) -> dict[str, Any]:
     for j in jobs:
         by_feature.setdefault(j["feature"], []).append(j)
     sections = prd_doc.sections_view(doc.read())
-    return {"product": {"exists": doc.exists(), "written": sum(1 for x in sections if x["filled"]), "total": len(sections), "path": prd_doc.PATH,
-                        "pitch": next((x["body"] for x in sections if x["id"] == "pitch" and x["filled"]), "")[:240]},
+    product = {"exists": doc.exists(), "written": sum(1 for x in sections if x["filled"]), "total": len(sections), "path": prd_doc.PATH,
+               "pitch": next((x["body"] for x in sections if x["id"] == "pitch" and x["filled"]), "")[:240]}
+    files = project_docs.project_files(root)
+    return {"product": product,
             "features": [{"id": f["id"], "name": f.get("name") or f["id"], "status": f.get("status"), "summary": str(f.get("summary") or "")[:200],
                           "jobs": len(by_feature.get(f["id"], [])), "jobs_done": sum(1 for j in by_feature.get(f["id"], []) if j["group"] == "done")} for f in features],
-            "jobs": jobs, "files": project_docs.project_files(root)}
+            "jobs": jobs, "files": files, "categories": [{"id": c, "label": label} for c, label in project_docs.CATEGORIES],
+            "gaps": docs_gaps(root, files, product)}
+
+
+def docs_gaps(root: Path, files: list[dict[str, Any]], product: dict[str, Any]) -> list[dict[str, Any]]:
+    """What the Documentation page says is missing, each with its fix. Never fails the page: a check that can't run is skipped."""
+    from orchestrator import architecture
+    try:
+        has_architecture = architecture.load_decision(root) is not None or (root / "docs" / "architecture.md").is_file()
+    except OSError:
+        has_architecture = False
+    readme_behind = 0
+    if (root / "README.md").is_file():
+        last = git(root, "log", "-1", "--format=%H", "--", "README.md").strip()
+        count = git(root, "rev-list", "--count", f"{last}..HEAD").strip() if last else ""
+        readme_behind = int(count) if count.isdigit() else 0
+    return project_docs.gaps(files, product, has_architecture=has_architecture,
+                             has_test_commands=(root / "docs" / "build-test-commands.md").is_file(), readme_behind=readme_behind,
+                             unmarked_plans=len(project_docs.plans_without_status(root, files)))
 
 
 def docs_export(root: Path) -> str:

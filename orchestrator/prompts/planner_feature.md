@@ -53,3 +53,5 @@ For each task, set complexity from the work itself, not the size of the parent j
 - **No Hallucinations**: If you don't find a file, don't invent one. Use your tools to find it.
 
 Follow the schema EXACTLY. Balance all braces and quotes.
+
+**You only plan.** You can't write files and don't need to: the builder creates the code, tests, docs and screenshots your plan lists. Never use `clarification_needed` to ask for write access or another tool; it is only for questions about what to build.

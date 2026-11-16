@@ -686,7 +686,11 @@ def unified_diff(old: str, new: str, old_label: str = "current", new_label: str 
 
 # --------------------------------------------------------------------------- drafting one from an existing project
 
-DIGEST_CHARS = 14_000
+DIGEST_CHARS = 20_000
+# Docs that state what the product should do: read first, and at more length, when drafting product requirements from a project.
+REQUIREMENT_DOC = re.compile(r"requirement|spec|vision|brief|design|product|roadmap|scope|user[-_ ]?stor", re.I)
+STRONG_REQUIREMENT_DOC = re.compile(r"requirement|vision|brief|product|scope", re.I)
+MAX_REQUIREMENT_DOCS = 4
 _SKIP_DIRS = {".git", ".orchestrator", "node_modules", ".build", "build", "dist", "target", "venv", ".venv", "__pycache__", "Pods", "DerivedData", ".idea", ".vscode"}
 _CODE_EXTS = {".py", ".js", ".jsx", ".ts", ".tsx", ".swift", ".kt", ".java", ".go", ".rs", ".rb", ".php", ".cs", ".c", ".cc", ".cpp", ".m", ".dart", ".sh", ".html", ".css", ".vue", ".svelte"}
 _DOC_NAMES = ("README.md", "README.rst", "README.txt", "README")
@@ -718,6 +722,28 @@ def can_draft(root: Path) -> bool:
     return False
 
 
+def requirement_docs(root: Path) -> list[Path]:
+    """Up to four markdown files under docs/ whose name says they hold requirements, specs or a design (never an old PRD or a plan),
+    so drafting product requirements starts from what the project already decided."""
+    docs = Path(root) / "docs"
+    if not docs.is_dir():
+        return []
+    found = []
+    try:
+        for f in docs.rglob("*.md"):
+            rel = f.relative_to(root)
+            if set(rel.parts) & _SKIP_DIRS or f.name.lower().startswith("prd") or "plans" in rel.parts:
+                continue
+            if REQUIREMENT_DOC.search(rel.as_posix()):
+                found.append(f)
+        # Whole-product documents first ("requirements", "vision"), then the shallowest (docs/ itself before a folder of
+        # per-feature specs), then the newest.
+        found.sort(key=lambda f: (not STRONG_REQUIREMENT_DOC.search(f.name), len(f.relative_to(docs).parts), -f.stat().st_mtime))
+    except OSError:
+        return []
+    return found[:MAX_REQUIREMENT_DOCS]
+
+
 def project_digest(root: Path, recent_commits: list[str] | None = None) -> str:
     """A bounded summary of an existing project for a model to infer what it is: notes, manifests, layout, languages, recent history."""
     root = Path(root)
@@ -727,13 +753,18 @@ def project_digest(root: Path, recent_commits: list[str] | None = None) -> str:
         if text.strip():
             parts.append(f"### {name}\n{text.strip()}")
             break
+    docs = root / "docs"
+    wanted = requirement_docs(root)
+    for f in wanted:  # what the product should do, in the project's own words: before the agent notes, which are about tooling
+        text = _read(f, 2500)
+        if text.strip():
+            parts.append(f"### {f.relative_to(root).as_posix()}\n{text.strip()}")
     for name in ("AGENTS.md", "CLAUDE.md"):
-        text = _read(root / name, 2000)
+        text = _read(root / name, 1200)
         if text.strip():
             parts.append(f"### {name}\n{text.strip()}")
-    docs = root / "docs"
     if docs.is_dir():
-        for f in sorted(docs.glob("*.md"))[:4]:
+        for f in [f for f in sorted(docs.glob("*.md")) if f not in wanted][:4]:
             if f.name.lower().startswith("prd"):
                 continue
             text = _read(f, 1500)

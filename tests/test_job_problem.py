@@ -100,7 +100,8 @@ class WiringTests(unittest.TestCase):
     def test_the_job_page_and_the_dialog_show_it(self):
         app = (STATIC / "app.js").read_text()
         self.assertIn('const rawHeroReason = String(problem?.summary || s.state.reason || "").trim();', app)
-        self.assertIn("Sign in to ${esc(problem.sign_in.name)}", app)
+        self.assertIn("const signIn = problem?.sign_in || s.state.sign_in;", app)
+        self.assertIn("Sign in to ${esc(signIn.name)}", app)
         self.assertIn("<strong>What needs fixing</strong>", app)
         self.assertIn("(await api(`jobs/${encodeURIComponent(params.job)}`)).problem", app)
         server = Path(glob.glob(str(ROOT / "orchestrator" / "web" / "ser*.py"))[0]).read_text()

@@ -7948,10 +7948,10 @@ class JobDetailPrinciplesTests(unittest.TestCase):
     def test_sign_in_action_initializes_problem_before_reading_it(self):
         # Execute the real declarations in page order, including the no-problem case.
         declarations = re.findall(
-            r"  const (?:problem =[^\n]+|signInAction =.*?;)",
+            r"  const (?:problem =[^\n]+|signIn =[^\n]+|signInAction =.*?;)",
             self.job_page, re.S,
         )
-        self.assertEqual(len(declarations), 2)
+        self.assertEqual(len(declarations), 3)
         script = """
 const assert = require('assert');
 const activeRun = null;
