@@ -451,7 +451,7 @@ details.more[open] > .more-menu { z-index: var(--z-menu); }
 .pill.done, .pill.ok { background: var(--ok-soft); color: var(--ok); }
 .pill.attention, .pill.warn { background: var(--warn-soft); color: var(--warn); }
 .pill.failed, .pill.bad { background: var(--bad-soft); color: var(--bad); }
-.pill.working, .pill.run { background: var(--accent-soft); color: var(--accent); }
+.pill.working, .pill.run, .pill.partial { background: var(--accent-soft); color: var(--accent); }
 .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); margin-right: var(--space-2); animation: pulse 1.6s infinite; }
 @keyframes pulse { 50% { opacity: .35; } }
 @media (prefers-reduced-motion: reduce) { .dot { animation: none; } }
@@ -4969,10 +4969,6 @@ dialog.ask-ai { width: min(34rem, 100vw); max-width: min(34rem, 100vw); height: 
 .ask-ai-head h2 { min-height: 0; min-width: 0; margin: 0; font-size: var(--type-page); justify-self: center; max-width: 100%; }
 .ask-ai-head-actions { display: flex; align-items: center; justify-content: flex-end; gap: var(--space-1); }
 .ask-ai-project-select { position: absolute; inset: 0; width: 100%; height: 100%; min-height: 0; opacity: 0; cursor: pointer; font-size: var(--type-body); }
-.ask-ai-clear { display: inline-grid; place-items: center; }
-.ask-ai-clear[hidden] { display: none; }
-.ask-ai-clear .icon { width: 18px; height: 18px; }
-.ask-ai-clear:hover { color: var(--bad); }
 .ask-ai-tiers { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--space-1); margin: 0; padding: var(--space-1); border: 1px solid var(--border); border-radius: var(--r-md); background: var(--panel-2); min-width: 0; }
 /* A provider left out because its key was refused: said plainly, with the way to fix it. */
 .ask-ai-problems { display: flex; flex-direction: column; gap: var(--space-1); }

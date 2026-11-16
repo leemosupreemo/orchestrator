@@ -367,8 +367,8 @@ const kindPill = (kind) => KIND_LABELS[kind] ? `<span class="kind-pill kind-${es
 // How complete the product requirements are, from how many of their fields have something in them.
 const prdStatusPill = (sections) => {
   const filled = sections.filter((x) => x.filled).length;
-  const [tone, label] = !sections.length || !filled ? ["failed", "Needs completion"]
-    : filled === sections.length ? ["done", "Completed"] : ["attention", "Partially completed"];
+  const [tone, label] = !sections.length || !filled ? ["attention", "Needs completion"] // yellow, wherever it shows
+    : filled === sections.length ? ["done", "Completed"] : ["partial", "Partially completed"];
   return `<span class="pill ${tone}" title="${filled} of ${sections.length} sections filled in">${label}</span>`;
 };
 const pill = (tone, label) => `<span class="pill ${esc(tone)}">${esc(label)}</span>`;
@@ -3457,8 +3457,7 @@ async function openAskAi(opts = {}) {
     <header class="ask-ai-head">
       <span aria-hidden="true"></span>
       <h2 class="ask-ai-project">${homeProjectTitle(state.project || { name: "Project" }).replace('class="home-project-select"', 'class="ask-ai-project-select"')}</h2>
-      <div class="ask-ai-head-actions"><button type="button" class="dialog-close-btn ask-ai-clear" data-ask-ai-clear aria-label="Clear conversation" title="Clear conversation" hidden><svg class="icon" aria-hidden="true"><use href="#i-trash"/></svg></button>
-        <button type="button" class="dialog-close-btn" aria-label="Close" data-ask-ai-close>✕</button></div>
+      <div class="ask-ai-head-actions"><button type="button" class="dialog-close-btn" aria-label="Close" data-ask-ai-close>✕</button></div>
     </header>
     <fieldset class="ask-ai-tiers" aria-label="Kind of AI"><legend class="sr-only">Kind of AI</legend><span class="muted">Loading…</span></fieldset>
     <div class="ask-ai-problems" aria-live="polite" hidden></div>
@@ -3495,9 +3494,8 @@ async function openAskAi(opts = {}) {
   };
   const status = dlg.querySelector(".ask-ai-status");
   const tiersBox = dlg.querySelector(".ask-ai-tiers");
-  const clearBtn = dlg.querySelector("[data-ask-ai-clear]");
   let messages = [];
-  const draw = () => { askAiThread(dlg, messages); clearBtn.hidden = !messages.length; };
+  const draw = () => { askAiThread(dlg, messages); };
   input.focus();
 
   let data;
@@ -3625,18 +3623,6 @@ async function openAskAi(opts = {}) {
     if (tiersBox.querySelector("input:checked")?.value) void ask(opts.prompt);
     else input.value = opts.prompt;
   }
-  // Clear opens the confirmation straight away. It removes this Ask AI conversation (shared by the people on the project) and
-  // nothing else: not job chats, the requirements, or other projects.
-  clearBtn.addEventListener("click", async () => {
-    if (askAiRun) { toast("Stop the question being answered first", "info"); return; }
-    const answer = await formDialog("Clear this conversation?",
-      `<p>This removes the Ask AI conversation for <strong>${esc(state.project?.name || "this project")}</strong>, for everyone on the project. It can't be undone.</p>
-       <p class="muted">Job chats, the product requirements and everything else stay as they are.</p>`,
-      "Clear conversation", { danger: true, compact: true });
-    if (answer === null) return;
-    try { await api("chat/clear", { method: "POST", body: {} }); messages = []; draw(); toast("Conversation cleared"); }
-    catch (e) { toast(e.message, true); }
-  });
 }
 
 document.addEventListener("click", (e) => {

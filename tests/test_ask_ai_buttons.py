@@ -85,7 +85,7 @@ class AskAiHeaderTests(unittest.TestCase):
         header = self.header()
         self.assertIn("homeProjectTitle(", header)
         self.assertLess(header.index('aria-hidden="true"></span>'), header.index("ask-ai-project"))
-        self.assertLess(header.index("ask-ai-project"), header.index("data-ask-ai-clear"))
+        self.assertLess(header.index("ask-ai-project"), header.index("data-ask-ai-close"))
 
     def test_the_dropdown_is_centred_by_a_three_column_header(self):
         css = (STATIC / "style.css").read_text()
@@ -142,51 +142,12 @@ console.log(JSON.stringify(out));
 
 
 class AskAiClearTests(unittest.TestCase):
-    """Clear (top right of the chat) opens a confirmation modal on the first click. It used to turn into "Clear for everyone?" and
-    wait for a second tap. Confirming clears this Ask AI conversation and nothing else."""
+    """The trash-can clear button is removed from the Ask AI header."""
 
-    def handler(self) -> str:
+    def test_no_trash_can_clear_button_in_ask_ai(self):
         source = ask_ai_source()
-        start = source.index("clearBtn.addEventListener")
-        return source[start:source.index("\n}\n", start)]
-
-    def test_clear_is_a_trash_icon_with_no_text_and_a_name_for_screen_readers(self):
-        source = ask_ai_source()
-        start = source.index("<button", source.index("ask-ai-head-actions"))
-        button = source[start:source.index("</button>", start) + len("</button>")]
-        self.assertIn("data-ask-ai-clear", button)
-        self.assertIn('href="#i-trash"', button)
-        self.assertIn('aria-label="Clear conversation"', button)
-        self.assertIn('title="Clear conversation"', button)
-        self.assertEqual(re.sub(r"<[^>]+>", "", button).strip(), "")  # nothing but the icon
-
-    def test_the_icon_exists_in_the_page_sprite(self):
-        self.assertRegex((STATIC / "index.html").read_text(), r'<symbol id="i-trash"')
-
-    def test_the_first_click_opens_a_confirmation_modal_not_a_second_tap(self):
-        source = ask_ai_source()
-        self.assertNotIn("Clear for everyone?", source)
-        self.assertNotIn("dataset.armed", source)
-        handler = self.handler()
-        self.assertIn("formDialog(", handler)
-        self.assertLess(handler.index("formDialog("), handler.index('api("chat/clear"'))  # asked before anything is removed
-
-    def test_the_modal_is_a_danger_confirmation_that_can_be_cancelled(self):
-        handler = self.handler()
-        self.assertIn("danger: true", handler)
-        self.assertIn("Clear conversation", handler)
-        self.assertRegex(handler, r"if \(answer === null\) return;")  # cancelling does nothing
-
-    def test_it_says_what_is_removed_and_what_is_not(self):
-        handler = self.handler()
-        for bit in ("can't be undone", "Job chats", "product requirements"):
-            self.assertIn(bit, handler)
-
-    def test_clearing_while_a_question_is_being_answered_is_refused(self):
-        self.assertIn("if (askAiRun)", self.handler().split("formDialog(")[0])
-
-    def test_only_the_chat_endpoint_is_called(self):
-        self.assertEqual(re.findall(r'api\("([^"]+)"', self.handler()), ["chat/clear"])
+        self.assertNotIn("data-ask-ai-clear", source)
+        self.assertNotIn("ask-ai-clear", source)
 
 
 class AskAiClearServerTests(unittest.TestCase):
