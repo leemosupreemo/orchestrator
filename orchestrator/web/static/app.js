@@ -13746,7 +13746,7 @@ function runStatus(r, vc = null) {
     : r.action === "plan_epic" && r.result_job ? `<a class="btn small primary" href="#/jobs/${encodeURIComponent(r.result_job)}">Review plan</a>` // the epic's waiting job is gone: planning replaced it
     : r.action === "logs_pull" ? `<a class="btn small" href="#/devlogs">See pulled logs</a>`
     : r.result_job && !r.job ? `<a class="btn small primary" href="#/jobs/${encodeURIComponent(r.result_job)}">Open job</a>`
-    : r.job ? `<a class="btn small primary" href="#/jobs/${encodeURIComponent(r.job)}">Back to job</a>` : "")
+    : "")
     : "";
   const targetJob = r.action === "plan_epic" && r.result_job ? r.result_job : r.job || r.result_job;
   const jobItem = targetJob
