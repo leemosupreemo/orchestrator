@@ -8505,13 +8505,13 @@ pages["ux-review"] = async (_, query) => {
     : failed ? "This attempt did not finish. Open the run details to see what stopped it, then try again."
     : pass && !newerRun ? "The saved report is shown below. Unreported checks remain marked Not checked."
     : newerRun ? "The run ended, but no saved report is available. Open its details before starting another review."
-    : "Find usability and design issues. Choose what to fix.";
-  const statusStrip = `<div class="banner ${statusTone}" id="ux-current-progress" role="status" aria-live="polite">
+    : "";
+  const statusStrip = status !== "Not started" ? `<div class="banner ${statusTone}" id="ux-current-progress" role="status" aria-live="polite">
       <span class="pill ${statusTone}">${status}</span><p>${statusMessage}</p>
       ${running && hasSteps ? `<progress class="ux-review-progress" value="${progress.step - 1}" max="4" aria-label="Completed review stages">${progress.step - 1} of 4</progress>` : ""}
       ${running ? `<span class="muted">Started ${esc(ago(run.started))}</span>` : ""}
       ${newerRun && run.last_line ? `<span class="muted">Latest activity: ${esc(run.last_line)}</span>` : ""}
-      ${run ? `<a class="btn small" href="#/runs/${encodeURIComponent(run.id)}">Open run details</a>` : ""}</div>`;
+      ${run ? `<a class="btn small" href="#/runs/${encodeURIComponent(run.id)}">Open run details</a>` : ""}</div>` : "";
 
   return {
     title: "UX review",
@@ -14630,7 +14630,7 @@ function runStatus(r, vc = null) {
     : "";
   const slow = calls.find((c) => c.age >= 120);
   const slowHint = slow
-    ? `No answer from ${slow.model} yet (${ageText(slow.age)}). Reasoning models often take 5 to 10 minutes${slow.timeout ? `. It moves on to the next model after ${Math.round(slow.timeout / 60)} minutes with no output, or ${Math.round(slow.timeout * 3 / 60)} minutes in all` : ""}.`
+    ? `Reasoning models often take 5–10m${slow.timeout ? `; switches after ${Math.round(slow.timeout / 60)}m silent or ${Math.round(slow.timeout * 3 / 60)}m max` : ""}.`
     : "";
   const stateText = r.waiting ? "Waiting for input" : stopping ? "Stopping…" : "";
   const stateItem = stateText ? `<div><dt>State</dt><dd>${esc(stateText)}</dd></div>` : "";

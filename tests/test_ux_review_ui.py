@@ -40,10 +40,11 @@ pages['ux-review']([], new URLSearchParams(input.latest ? 'id=older' : '')).then
                                  str(STATIC / "html.js")], text=True, capture_output=True, check=True)
         return json.loads(result.stdout)
 
-    def test_empty_review_explains_purpose_and_shows_checks_before_start(self):
+    def test_empty_review_omits_not_started_banner_and_shows_checks_before_start(self):
         page = self.render()
-        self.assertIn("Find usability and design issues. Choose what to fix.", page["html"])
-        self.assertIn("Not started", page["html"])
+        self.assertNotIn('id="ux-current-progress"', page["html"])
+        self.assertNotIn("Find usability and design issues. Choose what to fix.", page["html"])
+        self.assertNotIn("Not started", page["html"])
         self.assertIn("Visibility of system status", page["html"])
         self.assertIn("Keyboard focus", page["html"])
         self.assertIn("Not checked", page["html"])

@@ -322,11 +322,11 @@ for (const part of ['Step 2 of 10', 'Implementing changes', 'provider/model-a', 
 const slow = runStatus({...run, progress: {label: 'Waiting for claude-opus-4-7', agents: 1, models: ['gpt-5.4', 'claude-opus-4-7'], active_models: ['claude-opus-4-7'],
   calls: [{model: 'claude-opus-4-7', age: 485, timeout: 1200}],
   failed: [{model: 'gpt-5.4', reason: "Not supported <here>"}, {model: 'o1', reason: "couldn't start (is it installed?)"}]}});
-for (const part of ['Waiting for claude-opus-4-7', 'claude-opus-4-7 (working for 8m)', '2 models couldn&#39;t run', 'Not supported &lt;here&gt;', 'No answer from claude-opus-4-7 yet (8m)', 'after 20 minutes with no output, or 60 minutes in all']) assert(slow.includes(part) || slow.includes(part.replace('&#39;', "'")), part);
+for (const part of ['Waiting for claude-opus-4-7', 'claude-opus-4-7 (working for 8m)', '2 models couldn&#39;t run', 'Not supported &lt;here&gt;', 'Reasoning models often take 5–10m', 'switches after 20m silent or 60m max']) assert(slow.includes(part) || slow.includes(part.replace('&#39;', "'")), part);
 const fresh = runStatus({...run, progress: {label: 'Waiting for m', agents: 1, models: ['m'], active_models: ['m'], calls: [{model: 'm', age: 30, timeout: 600}], failed: []}});
 assert(fresh.includes('m (working for 30s)'));
-assert.doesNotMatch(fresh, /No answer from|Skipped models/);  // nothing to say until it has been quiet a while, or something was skipped
-assert.doesNotMatch(runStatus({...run, running: false, exit_code: 0, progress: {...run.progress, calls: [{model: 'm', age: 500, timeout: 600}]}}), /No answer from/);
+assert.doesNotMatch(fresh, /run-slow-hint|Skipped models/);  // nothing to say until it has been quiet a while, or something was skipped
+assert.doesNotMatch(runStatus({...run, running: false, exit_code: 0, progress: {...run.progress, calls: [{model: 'm', age: 500, timeout: 600}]}}), /run-slow-hint/);
 const flagged = runStatus({...run, running: false, exit_code: 0, progress: {label: 'Reading the model\'s answer', models: ['gpt-5.4', 'claude-opus-4-7'], failed: [{model: 'gpt-5.4', reason: 'Not supported'}]},
   result: {headline: '4 test files added with 49 tests, not checked yet', details: ['Location: Tests/'], tone: 'warn', partial: true}});
 for (const part of ['Partially complete', 'Paused: the work is saved',  '4 test files added with 49 tests', 'Location: Tests/', 'claude-opus-4-7']) assert(flagged.includes(part), part);
