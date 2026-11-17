@@ -123,6 +123,37 @@ class OwnershipTests(unittest.TestCase):
         handler._launch_run("delete_job", {"job": "j1"}, self.root)  # removing the stale copy is still allowed
         handler.server.sessions.start.assert_called_once()
 
+    def test_the_heartbeats_moves_mark_older_copies_only(self):
+        newer = self.root / ".orchestrator" / "jobs" / "j2.json"
+        newer.write_text(json.dumps({"job_id": "j2", "status": "executing", "imported_at": 500.0}))  # brought back here since
+        marked = ui.apply_moved_jobs({"j1": {"to": "MacBook Air", "imported_at": 100.0},
+                                      "j2": {"to": "MacBook Air", "imported_at": 100.0},
+                                      "missing": {"to": "MacBook Air", "imported_at": 100.0},
+                                      "../bad": {"to": "x", "imported_at": 1.0}}, roots=[self.root])
+        self.assertEqual(marked, ["j1"])
+        self.assertEqual(json.loads(self.path.read_text())["moved_to"], "MacBook Air")
+        self.assertNotIn("moved_to", json.loads(newer.read_text()))
+        self.assertEqual(ui.apply_moved_jobs({"j1": {"to": "MacBook Air", "imported_at": 100.0}}, roots=[self.root]), [])
+
+    def test_continue_here_restores_the_jobs_history_from_the_snapshot(self):
+        from orchestrator import account
+        source = {"job_id": "j9", "title": "Trees", "status": "debugging", "iteration": 6, "debug_phase": "propose",
+                  "allowed_models": ["claude-sonnet-5"], "task_commits": {"0": "abc123"},
+                  "clarification_history": [{"question": "Which zone?", "answer": "Camelot"}],
+                  "debug_history": [{"hypothesis": "wind too strong", "result": {"tests_ok": False}}],
+                  "plan": {"tasks": [{"title": "Sway"}], "risks": ["perf"]}, "worker_pid": 123, "blocker": {"kind": "git_lock"}}
+        raw = {"job_id": "j9", "title": "Trees", "status": "debugging", "tasks": [{"title": "Sway"}], "tasks_count": 1,
+               "record": account.job_record(source)}
+        with mock.patch("shutil.which", return_value=None):
+            ui.import_remote_job(self.root, {"job": raw, "source_machine_name": "Studio Mac"})
+        job = json.loads((self.root / ".orchestrator" / "jobs" / "j9.json").read_text())
+        for key in ("iteration", "debug_phase", "allowed_models", "task_commits", "clarification_history", "debug_history"):
+            self.assertEqual(job[key], source[key], key)
+        self.assertEqual(job["plan"]["risks"], ["perf"])
+        self.assertNotIn("worker_pid", job)  # this computer's state never travels
+        self.assertNotIn("blocker", job)
+        self.assertIsNone(account.job_record({"status": "completed", "iteration": 3}))
+
     def test_the_page_moves_the_older_copy_and_refuses_while_the_other_computer_works(self):
         app = (ROOT / "orchestrator" / "web" / "static" / "app.js").read_text(encoding="utf-8")
         self.assertIn("Number(rj.imported_at || 0) > Number(localImportedAt.get(jid) || 0)", app)

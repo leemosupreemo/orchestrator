@@ -39,9 +39,10 @@ Home's **Blocked** card shows it once with every job it holds up.
 - **Cleared or not.** `is_cleared` checks the blocker now rather than trusting when it was recorded: the lock file is
   gone, the person signed in since (`job_problem.signed_in_at`), the tool is on `PATH`, 2 GB is free, the folder is
   writable. Xcode and simulator problems can't be checked, so they wait for **Try again**.
-- **Resuming by itself.** Home posts to `/api/blockers` as it refreshes. The server resumes each job whose blocker is
-  cleared (`_resume_cleared_jobs`), at most once an hour per job and blocker (`auto_resumed_at`, carried over in
-  `last_blocker` when the run starts), so a blocker that comes straight back pauses the job again instead of looping.
+- **Resuming by itself.** The server's notifier loop (every 15 seconds, with or without a browser open) resumes each job
+  whose blocker is cleared (`UIServer.resume_cleared_jobs`). Home's refresh calls the same method. Each job is resumed at
+  most once an hour per blocker (`auto_resumed_at`, carried over in `last_blocker` when the run starts), so a blocker that
+  comes straight back pauses the job again instead of looping.
   **Clear the lock** (`/api/blockers/clear-lock`) removes a git lock only when it is over 10 seconds old and `lsof` shows
   nothing holds it, then resumes the jobs it held without waiting for the hour.
 
@@ -64,7 +65,10 @@ after the final commit. It never pushes the base branch, `main`, `master`, `deve
 mode. It's best effort: a failure is recorded as `backup_error` and tried again after the next task, and the job carries
 on. A computer that fails mid-job loses at most the task in progress.
 
-The job record itself is not yet backed up beyond the snapshot below.
+The job record is backed up in the snapshot below. For an unfinished job, the snapshot carries `record`
+(`account.job_record`): the answers to its questions, its fix attempts, its models, task commits and the rest of its plan,
+trimmed so one job stays under 30 KB. **Continue here** restores those fields, so a job picked up elsewhere keeps its
+history. What belongs to one computer (its process, its blockers, uncommitted files) never travels.
 
 ## Sharing state across computers
 
@@ -83,8 +87,13 @@ The job record itself is not yet backed up beyond the snapshot below.
 
 1. The new computer imports the job (`import_remote_job`) with `imported_from_machine` and `imported_at`, and fetches its
    branch.
-2. When Home on the computer it left sees, in the new computer's snapshot, a copy of one of its jobs imported from it and
-   newer than its own, it posts `/api/jobs/<id>/moved`. `mark_job_moved` records `moved_to`.
+2. The computer it left learns this two ways, whichever comes first:
+   - **From the account.** When the new computer's snapshot arrives, the control plane records the move on the computer the
+     job left (`_record_moves`, `moved_jobs` on its machine record) and returns it in that computer's next heartbeat reply.
+     `apply_moved_jobs` then marks every copy older than the one that moved. No browser is needed.
+   - **From Home.** Home there sees the newer copy in the other computer's snapshot and posts `/api/jobs/<id>/moved`.
+
+   Either way, `mark_job_moved` records `moved_to`.
 3. A moved job reads **Moved to <computer>** (group `done`, no action). `_launch_run` refuses every run on it except
    delete and discard, and `execute_job` returns before touching git or a model.
 4. Continuing it back imports the other copy over the moved one, since that copy is newer. Comparing `imported_at` stops the
@@ -92,8 +101,8 @@ The job record itself is not yet backed up beyond the snapshot below.
 
 Continue here is refused while the snapshot shows a run working on the job on the other computer.
 
-**Limits.** The "Moved to" mark is applied when Home loads on the computer the job left. Until then its copy is unmarked,
-but it doesn't run by itself.
+**Limits.** The account route needs the control plane deployed with `_record_moves`. Until it is, only Home marks a
+moved job. A computer that's offline learns of a move at its next heartbeat.
 
 ## Tests
 
@@ -104,6 +113,8 @@ but it doesn't run by itself.
 | Tests passed, not committed; no fix offered for an old error | `tests/test_passed_uncommitted.py` |
 | Git lock recovery in the commit step | `tests/test_worker_run.py` (`test_committing_finished_work_clears_a_leftover_git_lock_and_retries`) |
 | Snapshot contents and sending on change | `tests/test_snapshot_sync.py` |
-| Backup push (in throwaway repositories) and job ownership | `tests/test_job_ownership.py` |
+| Backup push (in throwaway repositories), job ownership, moves from the heartbeat, record restore | `tests/test_job_ownership.py` |
+| Commit the work, end to end in a throwaway repository | `tests/test_passed_uncommitted.py` (`CommitOnlyResumeTests`) |
+| Moves recorded by the control plane | `tests/test_control_plane.py` (`MovedJobTests`) |
 
 Git-touching tests run only in temporary repositories with a local bare remote, never in this checkout.

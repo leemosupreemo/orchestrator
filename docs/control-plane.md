@@ -43,7 +43,7 @@ While `orchestrator ui` runs on a paired computer, it reports every 60 seconds w
 
 ## Jobs across computers
 
-With the heartbeat, each computer sends a snapshot of its recent jobs (`machine/sync`), carrying each job's state as its own job page shows it and the run working on it now. It is rebuilt every 10 seconds and sent when it changes, so other computers see a job pause, finish or move on within seconds. The snapshot is a read-only copy: the computer running a job is its only source of truth, and **Continue here** moves a job rather than copying it. See [Job recovery and ownership](job-recovery.md).
+With the heartbeat, each computer sends a snapshot of its recent jobs (`machine/sync`), carrying each job's state as its own job page shows it and the run working on it now. It is rebuilt every 10 seconds and sent when it changes, so other computers see a job pause, finish or move on within seconds. The snapshot is a read-only copy: the computer running a job is its only source of truth, and **Continue here** moves a job rather than copying it. See [Job recovery and ownership](job-recovery.md). When a snapshot shows a job imported from another of the owner's computers, the control plane records the move on that computer (`moved_jobs`) and returns it in its heartbeat reply, so it stops working on its copy.
 
 ## Notifications
 

@@ -292,6 +292,42 @@ def _job_state(job: dict[str, Any], root: Path) -> dict[str, Any] | None:
             "next": {"action": nxt.get("action"), "label": nxt.get("label")} if isinstance(nxt, dict) else None}
 
 
+# The rest of an unfinished job's record, beyond the summary fields: with these, Continue here on another computer picks the
+# job up with its history (answers, fix attempts, models, task commits) rather than a summary. Trimmed to stay small.
+RECORD_FIELDS = ("clarification_history", "debug_history", "allowed_models", "allowed_machines", "planner", "builder", "reviewer",
+                 "task_commits", "iteration", "max_iterations", "debug_phase", "debug_pause_reason", "feature", "epic",
+                 "test_command_override", "ai_modified_files", "ai_untracked_files")
+MAX_RECORD_BYTES = 30_000
+PLAN_FIELDS = ("risks", "constraints", "assumptions", "likely_files", "acceptance_criteria", "test_cases")
+
+
+def _trimmed(value: Any, depth: int = 0) -> Any:
+    if isinstance(value, str):
+        return value[:1000]
+    if isinstance(value, list):
+        return [_trimmed(v, depth + 1) for v in value[-10:]] if depth < 4 else []
+    if isinstance(value, dict):
+        return {str(k)[:80]: _trimmed(v, depth + 1) for k, v in list(value.items())[:40]} if depth < 4 else {}
+    return value if isinstance(value, (int, float, bool)) or value is None else str(value)[:200]
+
+
+def job_record(job: dict[str, Any]) -> dict[str, Any] | None:
+    """The backup of an unfinished job's record carried in the snapshot (None for a finished job)."""
+    if job.get("status") in ("completed", "archived"):
+        return None
+    plan = job.get("plan") if isinstance(job.get("plan"), dict) else {}
+    record = {k: _trimmed(job[k]) for k in RECORD_FIELDS if job.get(k) not in (None, [], {}, "")}
+    extra = {k: _trimmed(plan[k]) for k in PLAN_FIELDS if plan.get(k) not in (None, [], {}, "")}
+    if extra:
+        record["plan_extra"] = extra
+    # The whole snapshot is one database document (1 MB at most, up to 100 jobs): the bulkiest history goes first.
+    for bulky in ("debug_history", "plan_extra", "clarification_history", "ai_modified_files", "ai_untracked_files"):
+        if len(json.dumps(record, default=str)) <= MAX_RECORD_BYTES:
+            break
+        record.pop(bulky, None)
+    return record or None
+
+
 def build_snapshot(root: Path | None = None, live: dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:
     """Assemble lightweight offline view of recent projects and jobs for the hosted app. `live`: job id -> its run going now
     ({"label": "Fix attempt", "step": "..."}), so other computers see progress, not only the status."""
@@ -364,6 +400,7 @@ def build_snapshot(root: Path | None = None, live: dict[str, dict[str, Any]] | N
                             "blocker": {k: jdata["blocker"].get(k) for k in ("kind", "title", "detail")} if isinstance(jdata.get("blocker"), dict) else None,
                             "imported_from_machine": jdata.get("imported_from_machine"),
                             "imported_at": jdata.get("imported_at"),
+                            "record": job_record(jdata),
                             "moved_to": jdata.get("moved_to"),
                             "tasks_count": len(tasks_raw),
                             "tasks_done": len(done_indices),

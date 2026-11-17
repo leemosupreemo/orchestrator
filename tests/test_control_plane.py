@@ -66,6 +66,35 @@ class PlaneCase(unittest.TestCase):
         return self.call("POST", "/cp/machine/heartbeat", {"endpoint": endpoint}, machine_auth=f"Machine {machine_id}:{secret}")
 
 
+class MovedJobTests(PlaneCase):
+    """Continue here moves a job: when one computer's snapshot says it imported a job from another, the account tells that
+    other computer in its heartbeat reply, so it stops working on its copy even with no browser open."""
+
+    def sync(self, machine_id, secret, jobs):
+        return self.call("POST", "/cp/machine/sync", {"projects": [], "recent_jobs": jobs}, machine_auth=f"Machine {machine_id}:{secret}")
+
+    def test_the_computer_a_job_left_hears_about_it_in_its_heartbeat(self):
+        studio = self.pair(name="Studio Mac")
+        air = self.pair(name="MacBook Air")
+        self.assertNotIn("moved_jobs", self.beat(*studio)[1])
+        self.sync(*air, [{"job_id": "j1", "imported_from_machine": "Studio Mac", "imported_at": 100.0},
+                         {"job_id": "j2"},  # made here: not a move
+                         {"job_id": "j3", "imported_from_machine": "Studio Mac", "imported_at": 50.0, "moved_to": "Studio Mac"}])
+        status, reply = self.beat(*studio)
+        self.assertEqual(status, 200)
+        self.assertEqual(reply["moved_jobs"], {"j1": {"to": "MacBook Air", "imported_at": 100.0}})
+        self.assertNotIn("moved_jobs", self.beat(*air)[1])
+
+    def test_only_the_same_accounts_computers_and_the_newest_move_count(self):
+        studio = self.pair(name="Studio Mac")
+        air = self.pair(name="MacBook Air")
+        other = self.pair(user="bob-token", name="Studio Mac")  # someone else's computer with the same name
+        self.sync(*air, [{"job_id": "j1", "imported_from_machine": "Studio Mac", "imported_at": 100.0}])
+        self.sync(*air, [{"job_id": "j1", "imported_from_machine": "Studio Mac", "imported_at": 90.0}])  # older: ignored
+        self.assertEqual(self.beat(*studio)[1]["moved_jobs"]["j1"]["imported_at"], 100.0)
+        self.assertNotIn("moved_jobs", self.beat(*other)[1])
+
+
 class RateLimitTests(PlaneCase):
     def start(self, ip):
         return self.plane.handle("POST", "/cp/pair/start", {"fastly-client-ip": ip}, {}, verify_user)[0]

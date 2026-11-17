@@ -1862,6 +1862,12 @@ def import_remote_job(root: Path, body: dict[str, Any]) -> dict[str, Any]:
             ]
         if raw.get("summary") or tasks:
             doc["plan"] = {"summary": raw.get("summary") or "", "tasks": tasks}
+        record = raw.get("record") if isinstance(raw.get("record"), dict) else {}
+        for key in account.RECORD_FIELDS:  # the job's history from the computer it came from (account.job_record)
+            if record.get(key) not in (None, [], {}, ""):
+                doc[key] = record[key]
+        if isinstance(record.get("plan_extra"), dict) and "plan" in doc:
+            doc["plan"].update({k: v for k, v in record["plan_extra"].items() if k in account.PLAN_FIELDS})
         if body.get("source_machine_name"):
             doc["imported_from_machine"] = str(body["source_machine_name"])
         doc["imported_at"] = time.time()  # the newer copy is the job's owner (see mark_job_moved)
@@ -1876,6 +1882,28 @@ def import_remote_job(root: Path, body: dict[str, Any]) -> dict[str, Any]:
         except (OSError, subprocess.TimeoutExpired):
             fetched = False
     return {"ok": True, "id": job_id, "already_existed": existed and not taking_back, "fetched_branch": fetched}
+
+
+def apply_moved_jobs(moves: Any, roots: list[Path] | None = None) -> list[str]:
+    """The account's list of jobs another computer took over (heartbeat reply: {job id: {to, imported_at}}). Each copy here
+    that is older than the one there is marked moved, in whichever recent project holds it. Returns the ids marked."""
+    if not isinstance(moves, dict) or not moves:
+        return []
+    if roots is None:
+        roots = [Path(p["root"]).expanduser() for p in load_recent_projects().get("projects", []) if p.get("root")]
+    marked = []
+    for job_id, move in moves.items():
+        if not isinstance(move, dict) or not isinstance(job_id, str) or not re.fullmatch(r"[A-Za-z0-9._-]{1,120}", job_id):
+            continue
+        for root in roots:
+            path = jobs_dir(root) / f"{job_id}.json"
+            if not path.is_file():
+                continue
+            local = read_json_file(path)
+            if not local.get("moved_to") and float(local.get("imported_at") or 0) < float(move.get("imported_at") or 0) \
+                    and mark_job_moved(root, job_id, str(move.get("to") or "")):
+                marked.append(job_id)
+    return marked
 
 
 def mark_job_moved(root: Path, job_id: str, machine_name: str) -> bool:
@@ -6557,6 +6585,12 @@ class UIServer(ThreadingHTTPServer):
                         last_sync[0] = time.time()
                     except Exception:
                         pass
+                if isinstance(reply, dict) and reply.get("moved_jobs"):
+                    try:  # jobs another computer took over (Continue here there): stop working on them here
+                        if marked := apply_moved_jobs(reply["moved_jobs"]):
+                            print(f"  Moved to another computer: {', '.join(marked)}", flush=True)
+                    except Exception:
+                        pass
                 if isinstance(reply, dict) and reply.get("reset_tunnel") and manager:
                     manager.request("legacy-" + secrets.token_hex(12), "repair")
                 elif isinstance(reply, dict) and reply.get("reset_tunnel") and self.on_reset_tunnel:
@@ -6629,6 +6663,11 @@ class UIServer(ThreadingHTTPServer):
                     self.packages_tick()
                 except Exception as exc:  # a package review is a nicety: never let it stop the loop
                     print(f"  Package review: {exc}", flush=True)
+                try:
+                    if self.root is not None:
+                        self.resume_cleared_jobs(self.root)  # blocked jobs whose blocker is gone, browser open or not
+                except Exception as exc:
+                    print(f"  Blocked jobs: {exc}", flush=True)
 
         thread = threading.Thread(target=loop, daemon=True, name="notifier")
         self._tracker = tracker
@@ -6752,6 +6791,28 @@ class UIServer(ThreadingHTTPServer):
             run["finished"] = decision["finished"]
             plan_run.save(runtime, run)
             return self._plan_payload(run, decision)
+
+    def resume_cleared_jobs(self, root: Path, force: bool = False) -> list[str]:
+        """Resumes the paused jobs whose blocker is cleared now (blockers.py): each at most once an hour (`force`, after Clear
+        the lock, skips that wait), so a blocker that comes straight back pauses the job again instead of looping. Runs from
+        the notifier loop, so it works with no browser open; Home's refresh and Clear the lock call it too."""
+        from orchestrator import blockers
+        running = self.sessions.running_job_ids()
+        resumed = []
+        for job_id, path, job in blocked_jobs(root):
+            blocker = job["blocker"]
+            if job_id in running or job.get("moved_to") or (str(root), job_id) in self._publishing_jobs \
+                    or not blockers.is_cleared(blocker, root) or not (force or blockers.due_for_auto_resume(blocker)):
+                continue
+            job["blocker"] = {**blocker, "auto_resumed_at": time.time()}
+            write_json_file(path, job)
+            title = job_summary(path, job)["title"]
+            session = self.sessions.start("resume", f"{ACTIONS['resume'].title} · {title}", ACTIONS["resume"].build({"job": job_id}, root),
+                                          root, self.child_env(), runtime_dir(root) / "logs" / "ui")
+            session.job_id, session.job_title = job_id, title
+            self.audit.record("blocked_job_resumed", "Orchestrator", ip="server", job=job_id, blocker=blocker.get("kind"))
+            resumed.append(job_id)
+        return resumed
 
     def notify_once(self, tracker: "notifier.Tracker", jobs: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
         root = self.root
@@ -9112,24 +9173,7 @@ class UIHandler(BaseHTTPRequestHandler):
         self._json({"project": project_state(candidate)})
 
     def _resume_cleared_jobs(self, root: Path, force: bool = False) -> list[str]:
-        """Resumes the paused jobs whose blocker is cleared now: each at most once an hour (`force`, after Clear the lock,
-        skips that wait), so a blocker that comes straight back pauses the job again instead of looping."""
-        from orchestrator import blockers
-        running = self.server.sessions.running_job_ids()
-        resumed = []
-        for job_id, path, job in blocked_jobs(root):
-            blocker = job["blocker"]
-            if job_id in running or not blockers.is_cleared(blocker, root) or not (force or blockers.due_for_auto_resume(blocker)):
-                continue
-            job["blocker"] = {**blocker, "auto_resumed_at": time.time()}
-            write_json_file(path, job)
-            try:
-                self._launch_run("resume", {"job": job_id}, root)
-            except UIError:
-                continue
-            self._audit("blocked_job_resumed", job=job_id, blocker=blocker.get("kind"))
-            resumed.append(job_id)
-        return resumed
+        return self.server.resume_cleared_jobs(root, force=force)
 
     def _launch_run(self, key: str, params: dict[str, Any], root: Path, cols: int = 110, rows: int = 32,
                     ask_about_duplicates: bool = False) -> PtySession:

@@ -9,6 +9,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 from orchestrator import blockers
@@ -96,16 +97,24 @@ class AutoResumeTests(unittest.TestCase):
         still = {**blockers.detect("bash: zzz-missing-tool: command not found"), "detected_at": 1.0}
         ui.write_json_file(jobs_dir / "a.json", {"status": "human-needed", "blocker": cleared})
         ui.write_json_file(jobs_dir / "b.json", {"status": "human-needed", "blocker": still})
-        handler = ui.UIHandler.__new__(ui.UIHandler)
-        handler.server = mock.Mock()
-        handler.server.sessions.running_job_ids.return_value = set()
-        handler._launch_run = mock.Mock()
-        handler._audit = mock.Mock()
-        self.assertEqual(handler._resume_cleared_jobs(root), ["a"])
-        handler._launch_run.assert_called_once_with("resume", {"job": "a"}, root)
-        self.assertEqual(handler._resume_cleared_jobs(root), [])  # already resumed this hour: not again
-        self.assertEqual(handler._resume_cleared_jobs(root, force=True), ["a"])  # Clear the lock skips the wait
+        # the server's own loop does this (no browser needed); Home's refresh and Clear the lock call the same method
+        started = []
+        server = SimpleNamespace(
+            sessions=SimpleNamespace(running_job_ids=lambda: set(),
+                                     start=lambda key, title, argv, *a, **k: started.append((key, argv)) or SimpleNamespace()),
+            _publishing_jobs=set(), child_env=lambda: {}, audit=mock.Mock())
+        resume = lambda **kw: ui.UIServer.resume_cleared_jobs(server, root, **kw)
+        self.assertEqual(resume(), ["a"])
+        self.assertEqual([key for key, _ in started], ["resume"])
+        self.assertTrue(any(str(a).endswith("a.json") for a in started[0][1]))
+        server.audit.record.assert_called_once()
+        self.assertEqual(resume(), [])  # already resumed this hour: not again
+        self.assertEqual(resume(force=True), ["a"])  # Clear the lock skips the wait
 
+    def test_the_servers_own_loop_resumes_them(self):
+        source = (ROOT / "orchestrator" / "web" / "server.py").read_text(encoding="utf-8")
+        loop = source[source.index("    def start_notifier("):source.index("    def _plan_inputs(")]
+        self.assertIn("self.resume_cleared_jobs(self.root)", loop)
 
 class WiringTests(unittest.TestCase):
     def test_the_worker_pauses_on_a_blocker_instead_of_starting_fix_attempts(self):

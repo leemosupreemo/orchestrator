@@ -2,12 +2,20 @@
 instead of reading "Partially complete · Next: debug failing tests" and building again."""
 from __future__ import annotations
 
+import copy
+import json
+import subprocess
+import sys
+import tempfile
 import unittest
+from types import SimpleNamespace
+from unittest import mock
 from pathlib import Path
 
 from orchestrator.web import server as ui
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "orchestrator" / "scripts"))
 
 
 class PassedUncommittedTests(unittest.TestCase):
@@ -37,6 +45,68 @@ class PassedUncommittedTests(unittest.TestCase):
         self.assertIn('!["debug", "answer", "merge", "complete", "approve", "schedule", "execute"].includes(next?.action)', app)
         source = (ROOT / "orchestrator" / "scripts" / "worker_run.py").read_text(encoding="utf-8")
         self.assertIn('        # SUCCESS POINT\n        job.pop("last_error", None)', source)
+
+
+class CommitOnlyResumeTests(unittest.TestCase):
+    """Resume on "Tests passed, not committed" commits the saved files, and only those, without running the builder.
+    Runs in a throwaway repository with a local bare remote, never this checkout."""
+
+    def git(self, cwd, *args):
+        return subprocess.run(["git", *args], cwd=str(cwd), check=True, capture_output=True, text=True).stdout.strip()
+
+    def test_resume_commits_the_saved_files_without_building_again(self):
+        import worker_run as worker
+        import common
+        tmp = Path(tempfile.mkdtemp())
+        remote, repo = tmp / "remote.git", tmp / "repo"
+        self.git(tmp, "init", "-q", "--bare", str(remote))
+        repo.mkdir()
+        self.git(repo, "init", "-q", "-b", "job/grass")
+        self.git(repo, "config", "user.email", "test@example.invalid")
+        self.git(repo, "config", "user.name", "Test")
+        self.git(repo, "remote", "add", "origin", str(remote))
+        for name in ("Grass.cs", "helper.cjs"):
+            (repo / name).write_text("old")
+        self.git(repo, "add", ".")
+        self.git(repo, "commit", "-q", "-m", "first")
+        (repo / "Grass.cs").write_text("new grass")         # the job's work, tested and passing
+        (repo / "helper.cjs").write_text("a tool's update")  # changed meanwhile by something else: not the job's
+        (repo / "test_grass.py").write_text("ok")            # the test the job wrote
+        jobs = tmp / "jobs"
+        jobs.mkdir()
+        job_path = jobs / "j1.json"
+        job_path.write_text(json.dumps({
+            "job_id": "j1", "title": "Grass", "type": "quick", "status": "human-needed", "branch": "job/grass",
+            "base_branch": "main", "branch_mode": "new", "last_error": "Command 'git add' returned non-zero exit status 128.",
+            "passed_uncommitted": {"files": ["Grass.cs", "test_grass.py"]}}))
+
+        class Stop(BaseException):  # past the commit: stop before the pull request step
+            pass
+
+        def phase(name, *a, **k):
+            if name == "pull_request":
+                raise Stop()
+
+        config = copy.copy(worker.PROJECT_CONFIG)  # the real config, pointed at the throwaway repository
+        for key, value in (("base_branch", "main"), ("git_remote", str(remote)), ("firebase_distribution", False), ("delivery_platform", "ios")):
+            object.__setattr__(config, key, value)
+        with mock.patch.object(worker, "ROOT", repo), mock.patch.object(common, "ROOT", repo), \
+             mock.patch.object(worker, "PROJECT_CONFIG", config), mock.patch.object(worker, "OUTPUT_DIR", tmp / "out"), \
+             mock.patch.object(worker, "prepare_git_branch", return_value=("job/grass", "main")), \
+             mock.patch.object(worker, "run_builder", side_effect=AssertionError("the builder ran again")), \
+             mock.patch.object(worker, "update_issue_status"), mock.patch.object(worker, "gh_comment"), \
+             mock.patch.object(worker, "send_notifications"), mock.patch.object(worker, "refresh_yolo", return_value=False), \
+             mock.patch.object(worker, "StatusBar"), mock.patch.object(worker, "print_phase", side_effect=phase), \
+             mock.patch("orchestrator.analytics.track_job_run"):
+            with self.assertRaises(Stop):
+                worker.execute_job(job_path, resume=True)
+
+        committed = self.git(repo, "show", "--name-only", "--format=", "HEAD").split()
+        self.assertEqual(sorted(committed), ["Grass.cs", "test_grass.py"])
+        self.assertIn("helper.cjs", self.git(repo, "status", "--porcelain"))  # left alone
+        job = json.loads(job_path.read_text())
+        self.assertNotIn("passed_uncommitted", job)
+        self.assertEqual(self.git(remote, "rev-parse", "job/grass"), self.git(repo, "rev-parse", "HEAD"))  # and backed up
 
 if __name__ == "__main__":
     unittest.main()

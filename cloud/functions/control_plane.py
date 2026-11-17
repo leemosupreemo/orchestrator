@@ -68,6 +68,7 @@ CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"  # no 0/O, 1/I/L
 CODE_LENGTH = 8
 SETUP_PROFILE_LIMIT = 200_000  # characters of settings and prompts one computer may share per project
 MAX_MACHINES_PER_USER = 20
+MAX_MOVED_JOBS = 200  # jobs another computer took over, kept per computer for its heartbeat reply
 MAX_DEVICES_PER_USER = 20
 MAX_EVENTS_PER_CALL = 10
 PAIR_START_LIMIT = (10, 3600)  # at most this many pairing codes (count, seconds) from one address
@@ -401,6 +402,8 @@ class ControlPlane:
         self.store.update("machines", machine_id, fields)
         reply = {"ok": True, "owner_email": machine["owner_email"], "update_requested": update_requested,
                  "reset_tunnel": reset_tunnel_requested}
+        if isinstance(machine.get("moved_jobs"), dict) and machine["moved_jobs"]:
+            reply["moved_jobs"] = machine["moved_jobs"]  # jobs another computer took over: this one stops working on them
         if command is not None and api_version >= 4:
             reply["connection_command"] = command
         operation = self._update_operation(machine_id, ack=body.get("update_ack"), delivery=True)
@@ -518,7 +521,35 @@ class ControlPlane:
         }
         self.store.set("machine_snapshots", machine_id, snapshot)
         self.store.update("machines", machine_id, {"has_snapshot": True, "snapshot_synced_at": now})
+        self._record_moves(machine_id, machine, recent_jobs)
         return {"ok": True, "synced_at": now}
+
+    def _record_moves(self, machine_id: str, machine: dict[str, Any], recent_jobs: list[Any]) -> None:
+        """A job this computer continued from another of the owner's computers (Continue here) is owned here now. Tell the
+        computer it came from, through its next heartbeat reply, so it stops working on its copy even with no browser open."""
+        by_source: dict[str, dict[str, dict[str, Any]]] = {}
+        for job in recent_jobs[:100]:
+            if not isinstance(job, dict) or job.get("moved_to"):
+                continue
+            job_id, source, at = job.get("job_id"), job.get("imported_from_machine"), job.get("imported_at")
+            if (isinstance(job_id, str) and 0 < len(job_id) <= 120 and isinstance(source, str) and source
+                    and isinstance(at, (int, float)) and not isinstance(at, bool) and source != machine.get("name")):
+                by_source.setdefault(source[:80], {})[job_id] = {"to": _clean(machine.get("name") or "another computer", 80),
+                                                                "imported_at": float(at)}
+        if not by_source:
+            return
+        for other_id, other in self.store.where("machines", "owner_uid", machine["owner_uid"]):
+            moves = by_source.get(str(other.get("name") or ""))
+            if other_id == machine_id or not moves:
+                continue
+            current = other.get("moved_jobs") if isinstance(other.get("moved_jobs"), dict) else {}
+            merged = dict(current)
+            for job_id, move in moves.items():
+                if float((current.get(job_id) or {}).get("imported_at") or 0) < move["imported_at"]:
+                    merged[job_id] = move
+            if merged != current:
+                newest = sorted(merged.items(), key=lambda kv: kv[1].get("imported_at") or 0, reverse=True)[:MAX_MOVED_JOBS]
+                self.store.update("machines", other_id, {"moved_jobs": dict(newest)})
 
     # -- setup profiles: what a computer has set up for a project, so a computer that is further behind can copy it
     # (orchestrator/setup_copy.py decides what is shared: settings only, never keys). Only the same account's computers see them.
