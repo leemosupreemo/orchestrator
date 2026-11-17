@@ -12,6 +12,7 @@ These integrations are optional. Swift Orchestrator runs through local scripts a
 | Playwright MCP | Inspect and automate web UIs, dashboards, docs portals, and browser-based admin tools. | Optional; useful only for web/browser workflows. |
 | Unity MCP | Unity MCP: read the Editor console, run tests and inspect scenes in an open Unity Editor (for example MCP for Unity, or Unity's own MCP bridge). | Optional; useful only for Unity projects. The orchestrator runs Unity in batchmode itself. |
 | REA MCP (`rea-agents`) | Reverse engineer binaries, mobile apps (APK/IPA), Electron packages, or network captures to recover architecture, screens, and product specs. | Optional; useful for reverse engineering existing applications into product requirements. |
+| Cruft Code Sweep (Claude Code skill, `sean-sunagaku/claude-code-plugin`) | A whole-codebase sweep for dead code, deprecated logic and leftovers: checks git history and dependencies before rating each find Safe, Likely safe, Risky or Keep, in a report. Complements the AI bloat check Orchestrator runs on each job's changes. Install: `npx skillfish add sean-sunagaku/claude-code-plugin cruft-code-sweep` (third party, MIT; review the repository first). | Optional; a skill for the assistant, not an MCP server. |
 
 ## Detection
 

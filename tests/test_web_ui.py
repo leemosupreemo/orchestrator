@@ -8810,7 +8810,7 @@ class ConnectionsAndModalLayoutConsistencyTests(unittest.TestCase):
         self.assertIn("Shelldrop", js)
         self.assertIn("https://shelldrop.app", js)
         self.assertIn("Recommended MCP servers", js)
-        for mcp in ("superpowers", "context7", "openspec", "github", "xcodebuild", "xcodediagnostics", "swiftlens", "mcp-ssh-manager", "rea"):
+        for mcp in ("superpowers", "cruft-code-sweep", "context7", "openspec", "github", "xcodebuild", "xcodediagnostics", "swiftlens", "mcp-ssh-manager", "rea"):
             self.assertIn(mcp, js)
         self.assertIn("brew install node", js)
         self.assertIn(".rec-section-header", css)

@@ -12133,6 +12133,13 @@ const RECOMMENDED_MCPS = [
     cmd: "npx -y superpowers-mcp",
   },
   {
+    id: "cruft-code-sweep",
+    name: "cruft-code-sweep",
+    badge: "Cleanup skill",
+    blurb: "A Claude Code skill (not an MCP server) that sweeps the whole codebase for dead code, deprecated logic and leftovers, checks git history and dependencies before calling anything safe to remove, and writes a report rating each find Safe, Likely safe, Risky or Keep. It complements the AI bloat check Orchestrator runs on each job's changes. MIT, by sean-sunagaku: review github.com/sean-sunagaku/claude-code-plugin before installing.",
+    cmd: "npx skillfish add sean-sunagaku/claude-code-plugin cruft-code-sweep",
+  },
+  {
     id: "context7",
     name: "context7",
     badge: "Live docs",
