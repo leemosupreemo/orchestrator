@@ -423,6 +423,8 @@
           <p class="card-b muted card-note">Checks tool installation and sign-in on enabled secondary computers. It does not run model requests.</p>
           <div class="ai-machine-status-list" id="ai-secondary-computers">${secondary.map((m) => `<div class="ai-machine-status" data-ai-machine="${escapeHtml(m.name)}"><strong>${escapeHtml(m.name)}</strong><span class="muted">Checking…</span></div>`).join("")}</div>
         </section>` : ""}
+        ${available ? `<section class="card configuration-card" id="ai-abilities"><div class="card-h"><h2>What your AI tools can do</h2></div>
+          <div class="card-b"><p class="muted">Checking each tool's commands and skills…</p></div></section>` : ""}
         ${roleAssignmentsCard(state)}
         ${keys ? otherKeysCard(keys.filter((k) => !providers.some((p) => p.key === k.id)), state) : ""}
         <section class="card configuration-card">

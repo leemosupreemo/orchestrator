@@ -4753,13 +4753,17 @@ def save_servers_for_app(root: Path, body: dict[str, Any]) -> dict[str, Any]:
 
 
 def build_ai_review(params: dict[str, Any], root: Path, terminal: bool) -> list[str]:
+    """A review of a job's branch by an AI tool (tool_abilities.py). The terminal one is always Claude's billed cloud review
+    (owner only, confirmed first); the plain one is any review that runs without typing, never that one."""
     from orchestrator import tool_abilities
+    if terminal:
+        return orchestrator_argv("script", "run_ability.py", _job_path(params, root), "claude-ultrareview")
     try:
         ability = tool_abilities.find(str(params.get("ability") or ""))
     except KeyError:
         raise UIError("Unknown AI ability.")
-    if (ability.get("mode") == "terminal") != terminal:
-        raise UIError("That ability runs another way.")
+    if ability.get("mode") == "terminal":
+        raise UIError("That review runs in its own way.")
     return orchestrator_argv("script", "run_ability.py", _job_path(params, root), ability["id"])
 
 

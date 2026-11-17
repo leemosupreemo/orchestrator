@@ -4663,6 +4663,9 @@ function jobHeaderActions(s, links = [], ctx = {}) {
         && ["Revise plan…", act("revise", j), "Ask the AI to re-plan with what should change"],
       idle && !reviewed && !ctx.planShown && ctx.canSplinter && ["Split into jobs…", act("splinter_job", j), "Each task becomes its own job, with a GitHub sub-issue"],
       idle && simulator && ctx.hasChanges && ["Check on simulator", act("run_visual_check", j), "Boot the simulator and capture screenshots"],
+      // Reviews by the AI tools themselves (tool_abilities.py), only those this computer's ready tools have
+      ...(s.branch && ctx.hasChanges ? (ctx.abilities || []).filter((a) => !a.billed || state.you?.role !== "member")
+        .map((a) => [`${a.label}${a.billed ? "…" : ""}`, act(a.mode === "terminal" ? "ai_review_terminal" : "ai_review", { job: s.id, ability: a.id }), a.what]) : []),
     ],
     [
       idle && state.you?.role !== "member" && s.branch && ["review-needed", "debugging"].includes(s.status)
@@ -5633,7 +5636,10 @@ function activeRunCard(r, labelled, timeline) {
     ${steps.length ? `<ol class="job-run-steps" aria-label="Latest steps of this run">${steps.map((st) => `<li class="${esc(st.status || "")}"><span aria-hidden="true">${icon(st)}</span> ${esc(st.title)}${st.seconds != null ? ` <span class="muted">${runSeconds(st.seconds)}</span>` : ""}</li>`).join("")}</ol>` : ""}</section>`;
 }
 
+// The AI tools' reviews offered on jobs (tool_abilities.py), read once per visit; the AI tools page keeps the scan fresh.
+let aiAbilities = { highlights: [], loaded: false };
 pages.job = async ([id]) => {
+  if (!aiAbilities.loaded) aiAbilities = { ...(await api("ai/abilities").catch(() => ({}))), loaded: true };
   const data = await api(`jobs/${encodeURIComponent(id)}`);
   const { summary: s, job, outputs, runs, docs, changes, links, test_summary: testSummary, pipeline: pipe, tasks: jobTasks, completed_tasks: jobCompleted, next_task: jobNextTask } = data;
 
@@ -5967,7 +5973,8 @@ pages.job = async ([id]) => {
   return {
     title: s.title,
     sub: subParts.length ? `<span class="status-line">${subParts.join('<span class="sep">·</span>')}</span>` : "",
-    actions: jobHeaderActions(summary, links, { canSplinter, planShown: reviewingPlan, fixShown: Boolean(recommendFixBtn), hasChanges: allFiles.length > 0 }),
+    actions: jobHeaderActions(summary, links, { canSplinter, planShown: reviewingPlan, fixShown: Boolean(recommendFixBtn), hasChanges: allFiles.length > 0,
+      abilities: aiAbilities.highlights }),
     html: `<div class="job-layout"><div class="job-top">
       ${runs.filter((r) => r.running && !isPreviewRun(r)).map((r) => activeRunCard(r, (jobRuns || []).find((x) => x.id === r.id), r.id === activeRun?.id ? activeTimeline : null)).join("")}
 
@@ -11913,6 +11920,8 @@ pages.config = async (args = []) => {
           view.addEventListener("change", onYolo);
           cleanup.push(() => view.removeEventListener("change", onYolo));
 
+          loadAbilities(config.viewer?.role !== "member");
+
           const modelsButton = $("#ai-refresh-models");
           if (modelsButton) {
             const refreshModels = async ({quiet = false} = {}) => {
@@ -12160,6 +12169,38 @@ async function connectFigma(clientId) {
     q.set("code_challenge_method", "S256");
   }
   location.href = `https://www.figma.com/oauth?${q}`;
+}
+
+// The AI tools page's "What your AI tools can do" (tool_abilities.py): each installed tool's slash commands, skills, plugins
+// and subcommands as the tool itself reports them, rescanned when the last scan is older than 15 minutes, and the few that
+// are a button on a job (marked "On jobs").
+const ABILITY_KINDS = [["built-in", "Built-in"], ["subcommand", "Commands"], ["skill", "Skills"], ["plugin", "From plugins"], ["custom", "Your own"]];
+const TOOL_NAMES = { claude: "Claude Code", codex: "Codex", gemini: "Gemini CLI", agy: "Antigravity", opencode: "OpenCode", pool: "Poolside", ollama: "Ollama" };
+async function loadAbilities(owner) {
+  const card = $("#ai-abilities");
+  if (!card) return;
+  const draw = (data, note = "") => {
+    const tools = Object.entries(data.tools || {}).filter(([, items]) => items.length);
+    const onJobs = new Map((data.highlights || []).map((h) => [h.tool, (data.highlights || []).filter((x) => x.tool === h.tool)]));
+    const tool = ([cli, items]) => `<details class="fold ability-tool"><summary><strong>${esc(TOOL_NAMES[cli] || cli)}</strong>
+        <span class="muted">${plural(items.length, "ability", "abilities")}${onJobs.get(cli) ? ` · ${plural(onJobs.get(cli).length, "on jobs", "on jobs")}` : ""}</span></summary>
+      ${(onJobs.get(cli) || []).map((h) => `<p><span class="pill done">On jobs</span> <strong>${esc(h.label)}</strong>: <span class="muted">${esc(h.what)}</span></p>`).join("")}
+      ${ABILITY_KINDS.map(([kind, title]) => { const list = items.filter((i) => i.kind === kind);
+        return list.length ? `<p class="muted">${title}</p><p class="ability-list">${list.map((i) => `<code title="${esc(i.what || "")}">${kind === "subcommand" ? "" : "/"}${esc(i.name)}</code>`).join(" ")}</p>` : ""; }).join("")}</details>`;
+    card.innerHTML = `<div class="card-h"><h2>What your AI tools can do</h2>${owner ? `<button type="button" class="btn small" id="ai-abilities-scan">Rescan</button>` : ""}</div>
+      <div class="card-b stack">
+        <p class="muted">Each tool's own slash commands, skills, plugins and commands, as it reports them on this computer. The reviews marked <strong>On jobs</strong> are in a job's More menu. ${note || (data.at ? `Scanned ${esc(new Date(data.at * 1000).toLocaleString())}.` : "")}</p>
+        ${tools.map(tool).join("") || `<p class="muted">Nothing found yet.</p>`}</div>`;
+    $("#ai-abilities-scan")?.addEventListener("click", () => scan());
+  };
+  const scan = async () => {
+    draw(await api("ai/abilities").catch(() => ({})), "Scanning…");
+    try { draw(await api("ai/abilities/scan", { method: "POST", body: {} })); }
+    catch (e) { toast(e.message, true); }
+  };
+  let data;
+  try { data = await api("ai/abilities"); } catch { card.hidden = true; return; }
+  if (owner && (data.stale || !data.at)) scan(); else draw(data);
 }
 
 function connectionStatus(p) {

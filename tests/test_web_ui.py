@@ -3025,7 +3025,7 @@ class ActionTests(unittest.TestCase):
         params = {"job": "20260922-bug-1", "summary": "s", "feedback": "f", "answer": "a", "change": "c",
                   "provider": "claude", "name": "Suite", "branch": "main", "menu": "keys", "feature": "word-score", "epic": "ep-test", "framework": "xcbeautify",
                   "id": "srv-default", "file": "AuthKey_ABC123DEFG.p8", "issuer": "6b2330c7-0203-4e58-9924-ba5c1f42e1a8",
-                  "platform": "ios", "from": "The Air", "to": "local", "acknowledged": True}
+                  "platform": "ios", "from": "The Air", "to": "local", "acknowledged": True, "ability": "codex-review"}
         (self.root / ".orchestrator" / "epics.json").write_text(json.dumps({"epics": [
             {"id": "ep-test", "name": "Word score", "summary": "", "status": "approved", "feature": "word-score", "requirements": [], "stories": [], "depends_on": []}]}))
         (self.root / ".orchestrator" / "features.json").write_text(json.dumps({"features": [{"id": "word-score", "name": "Word score", "status": "planned", "paths": [], "depends_on": []}]}))
