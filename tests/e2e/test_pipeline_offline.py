@@ -480,8 +480,10 @@ class ParallelJobTests(unittest.TestCase):
     def setUpClass(cls):
         from orchestrator import folder_lock
         cls.project = p = DummyProject([FREE]).create(code_host="git").fake_models("prose_first")
-        config = p.root / ".orchestrator" / "project.json"
-        config.write_text(json.dumps({**json.loads(config.read_text()), "parallel_jobs": 2}, indent=2))
+        machines = p.root / ".orchestrator" / "config" / "machines.json"  # Jobs at once: this computer's max_concurrent_jobs
+        data = json.loads(machines.read_text())
+        data["machines"][0]["max_concurrent_jobs"] = 2
+        machines.write_text(json.dumps(data, indent=2))
         cls.folder_before = (p.git("branch", "--show-current"), p.git("status", "--porcelain"), p.git("rev-parse", "HEAD"))
         with folder_lock.hold(p.root, job="other-job", title="Another job"):  # another job is building in the project folder
             cls.plan_run = plan_job(p)

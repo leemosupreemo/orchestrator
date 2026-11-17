@@ -64,8 +64,9 @@ By default one job builds in a project at a time: every local start (the worker,
 computer) goes through `worker_run.run_local`, which waits for the project folder (`folder_lock`). Before this, approving a
 plan called `execute_job` directly and skipped the wait, so two jobs could build in one folder at once.
 
-**Jobs at once** (`parallel_jobs` in project.json, set on the Git page, 1 to 4) lets more build together
-(`orchestrator/parallel_jobs.py`). A job that would wait builds in its own git worktree instead, kept outside the project in
+**Jobs at once** (set on the Git page, 1 to 4) lets more build together (`orchestrator/parallel_jobs.py`). It is stored as
+this computer's `max_concurrent_jobs` in the project's `config/machines.json`, the same number **Build the plan** and the
+scheduler use, so raising it also lets Build the plan run independent features at the same time. A job that would wait builds in its own git worktree instead, kept outside the project in
 `~/.orchestrator/worktrees/<project>-<hash>/<job>` so test discovery, Xcode and Unity never see the copies. The worker runs
 there with the worktree as its project folder and the project's `.orchestrator` for its records. A new branch starts from
 `origin/<base>` (or the local base) without checking the base out, since the project folder has it. The job keeps its
@@ -142,6 +143,7 @@ moved job. A computer that's offline learns of a move at its next heartbeat.
 | A job blocked mid-run by a held git lock, cleared, resumed by the server, committed and opened as a PR, inside the full offline pipeline | `tests/e2e/test_pipeline_offline.py` (`BlockedJobRecoveryTests`) |
 | Moves recorded by the control plane | `tests/test_control_plane.py` (`MovedJobTests`) |
 | Jobs at once: deciding, worktrees, branch setup, removal, the setting | `tests/test_parallel_jobs.py` |
+| Worktrees, made in one place for the integration check, both previews and jobs at once | `tests/test_worktrees.py` |
 | Overlap guards: duplicates with typos, shared files, another job's uncommitted work | `tests/test_overlap_guards.py` |
 | A job building alongside another in its own worktree, end to end | `tests/e2e/test_pipeline_offline.py` (`ParallelJobTests`) |
 

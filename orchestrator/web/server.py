@@ -1032,6 +1032,13 @@ def job_state(job: dict[str, Any], root: Path | None = None) -> dict[str, Any]:
     return state("working", "working", status.replace("-", " ").capitalize(), "")
 
 
+def jobs_at_once(root: Path) -> int:
+    """Jobs at once for this project on this computer: the local machine's max_concurrent_jobs (parallel_jobs.limit)."""
+    from orchestrator import parallel_jobs
+    machines = read_json_file(runtime_dir(root) / "config" / "machines.json").get("machines")
+    return parallel_jobs.limit(machines if isinstance(machines, list) else [])
+
+
 def blocked_jobs(root: Path) -> list[tuple[str, Path, dict[str, Any]]]:
     """Paused jobs that wait on a blocker (blockers.py): (id, path, job)."""
     out = []
@@ -3024,7 +3031,7 @@ def git_state(root: Path) -> dict[str, Any]:
         "source_control": {"current": source_control.current_key(host_kind(origin), origin, config.get("code_host")),
                            "blurb": source_control.BLURB, "options": source_control.OPTIONS},
         "base_branch": base_branch(root, read_settings(root)),
-        "parallel_jobs": int(config.get("parallel_jobs") or 1) if str(config.get("parallel_jobs") or 1).isdigit() else 1,
+        "parallel_jobs": jobs_at_once(root),
         "sync_remote": sync_remote,
         "sync_ref": sync_ref,
     }
@@ -5347,7 +5354,10 @@ def config_update(root: Path, part: str, body: dict[str, Any]) -> dict[str, Any]
             raise UIError("Choose how many jobs can run at once.")
         if not 1 <= count <= parallel_jobs.MAX_AT_ONCE:
             raise UIError(f"Choose from 1 to {parallel_jobs.MAX_AT_ONCE}.")
-        update_project_json(root, {"parallel_jobs": count})
+        try:  # the local machine's max_concurrent_jobs: Build the plan and the scheduler read the same number
+            parallel_jobs.set_limit(runtime_dir(root) / "config" / "machines.json", count)
+        except ValueError as exc:
+            raise UIError(str(exc))
         return {"saved": True, "parallel_jobs": count}
     if part == "base-branch":
         branch = _text(body, "branch", required=True, limit=250)

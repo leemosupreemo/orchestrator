@@ -8,12 +8,12 @@ code builds and passes. The result is stored with the heads it used, so it can s
 from __future__ import annotations
 
 import json
-import shutil
 import subprocess
-import tempfile
 import time
 from pathlib import Path
 from typing import Any, Callable
+
+from orchestrator import worktrees
 
 TAIL = 2500  # characters of command output kept
 
@@ -68,37 +68,38 @@ def verify(root: Path, base: str, branches: list[str], build_command: str | None
     if len(heads) < 2:
         return {**result, "status": "nothing", "error": "Fewer than two of this feature's jobs have a branch, so there is nothing to combine."}
 
-    tmp = Path(tempfile.mkdtemp(prefix="orchestrator-verify-"))
-    work = tmp / "work"
     try:
-        add = _git(root, "worktree", "add", "--detach", str(work), base_head)
-        if add.returncode != 0:
-            return {**result, "status": "error", "error": "Couldn't make a scratch checkout: " + add.stderr.strip()[-200:]}
-        env_user = ["-c", "user.name=Orchestrator", "-c", "user.email=orchestrator@localhost"]
-        for branch, sha in heads.items():
-            log(f"Merging {branch}...")
-            m = subprocess.run(["git", *env_user, "merge", "--no-ff", "--no-edit", sha], cwd=work, capture_output=True, text=True)
-            if m.returncode == 0:
-                result["merged"].append(branch)
-                continue
-            files = [f for f in _git(work, "diff", "--name-only", "--diff-filter=U").stdout.splitlines() if f]
-            result["conflicts"].append({"branch": branch, "files": files})
-            subprocess.run(["git", "merge", "--abort"], cwd=work, capture_output=True)
-        if result["conflicts"]:
-            result["status"] = "conflict"  # a partly merged tree says nothing useful about build or tests
-            return result
-        for key, command in (("build", build_command), ("test", test_command)):
-            if not command:
-                continue
-            log(f"Running {key}: {command}")
-            result[key] = _run_command(command, work, timeout)
-            if not result[key]["ok"]:
-                result["status"] = f"{key}-failed"
-                break
+        with worktrees.scratch(root, base_head, prefix="orchestrator-verify-") as work:
+            return _combine(work, heads, result, build_command, test_command, timeout, log)
+    except worktrees.WorktreeError as exc:
+        return {**result, "status": "error", "error": str(exc)}
+
+
+def _combine(work: Path, heads: dict[str, str], result: dict[str, Any], build_command: str | None, test_command: str | None,
+             timeout: int, log: Callable[[str], None]) -> dict[str, Any]:
+    """Merges each branch into the scratch checkout, then builds and tests the result."""
+    env_user = ["-c", "user.name=Orchestrator", "-c", "user.email=orchestrator@localhost"]
+    for branch, sha in heads.items():
+        log(f"Merging {branch}...")
+        m = subprocess.run(["git", *env_user, "merge", "--no-ff", "--no-edit", sha], cwd=work, capture_output=True, text=True)
+        if m.returncode == 0:
+            result["merged"].append(branch)
+            continue
+        files = [f for f in _git(work, "diff", "--name-only", "--diff-filter=U").stdout.splitlines() if f]
+        result["conflicts"].append({"branch": branch, "files": files})
+        subprocess.run(["git", "merge", "--abort"], cwd=work, capture_output=True)
+    if result["conflicts"]:
+        result["status"] = "conflict"  # a partly merged tree says nothing useful about build or tests
         return result
-    finally:
-        _git(root, "worktree", "remove", "--force", str(work))
-        shutil.rmtree(tmp, ignore_errors=True)
+    for key, command in (("build", build_command), ("test", test_command)):
+        if not command:
+            continue
+        log(f"Running {key}: {command}")
+        result[key] = _run_command(command, work, timeout)
+        if not result[key]["ok"]:
+            result["status"] = f"{key}-failed"
+            break
+    return result
 
 
 def save_result(runtime: Path, feature_id: str, result: dict[str, Any]) -> None:

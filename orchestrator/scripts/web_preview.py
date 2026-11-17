@@ -14,10 +14,11 @@ import re
 import shutil
 import subprocess
 import sys
-import tempfile
 import time
 from pathlib import Path
 from typing import Any
+
+from orchestrator import worktrees
 
 EXPIRES = "7d"
 
@@ -98,10 +99,7 @@ def main(argv: list[str] | None = None) -> int:
 
     channel = channel_name(args.branch)
     print(f"Previewing {args.branch} at {commit}: {subject}")
-    folder = Path(tempfile.mkdtemp(prefix="orchestrator-preview-"))
-    try:
-        subprocess.run(["git", "worktree", "add", "--detach", str(folder), args.branch], cwd=root, check=True,
-                       stdout=subprocess.DEVNULL)
+    with worktrees.scratch(root, args.branch, prefix="orchestrator-preview-") as folder:
         for command in build_commands(folder, config):
             print(f"$ {' '.join(command)}", flush=True)
             if subprocess.run(command, cwd=folder).returncode != 0:
@@ -117,9 +115,6 @@ def main(argv: list[str] | None = None) -> int:
             hint = " Sign in with: firebase login" if "auth" in (deploy.stdout + deploy.stderr).lower() else ""
             print(f"❌ Firebase didn't publish the preview: {exc}.{hint}")
             return 1
-    finally:
-        subprocess.run(["git", "worktree", "remove", "--force", str(folder)], cwd=root, capture_output=True)
-        shutil.rmtree(folder, ignore_errors=True)
 
     out = root / ".orchestrator" / "output" / "previews"
     out.mkdir(parents=True, exist_ok=True)

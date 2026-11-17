@@ -1757,10 +1757,11 @@ def own_worktree(job_path: Path) -> Optional[Path]:
     try:
         job = read_json(job_path)
         jobs = [(p.stem, read_json(p)) for p in sorted(job_path.parent.glob("*.json")) if p != job_path]
-        project = json.loads((PROJECT_CONFIG.runtime_dir / "project.json").read_text(encoding="utf-8"))
+        machines_file = PROJECT_CONFIG.runtime_dir / "config" / "machines.json"
+        machines = json.loads(machines_file.read_text(encoding="utf-8")).get("machines", []) if machines_file.is_file() else []
     except (OSError, ValueError):
         return None
-    use, why = parallel_jobs.decide(ROOT, job_path.stem, job, jobs, folder_lock.holder(ROOT), project)
+    use, why = parallel_jobs.decide(ROOT, job_path.stem, job, jobs, folder_lock.holder(ROOT), parallel_jobs.limit(machines))
     if not use:
         if why:
             print(f"\n⏳ {why}")

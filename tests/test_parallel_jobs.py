@@ -26,14 +26,14 @@ def git(cwd: Path, *args: str) -> str:
 
 
 class DecideTests(unittest.TestCase):
-    def decide(self, job, project=None, holder=HOLDER, jobs=(RUNNING,)):
-        return parallel_jobs.decide(Path("/p"), "b", job, list(jobs), holder, {"parallel_jobs": 2} if project is None else project)
+    def decide(self, job, at_once=2, holder=HOLDER, jobs=(RUNNING,)):
+        return parallel_jobs.decide(Path("/p"), "b", job, list(jobs), holder, at_once)
 
     def test_a_job_that_would_wait_builds_alongside_in_its_own_checkout(self):
         self.assertEqual(self.decide({"branch_mode": "new", "plan": {"likely_files": ["UI/Menu.cs"]}}), (True, ""))
 
     def test_one_at_a_time_or_a_free_folder_works_in_the_project_folder(self):
-        self.assertEqual(self.decide({"branch_mode": "new"}, project={}), (False, ""))
+        self.assertEqual(self.decide({"branch_mode": "new"}, at_once=1), (False, ""))
         self.assertEqual(self.decide({"branch_mode": "new"}, holder=None), (False, ""))
 
     def test_the_guards_say_why_it_waits(self):
@@ -45,10 +45,12 @@ class DecideTests(unittest.TestCase):
 
     def test_a_job_with_a_checkout_always_carries_on_there(self):
         with tempfile.TemporaryDirectory() as tmp:
-            self.assertEqual(self.decide({"branch_mode": "current", "worktree": tmp}, project={}), (True, ""))
+            self.assertEqual(self.decide({"branch_mode": "current", "worktree": tmp}, at_once=1), (True, ""))
 
-    def test_the_limit_is_kept_between_one_and_four(self):
-        self.assertEqual([parallel_jobs.limit(p) for p in ({}, {"parallel_jobs": 9}, {"parallel_jobs": "x"}, {"parallel_jobs": 3})], [1, 4, 1, 3])
+    def test_jobs_at_once_is_this_computers_max_concurrent_jobs(self):
+        local = lambda n: [{"name": "mini", "execution_mode": "ssh", "max_concurrent_jobs": 4}, {"name": "local", "max_concurrent_jobs": n}]
+        self.assertEqual([parallel_jobs.limit(m) for m in ([], local(9), local("x"), local(3), local(None))], [1, 4, 1, 3, 1])
+        self.assertEqual(parallel_jobs.limit([{"name": "local", "enabled": False, "max_concurrent_jobs": 3}]), 1)
 
 
 class WorktreeTests(unittest.TestCase):
@@ -101,13 +103,20 @@ class SettingTests(unittest.TestCase):
     def test_the_setting_is_saved_and_checked(self):
         from orchestrator.web import server as ui
         root = Path(tempfile.mkdtemp())
-        (root / ".orchestrator").mkdir()
-        (root / ".orchestrator" / "project.json").write_text("{}")
+        (root / ".orchestrator" / "config").mkdir(parents=True)
+        machines = root / ".orchestrator" / "config" / "machines.json"
+        machines.write_text(json.dumps({"version": 1, "machines": [{"name": "local", "execution_mode": "local", "max_concurrent_jobs": 1}]}))
         self.assertEqual(ui.config_update(root, "parallel-jobs", {"jobs": 3}), {"saved": True, "parallel_jobs": 3})
-        self.assertEqual(json.loads((root / ".orchestrator" / "project.json").read_text())["parallel_jobs"], 3)
+        # one number for Jobs at once, Build the plan and the scheduler: the local machine's max_concurrent_jobs
+        self.assertEqual(json.loads(machines.read_text())["machines"][0]["max_concurrent_jobs"], 3)
+        self.assertEqual(ui.jobs_at_once(root), 3)
+        self.assertFalse((root / ".orchestrator" / "project.json").exists())  # no second setting
         for bad in (0, 5, "x"):
             with self.assertRaises(ui.UIError):
                 ui.config_update(root, "parallel-jobs", {"jobs": bad})
+        machines.write_text(json.dumps({"version": 1, "machines": []}))
+        with self.assertRaises(ui.UIError):
+            ui.config_update(root, "parallel-jobs", {"jobs": 2})  # no machine here to run jobs
 
     def test_the_git_page_and_job_page_show_it(self):
         app = (ROOT / "orchestrator" / "web" / "static" / "app.js").read_text(encoding="utf-8")

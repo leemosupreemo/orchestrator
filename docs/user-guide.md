@@ -485,7 +485,7 @@ If a job crashes, the folder is free again at once. The computer releases the lo
 
 ### Jobs at once
 
-On the Git page, **Jobs at once** (1 to 4, default 1) lets more than one job build in a project together. Above 1, a job that would wait builds alongside in its own checkout instead: a separate copy of its branch, kept outside the project (in `~/.orchestrator/worktrees`), so your folder and its branch are never touched. The job page says so. Its checkout is removed when the job is merged, completed, discarded or deleted. One with uncommitted changes is only kept when you finish the job; discarding removes it.
+On the Git page, **Jobs at once** (1 to 4, default 1) lets more than one job build in a project together. It's the same number **Build the plan** uses, so raising it also builds independent features of a plan at the same time. Above 1, a job that would wait builds alongside in its own checkout instead: a separate copy of its branch, kept outside the project (in `~/.orchestrator/worktrees`), so your folder and its branch are never touched. The job page says so. Its checkout is removed when the job is merged, completed, discarded or deleted. One with uncommitted changes is only kept when you finish the job; discarding removes it.
 
 Some jobs still wait their turn:
 

@@ -33,6 +33,7 @@ import hmac
 from urllib.parse import parse_qsl, urlencode, urlsplit
 from typing import Any, Callable
 
+from orchestrator import worktrees
 from orchestrator.scripts.web_preview import channel_name, git
 
 ADDRESS = re.compile(r"https?://(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]):\d+[^\s\x1b'\"]*")
@@ -237,15 +238,7 @@ def start_proxy(target: str, remote_key: Callable[[], str] | None = None) -> str
     return f"http://localhost:{server.server_address[1]}{parts.path or '/'}{'?' + parts.query if parts.query else ''}"
 
 
-def checked_out_in(root: Path, branch: str) -> Path | None:
-    """The folder where the branch is checked out, if any (git keeps a branch in one place at a time)."""
-    path = None
-    for line in git(root, "worktree", "list", "--porcelain").splitlines():
-        if line.startswith("worktree "):
-            path = Path(line[len("worktree "):])
-        elif line == f"branch refs/heads/{branch}" and path is not None:
-            return path
-    return None
+checked_out_in = worktrees.checked_out_in  # where the branch is checked out already (a job's own worktree included)
 
 
 # Folders a site's pages usually live in, when it has no build of its own: the first with an index.html is served.
@@ -401,10 +394,7 @@ def main(argv: list[str] | None = None) -> int:
     if folder is None:
         folder = copy_folder(root, slug)
         if not (folder / ".git").exists():
-            folder.parent.mkdir(parents=True, exist_ok=True)
-            subprocess.run(["git", "worktree", "prune"], cwd=root, capture_output=True)  # a copy the computer cleared away
-            subprocess.run(["git", "worktree", "add", "--detach", str(folder), args.branch], cwd=root, check=True,
-                           stdout=subprocess.DEVNULL)
+            worktrees.ensure(root, folder, args.branch)
         else:  # the preview folder from last time: bring it up to the branch's latest commit
             subprocess.run(["git", "checkout", "--detach", "--force", args.branch], cwd=folder, check=True,
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
