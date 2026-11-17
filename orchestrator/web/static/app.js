@@ -11485,7 +11485,7 @@ function renderDeviceAlerts() {
   const body = $("#device-alerts-body"), actions = $("#device-alerts-actions");
   if (!body || !actions) return;
   if (needsHomeScreen()) {
-    body.innerHTML = `<strong>Needs the Home Screen</strong><span class="muted">iPhone only allows alerts for apps on the Home Screen. Share, then Add to Home Screen, and open it from there.</span>`;
+    body.innerHTML = `<strong>Add to Home Screen</strong><span class="muted">Add this app to your Home Screen and open it from there to turn on alerts.</span>`;
     actions.innerHTML = "";
     return;
   }
@@ -12321,8 +12321,7 @@ pages.connections = async (_, query) => {
             ${p.move_default ? `<input type="text" data-opt="target" value="${esc(p.options.target)}" placeholder="${esc(p.move_default)}" aria-label="Target" ${p.options.move_on_merge ? "" : "disabled"}>` : ""}
           </div>` : ""}
           <div class="row" data-owner-only>
-            ${p.id === "figma" && p.authorize_key && !p.connected ? `<button class="btn small primary" data-figma-authorize="${esc(p.authorize_key)}">Connect with Figma</button>
-              <button type="button" class="btn small" data-conn-connect="${esc(p.id)}">Manual token (backup)</button>`
+            ${p.id === "figma" && p.authorize_key && p.authorize_secret_set && !p.connected ? `<button class="btn small primary" data-figma-authorize="${esc(p.authorize_key)}">Connect with Figma</button>`
             : p.id === "trello" && p.authorize_key && !p.connected ? `<button class="btn small primary" data-trello-authorize="${esc(p.authorize_key)}">Connect with Trello</button>
               <button type="button" class="btn small" data-conn-connect="${esc(p.id)}">Manual key &amp; token (backup)</button>`
             : `<button class="btn small ${p.rejected || p.expiry?.expired || p.expiry?.soon ? "primary" : ""}" data-conn-connect="${esc(p.id)}">${!p.connected ? "Connect" : p.rejected || p.expiry?.expired ? "Reconnect" : "Update"}</button>`}
@@ -12341,13 +12340,13 @@ pages.connections = async (_, query) => {
             <div class="conn-grid">${providers.map(integrationCard).join("")}</div>
           </section>` : "";
         }).join("") || `<p class="muted">No plugins are available for this Orchestrator.</p>`}
-        <p class="muted mt-12" data-owner-only>Credentials are saved on your computer, in this project's settings, and checked with the service before they're kept. They're never shown again.</p>
+        <p class="muted mt-12" data-owner-only>Credentials are verified, saved on your computer, and never shown again.</p>
       </section>
       <section class="connections-section" id="connections-alerts" aria-labelledby="connections-alerts-title">
         <h2 class="connections-section-title" id="connections-alerts-title">Alerts / notifications</h2>
         <div class="conn-grid">
           <section class="card conn-card"><div class="card-b stack">
-            <div class="row"><strong class="conn-name">${providerIcon("slack")}Slack, email, this device and your Mac</strong>${alertsPill}</div>
+            <div class="row"><strong class="conn-name">${providerIcon("slack")}Slack and more</strong>${alertsPill}</div>
             <p class="muted">${hook?.set ? `Slack is connected${hook.paused ? " but paused" : ""}. ` : ""}${config?.email?.recipients?.length ? `Email goes to ${plural(config.email.recipients.length, "address", "addresses")}. ` : ""}Where updates reach you is set in one place.</p>
             <div><a class="btn small primary" href="#/config/alerts">Open Alerts settings</a></div>
           </div></section>
@@ -12401,15 +12400,31 @@ pages.connections = async (_, query) => {
         } else if (connect) {
           const p = list.find((x) => x.id === connect.dataset.connConnect);
           const latest = p.token_max_days ? new Date(Date.now() + p.token_max_days * 86400000).toISOString().slice(0, 10) : "";
+          const figmaCallbackUrl = new URL("figma-auth.html", location.href).href;
+          const figmaOAuthReady = Boolean(p.authorize_key && p.authorize_secret_set);
+          const figmaAppFields = `
+            <div class="stack">
+              <div class="field"><span>Callback URL <span class="muted">(add this to your OAuth app at <a href="https://www.figma.com/developers/apps" target="_blank" rel="noopener">figma.com/developers/apps ↗</a>)</span></span>
+                <div class="row gap-8 align-center">
+                  <input type="text" readonly value="${esc(figmaCallbackUrl)}" class="mono" aria-label="Figma OAuth callback URL">
+                  <button type="button" class="btn small ghost" data-copy="${esc(figmaCallbackUrl)}">Copy</button>
+                </div>
+              </div>
+              <label class="field"><span>Figma Client ID</span>
+                <input type="text" name="figma_client_id" placeholder="e.g. your_figma_oauth_client_id" value="${esc(p.authorize_key || "")}" autocomplete="off" autocapitalize="off" spellcheck="false">
+              </label>
+              <label class="field"><span>Figma Client Secret</span>
+                <input type="password" name="figma_client_secret" placeholder="${p.authorize_secret_set ? "saved: leave blank to keep" : "your_figma_oauth_client_secret"}" value="" autocomplete="off" autocapitalize="off" spellcheck="false">
+              </label>
+            </div>`;
           const figmaOptionA = p.id === "figma" ? `
             <div class="card stack mb-16 conn-auth-box">
               <strong>Log in &amp; authorize with Figma</strong>
-              <p class="muted">Authorize with 1 click in your browser using Figma OAuth:</p>
-              ${!p.authorize_key ? `<label class="field"><span>Figma Client ID <span class="muted">(from figma.com/developers/apps)</span></span>
-                <input type="text" name="figma_client_id" placeholder="e.g. your_figma_oauth_client_id" value="">
-              </label>` : ""}
+              <p class="muted">${figmaOAuthReady ? "Authorize with 1 click in your browser using Figma OAuth." : "Save your Figma OAuth app details once, then sign in with 1 click."}</p>
+              ${figmaOAuthReady ? "" : figmaAppFields}
               <div><button type="button" class="btn small primary" id="figma-dialog-quick-btn" aria-label="Log in and authorize with Figma">Login ↗</button></div>
               <small class="hint-text">Sign in with your Figma account (or Enterprise SSO) and approve read access.</small>
+              ${figmaOAuthReady ? `<details class="conn-oauth-setup"><summary>Update Figma OAuth app</summary><div class="mt-8">${figmaAppFields}</div></details>` : ""}
             </div>
 ` : "";
           const trelloOptionA = p.id === "trello" ? `
@@ -12437,24 +12452,26 @@ pages.connections = async (_, query) => {
               <small class="hint-text">Click "Create API token" and copy it.</small>
             </div>
             <div class="conn-auth-divider mb-8"><strong>2. Fill in your site and paste the token</strong></div>` : "";
-          // Figma and Trello sign you in with a button; typing a token by hand is the fallback, tucked under Advanced.
-          const hasLogin = p.id === "figma" || p.id === "trello" || Boolean(sentryOptionA);
+          // Trello and Sentry sign you in with a button; typing a token by hand is the fallback, tucked under Advanced. Figma uses OAuth login only.
+          const allowManual = p.id !== "figma";
+          const hasLogin = p.id === "trello" || Boolean(sentryOptionA);
           const genericTokenLink = (p.id !== "trello" && p.id !== "jira" && p.id !== "figma" && p.token_url) ? `<p><a class="btn small" href="${esc(p.token_url)}" target="_blank" rel="noopener" aria-label="Log in to ${esc(p.name)} and create a token">Login ↗</a></p>` : "";
-          const dialogPromise = formDialog(`${p.connected ? "Update" : "Connect"} ${p.name}`, `
-            ${figmaOptionA}
-            ${trelloOptionA}
-            ${sentryOptionA}
-            ${jiraOptionA}
-            ${genericTokenLink}
-            ${hasLogin ? `<details class="advanced conn-manual" id="conn-manual"><summary>${p.id === "sentry" ? "Advanced: use a token instead (self-hosted Sentry)" : `Advanced: enter ${p.id === "figma" ? "a personal access token" : "a key and token"} by hand`}</summary><div class="stack">` : ""}
-            ${p.fields.map((f) => `
+          const manualFieldsHtml = allowManual ? `${p.fields.map((f) => `
             <label class="field"><span>${esc(f.label)}</span>
               <input ${f.secret ? 'type="password"' : 'type="text"'} name="${esc(f.key)}" autocomplete="off" autocapitalize="off" spellcheck="false"${f.required && !p.connected ? ' aria-required="true"' : ""}
                 value="${esc(!f.secret && p.suggest?.[f.key] ? p.suggest[f.key] : "")}"
                 placeholder="${esc(p.connected && f.secret ? "saved: leave blank to keep" : f.placeholder)}">
               <small class="hint-text">${esc(f.help)}</small></label>`).join("")}
             ${p.token_max_days ? `<label class="field"><span>Token expires on</span><input type="date" name="expires" value="${esc(p.expiry?.on || latest)}" max="${latest}">
-              <small class="hint-text">The date you picked when creating it. ${esc(p.name)} tokens last at most ${p.token_max_days} days; you'll be reminded before it runs out.</small></label>` : ""}
+              <small class="hint-text">The date you picked when creating it. ${esc(p.name)} tokens last at most ${p.token_max_days} days; you'll be reminded before it runs out.</small></label>` : ""}` : "";
+          const dialogPromise = formDialog(`${p.connected ? "Update" : "Connect"} ${p.name}`, `
+            ${figmaOptionA}
+            ${trelloOptionA}
+            ${sentryOptionA}
+            ${jiraOptionA}
+            ${genericTokenLink}
+            ${hasLogin ? `<details class="advanced conn-manual" id="conn-manual"><summary>${p.id === "sentry" ? "Advanced: use a token instead (self-hosted Sentry)" : "Advanced: enter a key and token by hand"}</summary><div class="stack">` : ""}
+            ${manualFieldsHtml}
             ${hasLogin ? `</div></details>` : ""}`,
             p.connected ? "Save" : "Connect");
           const okBtn = $("#dialog-ok");
@@ -12462,11 +12479,12 @@ pages.connections = async (_, query) => {
           const quickFigma = $("#figma-dialog-quick-btn");
           const quickTrello = $("#trello-dialog-quick-btn");
           const manual = $("#conn-manual");
-          // With a log-in button, Connect/Save is for the hand-entered token, so it shows only once that's open.
+          // With a log-in button, Connect/Save is for the hand-entered token, so it shows only once that's open (or stays hidden for OAuth-only Figma).
           const showManualButton = () => { if (okBtn && manual) okBtn.hidden = !manual.open; };
-          if (manual) { showManualButton(); manual.addEventListener("toggle", showManualButton); }
+          if (okBtn && !allowManual) okBtn.hidden = true;
+          else if (manual) { showManualButton(); manual.addEventListener("toggle", showManualButton); }
           // Enter in a log-in field logs in, rather than submitting the hidden hand-entered form.
-          dialogBody?.querySelectorAll("input[name='trello_login_key'], input[name='figma_client_id']").forEach((input) => input.addEventListener("keydown", (e) => {
+          dialogBody?.querySelectorAll("input[name='trello_login_key'], input[name='figma_client_id'], input[name='figma_client_secret']").forEach((input) => input.addEventListener("keydown", (e) => {
             if (e.key !== "Enter") return;
             e.preventDefault();
             (quickTrello || quickFigma)?.click();
@@ -12492,9 +12510,11 @@ pages.connections = async (_, query) => {
             }
             if (quickFigma) {
               const idInput = dialogBody?.querySelector("input[name='figma_client_id']");
+              const secretInput = dialogBody?.querySelector("input[name='figma_client_secret']");
               const cid = (idInput?.value || p.authorize_key || "").trim();
-              quickFigma.dataset.why = "Enter the Figma client ID first.";
-              quickFigma.disabled = !cid;
+              const hasSecret = Boolean((secretInput?.value || "").trim() || p.authorize_secret_set);
+              quickFigma.dataset.why = !cid ? "Enter your Figma Client ID first." : "Enter your Figma Client Secret first.";
+              quickFigma.disabled = !cid || !hasSecret;
             }
             // The Trello button stays clickable: without a key it says what's missing and goes to the field.
           };
@@ -12502,15 +12522,35 @@ pages.connections = async (_, query) => {
           updateDialogConnectState();
           dialogBody?.addEventListener("input", updateDialogConnectState);
           dialogBody?.addEventListener("change", updateDialogConnectState);
+          dialogBody?.querySelectorAll("[data-copy]").forEach((btn) => btn.addEventListener("click", () => {
+            navigator.clipboard?.writeText(btn.dataset.copy || "").then(() => toast("Copied callback URL")).catch(() => toast(btn.dataset.copy || "", "info"));
+          }));
 
           if (quickFigma) {
-            quickFigma.addEventListener("click", () => {
+            quickFigma.addEventListener("click", async () => {
               const idInput = $("#dialog-body input[name='figma_client_id']");
+              const secretInput = $("#dialog-body input[name='figma_client_secret']");
               const cid = (idInput?.value || p.authorize_key || "").trim();
+              const csecret = (secretInput?.value || "").trim();
               if (!cid) {
-                toast("Enter your Figma Client ID above first, then click Log in & authorize", true);
+                toast("Enter your Figma Client ID above first.", "warning");
                 idInput?.focus();
                 return;
+              }
+              if (!csecret && !p.authorize_secret_set) {
+                toast("Enter your Figma Client Secret above first.", "warning");
+                secretInput?.focus();
+                return;
+              }
+              if (cid !== (p.authorize_key || "") || csecret) {
+                quickFigma.disabled = true;
+                try {
+                  await api("integrations/figma/oauth-app", { method: "POST", body: { client_id: cid, client_secret: csecret } });
+                } catch (err) {
+                  quickFigma.disabled = false;
+                  toast(err.message, true);
+                  return;
+                }
               }
               connectFigma(cid);
             });
@@ -12564,7 +12604,10 @@ pages.connections = async (_, query) => {
       }
       // Back from Figma's OAuth page with authorization code: exchange and save it.
       let figmaAuth = null;
+      let figmaPkce = null;
       try {
+        const rawPkce = sessionStorage.getItem("orchestrator_figma_pkce");
+        if (rawPkce) figmaPkce = JSON.parse(rawPkce);
         const rawFigma = sessionStorage.getItem("orchestrator_figma_auth");
         if (rawFigma) {
           figmaAuth = JSON.parse(rawFigma);
@@ -12574,20 +12617,24 @@ pages.connections = async (_, query) => {
       } catch { /* storage blocked */ }
       const figma = list.find((x) => x.id === "figma");
       if (figmaAuth && figmaAuth.code) {
-        const cid = figmaAuth.clientId || figma?.authorize_key || "";
-        api("integrations/figma/connect", {
-          method: "POST",
-          body: {
-            values: {
-              code: figmaAuth.code,
-              code_verifier: figmaAuth.verifier,
-              redirect_uri: figmaAuth.redirectUri,
-              client_id: cid
+        if (figmaPkce?.state && figmaAuth.state && figmaAuth.state !== figmaPkce.state) {
+          toast("Figma sign-in state did not match. Please try connecting again.", true);
+        } else {
+          const cid = figmaAuth.clientId || figma?.authorize_key || "";
+          api("integrations/figma/connect", {
+            method: "POST",
+            body: {
+              values: {
+                code: figmaAuth.code,
+                code_verifier: figmaAuth.verifier || figmaPkce?.verifier || "",
+                redirect_uri: figmaAuth.redirectUri,
+                client_id: cid
+              }
             }
-          }
-        })
-          .then((r) => { toast(`Figma connected${r.who ? ` as ${r.who}` : ""}`); route(); })
-          .catch((e) => toast(e.message, true));
+          })
+            .then((r) => { toast(`Figma connected${r.who ? ` as ${r.who}` : ""}`); route(); })
+            .catch((e) => toast(e.message, true));
+        }
       }
       // Arriving to connect one app (Device logs → Connect Sentry): open its form straight away.
       const wanted = query?.get("connect");

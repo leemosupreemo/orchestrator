@@ -456,7 +456,7 @@
       <button type="button" class="btn small danger" data-config-action="email-remove" data-email="${escapeHtml(recipient)}">Remove</button>
     </div>`).join("");
     return `<section class="card configuration-card">
-          <div class="card-h"><h2>Email sender</h2><button type="button" class="btn small go" data-config-action="email-sender">Configure sender</button></div>
+          <div class="card-h"><h2>Email sender</h2><button type="button" class="btn small go" data-config-action="email-sender">Configure</button></div>
           <div class="card-b stack">
             <strong>${escapeHtml(readiness)}</strong>
             <span class="configuration-status">${isResend
@@ -493,11 +493,11 @@
   function desktopCard(state) {
     const on = state.desktop_notifications !== false;
     return `<section class="card configuration-card" id="desktop-alerts" data-owner-only>
-          <div class="card-h"><h2>This Mac</h2>
+          <div class="card-h"><h2>Desktop notifications</h2>
             <button type="button" class="btn small" data-config-action="desktop-toggle" data-enabled="${on ? "1" : "0"}">${on ? "Turn off" : "Turn on"}</button></div>
           <div class="card-b stack">
             <strong>${on ? "On" : "Off"}</strong>
-            <span class="muted">Shows a notification on the Mac that runs the work when a job finishes.</span>
+            <span class="muted">Shows a desktop banner on the computer running Orchestrator when a job finishes.</span>
           </div>
         </section>`;
   }
@@ -506,7 +506,7 @@
   function renderAlerts(state) {
     return {
       title: "Alerts",
-      sub: "Where Orchestrator reaches you when a job finishes, fails or needs you.",
+      sub: "",
       html: `<div class="configuration-page">
         ${deviceCard()}
         ${chatCard(state.webhook || {})}

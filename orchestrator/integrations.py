@@ -910,27 +910,31 @@ def figma_client_secret(settings: dict[str, Any] | None = None) -> str:
 def exchange_figma_token(code: str, code_verifier: str = "", redirect_uri: str = "",
                          client_id: str = "", client_secret: str = "") -> dict[str, Any]:
     params = {
-        "client_id": client_id,
         "grant_type": "authorization_code",
         "code": code,
         "redirect_uri": redirect_uri,
     }
     if code_verifier:
         params["code_verifier"] = code_verifier
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/x-www-form-urlencoded",
+        "User-Agent": "orchestrator",
+    }
+    basic = ""
     if client_secret:
-        params["client_secret"] = client_secret
+        basic = base64.b64encode(f"{client_id}:{client_secret}".encode("utf-8")).decode("ascii")
+        headers["Authorization"] = f"Basic {basic}"
+    else:
+        params["client_id"] = client_id
     data = urllib.parse.urlencode(params).encode("utf-8")
     req = urllib.request.Request(
         "https://api.figma.com/v1/oauth/token",
         data=data,
         method="POST",
-        headers={
-            "Accept": "application/json",
-            "Content-Type": "application/x-www-form-urlencoded",
-            "User-Agent": "orchestrator",
-        },
+        headers=headers,
     )
-    secrets = [s for s in (client_secret, code, code_verifier) if s]
+    secrets = [s for s in (client_secret, basic, code, code_verifier) if s]
     try:
         with urllib.request.urlopen(req, timeout=TIMEOUT, context=_ssl_context()) as resp:
             raw = resp.read()
@@ -981,6 +985,7 @@ def public_catalog(saved: dict[str, dict[str, str]], options: dict[str, dict[str
             "suggest": (suggest or {}).get(pid) or {},
             **({"authorize_key": trello_app_key(settings)} if pid == "trello" and trello_app_key(settings) else {}),
             **({"authorize_key": figma_client_id(settings)} if pid == "figma" and figma_client_id(settings) else {}),
+            **({"authorize_secret_set": bool(figma_client_secret(settings))} if pid == "figma" else {}),
             # Sentry's sign-in (a code approved in the browser) once Orchestrator's Sentry app id is set; see sentry_device.py
             **({"authorize_key": _sentry_client_id(settings)} if pid == "sentry" and _sentry_client_id(settings) else {}),
         })

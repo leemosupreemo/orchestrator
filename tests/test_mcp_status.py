@@ -98,7 +98,7 @@ class ConnectionsPageTests(unittest.TestCase):
         self.assertIn('self._require_owner("add MCP servers to AI tools")', server)
 
     def test_alerts_and_git_cards_show_a_status(self):
-        self.assertIn('<strong class="conn-name">${providerIcon("slack")}Slack, email, this device and your Mac</strong>${alertsPill}', self.app)
+        self.assertIn('<strong class="conn-name">${providerIcon("slack")}Slack and more</strong>${alertsPill}', self.app)
         self.assertIn("<strong class=\"conn-name\">Repository &amp; branches</strong>${gitPill}", self.app)
 
     def test_connect_jira_opens_the_jira_form(self):
@@ -291,9 +291,12 @@ class ConnectByHandIsAdvancedTests(unittest.TestCase):
     def test_typing_a_token_by_hand_is_tucked_under_advanced(self):
         app = APP.read_text(encoding="utf-8")
         self.assertNotIn("Option B:", app[app.index("const figmaOptionA"):app.index("const dialogPromise")])
-        self.assertIn('const hasLogin = p.id === "figma" || p.id === "trello" || Boolean(sentryOptionA);', app)  # Sentry, once sign-in is set up
-        self.assertIn('<details class="advanced conn-manual" id="conn-manual"><summary>${p.id === "sentry" ? "Advanced: use a token instead (self-hosted Sentry)" : `Advanced: enter', app)
+        self.assertIn('const allowManual = p.id !== "figma";', app)
+        self.assertNotIn("enter a personal access token", app)
+        self.assertIn('const hasLogin = p.id === "trello" || Boolean(sentryOptionA);', app)  # Sentry, once sign-in is set up
+        self.assertIn('<details class="advanced conn-manual" id="conn-manual"><summary>${p.id === "sentry" ? "Advanced: use a token instead (self-hosted Sentry)" : "Advanced: enter a key and token by hand"}</summary>', app)
         self.assertIn("okBtn.hidden = !manual.open", app)
+        self.assertIn("if (okBtn && !allowManual) okBtn.hidden = true;", app)
         self.assertIn('name="trello_login_key"', app)  # Trello's log-in needs only its API key, kept outside Advanced
         self.assertIn("<strong>1. Create an API token</strong>", app)  # Jira: one flow, its fields stay visible
 

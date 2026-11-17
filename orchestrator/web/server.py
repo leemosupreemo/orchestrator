@@ -125,7 +125,7 @@ HOSTED_ORIGINS = account.HOSTED_ORIGINS
 OWNER_SOURCES = ("git", "account", "environment")
 OWNER_ONLY_CONFIG = {"keys", "email", "analytics", "webhook", "desktop", "allowed-email", "firebase", "fleet", "role-prompts"}
 OWNER_ONLY_ACTIONS = {"server_start", "server_stop", "server_restart", "signing_import", "signing_secure", "signing_copy", "console", "wizard", "config_menu", "ai_connect", "package_update", "worker_install", "sync_fleet", "fleet_llm_check", "update_local",
-                      "update_fleet", "test_email", "logs_setup", "deliver", "distribute"}
+                      "update_fleet", "test_email", "logs_setup", "deliver", "distribute", "ai_review_terminal"}  # it bills the owner's Claude account
 SIGN_IN_TTL_SECONDS = 30 * 24 * 3600
 SNAPSHOT_CHECK_SECONDS = 10  # how soon other computers see a job here change (snapshot_sync)
 ALLOWED_EMAILS_CACHE_SECONDS = 60
@@ -4716,6 +4716,17 @@ def save_servers_for_app(root: Path, body: dict[str, Any]) -> dict[str, Any]:
     return {"saved": True, "app": selection}
 
 
+def build_ai_review(params: dict[str, Any], root: Path, terminal: bool) -> list[str]:
+    from orchestrator import tool_abilities
+    try:
+        ability = tool_abilities.find(str(params.get("ability") or ""))
+    except KeyError:
+        raise UIError("Unknown AI ability.")
+    if (ability.get("mode") == "terminal") != terminal:
+        raise UIError("That ability runs another way.")
+    return orchestrator_argv("script", "run_ability.py", _job_path(params, root), ability["id"])
+
+
 def build_distribute(params: dict[str, Any], root: Path) -> list[str]:
     notes = _text(params, "notes", limit=4000)
     branch = _text(params, "branch", limit=200)
@@ -5710,6 +5721,21 @@ def connect_integration(root: Path, provider_id: str, values: dict[str, Any]) ->
     return {"ok": True, "who": who}
 
 
+def save_figma_oauth_app(root: Path, body: dict[str, Any]) -> dict[str, Any]:
+    """Save the Figma OAuth app client ID and secret so one-click OAuth works across connects."""
+    settings = read_settings(root)
+    cid = str(body.get("client_id") or "").strip() or integrations.figma_client_id(settings)
+    secret = str(body.get("client_secret") or "").strip() or integrations.figma_client_secret(settings)
+    if not cid:
+        raise UIError("Figma Client ID is required.")
+    if not secret:
+        raise UIError("Figma Client Secret is required.")
+    settings["figma_client_id"] = cid
+    settings["figma_client_secret"] = secret
+    write_settings(root, settings)
+    return {"ok": True, "authorize_key": cid, "authorize_secret_set": True}
+
+
 # Sentry sign-ins in progress: id -> the secret device code, the client id, the project and when the code runs out.
 # The browser only ever sees the id, the code to type and the page to approve it on.
 SENTRY_SIGNINS: dict[str, dict[str, Any]] = {}
@@ -6229,14 +6255,14 @@ def build_manual(mode: str) -> Callable[[dict[str, Any], Path], list[str]]:
 # Terminal tools: the only runs someone is expected to type into. Everything else runs non-interactive, and the web
 # app never sends people into a terminal menu: each of these has an app page (the console stays as a deliberate,
 # clearly labelled escape hatch in the sidebar).
-TERMINAL_ACTIONS = {"console", "wizard", "config_menu", "ai_connect"}  # they take typing: the AI tools' sign-ins ask questions
+TERMINAL_ACTIONS = {"console", "wizard", "config_menu", "ai_connect", "ai_review_terminal"}  # they take typing: the AI tools' sign-ins ask questions
 
 # Work that only the project's primary computer starts (as do runs on an existing job): two computers starting work on one
 # project would overwrite each other's code on shared supporting computers.
 PRIMARY_ONLY_ACTIONS = frozenset({"new_job", "fix", "plan_epic"})
 
 # Runs that are about a job but aren't work on it: they don't show the job as Working.
-SIDE_ACTIONS = frozenset({"export_job", "web_preview", "dev_preview"})
+SIDE_ACTIONS = frozenset({"export_job", "web_preview", "dev_preview", "ai_review", "ai_review_terminal"})  # a review only reads the job's branch
 # Git actions on the project folder itself, refused while a job holds the folder (see folder_lock).
 FOLDER_GIT_ACTIONS = frozenset({"git_checkout", "stash_checkout", "git_new_branch", "git_pull", "distribute"})  # distribute checks out the branch it sends
 
@@ -6307,6 +6333,10 @@ ACTIONS: dict[str, Action] = {
     "worker_install": Action("Install worker dependencies", build_worker_install, fields=["machine"]),
     "verify_feature": Action("Check the feature's jobs together", build_verify_feature, fields=["feature"]),
     "verify_plan": Action("Check the plan's jobs together", lambda p, r: orchestrator_argv("script", "verify_integration.py", "--plan")),
+    # An AI tool's highlighted ability on a job (tool_abilities.py): a review of its branch by Claude Code or Codex.
+    "ai_review": Action("AI review", lambda p, r: build_ai_review(p, r, terminal=False), fields=["job", "ability"]),
+    "ai_review_terminal": Action("AI review", lambda p, r: build_ai_review(p, r, terminal=True), fields=["job", "ability"],
+                                 confirm="Runs Claude's /code-review ultra: a multi-agent review in Anthropic's cloud, billed to your Claude account. Claude asks before it starts."),
     "sync_fleet": Action("Sync fleet code", lambda p, r: orchestrator_argv("script", "sync_fleet.py")),
     "fleet_llm_check": Action("Fleet LLM latency & quota check", lambda p, r: orchestrator_argv("script", "fleet_llm_check.py")),
     "update_local": Action("Update Orchestrator (local)", lambda p, r: orchestrator_argv("update")),
@@ -8304,6 +8334,21 @@ class UIHandler(BaseHTTPRequestHandler):
             # The short version for Home: style mix, version, and whether the requirements have moved on since approval.
             self._json({**architecture.summary(root, prd_doc.Prd(root, runtime_dir(root)).read() or ""),
                         "proposal_waiting": architecture.load_proposal(runtime_dir(root)) is not None})
+        elif parts == ["ai", "abilities"] or parts == ["ai", "abilities", "scan"]:
+            # What each AI tool can do beyond writing code, scanned on this computer (tool_abilities.py): its slash commands,
+            # skills, plugins and subcommands, and the few that are a button on a job. POST .../scan rescans now.
+            from orchestrator import tool_abilities
+            from orchestrator.setup_checklist import ready_llm_providers
+            runtime = runtime_dir(root)
+            data = tool_abilities.load(runtime)
+            if method == "POST" and parts[-1] == "scan":
+                self._require_owner("scan the AI tools")
+                search = tool_search_path()
+                installed = [p["cli"] for p in ai_providers.PROVIDERS if shutil.which(p["cli"], path=search)]
+                data = tool_abilities.scan(root, runtime, installed)
+            ready = set(ready_llm_providers({}))
+            self._json({**data, "stale": tool_abilities.is_stale(data), "highlights": tool_abilities.highlights(data, ready),
+                        "checked": tool_abilities.CHECKED})
         elif parts == ["blockers"] or parts == ["blockers", "clear-lock"]:
             # What holds paused jobs up (blockers.py), once per blocker. POST also resumes the jobs whose blocker is cleared
             # (Home posts it as it refreshes); clear-lock first removes a leftover git lock that nothing has open.
@@ -8671,6 +8716,10 @@ class UIHandler(BaseHTTPRequestHandler):
             if result.get("status") == "done":
                 self._audit("settings_changed", part="integrations")
             self._json(result)
+        elif method == "POST" and parts == ["integrations", "figma", "oauth-app"]:
+            self._require_owner("change connected app credentials")
+            self._json(save_figma_oauth_app(root, self._body()))
+            self._audit("settings_changed", part="integrations")
         elif method == "POST" and len(parts) == 3 and parts[0] == "integrations" and parts[2] == "connect":
             self._require_owner("change connected app credentials")
             self._json(connect_integration(root, parts[1], self._body().get("values") or {}))

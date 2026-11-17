@@ -84,6 +84,46 @@ class FigmaSignInTests(unittest.TestCase):
         f_pat = ig.Figma({"token": "figd_pat_token"})
         self.assertEqual(f_pat._headers(), {"X-Figma-Token": "figd_pat_token"})
 
+    def test_oauth_app_settings_save_and_basic_auth_token_exchange(self):
+        import base64
+        import io
+        import urllib.request
+
+        figma = lambda settings=None: next(p for p in ig.public_catalog({}, settings=settings) if p["id"] == "figma")  # noqa: E731
+        with patch.dict(os.environ, {"ORCHESTRATOR_FIGMA_CLIENT_ID": "", "ORCHESTRATOR_FIGMA_CLIENT_SECRET": ""}):
+            self.assertFalse(figma()["authorize_secret_set"])
+            view = figma({"figma_client_id": "cid_1", "figma_client_secret": "sec_1"})
+            self.assertEqual(view["authorize_key"], "cid_1")
+            self.assertTrue(view["authorize_secret_set"])
+            self.assertNotIn("sec_1", json.dumps(view))
+
+        captured = {}
+
+        def fake_urlopen(req, timeout=None, context=None):
+            captured["auth"] = req.get_header("Authorization")
+            captured["body"] = req.data.decode("utf-8")
+            resp = io.BytesIO(json.dumps({"access_token": "figo_tok"}).encode("utf-8"))
+            resp.__enter__ = lambda s: s
+            resp.__exit__ = lambda *a: False
+            return resp
+
+        with patch.object(urllib.request, "urlopen", side_effect=fake_urlopen):
+            out = ig.exchange_figma_token(code="c_1", code_verifier="v_1", redirect_uri="https://app/figma-auth.html", client_id="cid_1", client_secret="sec_1")
+        self.assertEqual(out["access_token"], "figo_tok")
+        self.assertEqual(captured["auth"], "Basic " + base64.b64encode(b"cid_1:sec_1").decode("ascii"))
+        self.assertNotIn("client_secret=", captured["body"])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            res = ui.save_figma_oauth_app(root, {"client_id": "cid_2", "client_secret": "sec_2"})
+            self.assertEqual(res, {"ok": True, "authorize_key": "cid_2", "authorize_secret_set": True})
+            saved = ui.read_settings(root)
+            self.assertEqual((saved["figma_client_id"], saved["figma_client_secret"]), ("cid_2", "sec_2"))
+            # Updating client_id without re-sending client_secret keeps the previously saved secret
+            res2 = ui.save_figma_oauth_app(root, {"client_id": "cid_3"})
+            self.assertEqual(res2["authorize_key"], "cid_3")
+            self.assertEqual(ui.read_settings(root)["figma_client_secret"], "sec_2")
+
 
 class RejectedTokenTests(unittest.TestCase):
     def setUp(self):
@@ -148,8 +188,8 @@ class ConnectionUIBehaviorTests(unittest.TestCase):
         # Modal dialog connect state validator disables submit until manual fields are valid
         self.assertIn("updateDialogConnectState", self.app_js)
         self.assertIn("okBtn.disabled = !manualValid;", self.app_js)
-        # Figma's quick button is disabled without a client id. Trello's stays clickable and explains the API key it needs.
-        self.assertIn("quickFigma.disabled = !cid;", self.app_js)
+        # Figma's quick button is disabled without OAuth client ID and secret. Trello's stays clickable and explains the API key it needs.
+        self.assertIn("quickFigma.disabled = !cid || !hasSecret;", self.app_js)
         self.assertIn('toast("Paste your Trello API key first.", "warning");', self.app_js)
 
     def test_job_type_buttons_dimmed_by_about_25_percent_on_select(self):
