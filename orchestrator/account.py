@@ -278,8 +278,23 @@ def _snapshot_job_progress(jdata: dict[str, Any]) -> list[int]:
     return sorted({i for i in done if isinstance(i, int)}) if isinstance(done, list) else []
 
 
-def build_snapshot(root: Path | None = None) -> dict[str, Any]:
-    """Assemble lightweight offline view of recent projects and jobs for the hosted app."""
+def _job_state(job: dict[str, Any], root: Path) -> dict[str, Any] | None:
+    """What the job page on this computer says the job is waiting on (label, reason, next step), so another computer shows
+    the same instead of guessing from the bare status."""
+    try:
+        from orchestrator.web.server import job_state
+        state = job_state(job, root)
+    except Exception:
+        return None
+    nxt = state.get("next") or None
+    return {"group": state.get("group"), "tone": state.get("tone"), "label": state.get("label"),
+            "reason": str(state.get("reason") or "")[:600],
+            "next": {"action": nxt.get("action"), "label": nxt.get("label")} if isinstance(nxt, dict) else None}
+
+
+def build_snapshot(root: Path | None = None, live: dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:
+    """Assemble lightweight offline view of recent projects and jobs for the hosted app. `live`: job id -> its run going now
+    ({"label": "Fix attempt", "step": "..."}), so other computers see progress, not only the status."""
     from orchestrator.project_config import find_project_root, load_recent_projects
 
     recent_data = load_recent_projects(prune_missing=False)
@@ -344,6 +359,10 @@ def build_snapshot(root: Path | None = None) -> dict[str, Any]:
                             "test_status": jdata.get("test_status"),
                             "verification": {"status": verification.get("status"),
                                              "comments": str(verification.get("comments") or "")[:2000]} if verification else None,
+                            "state": _job_state(jdata, proj_root),
+                            "active_run": (live or {}).get(jpath.stem) or (live or {}).get(str(jdata.get("job_id") or "")),
+                            "blocker": {k: jdata["blocker"].get(k) for k in ("kind", "title", "detail")} if isinstance(jdata.get("blocker"), dict) else None,
+                            "imported_from_machine": jdata.get("imported_from_machine"),
                             "tasks_count": len(tasks_raw),
                             "tasks_done": len(done_indices),
                             "completed_task_indices": done_indices,
@@ -373,9 +392,10 @@ def build_snapshot(root: Path | None = None) -> dict[str, Any]:
     }
 
 
-def sync_snapshot(machine: dict[str, Any], snapshot: dict[str, Any] | None = None, root: Path | None = None) -> dict[str, Any]:
+def sync_snapshot(machine: dict[str, Any], snapshot: dict[str, Any] | None = None, root: Path | None = None,
+                  live: dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:
     """Sync offline project & job metadata to the control plane for browsing when this computer is offline."""
-    payload = snapshot if snapshot is not None else build_snapshot(root=root)
+    payload = snapshot if snapshot is not None else build_snapshot(root=root, live=live)
     return call("machine/sync", payload, machine=machine)
 
 

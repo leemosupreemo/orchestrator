@@ -3395,6 +3395,7 @@ document.addEventListener("click", (e) => {
 function jobTableRow(j, { hidden = false } = {}) {
   const parts = [
     j.remote_machine ? `on ${esc(j.remote_machine.name)}` : "",
+    j.continued_on ? `continued on ${esc(j.continued_on)}` : "", // another computer took this job over (Continue here)
     j.branch ? `<span class="mono">${esc(j.branch)}</span>` : "",
     j.tasks_total ? `${j.tasks_done}/${j.tasks_total} tasks` : "",
   ].filter(Boolean);
@@ -4460,6 +4461,7 @@ pages.home = async (_, query) => {
   // 1) Default ordered by most recent
   const runningRuns = state.runs.filter((r) => r.running && !isPreviewRun(r)); // a live preview shows in the Preview card
   const isRunningNow = (j) => runningRuns.some((r) => r.job === j.id || r.result_job === j.id); // shown in Running now, not again in the list
+  const continuedOn = new Map(); // local job id -> the computer that continued it (its copy says it came from here)
   const remoteJobs = await (async () => {
     if (typeof Account === "undefined" || !Account.active?.() || typeof cpApi !== "function" || !p) return [];
     const normRepo = (v) => {
@@ -4494,7 +4496,7 @@ pages.home = async (_, query) => {
       const { machines = [] } = await cpApi("machines", { signal: AbortSignal.timeout(3000) }).catch(() => ({ machines: [] }));
       const others = machines.filter((m) => m.id !== currentMachineId && m.has_snapshot);
       homeRemoteSnaps = {
-        key: currentMachineId, at: Date.now(),
+        key: currentMachineId, at: Date.now(), selfName: machines.find((m) => m.id === currentMachineId)?.name || "",
         snaps: await Promise.all(others.map((m) => cpApi("machine/snapshot", { method: "POST", body: { machine_id: m.id }, signal: AbortSignal.timeout(3000) }).then((d) => ({ m, snap: d?.snapshot })).catch(() => null))),
       };
     }
@@ -4505,6 +4507,7 @@ pages.home = async (_, query) => {
       if (!item?.snap?.recent_jobs) continue;
       for (const rj of item.snap.recent_jobs) {
         const jid = rj.job_id || rj.id;
+        if (jid && seen.has(jid) && rj.imported_from_machine && rj.imported_from_machine === homeRemoteSnaps.selfName) continuedOn.set(jid, item.m.name);
         if (!jid || seen.has(jid)) continue;
         const rRepo = normRepo(rj.repo || "");
         const same = (myRepo && rRepo) ? myRepo === rRepo : (myName && String(rj.project || "").toLowerCase() === myName);
@@ -4517,7 +4520,7 @@ pages.home = async (_, query) => {
           updated: Date.parse(rj.updated_at || rj.created_at || "") / 1000 || 0,
           tasks_total: rj.tasks_count || tasks.length,
           tasks_done: Number.isInteger(rj.tasks_done) ? rj.tasks_done : (Array.isArray(rj.completed_task_indices) ? rj.completed_task_indices.length : 0),
-          state: remoteState(rj),
+          state: rj.state?.label ? { ...rj.state, next: null, reason: rj.active_run ? `${rj.active_run.label}${rj.active_run.step ? ` · ${rj.active_run.step}` : ""}` : rj.state.reason } : remoteState(rj),
           remote_machine: { id: item.m.id, name: item.m.name, online: Boolean(item.m.online), reachable: Boolean(item.m.reachable) },
         });
       }
@@ -4525,6 +4528,7 @@ pages.home = async (_, query) => {
     return out;
   })();
   if (!sameProject()) return {stale: true};
+  jobs.forEach((j) => { if (continuedOn.has(j.id)) j.continued_on = continuedOn.get(j.id); });
   const mergedJobs = jobs.concat(remoteJobs);
   const sortedJobs = sortJobs(mergedJobs);
 
@@ -5390,7 +5394,10 @@ pages["remote-job"] = async ([machineId, jobId]) => {
     html: `<section class="card mb-16">
       <div class="card-h"><h2>Remote job on ${esc(machineLabel)}</h2></div>
       <div class="card-b stack gap-12">
-        ${rj.last_error ? `<div class="notice warn"><strong>Last error:</strong> ${esc(rj.last_error)}</div>` : ""}
+        ${rj.state?.label ? `<div><strong>${esc(rj.state.label)}</strong>${rj.state.reason ? `<p class="muted">${esc(rj.state.reason)}</p>` : ""}</div>` : ""}
+        ${rj.active_run ? `<p><span class="pill working">Running</span> ${esc(rj.active_run.label)}${rj.active_run.step ? ` · ${esc(rj.active_run.step)}` : ""}</p>` : ""}
+        ${rj.state?.next?.label ? `<p class="muted">Next on ${esc(machineLabel)}: ${esc(rj.state.next.label)}. Open remote to do it there.</p>` : ""}
+        ${rj.last_error && !rj.state?.reason ? `<div class="notice warn"><strong>Last error:</strong> ${esc(rj.last_error)}</div>` : ""}
         <div class="row gap-8 wrap">
           ${machine?.reachable ? `<button type="button" class="btn primary" id="open-remote-machine-job">Open remote</button>` : ""}
           <button type="button" class="btn ${machine?.reachable ? "" : "primary"}" id="continue-remote-job-here">Continue here</button>
@@ -5675,7 +5682,9 @@ pages.job = async ([id]) => {
   const next = s.state.next;
   const isStoppingActive = activeRun && (stoppingRuns.has(activeRun.id) || Boolean(activeRun.stopping));
   // The one way to start a fix from here: the same dialog as the More menu's, with the error already in it.
-  const recommendFixBtn = !activeRun && job.last_error && next?.action !== "debug" && next?.action !== "answer"
+  // Only while something is wrong: a job ready to approve, merge or finish keeps an old attempt's error, which isn't a reason to fix.
+  const recommendFixBtn = !activeRun && job.last_error && !["debug", "answer", "merge", "complete", "approve", "schedule", "execute"].includes(next?.action)
+    && s.state.group !== "done"
     ? `<button class="btn small" ${act("debug", { job: s.id, feedback: String(job.last_error).slice(0, 2000) })}>Run a fix…</button>`
     : "";
   const signIn = problem?.sign_in || s.state.sign_in; // a failed fix's sign-in, or a blocker that needs one

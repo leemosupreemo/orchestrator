@@ -1272,6 +1272,7 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
             return
 
         # SUCCESS POINT
+        job.pop("last_error", None)  # built and tested: an error from an earlier attempt no longer describes this job
         likely_files = job.get("plan", {}).get("likely_files", [])
         is_ios = any(f.endswith(".swift") or f.endswith(".storyboard") or f.endswith(".plist") for f in likely_files)
 

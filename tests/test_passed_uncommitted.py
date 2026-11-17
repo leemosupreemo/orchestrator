@@ -32,5 +32,11 @@ class PassedUncommittedTests(unittest.TestCase):
         self.assertIn("Next:</span> commit the finished work", app)
 
 
+    def test_a_job_ready_to_merge_offers_no_fix_for_an_old_error(self):
+        app = (ROOT / "orchestrator" / "web" / "static" / "app.js").read_text(encoding="utf-8")
+        self.assertIn('!["debug", "answer", "merge", "complete", "approve", "schedule", "execute"].includes(next?.action)', app)
+        source = (ROOT / "orchestrator" / "scripts" / "worker_run.py").read_text(encoding="utf-8")
+        self.assertIn('        # SUCCESS POINT\n        job.pop("last_error", None)', source)
+
 if __name__ == "__main__":
     unittest.main()

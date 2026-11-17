@@ -127,6 +127,7 @@ OWNER_ONLY_CONFIG = {"keys", "email", "analytics", "webhook", "desktop", "allowe
 OWNER_ONLY_ACTIONS = {"server_start", "server_stop", "server_restart", "signing_import", "signing_secure", "signing_copy", "console", "wizard", "config_menu", "ai_connect", "package_update", "worker_install", "sync_fleet", "fleet_llm_check", "update_local",
                       "update_fleet", "test_email", "logs_setup", "deliver", "distribute"}
 SIGN_IN_TTL_SECONDS = 30 * 24 * 3600
+SNAPSHOT_CHECK_SECONDS = 10  # how soon other computers see a job here change (snapshot_sync)
 ALLOWED_EMAILS_CACHE_SECONDS = 60
 MAX_BUFFER_BYTES = 4 * 1024 * 1024
 MAX_FILE_BYTES = 2 * 1024 * 1024
@@ -6486,6 +6487,17 @@ class UIServer(ThreadingHTTPServer):
             self._used_tickets[nonce] = expires
             return True
 
+    def live_job_runs(self) -> dict[str, dict[str, Any]]:
+        """Job id -> the run working on it now, for the snapshot other computers read: {"label": "Fix attempt", "step": "..."}."""
+        live: dict[str, dict[str, Any]] = {}
+        for run in self.sessions.list():
+            job = run.get("job") or run.get("result_job")
+            if run.get("running") and job:
+                progress = run.get("progress") if isinstance(run.get("progress"), dict) else {}
+                live[str(job)] = {"label": job_runs.kind(str(run.get("action") or ""))[0],
+                                  "step": str(progress.get("step") or progress.get("label") or "")[:200]}
+        return live
+
     def start_heartbeat(self, endpoint: Callable[[], str], interval: float = account.HEARTBEAT_SECONDS) -> threading.Thread | None:
         # Also reports how many runs are going, so the account can say so if this computer disappears mid-run.
         """While this computer is paired, tell the control plane it is up and where to reach it."""
@@ -6505,9 +6517,9 @@ class UIServer(ThreadingHTTPServer):
                 command = reply.get("connection_command") if isinstance(reply, dict) else None
                 if manager and account.valid_connection_command(command):
                     manager.request(command["id"], command["action"], expires=command["expires"])
-                if time.time() - last_sync[0] >= 300:
+                if time.time() - last_sync[0] >= 300:  # the fallback: snapshot_sync sends changes within seconds
                     try:
-                        account.sync_snapshot(machine, root=self.root)
+                        account.sync_snapshot(machine, root=self.root, live=self.live_job_runs())
                         last_sync[0] = time.time()
                     except Exception:
                         pass
@@ -6526,6 +6538,25 @@ class UIServer(ThreadingHTTPServer):
                 print(f"  Account heartbeat: {exc}", flush=True)
             return True
 
+        def snapshot_sync() -> None:
+            # Other computers list this one's jobs from its snapshot. Rebuilt every few seconds and sent when it changed (a
+            # job paused, finished, opened a PR, or its run moved on a step), so they show it within seconds, not minutes.
+            sent = ""
+            while not self._stopping.wait(SNAPSHOT_CHECK_SECONDS):
+                machine = account.load_machine()
+                if machine is None:
+                    return
+                try:
+                    snapshot = account.build_snapshot(root=self.root, live=self.live_job_runs())
+                    digest = hashlib.sha256(json.dumps(snapshot, sort_keys=True, default=str).encode()).hexdigest()
+                    if digest != sent:
+                        account.sync_snapshot(machine, snapshot=snapshot)
+                        sent = digest
+                        last_sync[0] = time.time()
+                except Exception:
+                    pass  # offline or a bad job file: the next check tries again
+
+        threading.Thread(target=snapshot_sync, daemon=True, name="snapshot-sync").start()
         wake_event = threading.Event()
         self.trigger_heartbeat = wake_event.set
 
