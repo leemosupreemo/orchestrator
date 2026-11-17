@@ -4462,6 +4462,7 @@ pages.home = async (_, query) => {
   const runningRuns = state.runs.filter((r) => r.running && !isPreviewRun(r)); // a live preview shows in the Preview card
   const isRunningNow = (j) => runningRuns.some((r) => r.job === j.id || r.result_job === j.id); // shown in Running now, not again in the list
   const continuedOn = new Map(); // local job id -> the computer that continued it (its copy says it came from here)
+  const localImportedAt = new Map(jobs.map((j) => [j.id, j.imported_at])); // a job brought back here is newer than the copy it left
   const remoteJobs = await (async () => {
     if (typeof Account === "undefined" || !Account.active?.() || typeof cpApi !== "function" || !p) return [];
     const normRepo = (v) => {
@@ -4507,7 +4508,8 @@ pages.home = async (_, query) => {
       if (!item?.snap?.recent_jobs) continue;
       for (const rj of item.snap.recent_jobs) {
         const jid = rj.job_id || rj.id;
-        if (jid && seen.has(jid) && rj.imported_from_machine && rj.imported_from_machine === homeRemoteSnaps.selfName) continuedOn.set(jid, item.m.name);
+        if (jid && seen.has(jid) && rj.imported_from_machine && rj.imported_from_machine === homeRemoteSnaps.selfName && !rj.moved_to
+            && Number(rj.imported_at || 0) > Number(localImportedAt.get(jid) || 0)) continuedOn.set(jid, item.m.name); // its copy is newer
         if (!jid || seen.has(jid)) continue;
         const rRepo = normRepo(rj.repo || "");
         const same = (myRepo && rRepo) ? myRepo === rRepo : (myName && String(rj.project || "").toLowerCase() === myName);
@@ -4528,7 +4530,12 @@ pages.home = async (_, query) => {
     return out;
   })();
   if (!sameProject()) return {stale: true};
-  jobs.forEach((j) => { if (continuedOn.has(j.id)) j.continued_on = continuedOn.get(j.id); });
+  jobs.forEach((j) => {
+    if (!continuedOn.has(j.id) || j.moved_to) return;
+    j.continued_on = continuedOn.get(j.id);
+    // one owner per job: this copy stops (the server refuses to run it) and reads "Moved to …" from the next refresh
+    api(`jobs/${encodeURIComponent(j.id)}/moved`, { method: "POST", body: { machine: j.continued_on } }).catch(() => {});
+  });
   const mergedJobs = jobs.concat(remoteJobs);
   const sortedJobs = sortJobs(mergedJobs);
 
@@ -5402,6 +5409,7 @@ pages["remote-job"] = async ([machineId, jobId]) => {
           ${machine?.reachable ? `<button type="button" class="btn primary" id="open-remote-machine-job">Open remote</button>` : ""}
           <button type="button" class="btn ${machine?.reachable ? "" : "primary"}" id="continue-remote-job-here">Continue here</button>
         </div>
+        <p class="muted">Continue here moves the job to this computer: ${esc(machineLabel)} stops working on it and shows it as moved.</p>
       </div>
     </section>`,
     after: () => {
@@ -5439,6 +5447,10 @@ pages["remote-job"] = async ([machineId, jobId]) => {
       });
       $("#continue-remote-job-here")?.addEventListener("click", async (e) => {
         const btn = e.currentTarget;
+        if (rj.active_run) { // one owner per job: two computers building the same branch would overwrite each other
+          toast(`${machineLabel} is working on this job right now (${rj.active_run.label}). Stop that run there first, then continue here.`, true);
+          return;
+        }
         btn.disabled = true;
         btn.textContent = "Importing…";
         try {

@@ -796,6 +796,8 @@ From the top:
 
 The sidebar's **Primary machine** dropdown switches between your computers. The one marked **Primary** starts this project's jobs. Another computer can look at the project, but it can't start work until it's made primary.
 
+**Jobs on your other computers.** Home also lists the jobs your other computers run in this project, with the same state their own job page shows ("Blocked: Git is locked", "Tests passed, not committed", the run working now and its step), usually within 10 seconds of a change. The computer running a job is its one source of truth; your account only holds a read-only copy for the others. While a job runs, each finished task is pushed to the job's own branch (never the base branch), so if that computer fails, at most the task in progress is lost. **Continue here** moves a job to the computer you're on, using what reached the branch: the computer it left marks it **Moved to <computer>** and won't run it again until you continue it back. It can't be moved while a run is working on it there.
+
 ### Ask AI
 
 The chat button on Home opens a conversation about the project. Ask anything: what the product is, what changed last week, what's left in the requirements, or why something was built the way it was. It can't change code or files. When something should change, it says what, and you start a job for it.

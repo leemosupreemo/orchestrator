@@ -6,6 +6,7 @@ import contextlib
 import copy
 import os
 os.environ["AI_REQUEST_SOURCE"] = "orchestrator"
+import re
 import shlex
 import shutil
 import socket
@@ -822,6 +823,9 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
     start_epoch = time.time()
     remove_task_views(job_path)  # left over from a run that was stopped part way
     job = read_json(job_path)
+    if job.get("moved_to"):  # one owner per job: it was continued on another computer
+        print(f"\nThis job moved to {job['moved_to']} and is worked on there now. Nothing was run here.")
+        return
     if isinstance(job.get("blocker"), dict):  # running again: what it waited on is cleared (or the person chose to try)
         job["last_blocker"] = job.pop("blocker")  # kept so a blocker that comes straight back isn't auto-resumed again
         write_json(job_path, job)
@@ -1210,6 +1214,7 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
                 commit_msg = f"fix: {job['title']} (AI generated)"
             
             _git_commit_step(f"git commit -m {shlex.quote(commit_msg)}")
+            backup_push(job)
         if job.pop("passed_uncommitted", None) is not None:
             write_json(job_path, job)
 
@@ -1574,6 +1579,36 @@ def update_product_requirements(job_path: Path) -> None:
         print(f"      - Note: couldn't check the product requirements: {exc}")
 
 
+PROTECTED_BRANCHES = {"main", "master", "develop", "trunk"}
+
+
+def backup_push(job: dict) -> bool:
+    """Pushes the job's branch to origin after work is committed, so a computer that dies mid-job loses at most the task in
+    progress. Only the job's own branch, never the base branch; best effort (no remote, offline, or rejected: it's tried again
+    after the next task, and the PR step pushes anyway)."""
+    branch = str(job.get("branch") or "").strip()
+    base = str(job.get("base_branch") or PROJECT_CONFIG.base_branch or "main").strip()
+    if (not branch or branch.startswith("-") or branch in (base, "HEAD") or branch in PROTECTED_BRANCHES
+            or normalize_branch_mode(job.get("branch_mode")) == "manual"):
+        return False
+    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GCM_INTERACTIVE": "never"}
+    try:
+        if getattr(subprocess.run(["git", "remote", "get-url", "origin"], cwd=str(ROOT), capture_output=True, timeout=10), "returncode", 1) != 0:
+            return False
+        res = subprocess.run(["git", "push", "-u", "origin", "--", branch], cwd=str(ROOT), capture_output=True, text=True, timeout=120, env=env)
+    except Exception as exc:  # a backup must never stop the job
+        job["backup_error"] = str(exc)[:300]
+        return False
+    if getattr(res, "returncode", 1) != 0:
+        job["backup_error"] = re.sub(r"(https?://)[^/@\s]+@", r"\1", str(getattr(res, "stderr", "") or getattr(res, "stdout", "") or "").strip())[-300:]
+        print(f"      - Couldn't back up {branch} to origin yet ({job['backup_error'].splitlines()[-1] if job['backup_error'] else 'push failed'}).")
+        return False
+    job.pop("backup_error", None)
+    job["backed_up_at"] = now_iso()
+    print(f"      - Backed up {branch} to origin.")
+    return True
+
+
 def checkpoint_task(job: dict, index: int, total: int, title: str, files: list[str]) -> None:
     """Commits one finished task by itself and records the commit, so the task can be undone later."""
     if not files:
@@ -1589,6 +1624,7 @@ def checkpoint_task(job: dict, index: int, total: int, title: str, files: list[s
     job.setdefault("task_commits", {})[str(index)] = sha
     job["ai_modified_files"] = sorted(set(job.get("ai_modified_files") or []) | set(files))
     print(f"      - Task {index + 1} committed ({sha[:7]}).")
+    backup_push(job)
 
 
 def check_task_growth(job: dict, index: int, task: dict) -> Optional[dict]:

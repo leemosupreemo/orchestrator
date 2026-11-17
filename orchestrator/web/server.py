@@ -906,6 +906,10 @@ def job_state(job: dict[str, Any], root: Path | None = None) -> dict[str, Any]:
         return {"group": group, "tone": tone, "label": label, "reason": reason,
                 "next": {"action": action, "label": action_label} if action else None}
 
+    if job.get("moved_to"):  # continued on another computer: owned and worked on there now
+        return state("done", "neutral", f"Moved to {job['moved_to']}",
+                     f"This job was continued on {job['moved_to']}, which works on it now. Open it from that computer's jobs on Home; "
+                     "Continue here on it brings it back.")
     waiting = job.get("waiting_for")
     if isinstance(waiting, dict) and worker_alive(job) is not False:  # see folder_lock: one job works in a project folder at a time
         return state("working", "working", "Waiting",
@@ -1095,6 +1099,8 @@ def job_summary(path: Path, job: dict[str, Any], feature_names: dict[str, str] |
         "tag": tag,
         "is_orchestrator_improvement": is_auto_improve,
         "submitted_for_inclusion": bool(job.get("submitted_for_inclusion")),
+        "imported_at": job.get("imported_at"),
+        "moved_to": job.get("moved_to"),
         "yolo": bool(job.get("yolo") or job.get("is_yolo")),
     }
 
@@ -1827,7 +1833,8 @@ def import_remote_job(root: Path, body: dict[str, Any]) -> dict[str, Any]:
         raise UIError("This job is archived on this computer. Restore it from Archived on Home instead.")
     target = folder / f"{job_id}.json"
     existed = target.exists()
-    if not existed:
+    taking_back = existed and bool(read_json_file(target).get("moved_to"))  # it moved away and comes back: the other copy is newer
+    if not existed or taking_back:
         tasks = raw.get("tasks") if isinstance(raw.get("tasks"), list) else []
         tasks_count = raw.get("tasks_count")
         status = str(raw.get("status") or "planned")
@@ -1857,6 +1864,7 @@ def import_remote_job(root: Path, body: dict[str, Any]) -> dict[str, Any]:
             doc["plan"] = {"summary": raw.get("summary") or "", "tasks": tasks}
         if body.get("source_machine_name"):
             doc["imported_from_machine"] = str(body["source_machine_name"])
+        doc["imported_at"] = time.time()  # the newer copy is the job's owner (see mark_job_moved)
         write_json_file(target, doc)
 
     branch = str(raw.get("branch") or "").strip()
@@ -1867,7 +1875,20 @@ def import_remote_job(root: Path, body: dict[str, Any]) -> dict[str, Any]:
             fetched = res.returncode == 0
         except (OSError, subprocess.TimeoutExpired):
             fetched = False
-    return {"ok": True, "id": job_id, "already_existed": existed, "fetched_branch": fetched}
+    return {"ok": True, "id": job_id, "already_existed": existed and not taking_back, "fetched_branch": fetched}
+
+
+def mark_job_moved(root: Path, job_id: str, machine_name: str) -> bool:
+    """Another computer continued this job (Continue here): it is owned there now, so this copy stops being worked on.
+    One owner per job: Resume, fixes and the rest refuse here until it's continued back from that computer."""
+    path = resolve_job_path(root, job_id)
+    job = read_json_file(path)
+    name = str(machine_name or "").strip()[:120]
+    if not job or not name or job.get("moved_to") == name:
+        return False
+    job.update(moved_to=name, moved_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
+    write_json_file(path, job)
+    return True
 
 
 def archive_jobs(root: Path, job_ids: list[str], running: set[str]) -> list[str]:
@@ -8010,6 +8031,13 @@ class UIHandler(BaseHTTPRequestHandler):
                     write_json_file(path, job)
                     moved.append(path.stem)
             self._json({**features_overview(root), "undo": {"feature": record, "jobs": moved}})
+        elif method == "POST" and len(parts) == 3 and parts[0] == "jobs" and parts[2] == "moved":
+            # Home saw another computer's newer copy of this job (Continue here there): it's owned there now
+            self._require_owner("mark a job as continued on another computer")
+            moved_now = mark_job_moved(root, parts[1], str(self._body().get("machine") or ""))
+            if moved_now:
+                _sync_snapshot_async(root)
+            self._json({"moved": moved_now})
         elif method == "POST" and len(parts) == 3 and parts[0] == "jobs" and parts[2] == "scope":
             job_path = resolve_job_path(root, parts[1])
             job = read_json_file(job_path)
@@ -9117,6 +9145,9 @@ class UIHandler(BaseHTTPRequestHandler):
         job_title = ""
         job_id = str(params.get("job") or "") or None
         side = key in SIDE_ACTIONS  # an errand about the job (export, preview) runs alongside work on it
+        if job_id and not side and key not in ("delete_job", "discard") and (moved := read_json_file(resolve_job_path(root, job_id)).get("moved_to")):
+            raise UIError(f"This job moved to {moved} and is worked on there now. Open it from that computer, or use Continue here on "
+                          "its copy to bring it back.", HTTPStatus.CONFLICT)
         if job_id and not side and (job_id in self.server.sessions.running_job_ids() or (str(root), job_id) in self.server._publishing_jobs):
             raise UIError("This job already has a run in progress. Open it from Activity instead.", HTTPStatus.CONFLICT)
         if job_id:

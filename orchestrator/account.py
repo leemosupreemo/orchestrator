@@ -363,6 +363,8 @@ def build_snapshot(root: Path | None = None, live: dict[str, dict[str, Any]] | N
                             "active_run": (live or {}).get(jpath.stem) or (live or {}).get(str(jdata.get("job_id") or "")),
                             "blocker": {k: jdata["blocker"].get(k) for k in ("kind", "title", "detail")} if isinstance(jdata.get("blocker"), dict) else None,
                             "imported_from_machine": jdata.get("imported_from_machine"),
+                            "imported_at": jdata.get("imported_at"),
+                            "moved_to": jdata.get("moved_to"),
                             "tasks_count": len(tasks_raw),
                             "tasks_done": len(done_indices),
                             "completed_task_indices": done_indices,
