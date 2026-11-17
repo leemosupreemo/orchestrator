@@ -1689,16 +1689,22 @@ def features_overview(root: Path) -> dict[str, Any]:
     rolled = feature_store.rollup(features, jobs + archived)
     base = read_json_file(runtime_dir(root) / "project.json").get("base_branch") or "main"
     for f in rolled:
-        branches = []
-        for j in jobs:
-            if j.get("feature") == f["id"] and j.get("branch") and j["status"] not in ("discarded", "archived") and j["branch"] not in branches:
-                branches.append(j["branch"])
-        result = integration_check.load_result(runtime_dir(root), f["id"])
-        base_head = git(root, "rev-parse", f"refs/heads/{base}")
-        f["combine"] = {"branches": branches, "result": result,
-                        "stale": integration_check.is_stale(result, base_head, integration_check.branch_heads(root, branches))}
+        f["combine"] = combine_view(root, jobs, {f["id"]}, f["id"], base)
     return {"features": rolled, "archived_jobs": archived, "overlaps": feature_store.overlaps(features, jobs, files),
             "unassigned": [j["id"] for j in jobs if not j.get("feature") and j["state"]["group"] != "done"]}
+
+
+def combine_view(root: Path, jobs: list[dict[str, Any]], feature_ids: set[str], key: str, base: str) -> dict[str, Any]:
+    """Do these features' open job branches work together (integration_check)? Their branches, the last check's result
+    (stored under `key`: a feature's id, or the plan's), and whether a branch or the base has moved on since."""
+    branches = []
+    for j in jobs:
+        if j.get("feature") in feature_ids and j.get("branch") and j["status"] not in ("discarded", "archived") and j["branch"] not in branches:
+            branches.append(j["branch"])
+    result = integration_check.load_result(runtime_dir(root), key)
+    base_head = git(root, "rev-parse", f"refs/heads/{base}")
+    return {"branches": branches, "result": result,
+            "stale": integration_check.is_stale(result, base_head, integration_check.branch_heads(root, branches))}
 
 
 def epics_overview(root: Path) -> dict[str, Any]:
@@ -6232,7 +6238,7 @@ PRIMARY_ONLY_ACTIONS = frozenset({"new_job", "fix", "plan_epic"})
 # Runs that are about a job but aren't work on it: they don't show the job as Working.
 SIDE_ACTIONS = frozenset({"export_job", "web_preview", "dev_preview"})
 # Git actions on the project folder itself, refused while a job holds the folder (see folder_lock).
-FOLDER_GIT_ACTIONS = frozenset({"git_checkout", "stash_checkout", "git_new_branch", "git_pull"})
+FOLDER_GIT_ACTIONS = frozenset({"git_checkout", "stash_checkout", "git_new_branch", "git_pull", "distribute"})  # distribute checks out the branch it sends
 
 ACTIONS: dict[str, Action] = {
     "console": Action("Interactive console", lambda p, r: orchestrator_argv("console")),
@@ -6300,6 +6306,7 @@ ACTIONS: dict[str, Action] = {
     "visual_check": Action("Simulator visual check", build_simulator_visual_check, fields=["destination", "wait", "no_build", "job", "no_video", "appearance"]),
     "worker_install": Action("Install worker dependencies", build_worker_install, fields=["machine"]),
     "verify_feature": Action("Check the feature's jobs together", build_verify_feature, fields=["feature"]),
+    "verify_plan": Action("Check the plan's jobs together", lambda p, r: orchestrator_argv("script", "verify_integration.py", "--plan")),
     "sync_fleet": Action("Sync fleet code", lambda p, r: orchestrator_argv("script", "sync_fleet.py")),
     "fleet_llm_check": Action("Fleet LLM latency & quota check", lambda p, r: orchestrator_argv("script", "fleet_llm_check.py")),
     "update_local": Action("Update Orchestrator (local)", lambda p, r: orchestrator_argv("update")),
@@ -6723,7 +6730,10 @@ class UIServer(ThreadingHTTPServer):
             return None
         features, jobs, slots = self._plan_inputs(root)
         decision = plan_run.decide(run, features, jobs, slots, self._planning_alive(run.get("starting") or {}), can_start=False)
-        return self._plan_payload(run, decision)
+        base = read_json_file(runtime_dir(root) / "project.json").get("base_branch") or "main"
+        # Do the plan's branches work together, and is that combination ready to send to testers (verify_integration --plan)?
+        return {**self._plan_payload(run, decision),
+                "combine": combine_view(root, jobs, set(run.get("features") or []), integration_check.PLAN_KEY, base)}
 
     PACKAGE_REVIEW_SETTLE_SECONDS = 90  # the requirements must sit unchanged this long, so an edit in progress doesn't start a review
     PACKAGE_REVIEW_STALE_SECONDS = 20 * 60  # a review "running" for longer than this crashed with the server; start over

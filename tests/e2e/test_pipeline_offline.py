@@ -598,6 +598,11 @@ class CombinedCheckTests(unittest.TestCase):
         for n, b in ((1, "ai/one"), (2, "ai/two")):
             (rt / "jobs" / f"20261001-000000-feature-{n}.json").write_text(json.dumps({"job_id": f"20261001-000000-feature-{n}", "status": "review-needed", "title": f"Job {n}", "type": "feature-plan", "branch": b, "feature": "word-score"}))
         cls.verify = p.orchestrator("script", "verify_integration.py", "word-score")
+        # The same two jobs, as the plan being built (Build the plan): the plan's own check, as its progress card runs it
+        from orchestrator import features as feature_store, plan_run
+        plan_run.start(rt, ["word-score"], feature_store.load(rt), auto_approve=False)
+        cls.plan_id = plan_run.load(rt)["id"]
+        cls.verify_plan = p.orchestrator("script", "verify_integration.py", "--plan")
 
     @classmethod
     def tearDownClass(cls):
@@ -616,6 +621,13 @@ class CombinedCheckTests(unittest.TestCase):
         result = json.loads((self.project.root / ".orchestrator" / "integration" / "word-score.json").read_text())
         self.assertEqual((result["status"], sorted(result["merged"])), ("test-failed", ["ai/one", "ai/two"]))
         self.assertIn("test_tea_is_three", result["test"]["tail"])
+
+    def test_the_plan_is_checked_as_a_whole_and_a_failing_combination_is_never_offered_to_testers(self):
+        self.assertEqual(self.verify_plan.returncode, 1, self.verify_plan.stdout[-800:])
+        result = json.loads((self.project.root / ".orchestrator" / "integration" / "plan.json").read_text())
+        self.assertEqual((result["status"], sorted(result["merged"])), ("test-failed", ["ai/one", "ai/two"]))
+        self.assertNotIn("branch", result)
+        self.assertEqual(self.project.git("branch", "--list", f"integration/plan-{self.plan_id}"), "")
 
     def test_the_checkout_is_untouched(self):
         self.assertEqual(self.project.git("branch", "--show-current"), "main")

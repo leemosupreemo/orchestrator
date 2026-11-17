@@ -1767,6 +1767,32 @@ process.stdout.write(JSON.stringify({
         self.assertNotIn('id="epic-build-plan"', out["cannot"])  # a plan is already building, or a member is looking
         self.assertNotIn('id="epic-build-plan"', out["allBuilt"])  # nothing left to build
 
+    def test_the_plans_card_checks_its_branches_together_then_offers_the_combined_build(self):
+        out = self.run_feature_plan("""
+const P = globalThis.FeaturePlan;
+const act = (a, p) => `data-action="${a}" data-params='${JSON.stringify(p)}'`;
+const plan = (combine) => P.renderRun({auto_approve: false, paused: false, finished: true, rows: [], combine}, {act});
+const two = ["ai/one", "ai/two"];
+process.stdout.write(JSON.stringify({
+  none: plan({branches: [], result: null}), one: plan({branches: ["ai/one"], result: null}),
+  unchecked: plan({branches: two, result: null}),
+  pass: plan({branches: two, stale: false, result: {status: "pass", merged: two, branch: "integration/plan-ab12"}}),
+  stale: plan({branches: two, stale: true, result: {status: "pass", merged: two, branch: "integration/plan-ab12"}}),
+  failing: plan({branches: two, result: {status: "test-failed", merged: two}}),
+  conflict: plan({branches: two, result: {status: "conflict", merged: [], conflicts: [{branch: "ai/two", files: ["a.py"]}]}})}));""")
+        self.assertNotIn("plan-combine", out["none"])
+        self.assertIn('data-action="distribute"', out["one"])  # one branch: that branch is the build
+        self.assertIn('"branch":"ai/one"', out["one"])
+        self.assertIn('data-action="verify_plan"', out["unchecked"])
+        self.assertIn("Check together", out["unchecked"])
+        self.assertNotIn('data-action="distribute"', out["unchecked"])
+        self.assertIn("Works together", out["pass"])
+        self.assertIn('"branch":"integration/plan-ab12"', out["pass"])
+        for not_ready in ("stale", "failing", "conflict"):
+            self.assertNotIn('data-action="distribute"', out[not_ready], not_ready)  # never a build that wasn't proven together
+        self.assertIn("Tests fail together", out["failing"])
+        self.assertIn("ai/two (a.py)", out["conflict"])
+
     def run_feature_plan(self, source):
         helper = PACKAGE_ROOT / "orchestrator" / "web" / "static" / "feature-plan.js"
         result = subprocess.run(["node", "--require", HTML_JS, "-e", f"require(process.argv[1]);\n{source}", str(helper)], capture_output=True, text=True)
@@ -2403,6 +2429,15 @@ class PlanRunApiTests(ServerTestCase):
         rows = {r["feature"]: r for r in plan["rows"]}
         self.assertEqual(rows["chat"]["state"], "waiting")
         self.assertIn("Play a round", rows["chat"]["detail"])
+
+    def test_the_plan_reports_whether_its_branches_work_together(self):
+        self.request("POST", "/api/plan-run", {}, headers=UI_HEADERS)
+        self.write_job("j1", "play-a-round", "r", "review-needed", branch="ai/one")
+        self.write_job("j2", "lobby", "r", "review-needed", branch="ai/two")
+        self.write_job("j3", "lobby", "r", "discarded", branch="ai/three")
+        combine = self.request("GET", "/api/plan-run")[1]["plan"]["combine"]
+        self.assertEqual((sorted(combine["branches"]), combine["result"]), (["ai/one", "ai/two"], None))  # not the discarded one
+        self.assertIn("verify_plan", ui.ACTIONS)
 
     def test_light_poll_reports_the_run_without_starting_anything(self):
         res, data = self.request("GET", "/api/plan-run")

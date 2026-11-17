@@ -79,11 +79,13 @@ def run_smoke_delivery():
     test_id = f"quick-delivery-{timestamp()}"
     target_branch = os.environ.get("DISTRIBUTION_BRANCH")
     current_branch = subprocess.check_output(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=str(ROOT)).decode("utf-8").strip()
+    switched_from = None  # the branch to switch the folder back to once the build is sent
     if target_branch and target_branch != current_branch:
         print(f"Switching branch to '{target_branch}'...", flush=True)
         try:
             subprocess.check_call(["git", "checkout", target_branch], cwd=str(ROOT))
             branch = target_branch
+            switched_from = current_branch
         except subprocess.CalledProcessError:
             print(f"\n\033[1;91m!!! Error: Failed to switch to branch '{target_branch}'.\033[0m", flush=True)
             print("Please commit or stash any uncommitted changes and try again.", flush=True)
@@ -142,6 +144,11 @@ def run_smoke_delivery():
             os.remove(job_file)
             print(f"   \033[92m✓ Cleaned up temporary delivery record ({job_file.name}).\033[0m\n", flush=True)
         sys.exit(1)
+    finally:
+        if switched_from:  # sending a build (say the plan's combined one) doesn't leave your folder on its branch
+            back = subprocess.run(["git", "checkout", switched_from], cwd=str(ROOT), capture_output=True, text=True)
+            print(f"Switched back to '{switched_from}'." if back.returncode == 0
+                  else f"Couldn't switch back to '{switched_from}': {back.stderr.strip()}", flush=True)
 
 if __name__ == "__main__":
     try:

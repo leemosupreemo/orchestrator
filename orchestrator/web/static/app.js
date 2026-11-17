@@ -6782,21 +6782,6 @@ function drawFeatureLinks(map) {
   }).join("") : "";
 }
 
-// "Do this feature's jobs work together?": one line, one action, and the last result in plain words.
-function combineLine(f) {
-  const c = f.combine;
-  if (!c || c.branches.length < 2) return "";
-  const r = c.result;
-  const stale = c.stale ? ` <span class="muted">Out of date: a branch or the base has changed since.</span>` : "";
-  const files = (r?.conflicts || []).map((x) => `${esc(x.branch)}${x.files.length ? ` (${x.files.map(esc).join(", ")})` : ""}`).join("; ");
-  const say = !r ? `<span class="muted">Not checked yet. Each job passed alone; this tries them all together.</span>`
-    : r.status === "pass" ? `<span class="pill done">Works together</span> <span class="muted">${r.merged.length} branches merged, build and tests pass.</span>`
-    : r.status === "conflict" ? `<span class="pill failed">Conflict</span> <span class="muted">These don't merge cleanly: ${files}.</span>`
-    : r.status === "build-failed" || r.status === "test-failed" ? `<span class="pill failed">${r.status === "build-failed" ? "Build fails" : "Tests fail"} together</span> <span class="muted">Each branch passed alone; the combination doesn't.</span>`
-    : `<span class="muted">${esc(r.error || "Couldn't check.")}</span>`;
-  return `<div class="row gap-12">${say}${stale}<button type="button" class="btn small" ${act("verify_feature", { feature: f.id })}>${r ? "Check again" : "Check together"}</button></div>`;
-}
-
 pages.features = async () => {
   location.hash = "#/";
 };
@@ -10036,7 +10021,7 @@ function epicsSection(initial, { onPrdChanged }) {
   };
 
   const body = () => `${breakdownCard()}${ov.prd_filled ? FeaturePlan.renderQuestions(ov.breakdown) : ""}${FeaturePlan.renderSuggested(ov.epics, ov.breakdown)}
-    ${FeaturePlan.renderRun(plan)}
+    ${FeaturePlan.renderRun(plan, { act })}
     ${FeaturePlan.renderApproved(ov.epics, { act, jiraConnected: ov.jira?.connected && owner && !!ov.jira.project, canBuild: owner && !building() })}
     ${FeaturePlan.renderBuilt(ov.epics)}${FeaturePlan.renderDeclined(ov.epics)}${jiraCard()}`;
 

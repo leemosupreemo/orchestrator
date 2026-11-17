@@ -43,6 +43,23 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual((r["status"], r["merged"], r["conflicts"]), ("pass", ["j1", "j2"], []))
         self.assertTrue(r["test"]["ok"])
 
+    def test_a_passing_combination_can_be_kept_as_a_branch_to_deliver(self):
+        self.branch("j1", {"one.txt": "1\n"})
+        self.branch("j2", {"two.txt": "2\n"})
+        r = ic.verify(self.root, "main", ["j1", "j2"], None, "test -f one.txt && test -f two.txt", keep_as="integration/plan-ab12")
+        self.assertEqual((r["status"], r["branch"]), ("pass", "integration/plan-ab12"))
+        files = git(self.root, "ls-tree", "--name-only", "integration/plan-ab12").split()
+        self.assertTrue({"one.txt", "two.txt"} <= set(files))  # both jobs' work, in one branch
+        self.assertEqual(git(self.root, "branch", "--show-current"), "main")  # your checkout untouched
+
+    def test_a_failing_combination_is_never_kept(self):
+        self.branch("j1", {"one.txt": "1\n"})
+        self.branch("j2", {"two.txt": "2\n"})
+        r = ic.verify(self.root, "main", ["j1", "j2"], None, "exit 1", keep_as="integration/plan-ab12")
+        self.assertEqual(r["status"], "test-failed")
+        self.assertNotIn("branch", r)
+        self.assertEqual(git(self.root, "branch", "--list", "integration/plan-ab12"), "")
+
     def test_a_conflict_names_the_branch_and_files_and_skips_the_build(self):
         self.branch("j1", {"config.txt": "name=one\n"})
         self.branch("j2", {"config.txt": "name=two\n"})

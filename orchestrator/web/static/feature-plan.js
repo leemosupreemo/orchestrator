@@ -173,7 +173,28 @@
     attention: ["Needs you", "attention"], failed_start: ["Stuck", "failed"], waiting: ["Waiting", "muted"], ready: ["Ready", "muted"]};
 
   // The plan being built: each feature's state, with Pause/Resume and Stop.
-  function renderRun(plan) {
+  // Do the plan's branches work together? The last check in plain words, one action to check (again), and once they pass
+  // (merged, built, tested), the combined build sent to testers. `act(action, params)` gives a button's attributes.
+  function renderCombine(c, act) {
+    if (!c || !c.branches?.length || !act) return "";
+    if (c.branches.length === 1) {  // one branch: nothing to combine, so that branch is the build
+      return `<div class="row gap-12 plan-combine"><span class="muted">One branch so far.</span>
+        <button type="button" class="btn small" ${act("distribute", {branch: c.branches[0], notes: "Build the plan: first iteration"})}>Send this build to testers</button></div>`;
+    }
+    const r = c.result;
+    const stale = c.stale ? ` <span class="muted">Out of date: a branch or the base has changed since.</span>` : "";
+    const files = (r?.conflicts || []).map((x) => `${escapeHtml(x.branch)}${x.files.length ? ` (${x.files.map(escapeHtml).join(", ")})` : ""}`).join("; ");
+    const say = !r ? `<span class="muted">${c.branches.length} branches. Each passed alone; this checks them together.</span>`
+      : r.status === "pass" ? `<span class="pill done">Works together</span> <span class="muted">${r.merged.length} branches merged, build and tests pass.</span>`
+      : r.status === "conflict" ? `<span class="pill failed">Conflict</span> <span class="muted">These don't merge cleanly: ${files}.</span>`
+      : r.status === "build-failed" || r.status === "test-failed" ? `<span class="pill failed">${r.status === "build-failed" ? "Build fails" : "Tests fail"} together</span> <span class="muted">Each branch passed alone; the combination doesn't.</span>`
+      : `<span class="muted">${escapeHtml(r.error || "Couldn't check.")}</span>`;
+    const ready = r?.status === "pass" && !c.stale && r.branch;
+    const send = ready ? `<button type="button" class="btn small primary" ${act("distribute", {branch: r.branch, notes: `Build the plan: ${r.merged.length} branches combined`})}>Send this build to testers</button>` : "";
+    return `<div class="row gap-12 wrap plan-combine">${say}${stale}<button type="button" class="btn small${ready ? "" : " primary"}" ${act("verify_plan", {})}>${r ? "Check again" : "Check together"}</button>${send}</div>`;
+  }
+
+  function renderRun(plan, {act} = {}) {
     if (!plan) return "";
     const done = plan.rows.filter((r) => r.state === "done").length;
     const rows = plan.rows.map((r) => {
@@ -190,9 +211,9 @@
       <div class="card-h"><h2>${plan.finished ? "The plan is built" : plan.paused ? "Building the plan (paused)" : "Building the plan"}</h2>
         <span class="count">${done}/${plan.rows.length}</span><div class="row gap-12">${controls}</div></div>
       <div class="card-b stack">${plan.auto_approve ? `<p class="muted">Plans are approved automatically unless they raise a question.</p>` : `<p class="muted">Each feature's plan waits for you to approve it.</p>`}
-        <div class="list">${rows}</div></div></section>`;
+        <div class="list">${rows}</div>${renderCombine(plan.combine, act)}</div></section>`;
   }
 
   root.FeaturePlan = {renderBreakdownInfo, renderQuestions, guessSection, renderSuggested, renderApproved, renderBuilt, renderDeclined, renderJiraImport, techniqueSelect, jiraLink,
-    requirementsList, renderStartForm, chosenFeatures, renderRun};
+    requirementsList, renderStartForm, chosenFeatures, renderRun, renderCombine};
 })(typeof globalThis !== "undefined" ? globalThis : window);

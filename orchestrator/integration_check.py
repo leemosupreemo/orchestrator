@@ -32,6 +32,9 @@ def branch_heads(root: Path, branches: list[str]) -> dict[str, str]:
     return out
 
 
+PLAN_KEY = "plan"  # the result for the plan being built (Build the plan), beside each feature's
+
+
 def result_path(runtime: Path, feature_id: str) -> Path:
     return runtime / "integration" / f"{feature_id}.json"
 
@@ -58,7 +61,8 @@ def _run_command(command: str, cwd: Path, timeout: int) -> dict[str, Any]:
 
 
 def verify(root: Path, base: str, branches: list[str], build_command: str | None, test_command: str | None,
-           timeout: int = 900, log: Callable[[str], None] = lambda s: None) -> dict[str, Any]:
+           timeout: int = 900, log: Callable[[str], None] = lambda s: None, keep_as: str | None = None) -> dict[str, Any]:
+    """`keep_as`: when everything merges, builds and passes, keep the combination as this local branch (to deliver it)."""
     heads = branch_heads(root, branches)
     base_head = _git(root, "rev-parse", f"refs/heads/{base}").stdout.strip() or _git(root, "rev-parse", base).stdout.strip()
     result: dict[str, Any] = {"at": time.time(), "base": base, "base_head": base_head, "heads": heads, "missing": [b for b in branches if b not in heads],
@@ -70,7 +74,13 @@ def verify(root: Path, base: str, branches: list[str], build_command: str | None
 
     try:
         with worktrees.scratch(root, base_head, prefix="orchestrator-verify-") as work:
-            return _combine(work, heads, result, build_command, test_command, timeout, log)
+            combined = _combine(work, heads, result, build_command, test_command, timeout, log)
+            if keep_as and combined["status"] == "pass":
+                kept = _git(work, "branch", "-f", keep_as, "HEAD")
+                if kept.returncode == 0:
+                    combined["branch"] = keep_as
+                    log(f"Kept the combination as the branch {keep_as}.")
+            return combined
     except worktrees.WorktreeError as exc:
         return {**result, "status": "error", "error": str(exc)}
 

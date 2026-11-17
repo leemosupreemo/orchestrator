@@ -130,6 +130,11 @@ class ServerTests(ServerTestCase):
             res, data = self.request("POST", "/api/runs", body={"action": "git_checkout", "params": {"branch": "main"}}, headers=UI_HEADERS)
         self.assertEqual(res.status, 409)
         self.assertIn("Add login page", data["error"])
+        with folder_lock.hold(self.root, job="j1", title="Add login page"):  # sending a build checks its branch out too
+            res, data = self.request("POST", "/api/runs", body={"action": "distribute", "params": {"branch": "integration/plan-ab12"}}, headers=UI_HEADERS)
+        self.assertEqual(res.status, 409)
+        source = (PACKAGE_ROOT / "orchestrator" / "scripts" / "smoke_test_delivery.py").read_text()
+        self.assertIn('back = subprocess.run(["git", "checkout", switched_from]', source)  # and puts your folder back afterwards
 
     def test_a_waiting_job_says_what_it_waits_for(self):
         state = ui.job_state({"status": "planned", "waiting_for": {"title": "Add login page"}, "worker_pid": os.getpid(), "worker_host": ui.socket.gethostname()})
