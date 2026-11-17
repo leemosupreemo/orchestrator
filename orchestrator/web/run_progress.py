@@ -12,7 +12,7 @@ class RunProgress:
         "PLANNING": "Planning implementation", "SCHEDULING": "Scheduling worker",
         "EXECUTION": "Starting execution", "GIT PREP": "Preparing git branch",
         "STATUS UPDATE": "Updating job status", "INVESTIGATION": "Investigating issue",
-        "IMPLEMENTATION": "Implementing changes", "AI THINKING": "Agent thinking",
+        "IMPLEMENTATION": "Implementing changes", "AI THINKING": "Working with AI",
         "BUILDING": "Building project", "TESTING": "Running tests",
         "VERIFICATION": "Verifying changes", "REVIEW": "Reviewing changes",
         "PULL REQUEST": "Creating pull request", "DELIVERY": "Delivering build",
@@ -21,9 +21,9 @@ class RunProgress:
         "MEASURING CODE COVERAGE": "Measuring code coverage",
     }
     TASK_PHASES = {"INVESTIGATION", "IMPLEMENTATION", "AI THINKING", "BUILDING", "TESTING", "VERIFICATION", "COVERAGE", "MEASURING CODE COVERAGE"}
-    SUITE_PHASES = {"Investigating issue", "Implementing changes", "Agent thinking", "Running tests", "Verifying changes"}
+    SUITE_PHASES = {"Investigating issue", "Implementing changes", "Working with AI", "Running tests", "Verifying changes"}
     # A label from before any real work was announced: once a model call starts, say what is being waited on instead.
-    IDLE_LABELS = {"", "Scheduling worker", "Starting execution", "Updating job status", "Preparing git branch"}
+    IDLE_LABELS = {"", "Scheduling worker", "Starting execution", "Updating job status", "Preparing git branch", "Working with AI"}
     ANSI = re.compile(rb"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[()][AB0-2]|[78=>cM])")
 
     def __init__(self) -> None:

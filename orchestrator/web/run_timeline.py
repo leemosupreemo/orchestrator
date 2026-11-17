@@ -31,7 +31,7 @@ KINDS = [
     ("git", r"\bgit\b|branch|commit|merge|push|pull\b"),
     ("test", r"\btest|coverage|verif|check"),
     ("build", r"\bbuild|compil|archiv|install|deliver|distribut"),
-    ("model", r"\bwaiting for|thinking|agent"),
+    ("model", r"\bwaiting for|working with ai|thinking|agent"),
     ("code", r"\bimplement|writ|chang|fix|task|step"),
 ]
 FAILURE = re.compile(r"^(?:❌|✗|✘|Error:|ERROR\b|FAILED\b|Traceback \(most recent call last\))|\bfatal:", re.I)

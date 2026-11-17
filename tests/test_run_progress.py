@@ -50,6 +50,10 @@ class RunProgressTests(unittest.TestCase):
         self.assertEqual(progress.snapshot()["label"], "Waiting for claude-opus-4-7")
         progress.feed(b"=== IMPLEMENTATION ===\n      - Running LLM (claude-opus-4-7, timeout=1200s)...\n")
         self.assertEqual(progress.snapshot()["label"], "Implementing changes")  # a real phase is never overwritten
+        progress.feed(b"=== AI THINKING ===\n")
+        self.assertEqual(progress.snapshot()["label"], "Working with AI")
+        progress.feed(b"      - Running LLM (claude-sonnet-4-6, timeout=1200s)...\n")
+        self.assertEqual(progress.snapshot()["label"], "Waiting for claude-sonnet-4-6")
 
     def test_calls_in_flight_report_how_long_they_have_run_and_their_timeout(self):
         progress = RunProgress()

@@ -3697,6 +3697,10 @@ body[data-page="run"] #page-title {
 body[data-page="run"] #page-sub {
   grid-area: sub;
   margin-top: 0;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+  overflow-wrap: anywhere;
 }
 
 .topbar:has(> .topbar-actions > [data-stop]) .topbar-actions,
@@ -3764,11 +3768,13 @@ body[data-page="run"] .topbar-actions {
 
   body[data-page="run"] #page-sub {
     font-size: var(--type-tag);
-    line-height: 1.2;
+    line-height: 1.35;
     margin: 0;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    padding-left: 0;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    min-width: 0;
+    max-width: 100%;
   }
 
   body[data-page="run"] .topbar-actions .btn {
@@ -5395,7 +5401,8 @@ dialog.ask-ai { width: min(34rem, 100vw); max-width: min(34rem, 100vw); height: 
 .job-run-steps li.failed { color: var(--bad); }
 .job-run-steps li:last-child { font-weight: var(--weight-medium); }
 .job-run-row.is-side .title { color: var(--muted); }
-.run-family { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.run-family { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; min-width: 0; max-width: 100%; white-space: normal; }
+.run-family > span, .run-family > a { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
 .run-unreported { color: var(--bad); }
 
 /* Required fields: a red asterisk after the label. The field's own required (or aria-required) attribute tells assistive

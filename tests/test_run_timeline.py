@@ -155,6 +155,14 @@ class PageTests(unittest.TestCase):
         family = app[app.index("function runFamilyHtml"):app.index("function runHeader")]
         self.assertNotIn('<span class="pill neutral">Run</span>', family)
 
+    def test_run_family_subtitle_wraps_instead_of_bleeding_offscreen(self):
+        css = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "style.css").read_text()
+        self.assertIn(".run-family > span, .run-family > a { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }", css)
+        mobile = css[css.index('@media (max-width: 760px) {\n  html:has(body[data-page="run"])'):][:2500]
+        sub_block = mobile[mobile.index('body[data-page="run"] #page-sub {'):][:350]
+        self.assertIn("white-space: normal;", sub_block)
+        self.assertIn("overflow-wrap: anywhere;", sub_block)
+
 
 if __name__ == "__main__":
     unittest.main()
