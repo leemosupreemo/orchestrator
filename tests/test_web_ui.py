@@ -2317,7 +2317,9 @@ process.stdout.write(JSON.stringify({
         home = app[app.index("pages.home = async"):app.index("function jobHeaderActions")]
         filters = home[home.index("const HOME_FILTERS"):home.index("const requested")]
         self.assertNotIn("stale", filters.lower())  # the job filters never hide older jobs; suggestions have their own cache freshness
-        self.assertIn("filteredJobs.map((j, n) => jobSwipeRow(j, { hidden: n >= HOME_JOBS_SHOWN }))", home)
+        self.assertIn("filteredJobs.map((j, n) => jobSwipeRow(j, { hidden: n >= HOME_JOBS_SHOWN, number: n + 1 }))", home)
+        css = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "style.css").read_text()
+        self.assertIn(".job-table-body > .job-table-row:last-child", css)
 
     def test_empty_jobs_on_home_has_simplified_message_and_link_to_start_new_job(self):
         app = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
@@ -5270,6 +5272,7 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertIn('prd-file-link', self.js)
         self.assertIn('.prd-file-link', self.css)
         self.assertIn('body[data-page="product"] .topbar {', self.css)
+        self.assertIn('body[data-page="product"] .topbar:has(#page-sub[hidden]):has(#topbar-actions:empty):has(#back-link[hidden])', self.css)
         self.assertIn('body[data-page="product"] .topbar-actions {', self.css)
         self.assertIn('body[data-page="product"] .topbar-actions .btn {', self.css)
         self.assertIn('background: var(--accent);', self.css)

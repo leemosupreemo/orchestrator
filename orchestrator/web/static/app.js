@@ -3392,7 +3392,7 @@ document.addEventListener("click", (e) => {
   route();
 });
 
-function jobTableRow(j, { hidden = false } = {}) {
+function jobTableRow(j, { hidden = false, number = null } = {}) {
   const parts = [
     j.remote_machine ? `on ${esc(j.remote_machine.name)}` : "",
     j.continued_on ? `continued on ${esc(j.continued_on)}` : "", // another computer took this job over (Continue here)
@@ -3417,16 +3417,19 @@ function jobTableRow(j, { hidden = false } = {}) {
 
   return `
     <a class="job-table-row${testsClass(j)}"${hidden ? " hidden" : ""} href="${rowHref}">
-      <div class="col-job">
-        <div class="job-title-row">
-          <div class="job-title">${esc(j.title)} ${jiraChip(j)}</div>
-          ${featureChip(j)}
+      <div class="col-job${number != null ? " has-num" : ""}">
+        ${number != null ? `<span class="job-row-num" aria-hidden="true">${number}</span>` : ""}
+        <div class="col-job-main">
+          <div class="job-title-row">
+            <div class="job-title">${esc(j.title)} ${jiraChip(j)}</div>
+            ${featureChip(j)}
+          </div>
+          <div class="job-mobile-info">
+            ${typeTag}
+            ${jobPill(j)}
+          </div>
+          ${metaHtml ? `<div class="job-meta">${metaHtml}</div>` : ""}
         </div>
-        <div class="job-mobile-info">
-          ${typeTag}
-          ${jobPill(j)}
-        </div>
-        ${metaHtml ? `<div class="job-meta">${metaHtml}</div>` : ""}
       </div>
       <div class="col-type">
         ${typeTag}
@@ -4261,11 +4264,11 @@ document.addEventListener("scroll", repositionOpenHomeHealthPopovers, true);
 if (typeof window !== "undefined") window.addEventListener("resize", repositionOpenHomeHealthPopovers);
 
 // Wrap idle job rows in a swipeable container so swiping left reveals the Archive confirmation button.
-function jobSwipeRow(j, { hidden = false } = {}) {
-  if (j.active_run || j.remote_machine) return jobTableRow(j, { hidden });
+function jobSwipeRow(j, { hidden = false, number = null } = {}) {
+  if (j.active_run || j.remote_machine) return jobTableRow(j, { hidden, number });
   return `<div class="job-swipe-wrap"${hidden ? " hidden" : ""} data-swipe-job="${esc(j.id)}">
     <button type="button" class="job-swipe-archive" data-archive-jobs='${attrJSON([j.id])}' aria-label="Archive ${esc(j.title)}" tabindex="-1">Archive</button>
-    ${jobTableRow(j)}
+    ${jobTableRow(j, { number })}
   </div>`;
 }
 
@@ -4600,7 +4603,7 @@ pages.home = async (_, query) => {
               <button type="button" class="col-date sort-head" data-sort="updated" aria-label="Sort by last modified"><span class="date-header-long">Last modified</span><span class="date-header-short">Date</span>${sortArrow("updated")}</button>
             </div>
             <div class="job-table-body" id="job-list">
-              ${filteredJobs.map((j, n) => jobSwipeRow(j, { hidden: n >= HOME_JOBS_SHOWN })).join("")}
+              ${filteredJobs.map((j, n) => jobSwipeRow(j, { hidden: n >= HOME_JOBS_SHOWN, number: n + 1 })).join("")}
             </div>
             ${filteredJobs.length > HOME_JOBS_SHOWN ? `<div class="card-b"><button type="button" class="btn small" data-show-all="job-list">Show all ${filteredJobs.length}</button></div>` : ""}
           </div>
@@ -4611,7 +4614,7 @@ pages.home = async (_, query) => {
       ${finishedJobs.length ? `<section class="card mb-16" id="home-finished">
         <div class="card-h"><h2>Completed <span class="count">${finishedJobs.length}</span></h2></div>
         <div class="job-table"><div class="job-table-body" id="finished-list">
-          ${finishedJobs.map((j, n) => jobSwipeRow(j, { hidden: n >= HOME_JOBS_SHOWN })).join("")}</div>
+          ${finishedJobs.map((j, n) => jobSwipeRow(j, { hidden: n >= HOME_JOBS_SHOWN, number: n + 1 })).join("")}</div>
           ${finishedJobs.length > HOME_JOBS_SHOWN ? `<div class="card-b"><button type="button" class="btn small" data-show-all="finished-list">Show all ${finishedJobs.length}</button></div>` : ""}</div>
       </section>` : ""}
       ${archivedJobs.length ? `<section class="card" id="home-archived-section">
@@ -8529,7 +8532,7 @@ pages["ux-review"] = async (_, query) => {
             ${caveatText ? `<div class="notice">${esc(caveatText)}</div>` : ""}
             <div class="row gap-8"><span class="pill ${pass.counts.major ? "failed" : pass.counts.findings || caveat ? "attention" : "done"}">${caveat === "Nothing to review" ? "Nothing reviewed" : plural(pass.counts.findings, "finding")}</span>
               ${pass.counts.major ? `<span class="muted">${pass.counts.major} major or worse</span>` : ""}${caveat === "Nothing to review" ? "" : `<span class="muted">${pass.counts.passed} checklist items pass, ${pass.counts.failed} fail</span>`}
-              <span class="spacer"></span>${pass.findings?.length ? uxFixLink(pass.fix_text, "Create a job to fix the main ones") : ""}</div>
+              <span class="spacer"></span>${pass.findings?.length ? uxFixLink(pass.fix_text, "Create fix job") : ""}</div>
             ${pass.summary ? `<p>${clamped(pass.summary, 500)}</p>` : ""}
             ${pass.limits ? `<p class="muted">${esc(pass.limits)}</p>` : ""}
           </div>

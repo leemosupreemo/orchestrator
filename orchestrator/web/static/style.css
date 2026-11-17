@@ -474,8 +474,9 @@ div.import-option:hover { border-color: var(--border); background: var(--panel);
 .git-commit-caption { display: flex; gap: var(--space-2); flex-wrap: wrap; border-top: 1px solid var(--border); border-bottom: 0; }
 .git-commit-caption .linklike { min-height: var(--control-xs); }
 .git-commit-caption > span { min-width: 0; overflow-wrap: anywhere; }
+.git-commit-caption > span:first-child { color: var(--text); font-weight: var(--weight-bold); }
 .git-change-group + .git-change-group { border-top: 1px solid var(--border); }
-.git-change-group h3, .git-connection-options > h3 { padding: var(--space-3) var(--container-pad-x) var(--space-2); font-size: var(--type-secondary); font-weight: var(--weight-bold); color: var(--muted); }
+.git-change-group h3, .git-connection-options > h3 { padding: var(--space-3) var(--container-pad-x) var(--space-2); font-size: var(--type-secondary); font-weight: var(--weight-bold); color: var(--text); }
 .git-change-group .count { margin-left: var(--space-1); font-weight: var(--weight-regular); }
 .git-change-group .diff-files { gap: 0; }
 .git-change-group .diff-file > summary { min-height: var(--control-md); padding: var(--space-2) var(--container-pad-x); font-size: var(--type-secondary); line-height: 1.5; }
@@ -490,7 +491,7 @@ div.import-option:hover { border-color: var(--border); background: var(--panel);
 .git-settings-list { margin: 0; }
 .git-setting-row { display: grid; grid-template-columns: minmax(0, calc(var(--space-8) * 3)) minmax(0, 1fr); align-items: center; gap: var(--space-4); padding: var(--space-3) var(--container-pad-x); border-top: 1px solid var(--border); }
 .git-setting-row:first-child { border-top: 0; }
-.git-setting-row dt { min-width: 0; overflow-wrap: anywhere; color: var(--muted); font-size: var(--type-secondary); }
+.git-setting-row dt { min-width: 0; overflow-wrap: anywhere; color: var(--text); font-size: var(--type-secondary); font-weight: var(--weight-bold); }
 .git-setting-row dd { display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); min-width: 0; margin: 0; font-size: var(--type-body); }
 .git-setting-value { display: flex; flex-direction: column; gap: var(--space-1); min-width: 0; overflow-wrap: anywhere; }
 .git-setting-value small { color: var(--muted); font-size: var(--type-secondary); line-height: 1.5; }
@@ -603,7 +604,7 @@ a.item:hover { background: var(--panel-2); }
 .run-status-task { flex-basis: 100%; color: var(--muted); overflow-wrap: anywhere; font-size: var(--type-secondary); }
 .run-status-details { display: grid; grid-template-columns: max-content minmax(0, 1fr); align-items: baseline; gap: var(--space-2) var(--space-4); margin: 0; }
 .run-status-details > div { display: contents; }
-.run-status-details dt { color: var(--muted); font-size: var(--type-secondary); margin: 0; font-weight: var(--weight-regular); }
+.run-status-details dt { color: var(--text); font-size: var(--type-secondary); margin: 0; font-weight: var(--weight-bold); }
 .run-status-details dd { margin: 0; font-size: var(--type-secondary); font-weight: var(--weight-medium); color: var(--text); overflow-wrap: anywhere; font-variant-numeric: tabular-nums; text-align: left; }
 .run-status-progress { width: 100%; height: var(--space-1); accent-color: var(--accent); border: 0; }
 .run-status-progress::-webkit-progress-bar { background: var(--border); border-radius: var(--r-pill); }
@@ -2014,8 +2015,8 @@ dialog h2 {
   user-select: none;
   -webkit-tap-highlight-color: transparent;
 }
-.job-table-row:last-child,
-.job-swipe-wrap:last-child .job-table-row {
+.job-table-body > .job-table-row:last-child,
+.job-table-body > .job-swipe-wrap:last-child .job-table-row {
   border-bottom: 0;
 }
 .job-swipe-wrap {
@@ -2086,6 +2087,33 @@ dialog h2 {
   display: flex;
   flex-direction: column;
   gap: var(--space-1);
+}
+.job-table-row .col-job.has-num {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  column-gap: var(--space-3);
+  align-items: start;
+}
+.job-table-row .col-job-main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.job-row-num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: var(--space-6);
+  height: var(--space-6);
+  padding: 0 var(--space-1-5);
+  border-radius: var(--r-pill);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-size: var(--type-tag);
+  font-weight: var(--weight-bold);
+  font-variant-numeric: tabular-nums;
 }
 .job-table-row .job-title-row {
   display: flex;
@@ -2192,7 +2220,7 @@ dialog h2 {
     grid-template-columns: minmax(0, 1fr) auto;
     align-items: flex-start;
     gap: var(--space-3);
-    padding: var(--space-3);
+    padding: var(--space-4) var(--space-3);
   }
   .job-table-row .col-type,
   .job-table-row .col-status {
@@ -4929,6 +4957,10 @@ a.jira-chip:hover { border-color: var(--accent); color: var(--accent); }
 body[data-page="home"] #page-title { font-size: var(--type-home); }
 /* Product, Activity and Tests need no title: the sidebar and the tab already say where you are */
 body[data-page="product"] #page-title, body[data-page="activity"] #page-title, body[data-page="tests"] #page-title { display: none; }
+/* Collapse the empty topbar so pages without a title, subtitle or actions don't leave a dead gap above the first card. */
+body[data-page="product"] .topbar:has(#page-sub[hidden]):has(#topbar-actions:empty):has(#back-link[hidden]),
+body[data-page="activity"] .topbar:has(#page-sub[hidden]):has(#topbar-actions:empty):has(#back-link[hidden]),
+body[data-page="tests"] .topbar:has(#page-sub[hidden]):has(#topbar-actions:empty):has(#back-link[hidden]) { display: none; }
 .home-project-title { position: relative; display: inline-flex; align-items: center; gap: var(--space-2); max-width: 100%; border-radius: var(--r-md); cursor: pointer; white-space: nowrap; }
 .home-project-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .home-project-chevron { flex: none; color: var(--muted); width: 14px; height: 14px; background: currentColor;
@@ -5131,7 +5163,7 @@ body[data-page="preview"] .job-preview .job-preview-frame { flex: 1; height: aut
 .home-status-facts { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--space-3); }
 .home-status-facts > li { display: grid; grid-template-columns: 7.5rem minmax(0, 1fr); gap: var(--space-3); font-size: var(--type-secondary); }
 .home-status-facts > li > span { min-width: 0; overflow-wrap: anywhere; }
-.home-status-facts strong { color: var(--muted); font-weight: var(--weight-medium); }
+.home-status-facts strong { color: var(--text); font-weight: var(--weight-bold); }
 @media (max-width: 680px) { .home-status-facts > li { grid-template-columns: 1fr; gap: var(--space-1); } }
 
 /* Ask AI: the chat button opposite the branch picker on Home, and the conversation it opens.

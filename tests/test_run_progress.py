@@ -243,8 +243,10 @@ const run = {id: 'r1', job: 'job-1', running: true, started: 875, title: 'Build'
   progress: {label: 'Implementing changes', task: 'Add <login>', step: 2, total: 10}};
 globalThis.state = {runs: [run]};
 const job = {id: 'job-1', title: 'Sign-in', updated: 999, kind: 'Feature', active_run: true};
-const row = jobTableRow(job);
+const row = jobTableRow(job, {number: 2});
 assert.doesNotMatch(row, /job-tests/);
+assert.match(row, /class="col-job has-num"/);
+assert.match(row, /<span class="job-row-num" aria-hidden="true">2<\/span>/);
 assert.match(jobTableRow({...job, kind: 'Tests'}), /class="job-table-row job-tests"/);
 assert.doesNotMatch(row, /run-status|Step 2 of 10|Click for details/);
 assert.match(row, /href="#\/jobs\/job-1"/);

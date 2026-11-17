@@ -61,7 +61,7 @@ pages['ux-review']([], new URLSearchParams(input.latest ? 'id=older' : '')).then
                                                   'id="ux-screenshot-gallery"', 'id="ux-checklist"', "Earlier reviews")]
         self.assertEqual(order, sorted(order))
         self.assertEqual(html.count('data-action="ux_pass"'), 0)  # one Run button, in the header
-        self.assertIn("Create a job to fix the main ones", html)
+        self.assertIn("Create fix job", html)
 
     def test_setup_is_a_closed_one_line_summary_once_screens_are_set_up(self):
         page = self.render(saved={"url": "http://localhost:3000", "android": {"package": "com.example.app"}},
