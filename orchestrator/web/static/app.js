@@ -4869,6 +4869,7 @@ function previewCard(p, runs) {
   return `<section class="card mb-16 job-preview" id="job-preview" data-branch="${esc(p.branch)}" data-preview-url="${esc(p.preview_url || "")}" data-remote-live="${remoteLive ? "1" : ""}" data-autostart="${autostart ? "1" : ""}" data-starting="${starting ? esc(liveRun.id) : ""}">
     <div class="card-h">
       <h2>Preview</h2>
+      <a class="btn small ghost" href="#/ux-review">UI review</a>
       <a class="btn small ghost preview-close" href="#/" aria-label="Close preview">Close</a>
       ${owner ? `<button type="button" class="preview-publish-btn${hosted ? " is-published" : ""}${publishing ? " is-busy" : ""}" id="job-preview-publish" aria-label="${esc(publishLabel)}" title="${esc(publishLabel)}"><svg class="icon" aria-hidden="true"><use href="#i-globe"/></svg></button>` : ""}
     </div>
@@ -6149,7 +6150,7 @@ pages.job = async ([id]) => {
           ${currentPhase === "review" ? `<div class="row">${heroAction}</div>` : ""}</div>
       </section>
 
-      ${uxReviewCard(s, data.ux_review)}
+      ${uxReviewCard(s, data.ux_review, visualChecks)}
 
 
 
@@ -6164,40 +6165,6 @@ pages.job = async ([id]) => {
                 <span class="arrow">→</span>
               </a>
             `).join("")}
-          </div>
-        </section>
-      ` : ""}
-
-      <!-- Simulator Visual QA Screenshots & Video (if any) -->
-      ${(visualChecks.length && (visualChecks[0].screenshots.length || visualChecks[0].video)) ? `
-        <section class="card mb-16 visual-check-job-card">
-          <div class="card-h">
-            <h2>Simulator Visual QA</h2>
-            <div class="row gap-8">
-              ${visualChecks[0].video ? `<span class="pill">Video recorded</span>` : ""}
-              <span class="count">${visualChecks[0].screenshots.length} captured</span>
-            </div>
-          </div>
-          <p class="visual-check-desc">Boots the app on the simulator to check launch layout, element alignment, and safe-area insets. Click any screen to zoom and inspect.</p>
-          <div class="card-b visual-check-job-body">
-            ${visualChecks[0].video ? `
-              <div class="visual-check-job-video-wrap">
-                <div class="visual-check-video-label"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-play"/></svg> Launch &amp; Settle Video</div>
-                <video class="visual-check-player" controls playsinline preload="metadata" src="${typeof visualVideoUrl === "function" ? visualVideoUrl(visualChecks[0]) : `/api/visual-checks/${encodeURIComponent(visualChecks[0].id)}/video/${encodeURIComponent(visualChecks[0].video)}`}">
-                  Your browser does not support HTML5 video.
-                </video>
-              </div>` : ""}
-            <div class="visual-check-job-grid">
-              ${visualChecks[0].screenshots.map((img) => `
-                <div class="visual-check-job-item">
-                  <a href="/api/visual-checks/${encodeURIComponent(visualChecks[0].id)}/screenshots/${encodeURIComponent(img)}" target="_blank" rel="noopener" data-preview-img="/api/visual-checks/${encodeURIComponent(visualChecks[0].id)}/screenshots/${encodeURIComponent(img)}" data-preview-auth="visual-checks/${encodeURIComponent(visualChecks[0].id)}/screenshots/${encodeURIComponent(img)}" data-preview-title="${esc(img)}">
-                    <img src="/api/visual-checks/${encodeURIComponent(visualChecks[0].id)}/screenshots/${encodeURIComponent(img)}" data-auth-src="visual-checks/${encodeURIComponent(visualChecks[0].id)}/screenshots/${encodeURIComponent(img)}" alt="Screenshot: ${esc(img)}">
-                    ${typeof appearanceBadgeHtml === "function" ? appearanceBadgeHtml(img) : ""}
-                  </a>
-                  <div class="visual-check-thumb-caption muted mono">${esc(img)}</div>
-                </div>
-              `).join("")}
-            </div>
           </div>
         </section>
       ` : ""}
@@ -8375,26 +8342,56 @@ function uxScreensHtml(screens, base) {
 const uxFixLink = (text, label = "Create a job to fix") =>
   `<a class="btn small" href="#/new?type=quick&summary=${encodeURIComponent("Fix UX and design findings")}&spec=${encodeURIComponent(text)}">${label}</a>`;
 
-// The job page's card: the checklist run on this job's interface changes.
-function uxReviewCard(s, ux) {
-  if (!ux || (ux.skipped && !ux.error && !ux.screens && !ux.capture_status)) return "";
-  const c = ux.counts || {};
-  const rerun = `<button type="button" class="btn small ghost" ${act("ux_review_job", { job: s.id })}>Check again</button>`;
-  if (ux.error) return `<section class="card mb-16" id="ux-section"><div class="card-h"><h2>UX and design check</h2>${rerun}</div>
-    <div class="card-b stack"><p class="muted">It couldn't run: ${esc(ux.error)}</p>${uxScreensHtml(ux.screen_list, `ux-screens/job/${encodeURIComponent(s.id)}`)}
-      <a class="btn small" href="#/ux-review">Open screenshots in UX review</a></div></section>`;
+// The job page's single UI review card: UX/design findings, checklist, and any simulator video/screenshots.
+function uxReviewCard(s, ux, visualChecks = []) {
+  const vc = visualChecks?.[0] && (visualChecks[0].screenshots?.length || visualChecks[0].video) ? visualChecks[0] : null;
+  if ((!ux || (ux.skipped && !ux.error && !ux.screens && !ux.capture_status)) && !vc) return "";
+  const c = ux?.counts || {};
+  const rerun = `<button type="button" class="btn small ghost" ${act("ux_review_job", { job: s.id })}>${ux && !ux.skipped ? "Check again" : "Run UI review"}</button>`;
+  const visualMediaHtml = vc ? `<div class="visual-check-job-body">
+    ${vc.video ? `
+      <div class="visual-check-job-video-wrap">
+        <div class="visual-check-video-label"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-play"/></svg> Launch &amp; Settle Video</div>
+        <video class="visual-check-player" controls playsinline preload="metadata" src="${typeof visualVideoUrl === "function" ? visualVideoUrl(vc) : `/api/visual-checks/${encodeURIComponent(vc.id)}/video/${encodeURIComponent(vc.video)}`}">
+          Your browser does not support HTML5 video.
+        </video>
+      </div>` : ""}
+    ${vc.screenshots?.length && !(ux?.screens) ? `
+      <div class="visual-check-job-grid">
+        ${vc.screenshots.map((img) => `
+          <div class="visual-check-job-item">
+            <a href="/api/visual-checks/${encodeURIComponent(vc.id)}/screenshots/${encodeURIComponent(img)}" target="_blank" rel="noopener" data-preview-img="/api/visual-checks/${encodeURIComponent(vc.id)}/screenshots/${encodeURIComponent(img)}" data-preview-auth="visual-checks/${encodeURIComponent(vc.id)}/screenshots/${encodeURIComponent(img)}" data-preview-title="${esc(img)}">
+              <img src="/api/visual-checks/${encodeURIComponent(vc.id)}/screenshots/${encodeURIComponent(img)}" data-auth-src="visual-checks/${encodeURIComponent(vc.id)}/screenshots/${encodeURIComponent(img)}" alt="Screenshot: ${esc(img)}">
+              ${typeof appearanceBadgeHtml === "function" ? appearanceBadgeHtml(img) : ""}
+            </a>
+            <div class="visual-check-thumb-caption muted mono">${esc(img)}</div>
+          </div>
+        `).join("")}
+      </div>` : ""}
+  </div>` : "";
+  if (ux?.error) return `<section class="card mb-16" id="ux-section"><div class="card-h"><h2>UX and design check</h2>${rerun}</div>
+    <div class="card-b stack"><p class="muted">It couldn't run: ${esc(ux.error)}</p>${uxScreensHtml(ux.screen_list, `ux-screens/job/${encodeURIComponent(s.id)}`)}${visualMediaHtml}
+      <a class="btn small" href="#/ux-review">Open UI review</a></div></section>`;
+  if (!ux || ux.skipped) return `<section class="card mb-16" id="ux-section">
+    <div class="card-h"><h2>UX and design check</h2><span class="count">${vc?.video ? "Video + " : ""}${plural(vc?.screenshots?.length || ux?.screens || 0, "screenshot")}</span></div>
+    <div class="card-b stack">
+      ${ux?.skipped ? `<p class="muted">${esc(ux.skipped)}</p>` : `<p class="muted">Simulator capture saved; run a UI review to check layout, spacing and usability.</p>`}
+      ${uxScreensHtml(ux?.screen_list, `ux-screens/job/${encodeURIComponent(s.id)}`)}
+      ${visualMediaHtml}
+      <div class="row gap-8 wrap">${rerun}<a class="btn small" href="#/ux-review">Open UI review</a></div>
+    </div></section>`;
   const findings = ux.findings || [];
   const fixText = "Fix these UX and design findings:\n" + findings.filter((f) => f.severity >= 2).map((f) => `- [${UX_SEVERITY[f.severity]}] ${f.screen || "All screens"}: ${f.problem}${f.fix ? ` Fix: ${f.fix}` : ""}`).join("\n");
   return `<section class="card mb-16" id="ux-section">
-    <div class="card-h"><h2>UX and design check</h2><span class="count">${ux.skipped ? `${ux.screens || 0} screenshots saved` : c.findings ? `${plural(c.findings, "finding")}${c.major ? ` · ${c.major} major` : ""}` : "Nothing found"}</span></div>
+    <div class="card-h"><h2>UX and design check</h2><span class="count">${c.findings ? `${plural(c.findings, "finding")}${c.major ? ` · ${c.major} major` : ""}` : "Nothing found"}</span></div>
     <div class="card-b stack">
-      ${ux.skipped ? `<p class="muted">${esc(ux.skipped)}</p>` : ""}
       ${ux.summary ? `<p>${clamped(ux.summary, 320)}</p>` : ""}
-      <div class="muted">${ux.skipped ? "Screenshot evidence only; checks have not been evaluated." : `Checked ${plural((ux.files || []).length, "interface file")}${ux.screens ? ` and ${plural(ux.screens, "screen")}` : ", from the code only"}. A prompt to look, not a gate.`}</div>
+      <div class="muted">Checked ${plural((ux.files || []).length, "interface file")}${ux.screens ? ` and ${plural(ux.screens, "screen")}` : ", from the code only"}. A prompt to look, not a gate.</div>
       ${uxScreensHtml(ux.screen_list, `ux-screens/job/${encodeURIComponent(s.id)}`)}
+      ${visualMediaHtml}
       ${ux.capture_status === "missing" ? `<p class="notice">No screenshots were captured. Configure the app and retry from UX review.</p>` : ""}
       ${(ux.capture_limits || []).length ? `<p class="muted">${esc(ux.capture_limits.join(" "))}</p>` : ""}
-      <a class="btn small" href="#/ux-review">Open screenshot history</a>
+      <a class="btn small" href="#/ux-review">Open UI review</a>
     </div>
     ${findings.length ? uxFindingsHtml(findings, { listId: "ux-findings", shown: 5 }) : ""}
     <details class="fold"><summary class="card-h"><h2>Checklist</h2></summary>${uxChecklistHtml(ux.checklist || [])}</details>
@@ -8488,10 +8485,15 @@ pages["ux-review"] = async (_, query) => {
   // What the project is set up to capture, from the saved settings (so a half-valid config still shows what was typed).
   const set = { web: Boolean(saved.url), ios: Boolean(saved.simulator), android: Boolean(saved.android), mac: Boolean(saved.macos) };
   const anySet = Object.values(set).some(Boolean);
-  // Nothing saved yet: start from what the product requirements and the code say the app runs on (ux_review.inferred_targets)
-  const guess = anySet ? {} : (data.inferred || {});
+  // Nothing saved yet: start from Live preview or what the product requirements and code say the app runs on
+  const preview = data.preview || null;
+  const guess = anySet ? {} : { ...(data.inferred || {}) };
+  if (!anySet && preview?.live?.url) {
+    guess.web = { ...(guess.web || {}), url: preview.live.url, why: "Live preview" };
+  }
   for (const key of Object.keys(set)) set[key] = set[key] || Boolean(guess[key]);
   const guessed = Object.keys(guess);
+  const canSimulator = Boolean(set.ios || guess.ios || (state.project?.mobile_app !== false && state.project?.languages?.some((l) => l.name === "Swift")));
   const summaryLine = [set.web && `Web ${saved.url}`, set.ios && "iOS simulator", set.android && `Android ${saved.android.package || ""}`, set.mac && `Mac ${saved.macos.app || ""}`].filter(Boolean).join(" · ");
   const field = (label, name, value, { hint = "", placeholder = "", optional = false } = {}) =>
     `<label class="field"><span>${label}${optional ? ` <span class="muted">(optional)</span>` : ""}</span><input type="text" name="${name}" value="${esc(value || "")}" placeholder="${esc(placeholder)}" spellcheck="false">${hint ? `<small class="hint-text">${hint}</small>` : ""}</label>`;
@@ -8563,11 +8565,15 @@ pages["ux-review"] = async (_, query) => {
           </div>
           ${pass.findings?.length ? uxFindingsHtml(pass.findings, { listId: "ux-findings" }) : ""}
         </section>` : ""}
-      <section class="card mb-16" id="ux-screenshot-gallery"><div class="card-h"><h2>UI screenshots</h2><span class="count">${selectedCapture?.screens?.length || 0} saved</span></div>
+      <section class="card mb-16" id="ux-screenshot-gallery"><div class="card-h"><h2>UI screenshots</h2>
+        <div class="card-actions"><span class="count">${selectedCapture?.screens?.length || 0} saved</span>${preview ? `<a class="btn small ghost" href="#/preview">${preview.live ? "Open live preview" : "Live preview"}</a>` : ""}${canSimulator ? `<button type="button" class="btn small ghost" ${act("visual_check")}>Capture simulator</button>` : ""}</div></div>
         <div class="card-b stack">
+          ${preview ? `<p class="muted">${preview.live ? `Live preview is running at ${esc(preview.live.url)} — reviews capture from it automatically.` : "Web reviews also capture from Live preview when it is running or configured."}</p>` : ""}
           ${captures.length ? `<label class="field"><span>Capture history</span><select id="ux-capture-select">${captures.map((capture) => `<option value="${esc(captureKey(capture))}" ${capture === selectedCapture ? "selected" : ""}>${esc(capture.title || capture.id)} · ${esc(capture.at || "")}</option>`).join("")}</select></label>
             ${selectedCapture.kind === "job" ? `<a href="#/jobs/${encodeURIComponent(selectedCapture.id)}">Source job: ${esc(selectedCapture.title || selectedCapture.id)}</a>` : ""}
+            ${selectedCapture.kind === "preview" ? `<a href="#/preview">Open live preview</a>` : ""}
             ${selectedCapture.branch ? `<p class="muted">Job branch: ${esc(selectedCapture.branch)}</p>` : ""}
+            ${selectedCapture.kind === "visual" && selectedCapture.video ? `<div class="visual-check-job-video-wrap"><div class="visual-check-video-label"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-play"/></svg> Launch &amp; Settle Video</div><video class="visual-check-player" controls playsinline preload="metadata" src="${typeof visualVideoUrl === "function" ? visualVideoUrl(selectedCapture) : `/api/visual-checks/${encodeURIComponent(selectedCapture.id)}/video/${encodeURIComponent(selectedCapture.video)}`}">Your browser does not support HTML5 video.</video></div>` : ""}
             ${uxScreensHtml(selectedCapture.screens, captureBase)}
             ${!selectedCapture.screens?.length ? `<div class="notice">This capture saved no screenshots. Check the setup and capture limits below, then retry.</div>` : ""}
             ${captureLimits.length ? `<p class="muted">Capture limits: ${esc(captureLimits.join(" "))}</p>` : ""}`
@@ -10778,10 +10784,6 @@ pages.tests = async (_, query) => {
       <section class="card" id="test-suites"><div class="card-h"><h2>Suites <span class="count">${plural(withTests.length, "suite")} · ${plural(total, "test")}</span></h2>
         <form id="suite-filter" class="row"><input type="search" name="q" value="${esc(query.get("q") || "")}" placeholder="Filter" aria-label="Filter suites"></form></div>
         ${data.groups?.length && suites.length ? frameworkGroupsHtml(data.groups, suites, { filtering: Boolean(filter) }) : suiteGroupsHtml(suites, { open: Boolean(filter) })}</section>
-      ${state.project.mobile_app !== false && (!state.project.languages?.length || state.project.languages.some((l) => l.name === "Swift")) ? `<section class="card"><div class="card-h"><h2>Simulator visual check</h2></div>
-        <div class="card-b stack"><p>Builds and launches your app in the simulator, then captures screenshots for you to review.</p>
-          <p class="muted">Requires Xcode and an iOS simulator.</p>
-          <div><button type="button" class="btn" ${act("visual_check")}>Capture screenshots</button></div></div></section>` : ""}
       ${data.frameworks && Object.keys(data.frameworks).length > 0 ? (() => {
         const frameworkGuidance = (key, f) => {
           const guide = {

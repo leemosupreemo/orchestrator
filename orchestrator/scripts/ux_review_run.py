@@ -43,13 +43,57 @@ def project_settings() -> dict:
     return ux.settings(read_json(project_file) if project_file.exists() else {})
 
 
-def capture(cfg: dict, screens_dir: Path, *, dark: bool | None, job_id: str = "") -> tuple[list[dict], list[str]]:
+import os
+
+
+def preview_web_target(cfg: dict, *, branch: str = "") -> tuple[dict, str]:
+    """When ui_review.url isn't set, reuse a running Live preview or preview_url/preview_dev_command from project.json."""
+    if cfg.get("url"):
+        return cfg, ""
+    dev_dir = OUTPUT_DIR / "dev-previews"
+    previews: list[dict] = []
+    if dev_dir.is_dir():
+        for path in sorted(dev_dir.glob("*.json")):
+            if path.name.endswith(".remote.json"):
+                continue
+            data = read_json(path)
+            if not isinstance(data, dict):
+                continue
+            try:
+                os.kill(int(data.get("pid") or 0), 0)
+            except (OSError, ValueError, TypeError):
+                continue
+            target_url = str(data.get("direct") or data.get("url") or "").strip()
+            if target_url:
+                previews.append({"branch": str(data.get("branch") or ""), "url": target_url})
+    picked = next((p for p in previews if branch and p["branch"] == branch), None) or (previews[0] if previews else None)
+    if picked:
+        return {**cfg, "url": picked["url"]}, "live preview"
+    project_file = ROOT / ".orchestrator" / "project.json"
+    proj = read_json(project_file) if project_file.exists() else {}
+    if isinstance(proj, dict):
+        p_url = str(proj.get("preview_url") or "").strip()
+        p_cmd = str(proj.get("preview_dev_command") or "").strip()
+        if p_url:
+            return {**cfg, "url": p_url, "start_command": p_cmd or cfg.get("start_command", "")}, "preview settings"
+        if p_cmd:
+            files = git_out("ls-files").splitlines()
+            inferred = ux.inferred_targets(ROOT, files, config=proj).get("web") or {}
+            if inferred.get("url"):
+                return {**cfg, "url": str(inferred["url"]), "start_command": p_cmd}, "preview command"
+    return cfg, ""
+
+
+def capture(cfg: dict, screens_dir: Path, *, dark: bool | None, job_id: str = "", branch: str = "") -> tuple[list[dict], list[str]]:
     limits = []
     shots: list[dict] = []
-    if cfg["url"]:
-        shots, problem = ux.capture_web(ROOT, cfg, screens_dir, dark=dark)
+    web_cfg, preview_source = preview_web_target(cfg, branch=branch)
+    if web_cfg["url"]:
+        shots, problem = ux.capture_web(ROOT, web_cfg, screens_dir, dark=dark)
         if problem:
             limits.append(problem)
+        elif preview_source:
+            limits.append(f"Screens were captured from the project's {preview_source} ({web_cfg['url']}).")
         else:
             limits.append("Screens show the app currently served at the configured URL. Baseline routes show first load; "
                           "declared screen states include their capture interactions. Other states may be missing.")
@@ -78,7 +122,7 @@ def capture(cfg: dict, screens_dir: Path, *, dark: bool | None, job_id: str = ""
         shots += mac_shots
         if problem:
             limits.append(problem)
-    if not ux.has_screens(cfg):
+    if not web_cfg["url"] and not ux.has_screens(cfg):
         limits.append("No screens configured (ui_review in project.json), so layout, spacing and contrast weren't judged.")
     return shots, limits
 
@@ -109,9 +153,11 @@ def product_pass(no_screens: bool, model: str) -> int:
     cfg = project_settings()
     out_dir = OUTPUT_DIR / "ux-pass" / ux.stamp()
     screens_dir = out_dir / "screens"
-    stage = "Capture screens" if not no_screens and ux.has_screens(cfg) else "Prepare interface code"
+    current_branch = git_out("branch", "--show-current").strip()
+    preview_cfg, _ = preview_web_target(cfg, branch=current_branch)
+    stage = "Capture screens" if not no_screens and (ux.has_screens(cfg) or preview_cfg["url"]) else "Prepare interface code"
     print(f"[1/4] {stage}", flush=True)
-    shots, limits = ([], ["Screens were skipped for this run."]) if no_screens else capture(cfg, screens_dir, dark=None)
+    shots, limits = ([], ["Screens were skipped for this run."]) if no_screens else capture(cfg, screens_dir, dark=None, branch=current_branch)
     save_screens(out_dir, shots, limits, title="Whole-product review")
     tracked = git_out("ls-files").splitlines()
     interface = ux.frontend_files(tracked, cfg["paths"])
@@ -194,7 +240,7 @@ def job_review(job_path: Path) -> int:
     else:
         plan_limits.append("No capture plan was provided for this UI change. Only configured pages were captured; new pages and interactive states may be missing.")
     try:
-        shots, limits = capture(cfg, pending_dir, dark=None, job_id=job["job_id"])
+        shots, limits = capture(cfg, pending_dir, dark=None, job_id=job["job_id"], branch=branch or "")
     except (OSError, subprocess.SubprocessError, ux.BrowserError) as exc:
         shots, limits = [], [f"Screenshot capture failed: {exc}"]
     screens_dir.mkdir(parents=True, exist_ok=True)

@@ -2347,19 +2347,42 @@ def ux_captures(root: Path) -> list[dict[str, Any]]:
                 "completed_at": path.stat().st_mtime, "screens": screens, "limits": record.get("limits") or [],
                 "branch": record.get("branch", "")})
     for visual in visual_checks_inventory(root):
-        if visual["screenshots"]:
+        if visual["screenshots"] or visual.get("video"):
             captures.append({"kind": "visual", "id": visual["id"], "capture_id": "", "title": "Simulator visual check",
                 "at": visual["created_at"], "completed_at": datetime.fromisoformat(visual["created_at"]).timestamp(), "limits": [],
-                "screens": [{"file": name, "route": "Simulator", "width": 0, "dark": False} for name in visual["screenshots"]]})
+                "video": visual.get("video"), "job": visual.get("job"),
+                "screens": [{"file": name, "route": "Simulator", "width": 0, "dark": "_dark." in name} for name in visual["screenshots"]]})
+    feedback_folders: list[tuple[str, str, Path]] = []
+    current_fb = out / "preview-feedback"
+    if current_fb.is_dir():
+        feedback_folders.append(("current", "Live preview", current_fb))
+    for job_dir in sorted(out.glob("*/preview-feedback")):
+        job_id = job_dir.parent.name
+        if VISUAL_RUN_RE.match(job_id):
+            feedback_folders.append((job_id, f"Live preview · {job_id}", job_dir))
+    for fb_id, fb_title, fb_dir in feedback_folders:
+        shots = sorted(
+            [p for p in fb_dir.iterdir() if p.is_file() and VISUAL_RUN_RE.match(p.name) and p.suffix.lower() in (".png", ".jpg")],
+            key=lambda p: p.stat().st_mtime, reverse=True,
+        )
+        if shots:
+            latest_m = shots[0].stat().st_mtime
+            captures.append({"kind": "preview", "id": fb_id, "capture_id": "", "title": fb_title,
+                "at": datetime.fromtimestamp(latest_m).astimezone().isoformat(), "completed_at": latest_m, "limits": [],
+                "screens": [{"file": p.name, "route": "Preview snapshot", "width": 0, "dark": False} for p in shots]})
     return sorted(captures, key=lambda c: c["completed_at"], reverse=True)[:50]
 
 
 def ux_screen(root: Path, kind: str, ident: str, name: str) -> Path | None:
-    """A screenshot from a pass (`pass/<id>`) or a job's check (`job/<job id>`), or None. Every part is validated."""
-    if not VISUAL_RUN_RE.match(ident) or ident.startswith(".") or not VISUAL_RUN_RE.match(name) or not name.endswith(".png"):
+    """A screenshot from a pass (`pass/<id>`), a job's check (`job/<job id>`), or preview feedback (`preview/<id>`), or None. Every part is validated."""
+    if not VISUAL_RUN_RE.match(ident) or ident.startswith(".") or not VISUAL_RUN_RE.match(name) or not name.lower().endswith((".png", ".jpg")):
         return None
     out = runtime_dir(root) / "output"
-    folder = {"pass": out / "ux-pass" / ident / "screens", "job": out / ident / "ux-review" / "screens"}.get(kind)
+    folder = {
+        "pass": out / "ux-pass" / ident / "screens",
+        "job": out / ident / "ux-review" / "screens",
+        "preview": (out / "preview-feedback") if ident == "current" else (out / ident / "preview-feedback"),
+    }.get(kind)
     if not folder:
         return None
     candidate = (folder / name).resolve()
@@ -2367,7 +2390,8 @@ def ux_screen(root: Path, kind: str, ident: str, name: str) -> Path | None:
 
 
 def ui_review_settings(root: Path) -> dict[str, Any]:
-    raw = read_json_file(runtime_dir(root) / "project.json").get("ui_review") or {}
+    project_json = read_json_file(runtime_dir(root) / "project.json")
+    raw = project_json.get("ui_review") or {}
     try:
         cfg, error = ux_review.settings({"ui_review": raw}), ""
     except ux_review.ConfigError as exc:
@@ -2376,10 +2400,11 @@ def ui_review_settings(root: Path) -> dict[str, Any]:
     files = git(root, "ls-files").splitlines()
     interface = ux_review.frontend_files(files, (cfg or {}).get("paths"))
     has_interface = bool(interface or (cfg and ux_review.has_screens(cfg)))
-    # What the app runs on, from the product requirements and the code: the Screens form starts with these, to check and save.
-    inferred = ux_review.inferred_targets(root, files, prd_doc.Prd(root, runtime_dir(root)).read() or "")
+    # What the app runs on, from Preview, the product requirements and the code: the Screens form starts with these, to check and save.
+    inferred = ux_review.inferred_targets(root, files, prd_doc.Prd(root, runtime_dir(root)).read() or "", config=project_json)
+    preview = project_preview(root, project_json)
     return {"saved": raw, "settings": cfg, "error": error, "browser": bool(ux_review.find_browser()), "has_interface": has_interface,
-            "inferred": inferred}
+            "inferred": inferred, "preview": preview}
 
 
 def save_ui_review(root: Path, body: dict[str, Any]) -> dict[str, Any]:
@@ -9111,7 +9136,7 @@ class UIHandler(BaseHTTPRequestHandler):
             if not target:
                 self._error(HTTPStatus.NOT_FOUND, "Screenshot not found")
                 return
-            self._send(HTTPStatus.OK, target.read_bytes(), "image/png", {})
+            self._send(HTTPStatus.OK, target.read_bytes(), "image/jpeg" if target.suffix.lower() == ".jpg" else "image/png", {})
         elif method == "GET" and parts == ["signing"]:
             self._json(signing_view(root))
         elif method == "GET" and parts == ["signing", "setup"]:
@@ -9204,7 +9229,7 @@ class UIHandler(BaseHTTPRequestHandler):
             if not target:
                 self._error(HTTPStatus.NOT_FOUND, "Screenshot not found")
                 return
-            self._send(HTTPStatus.OK, target.read_bytes(), "image/png", {})
+            self._send(HTTPStatus.OK, target.read_bytes(), "image/jpeg" if target.suffix.lower() == ".jpg" else "image/png", {})
         elif method == "GET" and len(parts) >= 4 and parts[0] == "visual-checks" and parts[2] == "video":
             target = visual_check_video(root, parts[1], parts[3])
             if not target:

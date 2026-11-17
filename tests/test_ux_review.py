@@ -340,3 +340,35 @@ class NativeCaptureWiringTests(unittest.TestCase):
         self.assertIn("No screens configured", limits[0])
         android.assert_not_called()
         mac.assert_not_called()
+
+    def test_capture_reuses_running_live_preview_and_preview_url_when_url_unset(self):
+        import os
+        import ux_review_run as runner
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            out = root / ".orchestrator" / "output"
+            dev_dir = out / "dev-previews"
+            dev_dir.mkdir(parents=True)
+            (dev_dir / "main.json").write_text(json.dumps({
+                "branch": "feature-ui", "url": "http://127.0.0.1:4100", "direct": "http://127.0.0.1:4101", "pid": os.getpid()
+            }))
+            with patch.object(runner, "ROOT", root), patch.object(runner, "OUTPUT_DIR", out):
+                resolved, source = runner.preview_web_target(ux.settings({}), branch="feature-ui")
+                self.assertEqual((resolved["url"], source), ("http://127.0.0.1:4101", "live preview"))
+
+                (dev_dir / "main.json").unlink()
+                (root / ".orchestrator" / "project.json").write_text(json.dumps({
+                    "preview_url": "http://localhost:5173", "preview_dev_command": "npm run dev"
+                }))
+                resolved2, source2 = runner.preview_web_target(ux.settings({}))
+                self.assertEqual((resolved2["url"], resolved2["start_command"], source2),
+                                 ("http://localhost:5173", "npm run dev", "preview settings"))
+
+    def test_inferred_targets_prefers_preview_settings(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            found = ux.inferred_targets(root, [], "", config={"preview_url": "http://localhost:4321", "preview_dev_command": "npm run preview"})
+            self.assertEqual(found["web"]["url"], "http://localhost:4321")
+            self.assertEqual(found["web"]["start_command"], "npm run preview")
+            self.assertEqual(found["web"]["why"], "Preview settings")

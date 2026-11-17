@@ -509,9 +509,10 @@ _WEB_PORTS = (("vite", "http://localhost:5173"), ("next", "http://localhost:3000
               ("@angular/core", "http://localhost:4200"), ("nuxt", "http://localhost:3000"), ("astro", "http://localhost:4321"))
 
 
-def inferred_targets(root: Path, files: list[str], prd_text: str = "") -> dict[str, Any]:
-    """{platform: {fields..., "why": "..."}} for "web", "ios", "android" and "mac", from the product requirements' "Built
-    for" line and the project's own files. Only suggestions: the Screens form shows them ticked and filled, to check and save."""
+def inferred_targets(root: Path, files: list[str], prd_text: str = "", config: dict[str, Any] | None = None) -> dict[str, Any]:
+    """{platform: {fields..., "why": "..."}} for "web", "ios", "android" and "mac", from Preview settings, the product
+    requirements' "Built for" line, and the project's own files. Only suggestions: the Screens form shows them ticked and
+    filled, to check and save."""
     import json as _json
     built_for = ""
     for line in prd_text.splitlines():
@@ -534,6 +535,18 @@ def inferred_targets(root: Path, files: list[str], prd_text: str = "") -> dict[s
             out["web"] = {"url": url or "http://localhost:3000", "start_command": start, "why": "package.json" + (f" ({start})" if start else "")}
     if not out.get("web") and ("web" in built_for or "browser" in built_for):
         out["web"] = {"url": "", "why": "the product requirements (Built for)"}
+    preview_url = str((config or {}).get("preview_url") or "").strip()
+    preview_cmd = str((config or {}).get("preview_dev_command") or "").strip()
+    if preview_url or preview_cmd:
+        web = dict(out.get("web") or {})
+        if preview_url:
+            web["url"] = preview_url
+        elif not web.get("url"):
+            web["url"] = "http://localhost:3000"
+        if preview_cmd:
+            web["start_command"] = preview_cmd
+        web["why"] = "Preview settings"
+        out["web"] = web
     xcode = any(f.endswith((".xcodeproj/project.pbxproj", "Package.swift")) for f in files)
     unity = any(f.startswith("ProjectSettings/") or "/ProjectSettings/ProjectSettings.asset" in f for f in files)
     if re_search(r"\bios\b|iphone|ipad", built_for) or (xcode and not built_for):

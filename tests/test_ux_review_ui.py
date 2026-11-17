@@ -12,7 +12,7 @@ STATIC = Path(__file__).resolve().parents[1] / "orchestrator/web/static"
 
 @unittest.skipUnless(shutil.which("node"), "node is required for UI rendering")
 class UxReviewUITests(unittest.TestCase):
-    def render(self, report=None, runs=None, settings=None, latest=None, captures=None, has_interface=None, saved=None):
+    def render(self, report=None, runs=None, settings=None, latest=None, captures=None, has_interface=None, saved=None, preview=None, inferred=None):
         script = r'''
 const fs = require('fs');
 const source = fs.readFileSync(process.argv[1], 'utf8');
@@ -24,7 +24,7 @@ const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
 const ago = () => 'a moment ago';
 const clamped = text => esc(text);
 async function api(path) {
-  if (path === 'ux-pass') return {captures: input.captures || [], passes: input.latest ? [input.latest, {id: 'older', at: input.report.at, counts: input.report.counts}] : input.report ? [{id: 'latest', completed_at: input.report.completed_at}] : [], settings: input.settings || {}, saved: input.saved || {}, browser: true, has_interface: input.has_interface};
+  if (path === 'ux-pass') return {captures: input.captures || [], passes: input.latest ? [input.latest, {id: 'older', at: input.report.at, counts: input.report.counts}] : input.report ? [{id: 'latest', completed_at: input.report.completed_at}] : [], settings: input.settings || {}, saved: input.saved || {}, browser: true, has_interface: input.has_interface, preview: input.preview || null, inferred: input.inferred || {}};
   if (path === 'ux-pass/latest') return input.latest || input.report;
   if (path === 'ux-pass/older') return input.report;
   throw new Error(`Unexpected request ${path}`);
@@ -36,7 +36,7 @@ eval(helpers + '\n' + page + '\nglobalThis.uxCheckIds = Object.keys(UX_CHECKS);'
 pages['ux-review']([], new URLSearchParams(input.latest ? 'id=older' : '')).then(result => console.log(JSON.stringify({...result, check_ids: globalThis.uxCheckIds})));
 '''
         result = subprocess.run(["node", "-e", script, str(STATIC / "app.js"),
-                                 json.dumps({"report": report, "runs": runs, "settings": settings, "latest": latest, "captures": captures, "has_interface": has_interface, "saved": saved}),
+                                 json.dumps({"report": report, "runs": runs, "settings": settings, "latest": latest, "captures": captures, "has_interface": has_interface, "saved": saved, "preview": preview, "inferred": inferred}),
                                  str(STATIC / "html.js")], text=True, capture_output=True, check=True)
         return json.loads(result.stdout)
 
@@ -177,6 +177,22 @@ if (updateUxReviewWhileEditing({html: ''})) throw new Error('Clean form blocked 
 """
         subprocess.run(["node", "-e", script, str(STATIC / "app.js")], check=True, capture_output=True, text=True)
 
+    def test_preview_and_simulator_captures_combine_into_single_ui_review(self):
+        app = (STATIC / "app.js").read_text(encoding="utf-8")
+        # Job page merges Simulator Visual QA video/screenshots into uxReviewCard instead of rendering a duplicate card.
+        self.assertNotIn('class="card mb-16 visual-check-job-card"', app)
+        self.assertIn("uxReviewCard(s, data.ux_review, visualChecks)", app)
+        self.assertNotIn('<h2>Simulator visual check</h2>', app)
+        # Live preview status and video/snapshot captures appear in UX review.
+        page = self.render(
+            preview={"branch": "main", "live": {"url": "http://localhost:5173"}},
+            captures=[{"kind": "visual", "id": "20261117-visual", "title": "Simulator visual check", "at": "2026-11-17T00:00:00Z",
+                       "video": "launch.mp4", "screens": [{"file": "shot.png", "route": "Simulator", "width": 0, "dark": False}]}],
+        )
+        self.assertIn("Open live preview", page["html"])
+        self.assertIn("http://localhost:5173", page["html"])
+        self.assertIn("visual-check-player", page["html"])
+
     def report(self):
         return {"id": "latest", "at": "2026-10-01T09:00:00", "completed_at": 1790845200, "counts": {"major": 0, "findings": 0, "passed": 1, "failed": 0},
                 "findings": [], "screens": [], "summary": "Code review complete", "limits": "No screenshots",
@@ -224,5 +240,5 @@ class UxReviewWordingTests(unittest.TestCase):
         self.assertIn("mac", found)
         self.assertEqual(ux_review.inferred_targets(root, [], ""), {})  # nothing to go on: nothing guessed
         app = (STATIC / "app.js").read_text(encoding="utf-8")
-        self.assertIn('const guess = anySet ? {} : (data.inferred || {});', app)  # only until something is saved
+        self.assertIn('const guess = anySet ? {} : { ...(data.inferred || {}) };', app)  # only until something is saved
         self.assertIn('"Detected: check and save"', app)
