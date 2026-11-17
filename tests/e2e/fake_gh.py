@@ -122,6 +122,8 @@ def main(argv: list[str]) -> int:
             emit(pick(data, rest), rest)
         elif action == "edit":
             pr["body"] = flag(rest, "--body", pr["body"])
+        elif action == "ready":
+            pr["isDraft"] = False
         elif action == "comment":
             pr["comments"].append(flag(rest, "--body", ""))
         elif action == "diff":

@@ -4136,22 +4136,26 @@ def handle_merge_cleanup(job: dict[str, Any]):
 
     if not pr_number:
         if branch and (job.get("code_host") == "git" or branch == (job.get("base_branch") or PROJECT_CONFIG.base_branch)):
-            handle_local_merge(job)
-            return
+            return handle_local_merge(job)
         print("!!! Error: No PR number found for this job.")
-        return
+        return False
 
     print_header(f"Merging & Cleaning up PR #{pr_number}")
 
-    # 1. Proactive Draft Check
+    # 1. Mark draft PRs ready for review automatically so Merge & complete actually completes on GitHub
     try:
         pr_view = subprocess.check_output(["gh", "pr", "view", str(pr_number), "--json", "isDraft"], cwd=str(ROOT)).decode("utf-8")
         is_draft = json.loads(pr_view).get("isDraft", False)
         if is_draft:
-            print("\n\033[1;91m!!! Error: PR is still a DRAFT.\033[0m")
-            print("Please mark the PR as 'Ready for Review' on GitHub before merging.")
-            _back_to_menu()
-            return
+            print(f"      - Marking PR #{pr_number} ready for review...")
+            ready_res = subprocess.run(["gh", "pr", "ready", str(pr_number)], cwd=str(ROOT), capture_output=True, text=True)
+            if ready_res.returncode != 0:
+                err = (ready_res.stderr or ready_res.stdout or "").strip()
+                print(f"\n\033[1;91m!!! Error: Could not mark PR #{pr_number} ready for review.\033[0m")
+                if err:
+                    print(err)
+                _back_to_menu()
+                return False
     except Exception as e:
         print(f"      - Note: Could not verify PR draft status: {e}")
 
@@ -4164,7 +4168,7 @@ def handle_merge_cleanup(job: dict[str, Any]):
         print("The merge was blocked by GitHub (check draft status, CI failures, or conflicts).")
         print("\033[93mLocal branch cleanup ABORTED to preserve your work.\033[0m")
         _back_to_menu()
-        return
+        return False
 
     # 3. Local branch cleanup (ONLY if merge succeeded and AI-managed)
     if branch:
@@ -4211,7 +4215,7 @@ def handle_local_merge(job: dict[str, Any]):
     if not ok:
         print("\n\033[1;91m!!! Merge didn't happen. The job is still ready for review.\033[0m")
         _back_to_menu()
-        return
+        return False
     if is_ai_branch(branch):
         print(f"      - Deleting local branch: {branch}...")
         subprocess.run(["git", "branch", "-d", branch], cwd=str(ROOT), capture_output=True)

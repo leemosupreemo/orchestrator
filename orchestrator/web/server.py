@@ -2672,6 +2672,42 @@ def job_changes(root: Path, job: dict[str, Any]) -> dict[str, Any]:
 
 
 MAX_DIFF_CHARS = 60_000
+MAX_FULL_DIFF_CHARS = 1_000_000
+
+
+def job_full_diff(root: Path, job: dict[str, Any], job_id: str = "") -> dict[str, Any]:
+    """Full unified patch for all files changed by a job (excluding .orchestrator state)."""
+    changes = job_changes(root, job)
+    branch = job.get("branch")
+    base = changes["base"]
+    parts: list[str] = []
+    if branch and re.fullmatch(r"[A-Za-z0-9._/-]+", branch) and re.fullmatch(r"[A-Za-z0-9._/-]+", base):
+        res = subprocess.run(
+            ["git", "diff", "--no-color", "-U3", f"{base}...{branch}", "--", ".", ":(exclude).orchestrator"],
+            cwd=root, capture_output=True, text=True, timeout=15,
+        )
+        if res.returncode == 0 and res.stdout.strip():
+            parts.append(res.stdout)
+    if changes["local_files"]:
+        res = subprocess.run(
+            ["git", "diff", "--no-color", "-U3", "HEAD", "--", ".", ":(exclude).orchestrator"],
+            cwd=root, capture_output=True, text=True, timeout=15,
+        )
+        if res.returncode == 0 and res.stdout.strip():
+            parts.append(res.stdout)
+    if not parts and job_id:
+        patch_file = runtime_dir(root) / "jobs" / f"{job_id}-diff.patch"
+        if patch_file.is_file():
+            parts.append(patch_file.read_text(encoding="utf-8", errors="replace"))
+    text = "\n".join(p.rstrip("\n") for p in parts if p.strip())
+    if text:
+        text += "\n"
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", job_id or str(job.get("job_id") or job.get("id") or "job")).strip("-") or "job"
+    return {
+        "name": f"{slug}.patch",
+        "diff": text[:MAX_FULL_DIFF_CHARS],
+        "truncated": len(text) > MAX_FULL_DIFF_CHARS,
+    }
 
 
 def job_file_diff(root: Path, job: dict[str, Any], path: str) -> dict[str, Any]:
@@ -8480,7 +8516,10 @@ class UIHandler(BaseHTTPRequestHandler):
             self._json({"ok": True, "feature": job.get("feature")})
         elif method == "GET" and len(parts) == 3 and parts[0] == "jobs" and parts[2] == "diff":
             job = read_json_file(resolve_job_path(root, parts[1]))
-            self._json(job_file_diff(root, job, (query.get("path") or [""])[0]))
+            if (query.get("full") or [""])[0] in ("1", "true"):
+                self._json(job_full_diff(root, job, parts[1]))
+            else:
+                self._json(job_file_diff(root, job, (query.get("path") or [""])[0]))
         elif method == "GET" and len(parts) == 2 and parts[0] == "jobs":
             detail = job_detail(root, parts[1])
             detail["runs"] = self._sessions_view(job_id=parts[1])

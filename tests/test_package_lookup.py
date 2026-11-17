@@ -113,6 +113,8 @@ class AddFormTests(unittest.TestCase):
         app = (Path(__file__).resolve().parents[1] / "orchestrator" / "web" / "static" / "app.js").read_text()
         self.assertIn("api(`packages/lookup?url=${encodeURIComponent(url)}`)", app)
         self.assertIn("wirePackageLookup(data);", app)
+        self.assertIn('id="pkg-actions-menu"', app)
+        self.assertIn('id="pkg-add">Add package</button>', app)
         self.assertIn('id="pkg-review">Recommend packages</button>', app)
         self.assertNotIn("Find packages with AI", app)
 

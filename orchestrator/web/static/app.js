@@ -5516,6 +5516,20 @@ function jobRunsCard(runs, rel) {
       ${runs.length > 8 ? `<div class="card-b"><button type="button" class="btn small" data-show-all="job-run-list">Show all ${runs.length}</button></div>` : ""}` : ""}</section>`;
 }
 
+// Extract a short 1-sentence summary of what a job actually changed, from its diff hypothesis or builder summary.
+function jobChangeSummary(otherDocs, changes) {
+  const raw = String(changes?.hypothesis || "").trim();
+  if (raw) return raw.length > 220 ? `${raw.slice(0, 217).trimEnd()}…` : raw;
+  const doc = (otherDocs || []).find((d) => d.name === "builder_summary.md" && d.text);
+  if (!doc) return "";
+  for (const line of String(doc.text).split(/\r?\n/)) {
+    const clean = line.trim().replace(/^[-*#>\s`]+/, "").replace(/`+/g, "");
+    if (!clean || /^(\d+\.|summary|changes|files|verification|tests)\b:?$/i.test(clean)) continue;
+    return clean.length > 220 ? `${clean.slice(0, 217).trimEnd()}…` : clean;
+  }
+  return "";
+}
+
 // Compact table of contents for project documentation, shown inside a job's Documentation card.
 function jobDocsOutlineHtml({ s, featureName, docFilesChanged, otherDocs, docsIndex }) {
   const product = docsIndex?.product || null;
@@ -5784,7 +5798,11 @@ pages.job = async ([id]) => {
     ...getStepState(4),
   };
 
-  const phaseTargets = ["#plan-section", "#build-section", "#verify-section", "#document-section", "#finalize-section"];
+  const hasBuildWork = allFiles.length > 0 || filesChanged > 0 || isJobComplete || currentPhaseIndex >= 2;
+  const prUrl = (links || []).find((l) => l?.url && /pr|pull|merge/i.test(l.label || ""))?.url || job.merge_request_url || job.pr_url || "";
+  const builderSummaryDoc = otherDocs.find((d) => d.name === "builder_summary.md" && d.text?.trim()) || null;
+  const changeSummaryText = jobChangeSummary(otherDocs, changes);
+  const phaseTargets = [!tasksTotal && !showSummary && hasBuildWork ? "#brief-section" : "#plan-section", "#build-section", "#verify-section", "#document-section", "#finalize-section"];
   const phasesInfo = [planStep, buildStep, verifyStep, docStep, reviewStep];
   ["plan", "build", "verify", "document", "finalize"].forEach((phase, i) => {
     const n = runRel?.per_phase?.[phase] || 0;
@@ -5850,6 +5868,10 @@ pages.job = async ([id]) => {
   } else if (s.state.next?.action === "debug") {
     nextExecutionPreview = `<span class="job-hero-next-label">Next:</span> debug failing tests`;
   }
+
+  const reviewContextHtml = (currentPhase === "review" || ["merge", "complete"].includes(nextAction)) && (allFiles.length || changeSummaryText || prUrl)
+    ? `<div class="job-hero-next-preview">${allFiles.length ? `<span class="job-hero-next-label">Changed:</span> ${esc(deltaUnsaved || plural(allFiles.length, "file"))} · ${filesHtml} · <button type="button" class="linklike" data-scroll-to="#changes-section">Inspect diff ↓</button>` : ""}${prUrl ? `${allFiles.length ? " · " : ""}<a href="${esc(prUrl)}" target="_blank" rel="noopener">Open PR${job.pr_number ? ` #${esc(job.pr_number)}` : ""} ↗</a>` : ""}</div>${changeSummaryText ? `<p class="job-hero-reason muted">${esc(changeSummaryText)}</p>` : ""}`
+    : "";
 
   // Approving (or starting) a plan: the plan is shown right under the decision, with what each task is done when,
   // the files it touches, and what the AI assumed. GitHub puts Approve beside the changes; this is the same idea.
@@ -5988,6 +6010,7 @@ pages.job = async ([id]) => {
           ${(data.overlaps || []).length ? `<p class="job-hero-reason job-overlap">Overlaps with ${data.overlaps.map((o) => `<a href="#/jobs/${encodeURIComponent(o.id)}">${esc(o.title)}</a> (${esc(o.files.slice(0, 2).join(", "))}${o.count > 2 ? `, +${o.count - 2}` : ""})`).join("; ")}. Both change the same files: finish one first, or merge them, so neither takes the other's work.</p>` : ""}
           ${s.state.blocker ? `<details class="fold"><summary class="linklike muted">What the AI said</summary><p class="muted">${esc(s.state.blocker)}</p></details>` : ""}
           ${runRel?.unreported ? `<p class="job-hero-reason run-unreported">The last run (${esc(runRel.unreported.label)}) ${runRel.unreported.status === "failed" ? "failed" : "ended without reporting back"} before it could update this job. <a href="#/runs/${encodeURIComponent(runRel.unreported.id)}">Open its log</a> to see what happened.</p>` : ""}
+          ${reviewContextHtml}
           ${nextExecutionPreview ? `<div class="job-hero-next-preview">${nextExecutionPreview}</div>` : ""}
           ${uxWarning ? `<p class="job-hero-reason"><button type="button" class="linklike" data-scroll-to="#ux-section">UX and design check: ${plural(uxWarning, "major finding")}. Look before you ${s.state.next?.action === "merge" ? "merge" : "finish"}.</button></p>` : ""}
         </div>
@@ -6025,7 +6048,7 @@ pages.job = async ([id]) => {
 
       <div class="job-body">
       <section class="card mb-16" id="build-section" tabindex="-1">
-        <div class="card-h"><h2>Progress</h2>${tasksTotal ? `<span class="count">${tasksDone}/${tasksTotal} tasks</span>` : ""}</div>
+        <div class="card-h"><h2>Progress</h2>${tasksTotal ? `<span class="count">${tasksDone}/${tasksTotal} tasks</span>` : hasBuildWork && allFiles.length ? `<span class="count">${plural(allFiles.length, "file")} changed</span>` : ""}</div>
         <div class="card-b stack">
           ${tasksTotal ? `<div class="tasks-progress-wrap">
             <div class="progress-bar-container" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${tasksPct}"><div class="progress-bar-fill" style="width: ${tasksPct}%"></div></div>
@@ -6039,7 +6062,11 @@ pages.job = async ([id]) => {
                 : tasksDone === tasksTotal
                   ? `<span class="pill done">All tasks built</span><span class="muted">Ready for verification &amp; review</span>`
                   : ""}
-          </div>` : `<div class="empty-state"><strong>No tasks yet</strong><span class="muted">Tasks appear once planned.</span></div>`}
+          </div>` : hasBuildWork ? `<div class="progress-now">
+            <span class="pill done">${allFiles.length ? "Implemented" : "Built"}</span>
+            <strong>${esc(deltaUnsaved || (allFiles.length ? `${plural(allFiles.length, "file")} changed` : "Implemented in a single pass"))}</strong>
+            ${allFiles.length ? `<button type="button" class="linklike" data-scroll-to="#changes-section">Inspect diff ↓</button>` : ""}
+          </div>${allFiles.length ? `<div class="muted t-secondary">${filesHtml}</div>` : ""}` : `<div class="empty-state"><strong>No tasks yet</strong><span class="muted">Tasks appear once planned.</span></div>`}
           <div class="progress-foot muted">
             ${esc(testsDisplay)}${docFilesChanged.length ? ` · Docs updated: ${docFilesChanged.slice(0, 3).map((f) => `<span class="mono">${esc(f)}</span>`).join(", ")}${docFilesChanged.length > 3 ? ` +${docFilesChanged.length - 3} more` : ""}` : ` · <a href="#/project-docs">Docs</a>`}${pipe?.planner || pipe?.builder || pipe?.reviewer ? ` · ${esc(pipeline.planner === pipeline.builder && pipeline.builder === pipeline.reviewer ? pipeline.planner : `${pipeline.planner} → ${pipeline.builder} → ${pipeline.reviewer}`)}` : ""}
           </div>
@@ -6063,7 +6090,7 @@ pages.job = async ([id]) => {
         <div class="md brief-content" data-expandable="320">${briefDoc.text ? Markdown.render(briefDoc.text) : `<p class="muted">No brief yet.</p>`}</div>
       </section>
 
-      ${!reviewingPlan ? `<section class="card mb-16" id="plan-section" tabindex="-1">
+      ${!reviewingPlan && (tasksTotal > 0 || showSummary || !hasBuildWork) ? `<section class="card mb-16" id="plan-section" tabindex="-1">
         <div class="card-h"><h2>Plan</h2></div>
         ${showSummary ? `<div class="card-b"><p>${esc(planSummary)}</p></div>` : ""}
         <div class="list">${taskRowsHtml(true)}</div>
@@ -6082,14 +6109,16 @@ pages.job = async ([id]) => {
 
       ${jobRunsCard(jobRuns, runRel)}
       <section class="card mb-16" id="changes-section">
-        <div class="card-h"><h2>Changes</h2>${changes?.base ? `<span class="count">vs ${esc(changes.base)}</span>` : ""}</div>
+        <div class="card-h"><h2>Changes</h2>${changes?.base ? `<span class="count">vs ${esc(changes.base)}</span>` : ""}
+          ${(allFiles.length || changes?.diffstat) ? `<div class="card-actions"><button type="button" class="btn small" id="download-job-diff" title="Download the full unified git diff as a .patch file">Download full diff (.patch)</button></div>` : ""}</div>
+        ${changes?.hypothesis ? `<div class="card-b card-b-split t-secondary"><strong>What changed:</strong> ${esc(changes.hypothesis)}</div>` : ""}
         <div class="card-b delta-summary-line">
           ${deltaUnsaved ? `<div class="delta-line unsaved">${esc(deltaUnsaved)}</div>` : ""}
           <div class="row wrap gap-8 muted t-secondary"><span>${state.project?.dirty_files ? `${plural(state.project.dirty_files, "uncommitted file")} in workspace.` : "Working tree clean."}</span><a href="#/git?show=changes">Open Git setup</a></div>
-          <div class="diff-files">${allFiles.slice(0, 12).map((f) => `<details class="diff-file" data-diff-path="${esc(f)}"><summary class="mono">${esc(f)}</summary><pre class="diff" aria-live="polite">Loading…</pre></details>`).join("") || `<span class="muted">No modified files</span>`}${allFiles.length > 12 ? `<div class="muted">+${allFiles.length - 12} more (see the full diffstat below)</div>` : ""}</div>
+          <div class="diff-files">${allFiles.slice(0, 12).map((f) => `<details class="diff-file" data-diff-path="${esc(f)}"><summary class="mono">${esc(f)}</summary><pre class="diff" aria-live="polite">Loading…</pre></details>`).join("") || `<span class="muted">No modified files</span>`}${allFiles.length > 12 ? `<div class="muted">+${allFiles.length - 12} more — use Download full diff (.patch) for every file</div>` : ""}</div>
         </div>
-        ${changes?.hypothesis ? `<div class="card-b card-b-split t-secondary"><strong>Why:</strong> ${esc(changes.hypothesis)}</div>` : ""}
-        ${changes?.diffstat ? `<details class="raw diffstat-details"><summary>View full diffstat (${allFiles.length} files)</summary><pre class="file">${esc(changes.diffstat)}</pre></details>` : ""}
+        ${builderSummaryDoc ? `<details class="raw diffstat-details"><summary>View builder summary</summary><div class="card-b md">${Markdown.render(builderSummaryDoc.text)}</div></details>` : ""}
+        ${changes?.diffstat ? `<details class="raw diffstat-details"><summary>View diff summary (${allFiles.length} files)</summary><pre class="file">${esc(changes.diffstat)}</pre></details>` : ""}
       </section>
 
       ${jobDocsOutlineHtml({ s, featureName, docFilesChanged, otherDocs, docsIndex })}
@@ -6295,6 +6324,20 @@ pages.job = async ([id]) => {
         if (!ok) return;
         try { await api(`jobs/${encodeURIComponent(id)}/revert-task`, { method: "POST", body: { index: i } }); toast("Task undone"); route(); } catch (e) { toast(e.message, true); }
       }));
+      view.querySelector("#download-job-diff")?.addEventListener("click", async (e) => {
+        const btn = e.currentTarget;
+        btn.disabled = true;
+        try {
+          const d = await api(`jobs/${encodeURIComponent(id)}/diff?full=1`);
+          if (!d?.diff?.trim()) return toast("No code diff is available for this job.", "info");
+          downloadText(d.name || `${id}.patch`, d.diff, "text/plain");
+          toast(d.truncated ? "Downloaded partial diff (truncated at 1 MB)." : "Downloaded full diff.");
+        } catch (err) {
+          toast(err.message, true);
+        } finally {
+          btn.disabled = false;
+        }
+      });
       view.querySelectorAll("[data-diff-path]").forEach((box) => box.addEventListener("toggle", async () => {
         if (!box.open || box.dataset.loaded) return;
         box.dataset.loaded = "1";
@@ -7764,7 +7807,7 @@ function packageJobHref(kind, p, data) {
 // The runner checks the selected manifest before offering a native update.
 function packageUpdateAction(item, data) {
   if (item.update?.supported === false) {
-    return ["Plan update with AI…", `data-href="${esc(packageJobHref("update", item, data))}"`, item.update.reason];
+    return ["Update with AI…", `data-href="${esc(packageJobHref("update", item, data))}"`, item.update.reason];
   }
   return ["Update", `data-package-update="${attrJSON(item)}"`, "Updates this dependency with its package manager, then runs the project checks"];
 }
@@ -7830,11 +7873,16 @@ pages.packages = async () => {
   const suggested = mine("suggested"), planned = mine("planned"), dismissed = packages.filter((p) => p.status === "dismissed");
   const SHOWN = 15;
   const eco = (p) => `<span class="pill">${esc(data.ecosystems[p.ecosystem]?.split(" (")[0] || p.ecosystem)}</span>`;
-  const row = (p, actions) => `<div class="item package-row" data-pkg-id="${esc(p.id)}"><div class="main-col">
+  const row = (p, actions) => {
+    const summary = p.purpose || p.why || "No description yet";
+    const extraWhy = p.purpose && p.why && p.why !== p.purpose ? p.why : "";
+    const detail = [extraWhy, p.notes].filter(Boolean);
+    return `<div class="item package-row" data-pkg-id="${esc(p.id)}"><div class="main-col">
       <div class="title">${esc(p.name)} ${eco(p)}${p.version ? ` <span class="muted mono">${esc(p.version)}</span>` : ""}${p.feature && featureName(p.feature) ? ` <span class="pill idle">${esc(featureName(p.feature))}</span>` : ""}</div>
-      <div class="meta package-meta">${[p.purpose, p.why && p.why !== p.purpose ? p.why : ""].filter(Boolean).map(esc).join(" · ") || "No description yet"}${p.link ? ` · <a href="${esc(p.link)}" target="_blank" rel="noopener">Link ↗</a>` : ""}</div>
-      ${p.notes ? `<div class="meta">${esc(p.notes)}</div>` : ""}</div>
+      <div class="meta package-meta">${esc(summary)}${p.link ? ` · <a href="${esc(p.link)}" target="_blank" rel="noopener">Link ↗</a>` : ""}</div>
+      ${detail.length ? `<details class="task-detail"><summary class="linklike muted">${extraWhy ? "Why" : "Notes"}</summary><div class="meta">${detail.map(esc).join(" · ")}</div></details>` : ""}</div>
       <div class="side">${owner ? actions : ""}</div></div>`;
+  };
   const addBtn = (p) => `<a class="btn small primary" href="${packageJobHref("add", p, data)}">Add to project</a>`;
   const menu = (p, extra = []) => moreMenu([["Edit", `data-pkg="edit" data-id="${esc(p.id)}"`], ...extra,
     ["Remove from the list", `data-pkg="remove" data-id="${esc(p.id)}"`, "This only removes it from this list; nothing in your code changes", "danger"]], { compact: true });
@@ -7843,15 +7891,30 @@ pages.packages = async () => {
   const dismissedRow = (p) => row(p, `<button type="button" class="btn small" data-pkg="restore" data-id="${esc(p.id)}">Restore</button>${menu(p)}`);
   const installedRow = (i, n) => `<div class="item package-row package-installed-row" ${n >= SHOWN ? "hidden" : ""} data-find="${esc(`${i.name} ${i.ecosystem} ${i.manifest}`.toLowerCase())}"><div class="main-col">
       <div class="title">${esc(i.name)} ${eco(i)}${i.version ? ` <span class="muted mono">${esc(i.version)}</span>` : ""}${i.kind === "dev" ? ` <span class="pill idle">dev</span>` : ""}</div>
-      <div class="meta mono">${esc(i.manifest)}</div>${i.update?.supported === false ? `<div class="meta">${esc(i.update.reason)}</div>` : ""}</div>
+      <div class="meta mono">${esc(i.manifest)}</div></div>
       <div class="side">${owner ? moreMenu([packageUpdateAction(i, data),
         ["Remove…", `data-href="${packageJobHref("remove", i, data)}"`, "Starts a job that removes it and the code that uses it", "danger"]], { compact: true, icon: true, ariaLabel: `Package actions: ${i.name}` }) : ""}</div></div>`;
-  const reviewNote = review?.at && review.suggested !== undefined ? `<p class="muted">Last reviewed ${esc(ago(Date.parse(review.at) / 1000))} · ${review.searched ? "searched the web" : "couldn't search the web, so versions may be out of date"} · ${plural(review.suggested || 0, "suggestion")}.${review.notes ? ` ${esc(review.notes)}` : ""}</p>
-      ${review.sources?.length ? `<details class="fold"><summary class="np-section-legend">Pages it used (${review.sources.length})</summary><ul class="package-sources">${review.sources.map((u) => `<li><a href="${esc(u)}" target="_blank" rel="noopener">${esc(u.replace(/^https:\/\//, ""))}</a></li>`).join("")}</ul></details>` : ""}` : "";
+  const reviewMeta = [
+    review?.at ? `Last reviewed ${ago(Date.parse(review.at) / 1000)}` : "",
+    review?.searched === false ? "couldn't search the web, so versions may be out of date" : "",
+    review?.suggested !== undefined ? plural(review.suggested || 0, "suggestion") : "",
+  ].filter(Boolean);
+  const reviewDetailsLabel = review?.notes && review?.sources?.length
+    ? `Review notes &amp; ${plural(review.sources.length, "source")}`
+    : review?.notes ? "Review notes"
+    : review?.sources?.length ? `Pages it used (${review.sources.length})` : "";
+  const reviewNote = review?.at && review.suggested !== undefined ? `<p class="muted">${esc(reviewMeta.join(" · "))}</p>
+      ${reviewDetailsLabel ? `<details class="fold"><summary class="np-section-legend">${reviewDetailsLabel}</summary><div class="stack gap-8">${review.notes ? `<p class="muted m-0">${esc(review.notes)}</p>` : ""}${review.sources?.length ? `<ul class="package-sources">${review.sources.map((u) => `<li><a href="${esc(u)}" target="_blank" rel="noopener">${esc(u.replace(/^https:\/\//, ""))}</a></li>`).join("")}</ul>` : ""}</div></details>` : ""}` : "";
   return {
     title: "Packages",
     sub: "",
-    actions: owner ? `<button type="button" class="btn" id="pkg-add">Add package</button><button type="button" class="btn${data.review_due ? " primary" : ""}" id="pkg-review">Recommend packages</button>` : "",
+    actions: owner ? `<details class="more" id="pkg-actions-menu">
+      <summary class="btn${data.review_due ? " primary" : ""} icon-only" aria-label="Package actions" title="Add or recommend packages"><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg></summary>
+      <div class="more-menu">
+        <button type="button" class="btn" id="pkg-add">Add package</button>
+        <button type="button" class="btn" id="pkg-review">Recommend packages</button>
+      </div>
+    </details>` : "",
     html: `
       <section class="card mb-16" id="pkg-review-card"><div class="card-b stack">
         <p>Suggested packages match your PRD. Nothing is installed unless you add it.</p>
@@ -7884,6 +7947,7 @@ pages.packages = async () => {
         cleanup.push(() => clearInterval(timer));
       }
       $("#pkg-add")?.addEventListener("click", async () => {
+        $("#pkg-actions-menu")?.removeAttribute("open");
         const dialog = formDialog("Add a package", packageFormBody({}, data), "Add");
         wirePackageLookup(data);
         const v = await dialog;
@@ -7903,6 +7967,7 @@ pages.packages = async () => {
         $("#pkg-more")?.toggleAttribute("hidden", Boolean(term));
       });
       $("#pkg-review")?.addEventListener("click", async (e) => {
+        $("#pkg-actions-menu")?.removeAttribute("open");
         const button = e.currentTarget, idle = button.innerHTML, note = $("#pkg-progress");
         const stage = $("#pkg-stage"), detail = $("#pkg-detail"), slow = $("#pkg-slow"), cancel = $("#pkg-cancel");
         let started = null;
@@ -13675,9 +13740,7 @@ function runFamilyHtml(r, family) {
   const where = me?.side ? `A side errand for the job ${job}`
     : work.length <= 1 ? (partial ? `The only recorded run of the job ${job}` : `The only run of the job ${job}`)
     : `Run ${at + 1} of ${work.length}${partial ? " recorded runs" : ""} of the job ${job}`;
-  const prev = at > 0 ? `<a href="#/runs/${encodeURIComponent(work[at - 1].id)}">← Previous run: ${esc(work[at - 1].label)}</a>` : "";
-  const next = at >= 0 && at < work.length - 1 ? `<a href="#/runs/${encodeURIComponent(work[at + 1].id)}">Next run: ${esc(work[at + 1].label)} →</a>` : "";
-  return `<span class="status-line run-family"><span>${where}</span>${prev ? `<span class="sep">·</span>${prev}` : ""}${next ? `<span class="sep">·</span>${next}` : ""}</span>`;
+  return `<span class="status-line run-family"><span>${where}</span></span>`;
 }
 
 function runHeader(r, family = null) {

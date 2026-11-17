@@ -59,6 +59,38 @@ class JobActionsTests(unittest.TestCase):
                 self.assertEqual(job_actions.main(["merge", str(path)]), 0)
         job = merge.call_args[0][0]
         self.assertEqual((job["pr_number"], job["_path"]), (141, path.resolve()))
+
+    def test_merge_marks_draft_pr_ready_before_merging_and_reports_failures(self):
+        import dev_console
+        from types import SimpleNamespace
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "job.json"
+            path.write_text(json.dumps({"job_id": "job-17", "status": "review-needed", "pr_number": 17, "branch": "ai/job-17"}))
+            commands = []
+
+            def fake_run(cmd, **kwargs):
+                commands.append(cmd)
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+            with patch.object(dev_console.subprocess, "check_output", return_value=b'{"isDraft": true}'), \
+                 patch.object(dev_console.subprocess, "run", side_effect=fake_run), \
+                 patch.object(dev_console, "archive_job", return_value=Path(tmp) / "job-17.json"), \
+                 patch.object(dev_console, "_back_to_menu"):
+                self.assertEqual(job_actions.main(["merge", str(path)]), 0)
+
+        self.assertIn(["gh", "pr", "ready", "17"], commands)
+        self.assertIn(["gh", "pr", "merge", "17", "--merge", "--delete-branch"], commands)
+        self.assertLess(commands.index(["gh", "pr", "ready", "17"]),
+                        commands.index(["gh", "pr", "merge", "17", "--merge", "--delete-branch"]))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "job.json"
+            path.write_text(json.dumps({"job_id": "job-17", "status": "review-needed", "pr_number": 17, "branch": "ai/job-17"}))
+            with patch.object(dev_console.subprocess, "check_output", return_value=b'{"isDraft": true}'), \
+                 patch.object(dev_console.subprocess, "run", return_value=SimpleNamespace(returncode=1, stdout="", stderr="failed")), \
+                 patch.object(dev_console, "_back_to_menu"):
+                self.assertEqual(job_actions.main(["merge", str(path)]), 1)
     def test_complete_archives_a_job_without_a_pr(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "job.json"

@@ -31,8 +31,11 @@ const data={ecosystems:{npm:'JavaScript'},features:[],installed:[{ecosystem:'npm
 
     def test_unsupported_action_explains_limitation_and_preserves_selected_manifest(self):
         out=self.run_js("item.update={supported:false,reason:'Workspace <scope> unavailable'};const a=c.packageUpdateAction(item,data);console.log(JSON.stringify({a,html:c.moreMenu([a],{compact:true})}));")
-        self.assertIn('AI',out['a'][0])
+        self.assertEqual(out['a'][0],'Update with AI…')
         self.assertNotIn('data-package-update',out['a'][1])
         self.assertIn('packages%2Fchosen%2Fpackage.json',out['a'][1])
         self.assertNotIn('other%2Fpackage.json',out['a'][1])
         self.assertIn('Workspace &lt;scope&gt; unavailable',out['html'])
+        app=(STATIC/'app.js').read_text(encoding='utf-8')
+        installed=app[app.index('const installedRow ='):app.index('const reviewMeta =')]
+        self.assertNotIn('i.update.reason',installed)

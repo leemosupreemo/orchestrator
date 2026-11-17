@@ -8094,6 +8094,49 @@ after();
         # the layered-plan warning is one line in the card while approving, not a second card above it
         self.assertIn("&& !reviewingPlan ? `<section", self.job_page)
 
+    @unittest.skipUnless(shutil.which("node"), "node is required")
+    def test_ready_to_merge_shows_changes_summary_and_built_progress_when_no_tasks(self):
+        start = self.source.index("function jobChangeSummary(")
+        end = self.source.index("\n// Compact table of contents", start)
+        fn = self.source[start:end]
+        script = f"""
+{fn}
+const fromHyp = jobChangeSummary([], {{ hypothesis: 'Updated vegetation rendering shader.' }});
+const fromDoc = jobChangeSummary([{{ name: 'builder_summary.md', text: '# Summary\\n\\n- Added instanced grass shader and LOD culling.' }}], {{}});
+console.log(JSON.stringify({{ fromHyp, fromDoc }}));
+"""
+        out = json.loads(subprocess.run(["node", "-e", script], capture_output=True, text=True, check=True).stdout)
+        self.assertEqual(out["fromHyp"], "Updated vegetation rendering shader.")
+        self.assertEqual(out["fromDoc"], "Added instanced grass shader and LOD culling.")
+        self.assertIn("${reviewContextHtml}", self.job_page)
+        self.assertIn("hasBuildWork ? `<div class=\"progress-now\">", self.job_page)
+        self.assertIn("!reviewingPlan && (tasksTotal > 0 || showSummary || !hasBuildWork)", self.job_page)
+        self.assertIn('!["debug", "answer", "merge", "complete", "approve", "schedule", "execute"].includes(next?.action)', self.job_page)
+
+    def test_job_changes_offers_downloadable_full_patch_diff(self):
+        self.assertIn('id="download-job-diff"', self.job_page)
+        self.assertIn("jobs/${encodeURIComponent(id)}/diff?full=1", self.job_page)
+        from orchestrator.web import server as srv
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            subprocess.run(["git", "init", "-b", "main"], cwd=root, check=True, capture_output=True)
+            subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=root, check=True, capture_output=True)
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=root, check=True, capture_output=True)
+            (root / "app.swift").write_text("let a = 1\n", encoding="utf-8")
+            (root / ".orchestrator").mkdir()
+            (root / ".orchestrator" / "state.json").write_text("{}\n", encoding="utf-8")
+            subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
+            subprocess.run(["git", "commit", "-m", "init"], cwd=root, check=True, capture_output=True)
+            subprocess.run(["git", "checkout", "-b", "ai/job-1"], cwd=root, check=True, capture_output=True)
+            (root / "app.swift").write_text("let a = 2\n", encoding="utf-8")
+            (root / ".orchestrator" / "state.json").write_text('{"x":1}\n', encoding="utf-8")
+            subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
+            subprocess.run(["git", "commit", "-m", "work"], cwd=root, check=True, capture_output=True)
+            out = srv.job_full_diff(root, {"branch": "ai/job-1", "base_branch": "main"}, "job-1")
+            self.assertEqual(out["name"], "job-1.patch")
+            self.assertIn("+let a = 2", out["diff"])
+            self.assertNotIn("state.json", out["diff"])
+
     def test_the_epics_page_keeps_technique_and_break_down_again_under_advanced_options(self):
         start = self.source.index("const breakdownCard = () =>")
         card = self.source[start:self.source.index("const jiraCard", start)]

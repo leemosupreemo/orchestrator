@@ -104,8 +104,7 @@ def merge(path: Path) -> int:
 
     job = load_job(path)
     drop_worktree(job)
-    handle_merge_cleanup(job)
-    return 0
+    return 0 if handle_merge_cleanup(job) is not False else 1
 
 
 def complete(path: Path) -> int:

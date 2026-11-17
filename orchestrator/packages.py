@@ -184,7 +184,9 @@ def _gradle(path: Path, rel: str) -> list[dict[str, str]]:
 
 def _unity(path: Path, rel: str) -> list[dict[str, str]]:
     deps = _json(path).get("dependencies")
-    return [_item(name, version, "unity", rel) for name, version in deps.items()] if isinstance(deps, dict) else []
+    if not isinstance(deps, dict):
+        return []
+    return [_item(name, version, "unity", rel) for name, version in deps.items() if str(version or "").strip().lower() != "exclude"]
 
 
 def _pubspec(path: Path, rel: str) -> list[dict[str, str]]:
@@ -205,7 +207,7 @@ READERS = {"package.json": _package_json, "pyproject.toml": _pyproject, "Package
            "Gemfile": _gemfile, "Podfile": _podfile, "build.gradle": _gradle, "build.gradle.kts": _gradle, "pubspec.yaml": _pubspec}
 
 
-def _manifests(root: Path, depth: int = 2) -> list[Path]:
+def _manifests(root: Path, depth: int = 3) -> list[Path]:
     found: list[Path] = []
 
     def walk(folder: Path, level: int) -> None:
@@ -551,9 +553,9 @@ def review_prompt(prd: str, features: list[dict[str, Any]], installed: list[dict
         *(["", "Already decided (do not suggest again):", *skip] if skip else []),
         "",
         "Answer with ONLY one JSON object and nothing else:",
-        '{"packages": [{"name": "...", "ecosystem": "...", "purpose": "what it is for, a few words", "why": "one sentence on why this project needs it",',
+        '{"packages": [{"name": "...", "ecosystem": "...", "purpose": "what it is for, 3-6 words", "why": "one concise sentence (<120 chars) on why this project needs it",',
         '  "feature": "exact feature name or empty", "url": "https://...", "version": "current version or empty"}],',
-        ' "notes": "one or two sentences on what you looked at and anything the person should know",',
+        ' "notes": "one brief sentence (under 140 chars) on key caveats; omit internal details like empty feature lists",',
         ' "sources": ["https://pages you read"]}',
     ])
 
@@ -612,4 +614,4 @@ def parse_suggestions(reply: str, features: list[dict[str, Any]], installed: lis
         record["feature"] = by_name.get(feature, "")
         out.append({k: record[k] for k in ("name", "ecosystem", "version", "purpose", "why", "feature", "url")})
     sources = [u for u in (_url(s) for s in value.get("sources", []) if isinstance(s, str)) if u][:12] if isinstance(value.get("sources"), list) else []
-    return {"packages": out[:MAX_SUGGESTIONS], "notes": _text(value.get("notes"), 600), "sources": sources}
+    return {"packages": out[:MAX_SUGGESTIONS], "notes": _text(value.get("notes"), 240), "sources": sources}

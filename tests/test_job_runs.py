@@ -177,12 +177,13 @@ class PageTests(unittest.TestCase):
         self.assertIn("runRel?.active?.now", self.app)
         self.assertIn("before it could update this job", self.app)
 
-    def test_the_run_page_says_whose_run_it_is_and_links_its_neighbours(self):
+    def test_the_run_page_says_whose_run_it_is(self):
         self.assertIn('api(`jobs/${encodeURIComponent(familyOf)}/runs`)', self.app)
         self.assertIn("The only run of the job", self.app)
         self.assertIn('Run ${at + 1} of ${work.length}${partial ? " recorded runs" : ""} of the job', self.app)
-        self.assertIn("← Previous run: ${esc(work[at - 1].label)}", self.app)  # a bare "← Screen check" read as this run's name
-        self.assertIn("Next run: ${esc(work[at + 1].label)} →", self.app)
+        family = self.app[self.app.index("function runFamilyHtml"):self.app.index("function runHeader")]
+        self.assertNotIn("Previous run:", family)
+        self.assertNotIn("Next run:", family)
         self.assertIn("(runHeader.families ||= new Map()).set(run.id, family)", self.app)
         self.assertIn('parts[0] == "jobs" and parts[2] == "runs"', self.server)
 

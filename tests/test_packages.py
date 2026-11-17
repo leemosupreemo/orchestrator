@@ -58,6 +58,18 @@ class DetectTests(unittest.TestCase):
         self.assertEqual(found[("gradle", "junit:junit")]["manifest"], "app/build.gradle")
         self.assertEqual(found[("unity", "com.unity.textmeshpro")]["manifest"], "Packages/manifest.json")
 
+    def test_skips_excluded_unity_modules_and_finds_nested_subproject_manifests(self):
+        root = self.project()
+        write(root, "clients/unity/Packages/manifest.json", json.dumps({
+            "dependencies": {
+                "com.unity.inputsystem": "1.17.0",
+                "com.unity.modules.physics2d": "exclude",
+            }
+        }))
+        found = {(i["ecosystem"], i["name"], i["manifest"]): i for i in pk.detect(root)}
+        self.assertIn(("unity", "com.unity.inputsystem", "clients/unity/Packages/manifest.json"), found)
+        self.assertNotIn(("unity", "com.unity.modules.physics2d", "clients/unity/Packages/manifest.json"), found)
+
     def test_a_branch_dependency_keeps_its_requirement_and_an_empty_project_has_nothing(self):
         found = {i["name"]: i for i in pk.detect(self.project())}
         self.assertIn("branch", found["y"]["version"])
