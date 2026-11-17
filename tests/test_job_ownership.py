@@ -9,6 +9,7 @@ import json
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -100,6 +101,27 @@ class OwnershipTests(unittest.TestCase):
         self.assertNotIn("moved_to", job)
         self.assertEqual((job["status"], job["pr_number"], job["imported_from_machine"]), ("review-needed", 17, "MacBook Air"))
         self.assertGreater(job["imported_at"], 0)
+
+    def handler(self):
+        handler = ui.UIHandler.__new__(ui.UIHandler)
+        handler.server = mock.Mock()
+        handler.server.sessions.running_job_ids.return_value = set()
+        handler.server._publishing_jobs = set()
+        handler.server._repository_lock = threading.Lock()
+        handler._audit = mock.Mock()
+        handler._require_owner = mock.Mock()
+        return handler
+
+    def test_the_server_refuses_to_run_a_moved_job_but_still_deletes_it(self):
+        ui.mark_job_moved(self.root, "j1", "MacBook Air")
+        handler = self.handler()
+        for action in ("resume", "debug"):
+            with self.assertRaises(ui.UIError) as err:
+                handler._launch_run(action, {"job": "j1"}, self.root)
+            self.assertIn("moved to MacBook Air", str(err.exception))
+        handler.server.sessions.start.assert_not_called()
+        handler._launch_run("delete_job", {"job": "j1"}, self.root)  # removing the stale copy is still allowed
+        handler.server.sessions.start.assert_called_once()
 
     def test_the_page_moves_the_older_copy_and_refuses_while_the_other_computer_works(self):
         app = (ROOT / "orchestrator" / "web" / "static" / "app.js").read_text(encoding="utf-8")

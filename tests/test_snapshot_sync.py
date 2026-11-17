@@ -45,12 +45,41 @@ class SnapshotTests(unittest.TestCase):
         self.assertEqual(ui.UIServer.live_job_runs(fake), {"j1": {"label": "Fix attempt", "step": "Running tests"}})
 
 
+class SendOnChangeTests(unittest.TestCase):
+    def setUp(self):
+        self.snapshots = [{"recent_jobs": [{"job_id": "j1", "status": "executing"}]}]
+        self.fake = SimpleNamespace(root=None, live_job_runs=lambda: {})
+        patches = [mock.patch.object(account, "build_snapshot", side_effect=lambda **kw: self.snapshots[-1]),
+                   mock.patch.object(account, "sync_snapshot")]
+        self.build, self.sync = (p.start() for p in patches)
+        for p in patches:
+            self.addCleanup(p.stop)
+
+    def send(self, sent):
+        return ui.UIServer.send_snapshot_if_changed(self.fake, {"machine_id": "m"}, sent)
+
+    def test_a_snapshot_is_sent_once_per_change(self):
+        first = self.send("")
+        self.assertTrue(first)
+        self.assertEqual(self.send(first), first)  # nothing changed: not sent again
+        self.assertEqual(self.sync.call_count, 1)
+        self.snapshots.append({"recent_jobs": [{"job_id": "j1", "status": "review-needed"}]})
+        self.assertNotEqual(self.send(first), first)
+        self.assertEqual(self.sync.call_count, 2)
+
+    def test_a_failed_send_is_tried_again_next_time(self):
+        self.sync.side_effect = account.AccountError("offline")
+        self.assertEqual(self.send("old"), "old")
+        self.sync.side_effect = None
+        self.assertNotEqual(self.send("old"), "old")
+
+
 class WiringTests(unittest.TestCase):
     def test_changes_are_sent_within_seconds_and_the_page_uses_them(self):
         server = (ROOT / "orchestrator" / "web" / "server.py").read_text(encoding="utf-8")
         self.assertIn("SNAPSHOT_CHECK_SECONDS = 10", server)
         self.assertIn('threading.Thread(target=snapshot_sync, daemon=True, name="snapshot-sync").start()', server)
-        self.assertIn("if digest != sent:", server)
+        self.assertIn("sent = self.send_snapshot_if_changed(machine, sent)", server)
         app = (ROOT / "orchestrator" / "web" / "static" / "app.js").read_text(encoding="utf-8")
         self.assertIn("state: rj.state?.label ? { ...rj.state, next: null", app)  # another computer's job can't be acted on here
         self.assertIn("continued on ${esc(j.continued_on)}", app)

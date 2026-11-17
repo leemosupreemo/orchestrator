@@ -6519,6 +6519,19 @@ class UIServer(ThreadingHTTPServer):
                                   "step": str(progress.get("step") or progress.get("label") or "")[:200]}
         return live
 
+    def send_snapshot_if_changed(self, machine: dict[str, Any], sent: str) -> str:
+        """Builds this computer's snapshot and sends it only when it differs from the last one sent (`sent`, its hash).
+        Returns the hash now on the account: the new one, or `sent` when nothing changed or sending failed."""
+        try:
+            snapshot = account.build_snapshot(root=self.root, live=self.live_job_runs())
+            digest = hashlib.sha256(json.dumps(snapshot, sort_keys=True, default=str).encode()).hexdigest()
+            if digest == sent:
+                return sent
+            account.sync_snapshot(machine, snapshot=snapshot)
+            return digest
+        except Exception:
+            return sent  # offline or a bad job file: the next check tries again
+
     def start_heartbeat(self, endpoint: Callable[[], str], interval: float = account.HEARTBEAT_SECONDS) -> threading.Thread | None:
         # Also reports how many runs are going, so the account can say so if this computer disappears mid-run.
         """While this computer is paired, tell the control plane it is up and where to reach it."""
@@ -6567,15 +6580,10 @@ class UIServer(ThreadingHTTPServer):
                 machine = account.load_machine()
                 if machine is None:
                     return
-                try:
-                    snapshot = account.build_snapshot(root=self.root, live=self.live_job_runs())
-                    digest = hashlib.sha256(json.dumps(snapshot, sort_keys=True, default=str).encode()).hexdigest()
-                    if digest != sent:
-                        account.sync_snapshot(machine, snapshot=snapshot)
-                        sent = digest
-                        last_sync[0] = time.time()
-                except Exception:
-                    pass  # offline or a bad job file: the next check tries again
+                before = sent
+                sent = self.send_snapshot_if_changed(machine, sent)
+                if sent != before:
+                    last_sync[0] = time.time()
 
         threading.Thread(target=snapshot_sync, daemon=True, name="snapshot-sync").start()
         wake_event = threading.Event()

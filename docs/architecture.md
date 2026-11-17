@@ -12,7 +12,7 @@ The orchestrator operates as a standalone CLI tool that can be integrated into a
 2.  **Project Config (`orchestrator/project_config.py`)**: Manages project-specific settings, Xcode configurations, and worker definitions.
 3.  **Agent Loop (`orchestrator/scripts/agent_loop.py`)**: The core execution engine that sequences agent tasks.
 4.  **LLM Integration (`orchestrator/scripts/llm.py`)**: Provides a unified interface to multiple AI providers (Antigravity, Claude, OpenAI, Ollama).
-5.  **Job Management**: State is persisted in `.orchestrator/jobs/` as JSON files, allowing for asynchronous execution and recovery.
+5.  **Job Management**: State is persisted in `.orchestrator/jobs/` as JSON files, allowing for asynchronous execution and recovery. How a job stops, recovers, is backed up and moves between computers: [Job recovery and ownership](job-recovery.md).
 
 ## Multi-Agent Workflow
 

@@ -2,6 +2,7 @@
 attempts, Home shows each blocker once with its jobs, and once it's cleared they resume by themselves, at most once an hour."""
 from __future__ import annotations
 
+import json
 import os
 import sys
 import tempfile
@@ -121,6 +122,35 @@ class WiringTests(unittest.TestCase):
             (Path(tmp) / "j1" / "build.log").write_text("Compiling...\nerror: No space left on device\n")
             self.assertEqual(worker_run.blocker_in_logs({"job_id": "j1"})["kind"], "disk_full")
             self.assertIsNone(worker_run.blocker_in_logs({"job_id": "missing"}))
+
+    def test_pausing_on_a_blocker_records_it_and_starts_no_fix(self):
+        import worker_run
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "j1.json"
+            job = {"job_id": "j1", "title": "Grass", "status": "executing"}
+            with mock.patch.object(worker_run, "update_issue_status"), mock.patch.object(worker_run, "send_notifications") as notify:
+                worker_run.pause_on_blocker(path, job, blockers.detect("No space left on device"), 16)
+            saved = json.loads(path.read_text())
+        self.assertEqual((saved["status"], saved["blocker"]["kind"]), ("human-needed", "disk_full"))
+        self.assertNotIn("debug_phase", saved)
+        self.assertIn("The disk is full", notify.call_args[0][1])
+
+    def test_a_run_starting_moves_the_blocker_to_last_blocker(self):
+        import worker_run
+        job = {"job_id": "j1", "status": "human-needed", "moved_to": None,
+               "blocker": {"kind": "git_lock", "key": "git", "auto_resumed_at": 5.0}}
+        written = []
+        with mock.patch.object(worker_run, "read_json", return_value=job), mock.patch.object(worker_run, "remove_task_views"), \
+             mock.patch.object(worker_run, "write_json", side_effect=lambda p, j: written.append(dict(j))), \
+             mock.patch.object(worker_run, "prepare_git_branch", side_effect=RuntimeError("stop here")), \
+             mock.patch.object(worker_run, "update_issue_status"), mock.patch.object(worker_run, "send_notifications"):
+            try:
+                worker_run.execute_job(Path("j1.json"), resume=True)
+            except Exception:
+                pass
+        self.assertTrue(written)
+        self.assertNotIn("blocker", written[0])
+        self.assertEqual(written[0]["last_blocker"]["auto_resumed_at"], 5.0)
 
     def test_home_shows_blockers_and_resumes_cleared_jobs(self):
         app = (ROOT / "orchestrator" / "web" / "static" / "app.js").read_text(encoding="utf-8")

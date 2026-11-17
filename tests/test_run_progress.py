@@ -237,6 +237,7 @@ globalThis.ago = () => 'just now';
 globalThis.jobPill = () => '<span class="pill working">Running</span>';
 globalThis.jobKind = (j) => j.kind;
 globalThis.jiraChip = () => '';
+globalThis.featureChip = () => '';
 Date.now = () => 1000000;
 const run = {id: 'r1', job: 'job-1', running: true, started: 875, title: 'Build', idle: 0,
   progress: {label: 'Implementing changes', task: 'Add <login>', step: 2, total: 10}};

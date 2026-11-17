@@ -41,6 +41,10 @@ A ticket for one computer is useless on another. This is why the hosted app does
 
 While `orchestrator ui` runs on a paired computer, it reports every 60 seconds with its version and its `https://` address (from `--tunnel`, `--tunnel-token` with `--public-url`, or `--public-url`). If the account removed the computer, the reply says so and the computer forgets its pairing.
 
+## Jobs across computers
+
+With the heartbeat, each computer sends a snapshot of its recent jobs (`machine/sync`), carrying each job's state as its own job page shows it and the run working on it now. It is rebuilt every 10 seconds and sent when it changes, so other computers see a job pause, finish or move on within seconds. The snapshot is a read-only copy: the computer running a job is its only source of truth, and **Continue here** moves a job rather than copying it. See [Job recovery and ownership](job-recovery.md).
+
 ## Notifications
 
 Alerts reach a person's phones and browsers even with Orchestrator closed. They turn them on with **Notify me when done** in the hosted app (on iPhone and iPad, after adding it to the Home Screen: iOS only allows web push for home-screen apps).

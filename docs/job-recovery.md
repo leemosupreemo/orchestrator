@@ -1,0 +1,109 @@
+# Job recovery and ownership
+
+How a job stops, what it says when it does, how it gets going again, and how its state is kept safe and shared across your
+computers. The user-facing view is in the [user guide](user-guide.md); this page is for working on Orchestrator itself.
+
+## Where the truth lives
+
+| What | Where | Authoritative |
+|---|---|---|
+| The job record: status, plan, progress, errors, blocker | `.orchestrator/jobs/<id>.json` in the project, on the computer running it | **Yes, only there** |
+| The code | That computer's checkout, then the job's branch on the git host | The branch, once pushed |
+| What other computers see | The account's snapshot of each computer (`account.build_snapshot`) | No: a read-only copy |
+
+The control plane never decides anything about a job. Each job has one owner (the computer that runs it) and one writer.
+
+## How a run stops
+
+When the build or tests fail, or the worker raises, the job ends up in one of these states. `job_state` in
+`orchestrator/web/server.py` turns each into the label, reason and single next action the job page shows.
+
+| Cause | Recorded as | Job page | Next |
+|---|---|---|---|
+| Build or tests fail (the code) | `status: debugging` | Needs a fix | AI fix attempt (`debug_job.py`), up to 8, paused when stalled |
+| Something outside the code: a git lock, an expired sign-in, a missing tool, a full disk, Xcode or the simulator | `status: human-needed`, `blocker: {...}` (`orchestrator/blockers.py`) | The blocker's title, checked now | Steps to clear it, then **Try again**; resumes by itself once cleared |
+| The AI asks a question | `human_clarification_question` | Question for you | **Answer** |
+| The AI's "question" is really a blocker ("rerun with write access") | `human_clarification_question`, classified by `classify_clarification` | The AI couldn't continue (`orchestrator/blocker_fix.py`) | The one fix that applies, e.g. **Plan again** telling the planner it plans only |
+| The work passed its tests but the commit failed | `passed_uncommitted: {files}` | Tests passed, not committed | **Commit the work**: Resume commits those files without building again |
+| Another job is using the project folder | `waiting_for` (`folder_lock`) | Waiting | Starts by itself |
+| Continued on another computer | `moved_to` | Moved to <computer> | None here; Continue here on its copy brings it back |
+
+### Blockers
+
+`blockers.detect(text)` recognises a blocker in an error or a build or test log. Only high-confidence signatures count,
+so a failure in the code is never taken for one. Each blocker has a `scope` (`project` or `machine`) and a `key`, so
+Home's **Blocked** card shows it once with every job it holds up.
+
+- **Where they are recorded.** `worker_run.py` checks the run's `build.log`, `test.log` and `environment_failure.md` before
+  it would start a fix attempt (`blocker_in_logs`, `pause_on_blocker`), and checks the exception in its catch-all.
+- **Cleared or not.** `is_cleared` checks the blocker now rather than trusting when it was recorded: the lock file is
+  gone, the person signed in since (`job_problem.signed_in_at`), the tool is on `PATH`, 2 GB is free, the folder is
+  writable. Xcode and simulator problems can't be checked, so they wait for **Try again**.
+- **Resuming by itself.** Home posts to `/api/blockers` as it refreshes. The server resumes each job whose blocker is
+  cleared (`_resume_cleared_jobs`), at most once an hour per job and blocker (`auto_resumed_at`, carried over in
+  `last_blocker` when the run starts), so a blocker that comes straight back pauses the job again instead of looping.
+  **Clear the lock** (`/api/blockers/clear-lock`) removes a git lock only when it is over 10 seconds old and `lsof` shows
+  nothing holds it, then resumes the jobs it held without waiting for the hour.
+
+### Git locks
+
+A git command that is killed (often a tool's status check that timed out in a large repository) leaves
+`.git/index.lock` behind, and every git command after it fails with "exit status 128". The worker clears a stale lock and
+retries during checkout, pull, and the commit at the end (`_git_commit_step`). If the lock is still held after about
+30 seconds, the job stops with a plain explanation, not the raw git error.
+
+### After a success
+
+Reaching the success point clears `last_error`, so a finished job doesn't keep offering **Run a fix…** for an earlier
+attempt's error. The job page only shows that button while something is actually wrong.
+
+## Durability
+
+`backup_push` in `worker_run.py` pushes the job's own branch to `origin` after each finished task (`checkpoint_task`) and
+after the final commit. It never pushes the base branch, `main`, `master`, `develop` or `trunk`, or a job in manual branch
+mode. It's best effort: a failure is recorded as `backup_error` and tried again after the next task, and the job carries
+on. A computer that fails mid-job loses at most the task in progress.
+
+The job record itself is not yet backed up beyond the snapshot below.
+
+## Sharing state across computers
+
+- **What's sent.** `account.build_snapshot` lists each computer's recent jobs (20 per project, 10 projects). Each job carries
+  the job page's own `state` (label, reason, next step), its `active_run` (label and current step, from
+  `UIServer.live_job_runs`), its `blocker`, and where it was imported from.
+- **When.** A `snapshot-sync` thread rebuilds the snapshot every 10 seconds (`SNAPSHOT_CHECK_SECONDS`) and sends it when its
+  hash changed. The heartbeat still sends one every 5 minutes as a fallback, and archiving or importing sends one at once.
+- **How it's shown.** Home on another computer uses that `state` as is, with no action button, since a job can only be
+  acted on by the computer that owns it. The remote job page shows the state, the run's step, and the next step to take on
+  that computer.
+
+## One owner per job
+
+**Continue here** moves a job to the computer you're on:
+
+1. The new computer imports the job (`import_remote_job`) with `imported_from_machine` and `imported_at`, and fetches its
+   branch.
+2. When Home on the computer it left sees, in the new computer's snapshot, a copy of one of its jobs imported from it and
+   newer than its own, it posts `/api/jobs/<id>/moved`. `mark_job_moved` records `moved_to`.
+3. A moved job reads **Moved to <computer>** (group `done`, no action). `_launch_run` refuses every run on it except
+   delete and discard, and `execute_job` returns before touching git or a model.
+4. Continuing it back imports the other copy over the moved one, since that copy is newer. Comparing `imported_at` stops the
+   two computers marking each other as moved.
+
+Continue here is refused while the snapshot shows a run working on the job on the other computer.
+
+**Limits.** The "Moved to" mark is applied when Home loads on the computer the job left. Until then its copy is unmarked,
+but it doesn't run by itself.
+
+## Tests
+
+| Area | Tests |
+|---|---|
+| Blockers: detection, clearing, grouping, auto-resume, job page | `tests/test_blockers.py` |
+| Question blockers and their fixes | `tests/test_question_blockers.py` |
+| Tests passed, not committed; no fix offered for an old error | `tests/test_passed_uncommitted.py` |
+| Git lock recovery in the commit step | `tests/test_worker_run.py` (`test_committing_finished_work_clears_a_leftover_git_lock_and_retries`) |
+| Snapshot contents and sending on change | `tests/test_snapshot_sync.py` |
+| Backup push (in throwaway repositories) and job ownership | `tests/test_job_ownership.py` |
+
+Git-touching tests run only in temporary repositories with a local bare remote, never in this checkout.
