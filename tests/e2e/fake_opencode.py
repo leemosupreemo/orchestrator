@@ -13,6 +13,8 @@ directory) or a review. Behaviour switches come from $FAKE_LLM_BEHAVIOUR, a comm
   prd_gut        ...answer with a document whose pitch has been emptied (which must be refused)
   concerns_once  the first verification raises concerns (the orchestrator should accept the suggestions and carry on)
   asks_twice     a freestyle request: ask a question, then a follow-up once it's answered, then plan
+  planner_asks   the first plan comes with a question (a YOLO job answers it itself)
+  builder_asks   the first build stops with a question (a YOLO job answers it itself)
   hold_git_lock  the builder leaves a process holding the project's .git/index.lock (as a killed git command's lock
                  would be, but held), so the job's commit is blocked; its pid is written to lock-holder.pid beside the state
 """
@@ -142,6 +144,8 @@ def main() -> int:
     elif role == "planner":
         if "prose_first" in BEHAVIOUR and planner_calls == 1:
             print("I looked through the code and wrote my plan to plan.json. It adds the bonus in score().")
+        elif "planner_asks" in BEHAVIOUR and planner_calls == 1:
+            print("```json\n" + json.dumps({**plan(), "clarification_needed": "Should punctuation count towards the seven letters?"}) + "\n```")
         else:
             print("```json\n" + json.dumps(plan()) + "\n```")
     elif role == "verifier":
@@ -150,7 +154,10 @@ def main() -> int:
         else:
             print(json.dumps({"status": "approved", "comments": "Grounded in wordgame/scoring.py.", "suggested_additions": [], "risks_identified": []}))
     elif role == "builder":
+        builder_calls = sum(1 for c in state["calls"] if c["role"] == "builder")
         reply = build(prompt)
+        if "builder_asks" in BEHAVIOUR and builder_calls == 1:
+            reply = {**reply, "clarification_needed": "Which colour should the bonus badge be?"}
         if "hold_git_lock" in BEHAVIOUR and not (STATE.parent / "lock-holder.pid").exists():
             import subprocess
             lock = Path(".git/index.lock").resolve()

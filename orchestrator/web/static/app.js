@@ -5273,8 +5273,18 @@ function wirePreview(view) {
 
 // The planner's questions and the person's answers, oldest first, read as a conversation.
 function clarificationThread(history) {
-  return (history || []).map((h) => `<div class="clarify-msg clarify-ai"><span class="clarify-who">AI</span><p>${esc(h.question || "")}</p></div>
-    <div class="clarify-msg clarify-you"><span class="clarify-who">You</span><p>${esc(h.answer || "")}</p></div>`).join("");
+  // An answer Orchestrator gave for you in YOLO mode (common.autorespond) is labelled as such, never as yours.
+  return (history || []).map((h) => `<div class="clarify-msg clarify-ai"><span class="clarify-who">${h.asker === "builder" ? "Builder" : h.asker === "planner" ? "Planner" : "AI"}</span><p>${esc(h.question || "")}</p></div>
+    <div class="clarify-msg clarify-you${h.auto ? " clarify-auto" : ""}"><span class="clarify-who">${h.auto ? "🤖 Answered for you (YOLO)" : "You"}</span><p>${esc(h.answer || "")}</p></div>`).join("");
+}
+
+// YOLO answered the AI's questions for the person: said in the job's hero, with the count against the limit.
+function autoresponseNote(job) {
+  const auto = (job.clarification_history || []).filter((h) => h.auto);
+  if (!auto.length) return "";
+  return `<p class="job-hero-reason autoresponse-note"><span class="pill attention">🤖 Answered for you</span> YOLO answered
+    ${auto.length === 1 ? "1 of the AI's questions" : `${auto.length} of the AI's questions`} to keep it going (${auto.length} of 3; after that it waits for you).
+    <a href="#clarify-history" data-scroll-to="#clarify-history">See what it asked and what was answered</a>.</p>`;
 }
 
 // Sentry's device sign-in, inside the Connect Sentry dialog: open Sentry's approval page with the code filled in, show the
@@ -6015,6 +6025,7 @@ pages.job = async ([id]) => {
           <h2 class="job-hero-title">${(activeRun && !activeRun.waiting) || s.state.label === "Building" ? runningMark : ""}${esc(s.state.label || s.status)}</h2>
           <p class="job-hero-reason">${heroReason}</p>
           ${heroReasonDetails}
+          ${autoresponseNote(job)}
           ${s.state.steps?.length ? `<ol class="job-hero-reason blocker-steps">${s.state.steps.map((step) => `<li>${esc(step)}</li>`).join("")}</ol>` : ""}
           ${job.worktree ? `<p class="job-hero-reason muted">Builds alongside other jobs in its own checkout (<span class="mono">${esc(job.worktree)}</span>).</p>` : ""}
           ${(data.overlaps || []).length ? `<p class="job-hero-reason job-overlap">Overlaps with ${data.overlaps.map((o) => `<a href="#/jobs/${encodeURIComponent(o.id)}">${esc(o.title)}</a> (${esc(o.files.slice(0, 2).join(", "))}${o.count > 2 ? `, +${o.count - 2}` : ""})`).join("; ")}. Both change the same files: finish one first, or merge them, so neither takes the other's work.</p>` : ""}
@@ -6042,7 +6053,7 @@ pages.job = async ([id]) => {
             </div>
           </div>
         </form></div></section>`
-        : (job.clarification_history || []).length ? `<section class="card mb-16"><details class="fold"><summary class="card-h"><h2>Questions and answers <span class="count">${job.clarification_history.length}</span></h2></summary>
+        : (job.clarification_history || []).length ? `<section class="card mb-16" id="clarify-history"><details class="fold"${(job.clarification_history || []).some((h) => h.auto) ? " open" : ""}><summary class="card-h"><h2>Questions and answers <span class="count">${job.clarification_history.length}</span></h2></summary>
           <div class="card-b stack">${clarificationThread(job.clarification_history)}<div class="row gap-8"><button type="button" class="btn small ghost" data-clarify-export="copy">Copy chat</button><button type="button" class="btn small ghost" data-clarify-export="download"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-download"/></svg> Export chat</button></div></div></details></section>` : ""}
 
       ${(data.blockers || []).map((b) => `<div class="banner attention"><p><strong>This job can't start yet.</strong> ${esc(b.text)}${b.route ? ` <a class="btn small" href="${esc(b.route)}">${esc(b.fix)}</a>` : ""}</p></div>`).join("")}
@@ -12187,8 +12198,12 @@ async function loadAbilities(owner) {
       ${(onJobs.get(cli) || []).map((h) => `<p><span class="pill done">On jobs</span> <strong>${esc(h.label)}</strong>: <span class="muted">${esc(h.what)}</span></p>`).join("")}
       ${ABILITY_KINDS.map(([kind, title]) => { const list = items.filter((i) => i.kind === kind);
         return list.length ? `<p class="muted">${title}</p><p class="ability-list">${list.map((i) => `<code title="${esc(i.what || "")}">${kind === "subcommand" ? "" : "/"}${esc(i.name)}</code>`).join(" ")}</p>` : ""; }).join("")}</details>`;
+    // Tools that used up their allowance: every job skips them until they reset, then they're back (project_chat.record_out_of_usage)
+    const holds = (data.out_of_usage || []).map((h) => `<div class="notice warn"><strong>${esc(TOOL_NAMES[h.family] || h.family)} is out of
+      ${h.kind === "rate" ? "requests for now" : "usage"}</strong> until about ${esc(h.back_at)}. Jobs use your other tools until then
+      (a job it was working on carries on with the next one, from where it stopped) and go back to it after, by themselves.</div>`).join("");
     card.innerHTML = `<div class="card-h"><h2>What your AI tools can do</h2>${owner ? `<button type="button" class="btn small" id="ai-abilities-scan">Rescan</button>` : ""}</div>
-      <div class="card-b stack">
+      <div class="card-b stack">${holds}
         <p class="muted">Each tool's own slash commands, skills, plugins and commands, as it reports them on this computer. The reviews marked <strong>On jobs</strong> are in a job's More menu. ${note || (data.at ? `Scanned ${esc(new Date(data.at * 1000).toLocaleString())}.` : "")}</p>
         ${tools.map(tool).join("") || `<p class="muted">Nothing found yet.</p>`}</div>`;
     $("#ai-abilities-scan")?.addEventListener("click", () => scan());

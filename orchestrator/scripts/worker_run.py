@@ -46,6 +46,8 @@ from common import (
     print_phase,
     read_json,
     record_clarification,
+    autorespond,
+    can_autorespond,
     run,
     run_shell,
     slugify,
@@ -1017,6 +1019,14 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
                         build_ok, test_ok, _summary_path, task_output = unpack_builder_result(run_builder(temp_job_path, resume=False))
                         break
                     except BuilderClarificationNeeded as clarification:
+                        if can_autorespond(job):  # YOLO: nobody is waiting to answer, so answer for them and keep going
+                            answer = autorespond(job, clarification.question, "builder")
+                            record_clarification(task_job, clarification.question, answer)
+                            task_job["clarification_history"][-1].update(auto=True, asker="builder")
+                            job["status"] = task_job["status"] = "executing"
+                            write_json(job_path, job)
+                            write_json(temp_job_path, task_job)
+                            continue
                         mark_human_needed(job_path, job, clarification.question, task_index=i)
                         update_issue_status(issue_number, "status:human-needed", ["status:executing"])
                         if interactive() and not job.get("headless", False) and not is_yolo:
@@ -1156,6 +1166,13 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
                     build_ok, test_ok, _summary_path, task_output = unpack_builder_result(run_builder(job_path, resume=resume))
                     break
                 except BuilderClarificationNeeded as clarification:
+                    if can_autorespond(job):  # YOLO: nobody is waiting to answer, so answer for them and keep going
+                        job = read_json(job_path)  # the builder marked it as waiting on a question
+                        autorespond(job, clarification.question, "builder")
+                        job["status"] = "executing"
+                        write_json(job_path, job)
+                        resume = False
+                        continue
                     mark_human_needed(job_path, job, clarification.question)
                     update_issue_status(issue_number, "status:human-needed", ["status:executing"])
                     if interactive() and not job.get("headless", False) and not is_yolo:

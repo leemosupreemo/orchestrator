@@ -16,6 +16,7 @@ from pathlib import Path
 from common import CONFIG_DIR, ROOT, append_log, ProgressIndicator, colorize_diff_line, LoopTroubleDetector
 from model_registry import get_model, ModelTier, get_all_models, preferred_cli, summarize_cli_error, model_usable, model_substitute
 from model_router import get_prioritized_models, ModelRole
+from orchestrator import usage_limits
 
 class LLMTimeoutError(RuntimeError):
     """Raised when an LLM call exceeds its timeout."""
@@ -172,6 +173,19 @@ def is_unusable_model_error(error_msg: str) -> tuple[bool, bool]:
     return False, False
 
 
+HANDOFF = ("\n\n### HANDOFF ###\nAnother model ({model}) was doing this task and stopped partway because it ran out of its usage "
+           "limit. Anything it changed is already in the files. Start by reading `git status` and `git diff`, keep what is right, "
+           "and finish the task from where it stopped rather than starting over.\n")
+
+
+def _out_of_usage(model_id: str) -> dict | None:
+    try:
+        from orchestrator.project_chat import out_of_usage
+        return out_of_usage(model_id)
+    except Exception:
+        return None
+
+
 JSON_REMINDER = (
     "\n\n### FORMAT CORRECTION ###\n"
     "Your previous reply was not a single JSON object. Reply again with ONLY the JSON object, as plain text in your message. "
@@ -216,10 +230,15 @@ def run_llm(model: str, prompt: str, cwd: Path | None = None, timeout: int = 300
     last_error = None
     actual_session_id = session_id or str(uuid.uuid4())
 
+    handoff = ""  # set when a model ran out of usage partway: the next one is told the work is already started
     for idx, current_model in enumerate(attempts):
         fallback_note = "Attempting fallback..." if idx + 1 < len(attempts) else "No fallback models remain."
+        if idx and _out_of_usage(current_model):  # its tool ran out a moment ago, in this same call
+            print(f"⏭️  Skipping {current_model}: {_out_of_usage(current_model).get('reason')}.")
+            continue
         try:
-            raw_output = _run_llm_single(current_model, prompt, cwd, timeout, role=role, session_id=session_id, images=images, on_chunk=on_chunk, **protection, **({"web": True} if web else {}), **({"raw": True} if raw else {}))
+            attempt_prompt = prompt + handoff if handoff and role in (ModelRole.BUILDER, ModelRole.DEBUGGER) else prompt
+            raw_output = _run_llm_single(current_model, attempt_prompt, cwd, timeout, role=role, session_id=session_id, images=images, on_chunk=on_chunk, **protection, **({"web": True} if web else {}), **({"raw": True} if raw else {}))
             
             # Validation: if role expects JSON, verify we have it but DO NOT overwrite raw_output
             if role in [ModelRole.PLANNER, ModelRole.BUILDER, ModelRole.DEBUGGER, ModelRole.VERIFIER]:
@@ -266,6 +285,17 @@ def run_llm(model: str, prompt: str, cwd: Path | None = None, timeout: int = 300
             err_str = str(exc)
             summary = summarize_cli_error(err_str)
             unusable, key_rejected = is_unusable_model_error(err_str)
+            if not unusable and usage_limits.detect(err_str):
+                # Its allowance is used up: left out (every job, this tool's whole family) until it resets, then back by itself.
+                try:
+                    from orchestrator.project_chat import record_out_of_usage
+                    hold = record_out_of_usage(current_model, err_str)
+                    print(f"⏸️  {current_model} is {hold['reason']}. It's left out until then and used again after. {fallback_note}")
+                except Exception:
+                    print(f"⏸️  {current_model} ran out of usage. {fallback_note}")
+                handoff = HANDOFF.format(model=current_model)
+                last_error = exc
+                continue
             if unusable:
                 try:
                     from orchestrator.project_chat import record_model_failure

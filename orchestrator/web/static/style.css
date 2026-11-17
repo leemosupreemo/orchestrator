@@ -990,6 +990,7 @@ details.raw pre { margin: 0; padding: 0 var(--space-4) var(--space-4); overflow:
 .clarify-msg p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .clarify-ai { align-self: flex-start; background: var(--panel-2); border: 1px solid var(--border); }
 .clarify-you { align-self: flex-end; background: var(--accent-soft); border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border)); }
+.clarify-auto { background: var(--warn-soft); border-style: dashed; } /* answered by YOLO for the person, not by them */
 .clarify-who { font-size: var(--type-tag); font-weight: var(--weight-bold); color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
 .clarify-reply { display: flex; flex-direction: column; gap: var(--space-2); }
 .clarify-input-row { display: flex; align-items: flex-end; gap: var(--space-2); width: 100%; }

@@ -185,6 +185,58 @@ def record_check(model: str, ok: bool, reason: str = "", now: float | None = Non
             _CHECKS_MEMO = None
 
 
+def _family_of(model_id: str) -> str:
+    try:
+        from orchestrator.scripts.model_registry import get_model
+        m = get_model(model_id)
+        return str(m.family) if m and m.family else ""
+    except Exception:
+        return ""
+
+
+def record_out_of_usage(model: str, message: str, now: float | None = None) -> dict[str, Any]:
+    """`model` used up its tool's allowance (usage_limits.detect): every model of that tool (its family; a Claude or Codex
+    limit is the whole account's) is left out until the time the message gives, then back in rotation by itself.
+    Returns the hold: {family, model, kind, until, reason}."""
+    from orchestrator import usage_limits
+    global _CHECKS_MEMO
+    now = now or time.time()
+    kind = usage_limits.detect(message) or "usage"
+    family = _family_of(model) or model
+    hold = {"ok": False, "family": family, "model": model, "kind": kind, "until": usage_limits.until(message, now), "at": now,
+            "reason": f"out of {'usage' if kind == 'usage' else 'requests for now'} until {usage_limits.when(usage_limits.until(message, now))}"}
+    with _CHECKS_LOCK:
+        path = checks_path()
+        data = _read_checks_unlocked(path)
+        data[f"limit:{family}"] = hold
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".checks-")
+        with os.fdopen(fd, "w") as f:
+            json.dump(data, f, indent=1)
+        os.replace(tmp, path)
+        try:
+            _CHECKS_MEMO = (path, path.stat().st_mtime, data)
+        except OSError:
+            _CHECKS_MEMO = None
+    return hold
+
+
+def usage_holds(checks: dict[str, dict[str, Any]] | None = None, now: float | None = None) -> list[dict[str, Any]]:
+    """The tools out of usage right now, soonest back first: [{family, model, kind, until, reason, at}]."""
+    checks = load_checks() if checks is None else checks
+    now = now or time.time()
+    return sorted((v for k, v in checks.items() if k.startswith("limit:") and float(v.get("until") or 0) > now),
+                  key=lambda v: float(v.get("until") or 0))
+
+
+def out_of_usage(model_id: str, checks: dict[str, dict[str, Any]] | None = None, now: float | None = None) -> dict[str, Any] | None:
+    """The hold that leaves `model_id` out now (its family used up its allowance), or None."""
+    checks = load_checks() if checks is None else checks
+    family = _family_of(model_id) or model_id
+    hold = checks.get(f"limit:{family}")
+    return hold if isinstance(hold, dict) and float(hold.get("until") or 0) > (now or time.time()) else None
+
+
 KEY_REJECTED = "its API key is rejected (check AI tools)"
 MODEL_UNAVAILABLE = "it isn't available from this provider"
 SHARED_KEY_EXEMPT = ("opencode", "ollama")  # these providers have models that need no key of their own
@@ -256,6 +308,8 @@ def is_model_blocked(model_id: str, checks: dict[str, dict[str, Any]] | None = N
         return False
     checks = load_checks() if checks is None else checks
     now = now or time.time()
+    if out_of_usage(model_id, checks, now):  # its tool used up its allowance: left out until it resets
+        return True
     provider = provider_of(model_id)
     if provider and provider in rejected_providers(checks, now):
         return True
@@ -329,6 +383,8 @@ def failure_reason(text: str) -> str:
 
 
 def _why_skipped(model_id: str, checks: dict[str, dict[str, Any]], rejected: set[str]) -> str:
+    if hold := out_of_usage(model_id, checks):
+        return str(hold.get("reason") or "out of usage")
     own = checks.get(model_id) or {}
     if not own.get("ok") and own.get("reason"):
         return own["reason"]
@@ -343,7 +399,8 @@ def chat_tiers(models: Iterable[Any], checks: dict[str, dict[str, Any]] | None =
     now = now or time.time()
     # A rejected key is the provider's, not one model's: every model of that provider fails with it until the key is replaced.
     rejected = set(rejected_providers(checks, now))
-    failed = lambda m: ((c := checks.get(m.id)) and not c.get("ok") and now - float(c.get("at") or 0) < FAIL_HOLD) or provider_of(m.id) in rejected
+    failed = lambda m: ((c := checks.get(m.id)) and not c.get("ok") and now - float(c.get("at") or 0) < FAIL_HOLD) or provider_of(m.id) in rejected \
+        or bool(out_of_usage(m.id, checks, now))
     answered = lambda m: (c := checks.get(m.id)) and c.get("ok") and now - float(c.get("at") or 0) < CHECK_FRESH
     groups: dict[str, list[Any]] = {t: [] for t in TIERS}
     for m in models:

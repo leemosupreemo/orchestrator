@@ -28,6 +28,8 @@ from common import (
     flush_stdin,
     StatusBar,
     format_clarification_history,
+    auto_answer,
+    can_autorespond,
 )
 from llm import run_llm, SUPPORTED_MODELS, DEFAULT_FALLBACKS, extract_json_block
 from model_router import AUTO, ModelRole, auto_assign_roles, get_prioritized_models, profile_job
@@ -908,18 +910,27 @@ def main(args_override: list[str] | None = None) -> None:
                 print(f"\033[1;96mQuestion:\033[0m {clarification}")
                 print("!"*60 + "\n")
 
-                # Inline interactive prompt when running in an interactive terminal
-                if interactive() and not getattr(args, "non_interactive", False) and not args.yolo:
-                    print("\033[97m💡 Answer now to revise the plan immediately, or press Enter to pause.\033[0m")
-                    try:
-                        user_ans = input("\033[1;96mYour Answer (or Enter to pause):\033[0m ").strip()
-                    except (EOFError, KeyboardInterrupt):
-                        user_ans = ""
+                # Inline interactive prompt when running in an interactive terminal; in YOLO mode nobody is waiting, so
+                # Orchestrator answers for the person (common.autorespond), up to MAX_AUTO_RESPONSES times a job.
+                ask_person = interactive() and not getattr(args, "non_interactive", False) and not args.yolo
+                yolo_on = bool(args.yolo or (existing_job or {}).get("yolo") or (existing_job or {}).get("is_yolo"))
+                auto = not ask_person and can_autorespond({"yolo": yolo_on, "clarification_history": clarification_history})
+                if ask_person or auto:
+                    if auto:
+                        user_ans = auto_answer(clarification)
+                        print(f"\n🤖 YOLO autoresponse: the planner asked \"{clarification[:200]}\". Answered: \"{user_ans}\"\n", flush=True)
+                    else:
+                        print("\033[97m💡 Answer now to revise the plan immediately, or press Enter to pause.\033[0m")
+                        try:
+                            user_ans = input("\033[1;96mYour Answer (or Enter to pause):\033[0m ").strip()
+                        except (EOFError, KeyboardInterrupt):
+                            user_ans = ""
                     if user_ans:
                         clarification_history.append({
                             "question": clarification,
                             "answer": user_ans,
-                            "timestamp": now_iso()
+                            "timestamp": now_iso(),
+                            **({"auto": True, "asker": "planner"} if auto else {}),
                         })
                         print(f"\n      - Re-planning with your answer...", flush=True)
                         clarification_feedback = f"### USER CLARIFICATION ###\nQuestion: {clarification}\nAnswer: {user_ans}\n"

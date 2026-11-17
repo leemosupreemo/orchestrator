@@ -217,6 +217,43 @@ def now_iso() -> str:
     return datetime.now().isoformat()
 
 
+# YOLO autoresponses: in a YOLO job nobody is waiting to answer, so when the planner or builder stops to ask, Orchestrator
+# answers for the person (decide from the requirements, the architecture and the code, note the assumption, carry on), up to
+# MAX_AUTO_RESPONSES times a job; after that the job pauses for a person, so a model that keeps asking can't loop. Each one is
+# kept in the job's clarification history marked "auto", and the job page lists them.
+MAX_AUTO_RESPONSES = 3
+AUTO_ANSWER = ("Nobody is available to answer (this job runs in YOLO mode), so decide for yourself. Choose the option that best "
+               "fits the product requirements, the architecture and the existing code; prefer the smallest change that meets the "
+               "goal; write the assumption you made in your summary; and carry on until the task is finished.")
+AUTO_CONTINUE = "Yes, carry on and finish the task. Nobody is available to answer (this job runs in YOLO mode)."
+
+
+def is_yolo_job(job: dict[str, Any]) -> bool:
+    return bool(job.get("yolo") or job.get("is_yolo"))
+
+
+def auto_answer(question: str) -> str:
+    """The answer Orchestrator gives a YOLO job's question: "carry on" to a should-I-continue, otherwise decide and note it."""
+    low = str(question or "").lower()
+    asks_to_continue = re.search(r"\b(?:should i|shall i|do you want me to|would you like me to|may i|can i)\s+(?:continue|proceed|go ahead|keep going|carry on|finish)", low)
+    return AUTO_CONTINUE if asks_to_continue else AUTO_ANSWER
+
+
+def can_autorespond(job: dict[str, Any]) -> bool:
+    """A YOLO job that hasn't used up its autoresponses."""
+    return is_yolo_job(job) and len([e for e in job.get("clarification_history") or [] if isinstance(e, dict) and e.get("auto")]) < MAX_AUTO_RESPONSES
+
+
+def autorespond(job: dict[str, Any], question: str, asker: str) -> str:
+    """Answers a YOLO job's question for the person, records it (marked auto, with who asked) and returns the answer."""
+    answer = auto_answer(question)
+    record_clarification(job, question, answer)
+    job["clarification_history"][-1].update(auto=True, asker=asker)
+    print(f"\n🤖 YOLO autoresponse ({len([e for e in job['clarification_history'] if e.get('auto')])} of {MAX_AUTO_RESPONSES}): "
+          f"the {asker} asked \"{str(question)[:200]}\". Answered: \"{answer}\"\n", flush=True)
+    return answer
+
+
 def record_clarification(job: dict[str, Any], question: str, answer: str) -> dict[str, Any]:
     """Records a clarification Q&A entry into the job's persistent history and clears the active question."""
     if not isinstance(job, dict):

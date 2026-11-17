@@ -530,6 +530,42 @@ class ParallelJobTests(unittest.TestCase):
         self.assertIn("LONG_WORD_BONUS", (self.project.root / "wordgame" / "scoring.py").read_text())
         self.assertEqual(self.project.run_tests().returncode, 0)
 
+
+class YoloAutorespondTests(unittest.TestCase):
+    """A YOLO job whose planner and builder each stop to ask a question finishes by itself: Orchestrator answers for the
+    person (common.autorespond), and each answer is kept marked as automatic."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.project = p = DummyProject([FREE]).create().fake_models("planner_asks,builder_asks")
+        cls.plan_run = p.orchestrator("script", "new_job.py", "feature", "--summary", SUMMARY, "--branch-mode", "new", "--no-dispatch", "--yolo",
+                                      "--planner", FREE, "--builder", FREE, "--reviewer", FREE, "--allowed-models", FREE, "--allowed-machines", "local")
+        cls.planned = p.job()
+        cls.build_run = action(p, "approve")
+        cls.built = p.job()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.project.cleanup()
+
+    def explain(self):
+        return "\n".join(re.sub(chr(27) + r"\[[0-9;?]*[a-zA-Z]", "", r.stdout)[-2500:] + r.stderr[-600:] for r in (self.plan_run, self.build_run))
+
+    def test_the_planners_question_is_answered_and_planning_carries_on(self):
+        self.assertTrue(self.planned.get("plan", {}).get("tasks"), self.explain())
+        self.assertNotEqual(self.planned.get("status"), "human-needed", self.explain())
+        self.assertIn("YOLO autoresponse: the planner asked", self.plan_run.stdout)
+
+    def test_the_builders_question_is_answered_and_the_job_finishes(self):
+        self.assertEqual(self.built.get("status"), "review-needed", self.explain())
+        self.assertIn("YOLO autoresponse (", self.build_run.stdout)
+        self.assertEqual(len([c for c in self.project.llm_calls() if c["role"] == "builder"]), 2)  # asked once, then built
+
+    def test_each_answer_is_kept_marked_as_automatic(self):
+        auto = [(h.get("asker"), h["question"]) for h in self.built.get("clarification_history", []) if h.get("auto")]
+        self.assertEqual(auto, [("planner", "Should punctuation count towards the seven letters?"),
+                                ("builder", "Which colour should the bonus badge be?")], self.explain())
+
 class TaskCheckpointTests(unittest.TestCase):
     """Each finished task is its own commit, so the latest one can be undone."""
 

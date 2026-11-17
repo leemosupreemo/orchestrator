@@ -8387,8 +8387,11 @@ class UIHandler(BaseHTTPRequestHandler):
                 installed = [p["cli"] for p in ai_providers.PROVIDERS if shutil.which(p["cli"], path=search)]
                 data = tool_abilities.scan(root, runtime, installed)
             ready = set(ready_llm_providers({}))
+            from orchestrator import usage_limits
+            from orchestrator.project_chat import usage_holds  # tools out of usage: skipped by every job until they reset
+            holds = [{**h, "back_at": usage_limits.when(float(h["until"]))} for h in usage_holds()]
             self._json({**data, "stale": tool_abilities.is_stale(data), "highlights": tool_abilities.highlights(data, ready),
-                        "checked": tool_abilities.CHECKED})
+                        "checked": tool_abilities.CHECKED, "out_of_usage": holds})
         elif parts == ["blockers"] or parts == ["blockers", "clear-lock"]:
             # What holds paused jobs up (blockers.py), once per blocker. POST also resumes the jobs whose blocker is cleared
             # (Home posts it as it refreshes); clear-lock first removes a leftover git lock that nothing has open.

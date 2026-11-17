@@ -83,6 +83,20 @@ Guards, so jobs never step on each other's work:
 | A job on the current branch, or with branch switching off | `parallel_jobs.decide` | Waits for the project folder (git can't check out one branch twice) |
 | Another open job's uncommitted work is in the folder | `blockers.other_jobs_work`, checked before the worker touches git | Pauses as blocked, "“…” has uncommitted work here"; starts by itself once that work is committed |
 
+## Keeping the AI going
+
+- **YOLO autoresponses** (`common.autorespond`, `MAX_AUTO_RESPONSES` = 3). When a YOLO job's planner (`new_job.py`) or
+  builder (`worker_run.py`, for one task and for each task of a plan) asks a question, Orchestrator answers it
+  (`AUTO_ANSWER`, or `AUTO_CONTINUE` for a should-I-continue) and carries on. Each answer goes into
+  `clarification_history` with `auto: true` and who asked; past the limit the job pauses as before. The job page labels
+  them "Answered for you (YOLO)" and says how many in the hero.
+- **Out of usage** (`usage_limits.py`, `project_chat.record_out_of_usage`). A usage-limit, quota, credits or rate-limit
+  error sets the model's whole family aside (`limit:<family>` in `model_checks.json`) until the reset time read from the
+  message, or an hour (five minutes for a rate limit). `is_model_blocked` leaves it out of every job's choices until then,
+  so it returns to rotation by itself. Within the same call `run_llm` skips that family's other models and gives the next
+  builder or fix attempt a `HANDOFF` note: the work is started, read `git status`/`git diff` and finish it. Manage AI
+  tools lists the holds (`usage_holds`).
+
 ## Durability
 
 `backup_push` in `worker_run.py` pushes the job's own branch to `origin` after each finished task (`checkpoint_task`) and
@@ -140,6 +154,8 @@ moved job. A computer that's offline learns of a move at its next heartbeat.
 | Snapshot contents and sending on change | `tests/test_snapshot_sync.py` |
 | Backup push (in throwaway repositories), job ownership, moves from the heartbeat, record restore | `tests/test_job_ownership.py` |
 | Commit the work, end to end in a throwaway repository | `tests/test_passed_uncommitted.py` (`CommitOnlyResumeTests`) |
+| Out-of-usage holds, switching with a handoff, YOLO autoresponses | `tests/test_autorespond_and_usage.py` |
+| A YOLO job whose planner and builder ask, finishing by itself | `tests/e2e/test_pipeline_offline.py` (`YoloAutorespondTests`) |
 | A job blocked mid-run by a held git lock, cleared, resumed by the server, committed and opened as a PR, inside the full offline pipeline | `tests/e2e/test_pipeline_offline.py` (`BlockedJobRecoveryTests`) |
 | Moves recorded by the control plane | `tests/test_control_plane.py` (`MovedJobTests`) |
 | Jobs at once: deciding, worktrees, branch setup, removal, the setting | `tests/test_parallel_jobs.py` |
