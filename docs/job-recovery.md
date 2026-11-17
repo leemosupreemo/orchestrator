@@ -24,7 +24,7 @@ When the build or tests fail, or the worker raises, the job ends up in one of th
 | Something outside the code: a git lock, an expired sign-in, a missing tool, a full disk, Xcode or the simulator | `status: human-needed`, `blocker: {...}` (`orchestrator/blockers.py`) | The blocker's title, checked now | Steps to clear it, then **Try again**; resumes by itself once cleared |
 | The AI asks a question | `human_clarification_question` | Question for you | **Answer** |
 | The AI's "question" is really a blocker ("rerun with write access") | `human_clarification_question`, classified by `classify_clarification` | The AI couldn't continue (`orchestrator/blocker_fix.py`) | The one fix that applies, e.g. **Plan again** telling the planner it plans only |
-| The work passed its tests but the commit failed | `passed_uncommitted: {files}` | Tests passed, not committed | **Commit the work**: Resume commits those files without building again |
+| The work passed its tests but the commit failed | `passed_uncommitted: {files}` | Tests passed, not committed | **Commit the work**: Resume commits those files without building again, and without checking anything out (a forced checkout would throw the uncommitted work away) |
 | Another job is using the project folder | `waiting_for` (`folder_lock`) | Waiting | Starts by itself |
 | Continued on another computer | `moved_to` | Moved to <computer> | None here; Continue here on its copy brings it back |
 
@@ -115,6 +115,7 @@ moved job. A computer that's offline learns of a move at its next heartbeat.
 | Snapshot contents and sending on change | `tests/test_snapshot_sync.py` |
 | Backup push (in throwaway repositories), job ownership, moves from the heartbeat, record restore | `tests/test_job_ownership.py` |
 | Commit the work, end to end in a throwaway repository | `tests/test_passed_uncommitted.py` (`CommitOnlyResumeTests`) |
+| A job blocked mid-run by a held git lock, cleared, resumed by the server, committed and opened as a PR, inside the full offline pipeline | `tests/e2e/test_pipeline_offline.py` (`BlockedJobRecoveryTests`) |
 | Moves recorded by the control plane | `tests/test_control_plane.py` (`MovedJobTests`) |
 
 Git-touching tests run only in temporary repositories with a local bare remote, never in this checkout.

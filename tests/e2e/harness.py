@@ -153,7 +153,7 @@ class DummyProject:
     def env(self) -> dict[str, str]:
         env = dict(os.environ)
         env.update({"PATH": f"{self.bin}{os.pathsep}{env['PATH']}", "FAKE_GH_STATE": str(self.state_file), "ORCHESTRATOR_PROJECT_ROOT": str(self.root),
-                    "ORCHESTRATOR_USER_STATE_DIR": str(self.user_state), "ORCHESTRATOR_DISABLE_NOTIFICATIONS": "1", "ORCHESTRATOR_MIN_DISK_GB": "1", "PYTHONPATH": str(REPO),
+                    "ORCHESTRATOR_USER_STATE_DIR": str(self.user_state), "ORCHESTRATOR_DISABLE_NOTIFICATIONS": "1", "ORCHESTRATOR_MIN_DISK_GB": "1", "ORCHESTRATOR_GIT_LOCK_RETRY_SECONDS": "1", "PYTHONPATH": str(REPO),
                     "GIT_AUTHOR_NAME": "E2E", "GIT_AUTHOR_EMAIL": "e2e@example.com", "GIT_COMMITTER_NAME": "E2E", "GIT_COMMITTER_EMAIL": "e2e@example.com"})
         if getattr(self, "llm_state", None):
             env.update({"FAKE_LLM_STATE": str(self.llm_state), "FAKE_LLM_BEHAVIOUR": self.llm_behaviour})

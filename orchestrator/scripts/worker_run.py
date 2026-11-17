@@ -350,6 +350,9 @@ def _is_index_lock_error(detail: str) -> bool:
     return "index.lock" in detail or "Another git process seems to be running" in detail
 
 
+GIT_LOCK_RETRY_SECONDS = float(os.environ.get("ORCHESTRATOR_GIT_LOCK_RETRY_SECONDS") or 10)  # between commit retries on a held lock
+
+
 def _git_commit_step(cmd: str) -> None:
     """One git command committing the job's finished work. A leftover .git/index.lock (a git command that was killed, often a
     tool's status check that timed out) is cleared and the command retried, instead of failing a job whose tests passed."""
@@ -370,7 +373,7 @@ def _git_commit_step(cmd: str) -> None:
                 detail = f"{res.stderr or ''}\n{res.stdout or ''}"
                 if not _is_index_lock_error(detail):
                     break
-            time.sleep(10)
+            time.sleep(GIT_LOCK_RETRY_SECONDS)
         if _is_index_lock_error(detail):
             raise RuntimeError(
                 "The work is done and its tests passed, but committing it failed: another git command is holding this project's "
@@ -882,7 +885,12 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
     try:
         print_phase("git_prep")
         status_bar.render()
-        branch, base_branch = prepare_git_branch(job, issue_number)
+        if resume and isinstance(job.get("passed_uncommitted"), dict):
+            # Only the commit is left, and the finished work is uncommitted in this checkout: preparing the branch (a forced
+            # checkout and pull) would throw it away. Stay where it is, on the job's branch.
+            branch, base_branch = commit_pending_branch(job)
+        else:
+            branch, base_branch = prepare_git_branch(job, issue_number)
 
         print_phase("status_update")
         status_bar.render()
@@ -930,9 +938,16 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
         pre_state = get_repo_state()
         pre_hashes = dirty_file_hashes(ROOT)
         touched_this_run: set[str] = set()  # files the plan's tasks changed in this run, committed or not
-        committing_only = False  # set below when only the commit is left to do
+        # Done and tested last time, only the commit failed (a git lock): commit it now instead of building again, whether
+        # the job is one task or a plan of several.
+        committing_only = bool(resume and isinstance(job.get("passed_uncommitted"), dict))
+        if committing_only:
+            print("      - The work was done and its tests passed last time; only saving it to git failed. Committing it now...")
+            build_ok, test_ok = True, True
 
-        if job.get("type") == "feature-plan" and job.get("approved"):
+        if committing_only:
+            pass
+        elif job.get("type") == "feature-plan" and job.get("approved"):
             tasks = job.get("plan", {}).get("tasks", [])
             completed = job.get("completed_task_indices", [])
             all_ok = True
@@ -1114,12 +1129,7 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
             test_ok = all_ok
         else:
             # Original single-task execution
-            # Done and tested last time, only the commit failed (a git lock): commit it now instead of running the builder again.
-            committing_only = bool(resume and isinstance(job.get("passed_uncommitted"), dict))
-            if committing_only:
-                print("      - The work was done and its tests passed last time; only saving it to git failed. Committing it now...")
-                build_ok, test_ok = True, True
-            while not committing_only:
+            while True:
                 try:
                     build_ok, test_ok, _summary_path, task_output = unpack_builder_result(run_builder(job_path, resume=resume))
                     break
@@ -1607,6 +1617,19 @@ def backup_push(job: dict) -> bool:
     job["backed_up_at"] = now_iso()
     print(f"      - Backed up {branch} to origin.")
     return True
+
+
+def commit_pending_branch(job: dict) -> Tuple[str, str]:
+    """The branch to commit finished work on without checking anything out: the one this checkout is on, which must be the
+    job's own branch (else the work isn't where the job thinks, and nothing is touched)."""
+    base_branch = job.get("base_branch") or os.environ.get("BASE_BRANCH", PROJECT_CONFIG.base_branch)
+    current = current_git_branch()
+    expected = str(job.get("branch") or "").strip()
+    if expected and current != expected:
+        raise RuntimeError(f"The finished work waits to be committed on '{expected}', but this project is on '{current}'. "
+                           f"Switch back to '{expected}' (your uncommitted changes go with you), then press Commit the work.")
+    print(f"\n[1/4] Committing finished work on {current} (no checkout, so the uncommitted work stays).")
+    return current or expected, base_branch
 
 
 def checkpoint_task(job: dict, index: int, total: int, title: str, files: list[str]) -> None:

@@ -382,6 +382,94 @@ class ReadOnlyModelCallTests(unittest.TestCase):
         self.assertEqual(project.git("status", "--porcelain"), "")
 
 
+
+class BlockedJobRecoveryTests(unittest.TestCase):
+    """A job blocked by something outside the code, then cleared, carries on by itself and still lands.
+
+    While the builder works, a process takes the project's git lock and keeps it. The work is built and its tests pass, but it
+    can't be committed: the job must pause as blocked (not start AI fix attempts), say what blocks it, and keep the finished
+    work. Once the lock is let go and cleared, the server's own resume (what runs with no browser open) commits that work
+    without building it again, and the job goes on to its pull request."""
+
+    @classmethod
+    def setUpClass(cls):
+        import os
+        import signal
+        import subprocess
+        from types import SimpleNamespace
+        from orchestrator import blockers
+        from orchestrator.web import server as ui
+        cls.project = p = DummyProject([FREE]).create().fake_models("hold_git_lock")
+        plan_job(p)
+        cls.blocked_run = action(p, "approve")  # approving the plan runs the build, its tests and the commit
+        cls.blocked = p.job()
+        cls.state = ui.job_state(cls.blocked, p.root)
+        lock = p.root / ".git" / "index.lock"
+        cls.cleared_before = blockers.is_cleared(cls.blocked.get("blocker") or {}, p.root)
+        holder = p.llm_state.parent / "lock-holder.pid"
+        if holder.exists():  # the other git command finishes and lets go; its lock file stays behind, as they do
+            try:
+                os.kill(int(holder.read_text()), signal.SIGTERM)
+            except (OSError, ValueError):
+                pass
+        old = lock.stat().st_mtime - 60 if lock.exists() else 0
+        if lock.exists():
+            os.utime(lock, (old, old))
+        cls.lock_cleared = blockers.clear_git_lock(p.root)
+        # The server's notifier loop: the same method, with its runs started as the server would, here run to the end.
+        cls.resume_runs = []
+
+        def start(key, title, argv, root, env, logs, **kw):
+            cls.resume_runs.append(subprocess.run(argv, cwd=root, env=p.env(), capture_output=True, text=True, timeout=600))
+            return SimpleNamespace()
+
+        server = SimpleNamespace(sessions=SimpleNamespace(running_job_ids=lambda: set(), start=start), _publishing_jobs=set(),
+                                 child_env=lambda: {}, audit=SimpleNamespace(record=lambda *a, **k: None))
+        cls.resumed = ui.UIServer.resume_cleared_jobs(server, p.root)
+        cls.finished = p.job()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.project.cleanup()
+
+    def explain(self):
+        runs = [self.blocked_run] + [r for r in self.resume_runs]
+        return "\n".join(re.sub(chr(27) + r"\[[0-9;?]*[a-zA-Z]", "", r.stdout)[-2000:] + r.stderr[-800:] for r in runs)
+
+    def test_the_job_pauses_as_blocked_instead_of_starting_fix_attempts(self):
+        self.assertEqual(self.blocked["status"], "human-needed", self.explain())
+        self.assertEqual((self.blocked.get("blocker") or {}).get("kind"), "git_lock", self.explain())
+        self.assertNotIn("debug_phase", self.blocked)
+        self.assertEqual(len([c for c in self.project.llm_calls() if c["role"] == "debugger"]), 0)
+
+    def test_it_says_what_blocks_it_and_keeps_the_finished_work(self):
+        self.assertEqual(self.state["label"], "Git is locked in this project")
+        self.assertTrue(self.state["steps"])
+        self.assertIn("wordgame/scoring.py", (self.blocked.get("passed_uncommitted") or {}).get("files", []), self.explain())
+        self.assertFalse(self.cleared_before)  # checked, not assumed: the lock was still there
+
+    def test_once_cleared_the_server_resumes_it_by_itself(self):
+        self.assertTrue(self.lock_cleared)
+        self.assertEqual(self.resumed, [self.project.jobs()[-1].stem])
+        self.assertEqual(self.resume_runs[0].returncode, 0, self.explain())
+
+    def test_the_work_is_committed_without_building_it_again(self):
+        self.assertEqual(len([c for c in self.project.llm_calls() if c["role"] == "builder"]), 1, self.explain())
+        branch = self.finished["branch"]
+        changed = self.project.git("diff", "--name-only", f"main...{branch}").split()
+        self.assertIn("wordgame/scoring.py", changed, self.explain())
+        self.assertNotIn("passed_uncommitted", self.finished)
+        self.assertNotIn("blocker", self.finished)
+
+    def test_it_goes_on_to_its_pull_request_and_the_projects_tests_pass(self):
+        self.assertEqual(self.finished["status"], "review-needed", self.explain())
+        self.assertTrue(self.finished.get("pr_number"), self.explain())
+        self.project.git("checkout", "-q", self.finished["branch"])
+        try:
+            self.assertEqual(self.project.run_tests().returncode, 0)
+        finally:
+            self.project.git("checkout", "-q", "main")
+
 class TaskCheckpointTests(unittest.TestCase):
     """Each finished task is its own commit, so the latest one can be undone."""
 

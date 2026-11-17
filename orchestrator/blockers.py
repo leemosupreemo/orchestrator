@@ -23,7 +23,7 @@ AUTO_RESUME_EVERY = 3600  # seconds: one automatic resume per job per hour, per 
 LOCK_STALE_AFTER = 10
 MIN_FREE_BYTES = 2 * 1024 ** 3
 
-_GIT_LOCK = re.compile(r"index\.lock'?: File exists|Another git process seems to be running", re.I)
+_GIT_LOCK = re.compile(r"index\.lock'?: File exists|Another git process seems to be running|holding this project's git lock", re.I)
 _SIGN_IN = re.compile(r"oauth access token has expired|failed to authenticate|re-?authenticate to continue|not logged in|"
                       r"invalid api key|missing api key|please run /login", re.I)
 _TOOL = re.compile(r"(?:^|[\s:'\"`])([\w.+-]{2,40}): command not found", re.M)

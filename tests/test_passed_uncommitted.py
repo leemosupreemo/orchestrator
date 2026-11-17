@@ -34,7 +34,7 @@ class PassedUncommittedTests(unittest.TestCase):
         marked = source.index('job["passed_uncommitted"] = {"files"')
         self.assertLess(marked, source.index('_git_commit_step(f"git add {shlex.quote(f)}")'))
         self.assertIn('committing_only = bool(resume and isinstance(job.get("passed_uncommitted"), dict))', source)
-        self.assertIn("while not committing_only:", source)
+        self.assertIn("        if committing_only:\n            pass\n        elif job.get(\"type\") == \"feature-plan\"", source)
         self.assertIn('if job.pop("passed_uncommitted", None) is not None:', source)
         app = (ROOT / "orchestrator" / "web" / "static" / "app.js").read_text(encoding="utf-8")
         self.assertIn("Next:</span> commit the finished work", app)
@@ -92,7 +92,7 @@ class CommitOnlyResumeTests(unittest.TestCase):
             object.__setattr__(config, key, value)
         with mock.patch.object(worker, "ROOT", repo), mock.patch.object(common, "ROOT", repo), \
              mock.patch.object(worker, "PROJECT_CONFIG", config), mock.patch.object(worker, "OUTPUT_DIR", tmp / "out"), \
-             mock.patch.object(worker, "prepare_git_branch", return_value=("job/grass", "main")), \
+             mock.patch.object(worker, "prepare_git_branch", side_effect=AssertionError("a checkout would throw the work away")), \
              mock.patch.object(worker, "run_builder", side_effect=AssertionError("the builder ran again")), \
              mock.patch.object(worker, "update_issue_status"), mock.patch.object(worker, "gh_comment"), \
              mock.patch.object(worker, "send_notifications"), mock.patch.object(worker, "refresh_yolo", return_value=False), \
@@ -107,6 +107,15 @@ class CommitOnlyResumeTests(unittest.TestCase):
         job = json.loads(job_path.read_text())
         self.assertNotIn("passed_uncommitted", job)
         self.assertEqual(self.git(remote, "rev-parse", "job/grass"), self.git(repo, "rev-parse", "HEAD"))  # and backed up
+
+    def test_on_another_branch_nothing_is_touched_and_it_says_how_to_fix_it(self):
+        import worker_run as worker
+        with mock.patch.object(worker, "current_git_branch", return_value="main"):
+            with self.assertRaises(RuntimeError) as err:
+                worker.commit_pending_branch({"branch": "job/grass", "base_branch": "main"})
+        self.assertIn("Switch back to 'job/grass'", str(err.exception))
+        with mock.patch.object(worker, "current_git_branch", return_value="job/grass"):
+            self.assertEqual(worker.commit_pending_branch({"branch": "job/grass", "base_branch": "main"}), ("job/grass", "main"))
 
 if __name__ == "__main__":
     unittest.main()

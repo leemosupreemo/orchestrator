@@ -13,6 +13,8 @@ directory) or a review. Behaviour switches come from $FAKE_LLM_BEHAVIOUR, a comm
   prd_gut        ...answer with a document whose pitch has been emptied (which must be refused)
   concerns_once  the first verification raises concerns (the orchestrator should accept the suggestions and carry on)
   asks_twice     a freestyle request: ask a question, then a follow-up once it's answered, then plan
+  hold_git_lock  the builder leaves a process holding the project's .git/index.lock (as a killed git command's lock
+                 would be, but held), so the job's commit is blocked; its pid is written to lock-holder.pid beside the state
 """
 from __future__ import annotations
 
@@ -148,7 +150,15 @@ def main() -> int:
         else:
             print(json.dumps({"status": "approved", "comments": "Grounded in wordgame/scoring.py.", "suggested_additions": [], "risks_identified": []}))
     elif role == "builder":
-        print("```json\n" + json.dumps(build(prompt)) + "\n```")
+        reply = build(prompt)
+        if "hold_git_lock" in BEHAVIOUR and not (STATE.parent / "lock-holder.pid").exists():
+            import subprocess
+            lock = Path(".git/index.lock").resolve()
+            lock.write_text("")
+            holder = subprocess.Popen([sys.executable, "-c", "import sys, time; f = open(sys.argv[1], 'a'); time.sleep(300)", str(lock)],
+                                      start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            (STATE.parent / "lock-holder.pid").write_text(str(holder.pid))
+        print("```json\n" + json.dumps(reply) + "\n```")
     elif role == "prd":
         print(prd_reply(prompt))
     elif role == "reviewer":
