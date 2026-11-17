@@ -468,8 +468,7 @@ class Sentry(Provider):
         ("host", "Sentry address", False, "sentry.io", "Leave as sentry.io unless you self-host."),
         ("org", "Organization slug", False, "my-org", "From your Sentry URL: sentry.io/organizations/<slug>."),
         ("project", "Project slug (optional)", False, "my-app", "Limits the suggestion list to one project."),
-        ("token", "Auth token", True, "", "A personal token with org:read, project:read, event:read and event:write "
-                                           "(event:write lets jobs comment on and resolve issues). Device logs use it too."),
+        ("token", "Auth token", True, "", ""),
     ]
     token_url = "https://sentry.io/settings/account/api/auth-tokens/"
     ISSUE = re.compile(r"/issues/(\d+)")

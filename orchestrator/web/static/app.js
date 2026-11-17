@@ -12594,7 +12594,7 @@ pages.connections = async (_, query) => {
               <input ${f.secret ? 'type="password"' : 'type="text"'} name="${esc(f.key)}" autocomplete="off" autocapitalize="off" spellcheck="false"${f.required && !p.connected ? ' aria-required="true"' : ""}
                 value="${esc(!f.secret && p.suggest?.[f.key] ? p.suggest[f.key] : "")}"
                 placeholder="${esc(p.connected && f.secret ? "saved: leave blank to keep" : f.placeholder)}">
-              <small class="hint-text">${esc(f.help)}</small></label>`).join("")}
+              ${f.help ? `<small class="hint-text">${esc(f.help)}</small>` : ""}</label>`).join("")}
             ${p.token_max_days ? `<label class="field"><span>Token expires on</span><input type="date" name="expires" value="${esc(p.expiry?.on || latest)}" max="${latest}">
               <small class="hint-text">The date you picked when creating it. ${esc(p.name)} tokens last at most ${p.token_max_days} days; you'll be reminded before it runs out.</small></label>` : ""}` : "";
           const dialogPromise = formDialog(`${p.connected ? "Update" : "Connect"} ${p.name}`, `
