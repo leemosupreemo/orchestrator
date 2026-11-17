@@ -4698,7 +4698,7 @@ document.addEventListener("click", async (e) => {
   try {
     const [{ features }, { job }] = [await api("features"), await api(`jobs/${encodeURIComponent(jobId)}`)];
     if (!features.length) {
-      toast("This project has no features yet.", "info", { label: "Create one", run: () => { location.hash = "#/features"; } });
+      toast("This project has no features yet.", "info", { label: "Create one", run: () => { location.hash = "#/product?section=epics"; } });
       return;
     }
     const v = await formDialog("Move to feature", `<label class="field"><span>Feature</span><select name="feature">
@@ -10000,6 +10000,8 @@ function epicsSection(initial, { onPrdChanged }) {
   let jiraList = null; // epics found in Jira, while the import panel is open
   let working = null;  // the breakdown in flight: { abort }
   let busy = "";       // its spinner, kept when the page around it redraws
+  let plan = null;     // "Build the plan" (plan_run.py): the approved epics' features, built in dependency order
+  const building = () => plan && !plan.stopped && !plan.finished;
 
   const breakdownCard = () => {
     if (!ov.prd_filled) return `<section class="card mb-16"><div class="card-b stack"><strong>Epics fill in here on their own</strong>
@@ -10034,7 +10036,8 @@ function epicsSection(initial, { onPrdChanged }) {
   };
 
   const body = () => `${breakdownCard()}${ov.prd_filled ? FeaturePlan.renderQuestions(ov.breakdown) : ""}${FeaturePlan.renderSuggested(ov.epics, ov.breakdown)}
-    ${FeaturePlan.renderApproved(ov.epics, { act, jiraConnected: ov.jira?.connected && owner && !!ov.jira.project })}
+    ${FeaturePlan.renderRun(plan)}
+    ${FeaturePlan.renderApproved(ov.epics, { act, jiraConnected: ov.jira?.connected && owner && !!ov.jira.project, canBuild: owner && !building() })}
     ${FeaturePlan.renderBuilt(ov.epics)}${FeaturePlan.renderDeclined(ov.epics)}${jiraCard()}`;
 
   const redraw = () => { const box = $("#epics-body"); if (box) box.innerHTML = body(); };
@@ -10093,8 +10096,43 @@ function epicsSection(initial, { onPrdChanged }) {
     } catch (e) { failed(e); }
   };
 
+  // Build the plan: the approved epics' features, the MVP ones ticked, planned and built in dependency order (in parallel up to
+  // Jobs at once). Each epic's waiting job gives way to its planned one.
+  const buildPlan = async () => {
+    let features;
+    try { features = (await api("features")).features || []; } catch (e) { return failed(e); }
+    const approved = ov.epics.filter((e) => e.status === "approved" && e.feature);
+    const mine = new Set(approved.map((e) => e.feature));
+    const mvp = new Set(approved.filter((e) => e.slice === "MVP").map((e) => e.feature));
+    const choices = features.filter((f) => mine.has(f.id));
+    if (!choices.length) return toast("No approved epics to build yet.", "warning");
+    const v = await formDialog("Build the plan", FeaturePlan.renderStartForm(choices, mvp.size ? mvp : null), "Start building");
+    if (!v) return;
+    const chosenFeatures = FeaturePlan.chosenFeatures(v);
+    if (!chosenFeatures.length) return toast("Tick at least one epic.", "warning");
+    try {
+      plan = (await api("plan-run", { method: "POST", body: { features: chosenFeatures, auto_approve: v.auto_approve === "on" } })).plan || plan;
+      toast("Building the plan");
+      await refreshPlan();
+    } catch (e) { failed(e); }
+  };
+  const refreshPlan = async () => {
+    try { plan = (await api("plan-run")).plan; } catch { return; }
+    redraw();
+  };
+  const planAction = async (action) => {
+    try {
+      if (action === "stop") await api("plan-run/stop", { method: "POST", body: {} });
+      else await api("plan-run/pause", { method: "POST", body: { paused: action === "pause" } });
+      await refreshPlan();
+    } catch (e) { failed(e); }
+  };
+
   const onClick = async (event) => {
     const t = event.target;
+    if (t.closest("#epic-build-plan")) return buildPlan();
+    const planBtn = t.closest("[data-plan-action]");
+    if (planBtn) return planAction(planBtn.dataset.planAction);
     if (t.closest("#epic-break")) return breakDown();
     if (t.closest("#epic-break-cancel")) { stopBreakdown(); return; }
     if (t.closest("#epic-decline")) return decide("decline", chosen(), "Declined");
@@ -10164,6 +10202,10 @@ function epicsSection(initial, { onPrdChanged }) {
       view.addEventListener("submit", onSubmit);
       cleanup.push(() => { working?.abort.abort(); /* stop polling; the computer keeps going and saves the result */ view.removeEventListener("click", onClick); view.removeEventListener("change", onChange); view.removeEventListener("submit", onSubmit); });
       if (start && ov.prd_filled && !ov.epics.length) breakDown();
+      refreshPlan().then(() => {  // keep the plan's progress current while it builds
+        const timer = setInterval(() => { if (building() && !document.querySelector("dialog[open]")) refreshPlan(); }, 10000);
+        cleanup.push(() => clearInterval(timer));
+      });
     },
   };
 }

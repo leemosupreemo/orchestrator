@@ -107,7 +107,7 @@
   }
 
   // Approved epics, one line each: the epic (linking to its job), whether Jira has it, and whether it is built.
-  function renderApproved(epics, {jiraConnected} = {}) {
+  function renderApproved(epics, {jiraConnected, canBuild} = {}) {
     const list = (epics || []).filter((e) => e.status === "approved");
     if (!list.length) return "";
     const row = (e) => {
@@ -119,7 +119,9 @@
       return `<div class="item epic-row" data-epic="${escapeHtml(e.id)}"><div class="main-col"><div class="title">${name}</div></div>
         <div class="side">${jira}<span class="pill ${built ? "done" : "idle"}">${built ? "Implemented" : "Not implemented"}</span></div></div>`;
     };
-    return `<section class="card mb-16" id="epic-approved"><div class="card-h"><h2>Approved</h2><span class="count">${list.length}</span></div>
+    const build = canBuild && list.some((e) => !e.job_info || e.job_info.group !== "done")
+      ? `<button type="button" class="btn small primary" id="epic-build-plan" title="Plan and build the chosen epics in dependency order, independent ones at the same time">Build the plan</button>` : "";
+    return `<section class="card mb-16" id="epic-approved"><div class="card-h"><h2>Approved</h2><span class="count">${list.length}</span>${build}</div>
       <div class="list">${list.map(row).join("")}</div></section>`;
   }
 
@@ -151,17 +153,14 @@
       <div class="row"><span class="spacer"></span><button type="button" class="btn ghost" id="epic-jira-cancel">Cancel</button><button type="submit" class="btn primary">Import selected</button></div></form>`;
   }
 
-  function renderStories(stories) {
-    return stories?.length ? `<details><summary>Stories (${stories.length})</summary>${storiesList(stories)}</details>` : "";
-  }
-
-  // "Build the plan": choose features (planned ones without jobs are ticked) and whether plans approve themselves.
-  function renderStartForm(features) {
+  // "Build the plan": choose features and whether plans approve themselves. Ticked: the `preselect` ids (the approved MVP
+  // epics, from the Product page), or else planned features that have no jobs yet.
+  function renderStartForm(features, preselect = null) {
     const ordered = [...(features || [])].sort((a, b) => a.layer - b.layer);
     return `<p class="muted">Features are built in dependency order: each starts once everything it builds on is done, and independent
         ones run at the same time when your machines can take them. Running work is never stopped by pausing.</p>
       <fieldset class="field stack">${ordered.map((f) => `<label class="check"><input type="checkbox" name="f_${escapeHtml(f.id)}"
-        ${f.status === "planned" && !f.jobs_total ? "checked" : ""}><span>${escapeHtml(f.name)}${f.jobs_total ? ` <span class="muted">(has ${f.jobs_total} job${f.jobs_total === 1 ? "" : "s"})</span>` : ""}</span></label>`).join("")}</fieldset>
+        ${(preselect ? preselect.has(f.id) : f.status === "planned" && !f.jobs_total) ? "checked" : ""}><span>${escapeHtml(f.name)}${f.jobs_total ? ` <span class="muted">(has ${f.jobs_total} job${f.jobs_total === 1 ? "" : "s"})</span>` : ""}</span></label>`).join("")}</fieldset>
       <label class="check"><input type="checkbox" name="auto_approve"><span>Approve plans automatically
         <small class="hint-text">Otherwise each feature's plan waits for you to approve it. Plans with an open question or the architect's concerns always wait.</small></span></label>`;
   }
@@ -195,5 +194,5 @@
   }
 
   root.FeaturePlan = {renderBreakdownInfo, renderQuestions, guessSection, renderSuggested, renderApproved, renderBuilt, renderDeclined, renderJiraImport, techniqueSelect, jiraLink,
-    renderStories, requirementsList, renderStartForm, chosenFeatures, renderRun};
+    requirementsList, renderStartForm, chosenFeatures, renderRun};
 })(typeof globalThis !== "undefined" ? globalThis : window);

@@ -786,6 +786,25 @@ class EpicsJiraTests(ServerTestCase):
                 res, _ = self.as_user(token, method, path, body, sources=member)
                 self.assertEqual(res.status, 403)
 
+    def test_build_the_plan_from_approved_epics_plans_each_as_its_epic(self):
+        # The Product page's Build the plan (on the Approved epics card) starts a plan run with the approved epics' features;
+        # each feature job it plans is marked as its epic's, so it takes the waiting Epic job's place.
+        started = []
+        with patch.object(self.server.sessions, "start", side_effect=lambda action, title, argv, *a, **k: started.append((action, argv))
+                          or SimpleNamespace(id=f"run-{len(started)}", running=True, job_id=None)):
+            res, data = self.request("POST", "/api/plan-run", {"features": [self.approved["feature"]], "auto_approve": False}, headers=UI_HEADERS)
+            self.assertEqual(res.status, 201, data)
+            self.assertEqual([r["feature"] for r in data["plan"]["rows"]], [self.approved["feature"]])
+            for _ in range(100):
+                if started:
+                    break
+                time.sleep(0.02)
+        argv = next(a for action, a in started if action == "new_job")
+        self.assertEqual(argv[argv.index("--epic") + 1], self.approved["id"])
+        app = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text(encoding="utf-8")
+        self.assertIn('canBuild: owner && !building()', app)  # the button, back since the Features page went away
+        self.assertIn('FeaturePlan.renderStartForm(choices, mvp.size ? mvp : null)', app)  # MVP epics ticked
+
     def test_planning_an_epic_builds_a_feature_job_that_replaces_the_waiting_one(self):
         argv = ui.build_plan_epic({"epic": self.approved["id"]}, self.root)
         self.assertEqual(argv[argv.index("--epic") + 1], self.approved["id"])
@@ -1732,6 +1751,22 @@ process.stdout.write(JSON.stringify({
         self.assertIn("The plan is built", out["finished"])
         self.assertEqual(out["none"], "")
 
+    def test_build_the_plan_starts_from_the_approved_epics_with_the_mvp_ticked(self):
+        out = self.run_feature_plan("""
+const P = globalThis.FeaturePlan;
+const epics = [{id: "e1", name: "Play", status: "approved", job_info: {id: "j1", group: "needs_you"}},
+               {id: "e2", name: "Chat", status: "approved", job_info: {id: "j2", group: "done"}}];
+process.stdout.write(JSON.stringify({
+  form: P.renderStartForm([{id: "play", name: "Play", status: "in-progress", jobs_total: 1, layer: 0},
+                           {id: "chat", name: "Chat", status: "planned", jobs_total: 0, layer: 1}], new Set(["play"])),
+  can: P.renderApproved(epics, {canBuild: true}), cannot: P.renderApproved(epics, {canBuild: false}),
+  allBuilt: P.renderApproved([epics[1]], {canBuild: true})}));""")
+        self.assertIn('name="f_play"\n        checked', out["form"])  # the MVP epic, though it has a waiting job
+        self.assertNotIn('name="f_chat"\n        checked', out["form"])
+        self.assertIn('id="epic-build-plan"', out["can"])
+        self.assertNotIn('id="epic-build-plan"', out["cannot"])  # a plan is already building, or a member is looking
+        self.assertNotIn('id="epic-build-plan"', out["allBuilt"])  # nothing left to build
+
     def run_feature_plan(self, source):
         helper = PACKAGE_ROOT / "orchestrator" / "web" / "static" / "feature-plan.js"
         result = subprocess.run(["node", "--require", HTML_JS, "-e", f"require(process.argv[1]);\n{source}", str(helper)], capture_output=True, text=True)
@@ -1788,7 +1823,7 @@ const html = P.renderSuggested([
   epic({id: "ep-1", name: "Play a round", summary: "One game", stories: ["As a player I can play."], paths: ["app/game/"]}),
   epic({id: "ep-2", name: "Chat <script>", depends_on: ["Play a round"], layer: 1}),
   epic({id: "ep-3", name: "Done already", status: "approved"})], {technique: "list"});
-process.stdout.write(JSON.stringify({html, stories: P.renderStories(["As <a>"]), none: P.renderStories([])}));""")
+process.stdout.write(JSON.stringify({html}));""")
         html = out["html"]
         self.assertLess(html.index("Start with these"), html.index("Then these (layer 2)"))
         self.assertLess(html.index("Play a round"), html.index("Chat &lt;script&gt;"))
@@ -1797,8 +1832,6 @@ process.stdout.write(JSON.stringify({html, stories: P.renderStories(["As <a>"]),
         self.assertNotIn("<script>", html)
         self.assertNotIn("Done already", html)  # approved epics are listed elsewhere
         self.assertIn("Builds on Play a round", html)
-        self.assertIn("As &lt;a&gt;", out["stories"])
-        self.assertEqual(out["none"], "")
 
     def test_built_epics_are_listed_apart_with_their_files_and_partly_built_ones_say_so(self):
         out = self.run_feature_plan("""
