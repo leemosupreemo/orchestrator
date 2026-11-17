@@ -143,7 +143,10 @@ class WorkerTests(unittest.TestCase):
     def test_the_worker_holds_the_folder_for_the_whole_run(self):
         src = (PACKAGE_ROOT / "orchestrator" / "scripts" / "worker_run.py").read_text()
         main = src[src.index("def main() -> None:"):]
-        self.assertIn("with hold_project_folder(job_path):\n        execute_job(job_path, resume=args.resume)", main)
+        self.assertIn("code = run_local(job_path, resume=args.resume)", main)
+        self.assertIn("    with hold_project_folder(job_path):\n        execute_job(job_path, resume=resume)", main)  # in run_local
+        schedule = (PACKAGE_ROOT / "orchestrator" / "scripts" / "schedule_job.py").read_text()
+        self.assertIn("from worker_run import run_local", schedule)  # approving a plan waits too (it used to skip the lock)
 
     def test_the_page_asks_about_duplicates_for_every_way_of_creating_a_job(self):
         app = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()

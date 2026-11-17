@@ -90,10 +90,21 @@ def load_job(path: Path) -> dict[str, Any]:
 # --------------------------------------------------------------------------- job actions
 
 
+def drop_worktree(job: dict, force: bool = False) -> None:
+    """A job built alongside others has its own checkout (parallel_jobs.py): it goes once the job is finished with, before its
+    branch is merged or deleted (git won't delete a branch a worktree has checked out)."""
+    if job.get("worktree"):
+        from orchestrator import parallel_jobs
+        from common import ROOT
+        parallel_jobs.remove(ROOT, job, force=force)
+
+
 def merge(path: Path) -> int:
     from dev_console import handle_merge_cleanup
 
-    handle_merge_cleanup(load_job(path))
+    job = load_job(path)
+    drop_worktree(job)
+    handle_merge_cleanup(job)
     return 0
 
 
@@ -106,6 +117,7 @@ def complete(path: Path) -> int:
         print("This job has a pull request; use Merge & complete so the PR is merged.")
         return 1
     job["restore_status"] = job.get("status")  # so the web UI can undo this
+    drop_worktree(job)
     archive_job(job, status="completed")
     print("Job marked complete.")
     return 0
@@ -120,6 +132,7 @@ def discard(path: Path, keep_changes: bool = False) -> int:
         archive_job(job, status="discarded")
         print("\n✅ Job deleted and code changes kept.")
         return 0
+    drop_worktree(job, force=True)  # discarding throws the work away anyway
     handle_discard_job(job, confirmed=True)
     return 0
 

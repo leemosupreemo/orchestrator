@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import copy
+import json
 import os
 os.environ["AI_REQUEST_SOURCE"] = "orchestrator"
 import re
@@ -534,6 +535,9 @@ def prepare_git_branch(job: dict, issue_number: int | None) -> Tuple[str, str]:
         return branch, base_branch
 
     branch = job.get("branch") or generated_branch
+    from orchestrator import parallel_jobs
+    if os.environ.get(parallel_jobs.ENV_MAIN):
+        return prepare_worktree_branch(job, branch, base_branch)
     print(f"\n[1/4] Preparing git branch: {branch}...")
     print(f"      - Fetching origin and updating {base_branch}...")
     if PROJECT_CONFIG.git_remote:
@@ -809,6 +813,20 @@ def blocker_in_logs(job: dict) -> Optional[dict]:
     return blockers.detect(text)
 
 
+def other_job_in_folder(job_path: Path) -> Optional[dict]:
+    """A blocker when another open job's uncommitted work is in the project folder (blockers.other_jobs_work)."""
+    jobs = []
+    for path in sorted(Path(job_path).parent.glob("*.json")):
+        try:
+            jobs.append((path.stem, read_json(path)))
+        except Exception:
+            continue
+    try:
+        return blockers.other_jobs_work(ROOT, Path(job_path).stem, jobs, current_git_branch())
+    except Exception:
+        return None  # can't tell: carry on as before rather than stop every job
+
+
 def pause_on_blocker(job_path: Path, job: dict, blocker: dict, issue_number: Optional[int]) -> None:
     print(f"\n⚠️ {blocker['title']}. {blocker['detail']} This isn't a code problem, so no fix attempt is started; "
           "the job resumes once it's cleared.")
@@ -885,6 +903,10 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
     try:
         print_phase("git_prep")
         status_bar.render()
+        if other := other_job_in_folder(job_path):
+            # Another open job's work is uncommitted here: going on would commit it as this job's, or check it out of existence.
+            pause_on_blocker(job_path, job, other, issue_number)
+            return
         if resume and isinstance(job.get("passed_uncommitted"), dict):
             # Only the commit is left, and the finished work is uncommitted in this checkout: preparing the branch (a forced
             # checkout and pull) would throw it away. Stay where it is, on the job's branch.
@@ -1619,6 +1641,27 @@ def backup_push(job: dict) -> bool:
     return True
 
 
+def prepare_worktree_branch(job: dict, branch: str, base_branch: str) -> Tuple[str, str]:
+    """The job's branch in its own worktree. The base branch is checked out in the project folder, and git won't check a
+    branch out twice, so a new branch starts from origin's base (or the local one) without checking the base out here."""
+    print(f"\n[1/4] Preparing git branch in this job's own checkout: {branch}...")
+    if PROJECT_CONFIG.git_remote:
+        subprocess.run(["git", "fetch", "origin"], cwd=str(ROOT), capture_output=True, check=False)
+    exists = subprocess.run(["git", "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"], cwd=str(ROOT), capture_output=True).returncode == 0
+    if exists:
+        res = subprocess.run(["git", "checkout", "-f", branch], cwd=str(ROOT), capture_output=True, text=True)
+        if res.returncode != 0:
+            raise RuntimeError(f"Could not check out '{branch}' in this job's own checkout: {(res.stderr or res.stdout).strip()}\n\n"
+                               "How to fix:\n- If the project folder has this branch checked out, switch the project folder to another branch, then Resume.")
+        subprocess.run(["git", "pull", "--ff-only", "origin", branch], cwd=str(ROOT), capture_output=True, check=False)
+    else:
+        remote_base = subprocess.run(["git", "rev-parse", "--verify", "--quiet", f"refs/remotes/origin/{base_branch}"], cwd=str(ROOT), capture_output=True).returncode == 0
+        run(["git", "checkout", "-f", "-b", branch, f"origin/{base_branch}" if remote_base else base_branch], cwd=ROOT)
+        print(f"      - Created {branch} from {'origin/' if remote_base else ''}{base_branch}.")
+    job["branch"] = branch
+    return branch, base_branch
+
+
 def commit_pending_branch(job: dict) -> Tuple[str, str]:
     """The branch to commit finished work on without checking anything out: the one this checkout is on, which must be the
     job's own branch (else the work isn't where the job thinks, and nothing is touched)."""
@@ -1686,8 +1729,52 @@ def main() -> None:
     args = parser.parse_args()
 
     job_path = Path(args.job_file)
+    code = run_local(job_path, resume=args.resume)
+    if code:
+        sys.exit(code)
+
+
+def run_local(job_path: Path, resume: bool = False) -> int:
+    """Runs a job on this computer, the one way every local start goes (the worker itself, and schedule_job dispatching to
+    this computer): in its own worktree when it builds alongside another job (parallel_jobs.py), otherwise in the project
+    folder once no other job is using it (folder_lock)."""
+    if worktree := own_worktree(Path(job_path).resolve()):
+        # The worktree is the project folder for this run; the job's records stay in the project.
+        from orchestrator import parallel_jobs
+        argv = [sys.executable, "-P", "-m", "orchestrator", "script", "worker_run.py", str(Path(job_path).resolve()), *(["--resume"] if resume else [])]
+        return subprocess.run(argv, cwd=str(worktree), env=parallel_jobs.worker_env(ROOT, worktree, PROJECT_CONFIG.runtime_dir)).returncode
     with hold_project_folder(job_path):
-        execute_job(job_path, resume=args.resume)
+        execute_job(job_path, resume=resume)
+    return 0
+
+
+def own_worktree(job_path: Path) -> Optional[Path]:
+    """The worktree this run should build in instead of the project folder (parallel_jobs.decide), made if needed; None to
+    work in the project folder, waiting for it if another job has it."""
+    from orchestrator import folder_lock, parallel_jobs
+    if os.environ.get(parallel_jobs.ENV_MAIN):
+        return None  # already running in one
+    try:
+        job = read_json(job_path)
+        jobs = [(p.stem, read_json(p)) for p in sorted(job_path.parent.glob("*.json")) if p != job_path]
+        project = json.loads((PROJECT_CONFIG.runtime_dir / "project.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    use, why = parallel_jobs.decide(ROOT, job_path.stem, job, jobs, folder_lock.holder(ROOT), project)
+    if not use:
+        if why:
+            print(f"\n⏳ {why}")
+        return None
+    try:
+        worktree = parallel_jobs.create(ROOT, job_path.stem)
+    except Exception as exc:  # no worktree: fall back to waiting for the project folder, as before
+        print(f"\n⚠️ Couldn't make a separate checkout for this job ({exc}); it waits for the project folder instead.")
+        return None
+    if job.get("worktree") != str(worktree):
+        job["worktree"] = str(worktree)
+        write_json(job_path, job)
+    print(f"\n⚡ Another job is using the project folder: this one builds alongside it, in its own checkout ({worktree}).")
+    return worktree
 
 
 @contextlib.contextmanager
@@ -1720,6 +1807,10 @@ def hold_project_folder(job_path: Path):
                                 worker_pid=os.getpid(), worker_host=socket.gethostname()))  # pid: a waiter that was stopped doesn't look queued
 
     stop_waiting = lambda j: j.pop("waiting_for", None) is not None
+    from orchestrator import parallel_jobs
+    if os.environ.get(parallel_jobs.ENV_MAIN):  # in the job's own worktree: nobody else works here
+        yield
+        return
     try:
         with folder_lock.hold(ROOT, job=job.get("job_id") or job_path.stem, title=title, on_wait=waiting):
             if note(stop_waiting):

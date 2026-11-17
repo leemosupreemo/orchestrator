@@ -478,8 +478,11 @@ def dispatch_job(job_path: Path, machine: dict[str, Any], remote_probe: dict[str
         return
 
     if machine["execution_mode"] == "local":
-        from worker_run import execute_job
-        execute_job(job_path, resume=resume)
+        # Through the same door as the worker: its own worktree when it builds alongside another job, else the project
+        # folder once it's free. Calling execute_job here skipped that, so two jobs could build in one folder at once.
+        from worker_run import run_local
+        if code := run_local(job_path, resume=resume):
+            raise RuntimeError(f"The job's worker ended with exit code {code}.")
         return
 
     from orchestrator.job_scope import NONPRODUCTION_TYPES

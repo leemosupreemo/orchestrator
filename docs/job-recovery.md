@@ -58,6 +58,30 @@ retries during checkout, pull, and the commit at the end (`_git_commit_step`). I
 Reaching the success point clears `last_error`, so a finished job doesn't keep offering **Run a fix…** for an earlier
 attempt's error. The job page only shows that button while something is actually wrong.
 
+## Jobs at once and overlapping work
+
+By default one job builds in a project at a time: every local start (the worker, and `schedule_job` dispatching to this
+computer) goes through `worker_run.run_local`, which waits for the project folder (`folder_lock`). Before this, approving a
+plan called `execute_job` directly and skipped the wait, so two jobs could build in one folder at once.
+
+**Jobs at once** (`parallel_jobs` in project.json, set on the Git page, 1 to 4) lets more build together
+(`orchestrator/parallel_jobs.py`). A job that would wait builds in its own git worktree instead, kept outside the project in
+`~/.orchestrator/worktrees/<project>-<hash>/<job>` so test discovery, Xcode and Unity never see the copies. The worker runs
+there with the worktree as its project folder and the project's `.orchestrator` for its records. A new branch starts from
+`origin/<base>` (or the local base) without checking the base out, since the project folder has it. The job keeps its
+worktree until it's merged, completed, discarded or deleted. Merging and completing only remove a clean worktree; discarding
+removes it anyway.
+
+Guards, so jobs never step on each other's work:
+
+| Guard | Where | What happens |
+|---|---|---|
+| The same request twice, typos and all | `job_overlap.similarity` (near matches for long words) | New job asks: open that one, or create anyway |
+| Two open jobs changing the same files | `job_overlap.file_overlaps`, on the job page | "Overlaps with …": finish one first, or merge them |
+| A running job changes the same files | `parallel_jobs.decide` | The job waits instead of building alongside |
+| A job on the current branch, or with branch switching off | `parallel_jobs.decide` | Waits for the project folder (git can't check out one branch twice) |
+| Another open job's uncommitted work is in the folder | `blockers.other_jobs_work`, checked before the worker touches git | Pauses as blocked, "“…” has uncommitted work here"; starts by itself once that work is committed |
+
 ## Durability
 
 `backup_push` in `worker_run.py` pushes the job's own branch to `origin` after each finished task (`checkpoint_task`) and
@@ -117,5 +141,8 @@ moved job. A computer that's offline learns of a move at its next heartbeat.
 | Commit the work, end to end in a throwaway repository | `tests/test_passed_uncommitted.py` (`CommitOnlyResumeTests`) |
 | A job blocked mid-run by a held git lock, cleared, resumed by the server, committed and opened as a PR, inside the full offline pipeline | `tests/e2e/test_pipeline_offline.py` (`BlockedJobRecoveryTests`) |
 | Moves recorded by the control plane | `tests/test_control_plane.py` (`MovedJobTests`) |
+| Jobs at once: deciding, worktrees, branch setup, removal, the setting | `tests/test_parallel_jobs.py` |
+| Overlap guards: duplicates with typos, shared files, another job's uncommitted work | `tests/test_overlap_guards.py` |
+| A job building alongside another in its own worktree, end to end | `tests/e2e/test_pipeline_offline.py` (`ParallelJobTests`) |
 
 Git-touching tests run only in temporary repositories with a local bare remote, never in this checkout.

@@ -5984,6 +5984,8 @@ pages.job = async ([id]) => {
           <p class="job-hero-reason">${heroReason}</p>
           ${heroReasonDetails}
           ${s.state.steps?.length ? `<ol class="job-hero-reason blocker-steps">${s.state.steps.map((step) => `<li>${esc(step)}</li>`).join("")}</ol>` : ""}
+          ${job.worktree ? `<p class="job-hero-reason muted">Builds alongside other jobs in its own checkout (<span class="mono">${esc(job.worktree)}</span>).</p>` : ""}
+          ${(data.overlaps || []).length ? `<p class="job-hero-reason job-overlap">Overlaps with ${data.overlaps.map((o) => `<a href="#/jobs/${encodeURIComponent(o.id)}">${esc(o.title)}</a> (${esc(o.files.slice(0, 2).join(", "))}${o.count > 2 ? `, +${o.count - 2}` : ""})`).join("; ")}. Both change the same files: finish one first, or merge them, so neither takes the other's work.</p>` : ""}
           ${s.state.blocker ? `<details class="fold"><summary class="linklike muted">What the AI said</summary><p class="muted">${esc(s.state.blocker)}</p></details>` : ""}
           ${runRel?.unreported ? `<p class="job-hero-reason run-unreported">The last run (${esc(runRel.unreported.label)}) ${runRel.unreported.status === "failed" ? "failed" : "ended without reporting back"} before it could update this job. <a href="#/runs/${encodeURIComponent(runRel.unreported.id)}">Open its log</a> to see what happened.</p>` : ""}
           ${nextExecutionPreview ? `<div class="job-hero-next-preview">${nextExecutionPreview}</div>` : ""}
@@ -11186,6 +11188,7 @@ pages.git = async (_, query) => {
   const integrationCard = g.is_repo ? `<section class="card"><div class="card-h"><h2>Job integration</h2></div><dl class="git-settings-list">
     ${row("Job workflow", `<span>${workflow}</span>${reviewLinks ? `<small>${reviewLinks}</small>` : ""}`, editButton("git-workflow", "Change", "Change job workflow"))}
     ${row("Base branch", `<form id="git-base-branch-form" class="git-base-branch-form"><div class="git-base-branch-controls"><label class="sr-only" for="git-base-branch">Base branch for jobs</label><select id="git-base-branch" name="branch" aria-label="Base branch for jobs" ${!g.branches.length ? "disabled" : ""}>${baseBranchOptions}</select><button type="submit" class="btn small ghost" data-why="No branches to switch to." ${!g.branches.length ? "disabled" : ""}>Save</button></div></form>`)}
+    ${row("Jobs at once", `<form id="git-parallel-form" class="git-base-branch-form"><div class="git-base-branch-controls"><label class="sr-only" for="git-parallel">Jobs that can build at once in this project</label><select id="git-parallel" name="jobs" aria-label="Jobs that can build at once in this project">${[1, 2, 3, 4].map((n) => `<option value="${n}" ${n === (g.parallel_jobs || 1) ? "selected" : ""}>${n === 1 ? "1 (one after another)" : n}</option>`).join("")}</select><button type="submit" class="btn small ghost">Save</button></div></form><small>Above 1, a job that would wait builds alongside in its own checkout. Jobs on the current branch, or changing the same files as a running job, still wait.</small>`)}
     ${row("Publishing", `<span>${g.mode === "github" ? "Finished work becomes a draft pull request." : g.origin ? "Finished job branches are pushed to origin." : "Finished work stays on local job branches."}</span>`)}
     ${row("Project configuration", `<span>${esc(configuration.detail || "Fetch to compare with the base branch.")}</span>`, configuration.url ? external(configuration.url, "View committed file") : "")}
   </dl>
@@ -11237,6 +11240,10 @@ pages.git = async (_, query) => {
           if (button.isConnected) { button.disabled = false; button.removeAttribute("aria-busy"); button.innerHTML = idle; }
         }
       };
+      $("#git-parallel-form")?.addEventListener("submit", (event) => {
+        event.preventDefault();
+        return mutate(event.submitter, "config/parallel-jobs", { jobs: Number(event.currentTarget.elements.jobs.value) }, "Jobs at once saved");
+      });
       $("#git-base-branch-form")?.addEventListener("submit", (event) => {
         event.preventDefault();
         const branch = event.currentTarget.elements.branch.value;

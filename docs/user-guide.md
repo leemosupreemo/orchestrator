@@ -483,6 +483,18 @@ Each job builds on its own branch, but on any one computer all jobs share the pr
 
 If a job crashes, the folder is free again at once. The computer releases the lock when the job's process ends, however it ends.
 
+### Jobs at once
+
+On the Git page, **Jobs at once** (1 to 4, default 1) lets more than one job build in a project together. Above 1, a job that would wait builds alongside in its own checkout instead: a separate copy of its branch, kept outside the project (in `~/.orchestrator/worktrees`), so your folder and its branch are never touched. The job page says so. Its checkout is removed when the job is merged, completed, discarded or deleted. One with uncommitted changes is only kept when you finish the job; discarding removes it.
+
+Some jobs still wait their turn:
+
+- **Jobs on the current branch** (or with branch switching off): git can't check out one branch in two places.
+- **Jobs that change the same files as a running job**: building them side by side would end in conflicting branches.
+- **A job whose project folder holds another job's uncommitted work.** It pauses as **Blocked** ("“…” has uncommitted work here") rather than take that work as its own, then starts by itself once that work is committed.
+
+The job page also says when an open job **overlaps** another by files, so you can finish one first or merge them. A new job that looks like one still open asks before it's created, even with a typo in it.
+
 ### Jobs that look like the same work
 
 Before a job is created, its description is compared with the jobs still open. If it looks like one of them, Orchestrator asks first and lists the matching jobs. *Add a login page* and *Login page with Google sign-in* match; *Fix the login bug* and *Add a login page* don't.

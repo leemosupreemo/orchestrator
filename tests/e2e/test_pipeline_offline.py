@@ -470,6 +470,64 @@ class BlockedJobRecoveryTests(unittest.TestCase):
         finally:
             self.project.git("checkout", "-q", "main")
 
+
+class ParallelJobTests(unittest.TestCase):
+    """Jobs at once: with another job holding the project folder and the project allowing two jobs at once, a job builds
+    alongside it in its own checkout (parallel_jobs.py) instead of waiting. The project folder is never touched, the job's
+    branch is real and passes the project's tests, and merging it removes its checkout."""
+
+    @classmethod
+    def setUpClass(cls):
+        from orchestrator import folder_lock
+        cls.project = p = DummyProject([FREE]).create(code_host="git").fake_models("prose_first")
+        config = p.root / ".orchestrator" / "project.json"
+        config.write_text(json.dumps({**json.loads(config.read_text()), "parallel_jobs": 2}, indent=2))
+        cls.folder_before = (p.git("branch", "--show-current"), p.git("status", "--porcelain"), p.git("rev-parse", "HEAD"))
+        with folder_lock.hold(p.root, job="other-job", title="Another job"):  # another job is building in the project folder
+            cls.plan_run = plan_job(p)
+            cls.build_run = action(p, "approve")
+            cls.folder_during = (p.git("branch", "--show-current"), p.git("status", "--porcelain"), p.git("rev-parse", "HEAD"))
+        cls.built = p.job()
+        cls.worktree = Path(cls.built.get("worktree") or "/nonexistent")
+        cls.worktree_existed = cls.worktree.is_dir()
+        branch = cls.built.get("branch") or "missing"
+        cls.branch_changes = p.git("diff", "--name-only", f"main...{branch}", check=False).split()
+        import os
+        import subprocess
+        import sys as _sys
+        cls.branch_tests = subprocess.run([_sys.executable, "-m", "unittest", "discover", "-s", "tests"], cwd=cls.worktree, capture_output=True,
+                                          env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}).returncode if cls.worktree_existed else 1
+        cls.branch_has_bonus = cls.worktree_existed and "LONG_WORD_BONUS" in (cls.worktree / "wordgame" / "scoring.py").read_text()
+        cls.merge = p.orchestrator("script", "job_actions.py", "merge", str(p.jobs()[-1]), input="\n")
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.project.cleanup()
+
+    def explain(self):
+        return "\n".join(re.sub(chr(27) + r"\[[0-9;?]*[a-zA-Z]", "", r.stdout)[-2500:] + r.stderr[-800:] for r in (self.plan_run, self.build_run, self.merge))
+
+    def test_it_builds_alongside_in_its_own_checkout_instead_of_waiting(self):
+        self.assertTrue(self.worktree_existed, self.explain())
+        self.assertFalse(str(self.worktree).startswith(str(self.project.root)))
+        self.assertIn("builds alongside it, in its own checkout", self.build_run.stdout, self.explain())
+        self.assertNotIn("Waiting for", self.build_run.stdout)
+        self.assertEqual(self.built["status"], "review-needed", self.explain())
+
+    def test_the_project_folder_is_never_touched(self):
+        self.assertEqual(self.folder_during, self.folder_before)
+
+    def test_its_branch_is_real_and_passes_the_projects_tests(self):
+        self.assertIn("wordgame/scoring.py", self.branch_changes, self.explain())
+        self.assertTrue(self.branch_has_bonus)  # the tests below ran against the job's own work, in its checkout
+        self.assertEqual(self.branch_tests, 0)
+
+    def test_merging_it_removes_its_checkout_and_lands_the_work(self):
+        self.assertEqual(self.merge.returncode, 0, self.explain())
+        self.assertFalse(self.worktree.exists())
+        self.assertIn("LONG_WORD_BONUS", (self.project.root / "wordgame" / "scoring.py").read_text())
+        self.assertEqual(self.project.run_tests().returncode, 0)
+
 class TaskCheckpointTests(unittest.TestCase):
     """Each finished task is its own commit, so the latest one can be undone."""
 

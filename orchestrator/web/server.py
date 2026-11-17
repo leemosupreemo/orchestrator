@@ -1942,6 +1942,9 @@ def archive_jobs(root: Path, job_ids: list[str], running: set[str]) -> list[str]
 def delete_job(root: Path, job_id: str, revert: bool = False) -> None:
     job_path = resolve_job_path(root, job_id)
     job = read_json_file(job_path)
+    if job.get("worktree"):  # built alongside other jobs in its own checkout (parallel_jobs.py): reverting throws its work away
+        from orchestrator import parallel_jobs
+        parallel_jobs.remove(root, job, force=revert)
 
     if revert:
         ai_modified = job.get("ai_modified_files", [])
@@ -2559,6 +2562,7 @@ def job_detail(root: Path, job_id: str) -> dict[str, Any]:
         "parent": job_stub(root, job.get("parent_job_id")),
         "pipeline": pipeline,
         "blockers": job_blockers(root, job),
+        "overlaps": job_overlap.file_overlaps(path.stem, job, [(p.stem, read_json_file(p)) for p in sorted(jobs_dir(root).glob("*.json"))]),
         "tasks": tasks,
         "undoable_task": task_revert.latest_revertable(job),
         "completed_tasks": completed,
@@ -3020,6 +3024,7 @@ def git_state(root: Path) -> dict[str, Any]:
         "source_control": {"current": source_control.current_key(host_kind(origin), origin, config.get("code_host")),
                            "blurb": source_control.BLURB, "options": source_control.OPTIONS},
         "base_branch": base_branch(root, read_settings(root)),
+        "parallel_jobs": int(config.get("parallel_jobs") or 1) if str(config.get("parallel_jobs") or 1).isdigit() else 1,
         "sync_remote": sync_remote,
         "sync_ref": sync_ref,
     }
@@ -5333,6 +5338,17 @@ def config_state(root: Path) -> dict[str, Any]:
 
 def config_update(root: Path, part: str, body: dict[str, Any]) -> dict[str, Any]:
     settings = read_settings(root)
+    if part == "parallel-jobs":
+        # How many jobs build in this project at once (orchestrator/parallel_jobs.py): beyond the first, each in its own worktree.
+        from orchestrator import parallel_jobs
+        try:
+            count = int(body.get("jobs"))
+        except (TypeError, ValueError):
+            raise UIError("Choose how many jobs can run at once.")
+        if not 1 <= count <= parallel_jobs.MAX_AT_ONCE:
+            raise UIError(f"Choose from 1 to {parallel_jobs.MAX_AT_ONCE}.")
+        update_project_json(root, {"parallel_jobs": count})
+        return {"saved": True, "parallel_jobs": count}
     if part == "base-branch":
         branch = _text(body, "branch", required=True, limit=250)
         if branch not in git(root, "branch", "--format=%(refname:short)").splitlines():
