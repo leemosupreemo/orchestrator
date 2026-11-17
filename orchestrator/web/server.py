@@ -2373,9 +2373,13 @@ def ui_review_settings(root: Path) -> dict[str, Any]:
     except ux_review.ConfigError as exc:
         cfg, error = None, str(exc)
     # Same test the review itself uses to decide there is nothing to look at, so the page can say so before a run.
-    interface = ux_review.frontend_files(git(root, "ls-files").splitlines(), (cfg or {}).get("paths"))
+    files = git(root, "ls-files").splitlines()
+    interface = ux_review.frontend_files(files, (cfg or {}).get("paths"))
     has_interface = bool(interface or (cfg and ux_review.has_screens(cfg)))
-    return {"saved": raw, "settings": cfg, "error": error, "browser": bool(ux_review.find_browser()), "has_interface": has_interface}
+    # What the app runs on, from the product requirements and the code: the Screens form starts with these, to check and save.
+    inferred = ux_review.inferred_targets(root, files, prd_doc.Prd(root, runtime_dir(root)).read() or "")
+    return {"saved": raw, "settings": cfg, "error": error, "browser": bool(ux_review.find_browser()), "has_interface": has_interface,
+            "inferred": inferred}
 
 
 def save_ui_review(root: Path, body: dict[str, Any]) -> dict[str, Any]:

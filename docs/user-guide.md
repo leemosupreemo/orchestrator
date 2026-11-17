@@ -611,8 +611,9 @@ overlap, responsiveness, contrast, dark mode, focus). The checklist is
 
 - **Product pass.** Web UI > UX review > Run a pass, or `orchestrator script ux_review_run.py pass`. It captures every
   configured screen, runs a UX pass and a design pass (two model calls), and writes one report with findings ranked by
-  severity, the checklist, and the screenshots, under `.orchestrator/output/ux-pass/<when>/`. "Create a job to fix"
-  turns the findings into a job. A pass that couldn't capture screenshots finishes as "Completed with notes" (yellow)
+  severity, the checklist, and the screenshots, under `.orchestrator/output/ux-pass/<when>/`. Each finding leads with the
+  UX shortcoming it breaks (the checklist item, by name), then where it is, what's wrong and the fix, each in a sentence;
+  **Fix top issues** turns the major ones into a job. A pass that couldn't capture screenshots finishes as "Completed with notes" (yellow)
   and says only the code was read; in a project with no interface files it skips the model calls and reports
   "Nothing to review".
 - **Change check.** After the code review, every job whose diff touches interface files (HTML, CSS, JSX/TSX, Vue,
@@ -620,7 +621,12 @@ overlap, responsiveness, contrast, dark mode, focus). The checklist is
   checklist on just what it changed. The job page shows a "UX and design check" card, and the hero warns before you
   merge when something major was found. It is a prompt to look, never a gate.
 
-Screens come from `ui_review` in `.orchestrator/project.json` (or Web UI > UX review > Screens):
+Screens come from `ui_review` in `.orchestrator/project.json` (or Web UI > UX review > Screens). Until you save them, the
+Screens form starts from what the project says it runs on: the product requirements' "Built for" line and its files (a
+`package.json` with Vite, Next and the like gives the web address and start command; an Xcode project, iOS; an Android
+`build.gradle`, the app id and build command), ticked and filled in for you to check and Save. Its options: a **design
+rules file** (your spacing, type, colour and wording rules, which screens are checked against), **Check dark mode too**
+(each screen again in dark mode, for contrast) and **Check each job's UI changes** (the change check above).
 
 ```json
 "ui_review": {

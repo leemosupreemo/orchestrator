@@ -8180,10 +8180,12 @@ const UX_TONE = ["muted", "muted", "attention", "failed", "failed"];
 
 function uxFindingsHtml(findings, { listId, shown = 8 } = {}) {
   if (!findings.length) return `<div class="empty">No findings.</div>`;
+  // Each finding leads with the UX shortcoming it breaks (the checklist item, by name), then where, then what and the fix.
   return `<div class="list" id="${listId}">${findings.map((f, n) => `<div class="item ux-finding"${n >= shown ? " hidden" : ""}>
       <div class="main-col"><div class="row gap-8"><span class="pill ${UX_TONE[f.severity]}">${UX_SEVERITY[f.severity]}</span>
-        <strong>${esc([f.screen, f.element].filter(Boolean).join(" · ") || "All screens")}</strong>${f.item ? `<span class="muted mono">${esc(f.item)}</span>` : ""}</div>
-        <div>${esc(f.problem)}</div>${f.fix ? `<div class="muted">Fix: ${esc(f.fix)}</div>` : ""}</div></div>`).join("")}</div>
+        <strong title="${esc(UX_CHECKS[f.item]?.criterion || "")}">${esc(UX_CHECKS[f.item]?.name || "Other problem")}</strong></div>
+        <div class="muted">${esc([f.screen, f.element].filter(Boolean).join(" · ") || "All screens")}</div>
+        <div>${clamped(f.problem, 180)}</div>${f.fix ? `<div class="muted">Fix: ${clamped(f.fix, 140)}</div>` : ""}</div></div>`).join("")}</div>
     ${findings.length > shown ? `<div class="card-b"><button type="button" class="btn small" data-show-all="${listId}">Show all ${findings.length}</button></div>` : ""}`;
 }
 
@@ -8486,6 +8488,10 @@ pages["ux-review"] = async (_, query) => {
   // What the project is set up to capture, from the saved settings (so a half-valid config still shows what was typed).
   const set = { web: Boolean(saved.url), ios: Boolean(saved.simulator), android: Boolean(saved.android), mac: Boolean(saved.macos) };
   const anySet = Object.values(set).some(Boolean);
+  // Nothing saved yet: start from what the product requirements and the code say the app runs on (ux_review.inferred_targets)
+  const guess = anySet ? {} : (data.inferred || {});
+  for (const key of Object.keys(set)) set[key] = set[key] || Boolean(guess[key]);
+  const guessed = Object.keys(guess);
   const summaryLine = [set.web && `Web ${saved.url}`, set.ios && "iOS simulator", set.android && `Android ${saved.android.package || ""}`, set.mac && `Mac ${saved.macos.app || ""}`].filter(Boolean).join(" · ");
   const field = (label, name, value, { hint = "", placeholder = "", optional = false } = {}) =>
     `<label class="field"><span>${label}${optional ? ` <span class="muted">(optional)</span>` : ""}</span><input type="text" name="${name}" value="${esc(value || "")}" placeholder="${esc(placeholder)}" spellcheck="false">${hint ? `<small class="hint-text">${hint}</small>` : ""}</label>`;
@@ -8493,15 +8499,15 @@ pages["ux-review"] = async (_, query) => {
     `<label class="field"><span>${label} <span class="muted">(one per line${hint ? "" : ", optional"})</span></span><textarea name="${name}" rows="3" spellcheck="false" placeholder="${esc(placeholder)}">${esc((values || []).join("\n"))}</textarea>${hint ? `<small class="hint-text">${hint}</small>` : ""}</label>`;
   const platformBox = (key, title) => `<label class="check ux-platform-choice"><input type="checkbox" name="p_${key}" ${set[key] ? "checked" : ""}><span>${title}</span></label>`;
   const platformFields = {
-    web: `${field("Address of your running app", "url", saved.url, { placeholder: "http://localhost:3000", hint: "Where the app runs during development. A sign-in token can come from an environment variable: <code class=\"nowrap\">?token=$MY_TOKEN</code>." })}
+    web: `${field("Address of your running app", "url", saved.url || guess.web?.url, { placeholder: "http://localhost:3000", hint: "Where the app runs during development. A sign-in token can come from an environment variable: <code class=\"nowrap\">?token=$MY_TOKEN</code>." })}
       <label class="field"><span>Pages to capture <span class="muted">(one per line)</span></span><textarea name="routes" rows="3" spellcheck="false">${esc((saved.routes || ["/"]).join("\n"))}</textarea></label>
       <label class="field"><span>Widths <span class="muted">(pixels)</span></span><input type="text" name="widths" value="${esc((saved.widths || [390, 1440]).join(" "))}"></label>
-      ${field("Command that starts the app", "start_command", saved.start_command, { optional: true, placeholder: "npm run dev", hint: "Used only when the address isn't answering; stopped afterwards." })}`,
+      ${field("Command that starts the app", "start_command", saved.start_command || guess.web?.start_command, { optional: true, placeholder: "npm run dev", hint: "Used only when the address isn't answering; stopped afterwards." })}`,
     ios: `<p class="muted">Builds and launches the app in the Xcode simulator.</p>
       ${lines("Screens to open", "simulator_screens", saved.simulator_screens, "myapp://settings", "")}`,
-    android: `${field("App id", "android_package", saved.android?.package, { placeholder: "com.example.app", hint: "Needs adb (Android platform-tools) and a running emulator or device, or the name of one below." })}
+    android: `${field("App id", "android_package", saved.android?.package || guess.android?.package, { placeholder: "com.example.app", hint: "Needs adb (Android platform-tools) and a running emulator or device, or the name of one below." })}
       ${field("Built app (.apk)", "android_apk", saved.android?.apk, { optional: true, placeholder: "app/build/outputs/apk/debug/app-debug.apk" })}
-      ${field("Build command", "android_build", saved.android?.build_command, { optional: true, placeholder: "./gradlew assembleDebug" })}
+      ${field("Build command", "android_build", saved.android?.build_command || guess.android?.build_command, { optional: true, placeholder: "./gradlew assembleDebug" })}
       ${field("Emulator to start (AVD name)", "android_avd", saved.android?.avd, { optional: true, placeholder: "Pixel_8_API_34" })}
       ${lines("Screens to open", "android_screens", saved.android?.screens, "myapp://settings", "")}`,
     mac: `${field("Built app (.app)", "macos_app", saved.macos?.app, { placeholder: "build/Debug/MyApp.app", hint: "Its window is captured in light mode. The app running Orchestrator needs Screen Recording permission in System Settings." })}
@@ -8509,14 +8515,15 @@ pages["ux-review"] = async (_, query) => {
   };
   const platformTitles = { web: "Web app", ios: "iOS app", android: "Android app", mac: "Mac app" };
   const setupCard = `<section class="card mb-16" id="ux-setup"><details class="fold"${query.get("setup") || !anySet ? " open" : ""}>
-      <summary class="card-h"><h2>Screens</h2><span class="muted">${anySet ? esc(summaryLine) : "Not set up: reviewing code only"}</span></summary>
+      <summary class="card-h"><h2>Screens</h2><span class="muted">${anySet ? esc(summaryLine) : guessed.length ? "Detected: check and save" : "Not set up: reviewing code only"}</span></summary>
       <form class="card-b stack" id="ux-settings">
+        ${guessed.length ? `<p class="muted">Detected from ${esc([...new Set(guessed.map((k) => guess[k].why))].join(", "))}. Check it, then Save.</p>` : ""}
         <fieldset class="ux-platforms"><legend>What does your app run on?</legend><div class="row gap-8">${Object.keys(platformTitles).map((key) => platformBox(key, platformTitles[key])).join("")}</div></fieldset>
         ${Object.keys(platformTitles).map((key) => `<div class="ux-platform stack" data-platform="${key}"${set[key] ? "" : " hidden"}><strong>${platformTitles[key]}</strong>${platformFields[key]}</div>`).join("")}
         <details class="np-more"><summary class="np-section-legend">More options</summary><div class="stack">
-          ${field("Your UI conventions file", "conventions", saved.conventions, { optional: true, placeholder: "docs/ui-conventions.md", hint: "Found automatically when it's named like docs/*ui*conventions*.md or DESIGN.md." })}
-          <label class="check"><input type="checkbox" name="dark_mode" ${saved.dark_mode !== false ? "checked" : ""}><span>Also capture dark mode</span></label>
-          <label class="check"><input type="checkbox" name="review_changes" ${saved.review_changes !== false ? "checked" : ""}><span>Review each UI job's changes automatically</span></label>
+          ${field("Design rules file", "conventions", saved.conventions, { optional: true, placeholder: "docs/ui-conventions.md", hint: "Your spacing, type, colour and wording rules: screens are checked against them. Found by itself at docs/*ui*conventions*.md or DESIGN.md." })}
+          <label class="check"><input type="checkbox" name="dark_mode" ${saved.dark_mode !== false ? "checked" : ""}><span>Check dark mode too <small class="hint-text">Each screen again in dark mode, for contrast</small></span></label>
+          <label class="check"><input type="checkbox" name="review_changes" ${saved.review_changes !== false ? "checked" : ""}><span>Check each job's UI changes <small class="hint-text">Only what the job changed, on its page</small></span></label>
         </div></details>
         <div><button class="btn" type="submit">Save</button></div>
       </form></details></section>`;
@@ -8549,10 +8556,10 @@ pages["ux-review"] = async (_, query) => {
           <div class="card-b stack">
             ${caveatText ? `<div class="notice">${esc(caveatText)}</div>` : ""}
             <div class="row gap-8"><span class="pill ${pass.counts.major ? "failed" : pass.counts.findings || caveat ? "attention" : "done"}">${caveat === "Nothing to review" ? "Nothing reviewed" : plural(pass.counts.findings, "finding")}</span>
-              ${pass.counts.major ? `<span class="muted">${pass.counts.major} major or worse</span>` : ""}${caveat === "Nothing to review" ? "" : `<span class="muted">${pass.counts.passed} checklist items pass, ${pass.counts.failed} fail</span>`}
-              <span class="spacer"></span>${pass.findings?.length ? uxFixLink(pass.fix_text, "Create fix job") : ""}</div>
-            ${pass.summary ? `<p>${clamped(pass.summary, 500)}</p>` : ""}
-            ${pass.limits ? `<p class="muted">${esc(pass.limits)}</p>` : ""}
+              <span class="muted">${[pass.counts.major && `${pass.counts.major} major`, caveat === "Nothing to review" ? "" : `${pass.counts.passed} of ${pass.counts.passed + pass.counts.failed} checks pass`].filter(Boolean).join(" · ")}</span>
+              <span class="spacer"></span>${pass.findings?.length ? uxFixLink(pass.fix_text, "Fix top issues") : ""}</div>
+            ${pass.summary ? `<p>${clamped(pass.summary, 200)}</p>` : ""}
+            ${pass.limits && !caveatText ? `<details class="fold"><summary class="muted">What wasn't checked</summary><p class="muted">${esc(pass.limits)}</p></details>` : ""}
           </div>
           ${pass.findings?.length ? uxFindingsHtml(pass.findings, { listId: "ux-findings" }) : ""}
         </section>` : ""}

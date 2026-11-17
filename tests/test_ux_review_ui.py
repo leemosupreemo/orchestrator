@@ -61,7 +61,7 @@ pages['ux-review']([], new URLSearchParams(input.latest ? 'id=older' : '')).then
                                                   'id="ux-screenshot-gallery"', 'id="ux-checklist"', "Earlier reviews")]
         self.assertEqual(order, sorted(order))
         self.assertEqual(html.count('data-action="ux_pass"'), 0)  # one Run button, in the header
-        self.assertIn("Create fix job", html)
+        self.assertIn("Fix top issues", html)
 
     def test_setup_is_a_closed_one_line_summary_once_screens_are_set_up(self):
         page = self.render(saved={"url": "http://localhost:3000", "android": {"package": "com.example.app"}},
@@ -193,3 +193,36 @@ if (updateUxReviewWhileEditing({html: ''})) throw new Error('Clean form blocked 
         self.assertIn("Not checked", page["html"])
         self.assertIn("Keyboard focus", page["html"])
         self.assertNotIn('<details class="fold"><summary class="card-h"><h2>Usability heuristics', page["html"])
+
+
+class UxReviewWordingTests(unittest.TestCase):
+    """Each finding names the UX shortcoming it breaks; counts are one line; the reviewer is asked for short text; the
+    Screens form starts from what the project runs on."""
+
+    def test_findings_lead_with_the_shortcoming_and_stay_short(self):
+        app = (STATIC / "app.js").read_text(encoding="utf-8")
+        self.assertIn('${esc(UX_CHECKS[f.item]?.name || "Other problem")}', app)
+        self.assertIn("${clamped(f.problem, 180)}", app)
+        self.assertIn('uxFixLink(pass.fix_text, "Fix top issues")', app)
+        self.assertIn("What wasn't checked", app)
+        prompt = (STATIC.parents[1] / "prompts" / "ux_reviewer.md").read_text(encoding="utf-8")
+        self.assertIn("in one sentence under 30 words", prompt)
+
+    def test_what_the_app_runs_on_is_worked_out_from_the_project(self):
+        import json
+        import tempfile
+        from orchestrator import ux_review
+        root = Path(tempfile.mkdtemp())
+        (root / "package.json").write_text(json.dumps({"scripts": {"dev": "vite"}, "devDependencies": {"vite": "5"}}))
+        (root / "app").mkdir()
+        (root / "app" / "build.gradle").write_text('android { defaultConfig { applicationId "com.example.word" } }')
+        found = ux_review.inferred_targets(root, ["package.json", "app/build.gradle"], "Built for: iOS, macOS")
+        self.assertEqual(found["web"]["url"], "http://localhost:5173")
+        self.assertEqual(found["web"]["start_command"], "npm run dev")
+        self.assertEqual(found["android"]["package"], "com.example.word")
+        self.assertIn("Built for", found["ios"]["why"])
+        self.assertIn("mac", found)
+        self.assertEqual(ux_review.inferred_targets(root, [], ""), {})  # nothing to go on: nothing guessed
+        app = (STATIC / "app.js").read_text(encoding="utf-8")
+        self.assertIn('const guess = anySet ? {} : (data.inferred || {});', app)  # only until something is saved
+        self.assertIn('"Detected: check and save"', app)

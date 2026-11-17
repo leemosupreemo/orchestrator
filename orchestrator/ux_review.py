@@ -501,3 +501,60 @@ def fix_job_text(findings: list[dict[str, Any]], min_severity: int = 2) -> str:
 
 def stamp() -> str:
     return datetime.now().strftime("%Y%m%d-%H%M%S")
+
+
+# ---- what the app runs on, worked out from the project, so the Screens form starts filled in rather than blank
+
+_WEB_PORTS = (("vite", "http://localhost:5173"), ("next", "http://localhost:3000"), ("react-scripts", "http://localhost:3000"),
+              ("@angular/core", "http://localhost:4200"), ("nuxt", "http://localhost:3000"), ("astro", "http://localhost:4321"))
+
+
+def inferred_targets(root: Path, files: list[str], prd_text: str = "") -> dict[str, Any]:
+    """{platform: {fields..., "why": "..."}} for "web", "ios", "android" and "mac", from the product requirements' "Built
+    for" line and the project's own files. Only suggestions: the Screens form shows them ticked and filled, to check and save."""
+    import json as _json
+    built_for = ""
+    for line in prd_text.splitlines():
+        if line.strip().lower().startswith("built for:"):
+            built_for = line.split(":", 1)[1].lower()
+            break
+    names = {Path(f).name for f in files}
+    out: dict[str, Any] = {}
+    pkg = Path(root) / "package.json"
+    if "package.json" in names and pkg.is_file():
+        try:
+            data = _json.loads(pkg.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            data = {}
+        deps = {**(data.get("dependencies") or {}), **(data.get("devDependencies") or {})}
+        scripts = data.get("scripts") or {}
+        url = next((u for dep, u in _WEB_PORTS if dep in deps), "")
+        if url or "web" in built_for:
+            start = "npm run dev" if "dev" in scripts else "npm start" if "start" in scripts else ""
+            out["web"] = {"url": url or "http://localhost:3000", "start_command": start, "why": "package.json" + (f" ({start})" if start else "")}
+    if not out.get("web") and ("web" in built_for or "browser" in built_for):
+        out["web"] = {"url": "", "why": "the product requirements (Built for)"}
+    xcode = any(f.endswith((".xcodeproj/project.pbxproj", "Package.swift")) for f in files)
+    unity = any(f.startswith("ProjectSettings/") or "/ProjectSettings/ProjectSettings.asset" in f for f in files)
+    if re_search(r"\bios\b|iphone|ipad", built_for) or (xcode and not built_for):
+        out["ios"] = {"why": "the product requirements (Built for)" if built_for else "the Xcode project"}
+    if re_search(r"\bmacos\b|\bmac\b", built_for):
+        out["mac"] = {"why": "the product requirements (Built for)" + (" · a Unity project: build the Mac player first" if unity else "")}
+    gradle = next((f for f in files if f.endswith(("build.gradle", "build.gradle.kts")) and "/app/" in f"/{f}"), "")
+    if gradle or "android" in built_for:
+        package = ""
+        if gradle:
+            try:
+                match = re_search(r"applicationId\s*[=\s]\s*[\"']([\w.]+)[\"']", (Path(root) / gradle).read_text(encoding="utf-8", errors="replace"))
+                package = match.group(1) if match else ""
+            except OSError:
+                pass
+        out["android"] = {"package": package, "build_command": "./gradlew assembleDebug" if gradle else "",
+                          "why": gradle or "the product requirements (Built for)"}
+    return out
+
+
+def re_search(pattern: str, text: str):
+    import re as _re
+    return _re.search(pattern, text or "")
+

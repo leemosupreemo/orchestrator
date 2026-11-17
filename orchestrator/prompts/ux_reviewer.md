@@ -64,7 +64,7 @@ Return only JSON, no prose before or after:
 
 ```json
 {
-  "summary": "Two or three sentences: the overall state and the most important thing to fix.",
+  "summary": "One sentence, under 30 words: the overall state and the most important thing to fix.",
   "checklist": [
     {"id": "ux.one-primary", "status": "pass | fail | partial | n/a", "note": "One line of evidence."}
   ],
@@ -75,11 +75,11 @@ Return only JSON, no prose before or after:
       "severity": 3,
       "screen": "Home, phone",
       "element": "the floating + button",
-      "problem": "What is wrong, specifically.",
-      "fix": "What to change, specifically."
+      "problem": "What is wrong, in one sentence under 30 words. Name the file and line only when it helps find it.",
+      "fix": "What to change, in one sentence under 25 words."
     }
   ],
-  "limits": "What you could not check (no screenshots, could not open images, pages behind sign-in)."
+  "limits": "What you could not check, in one short sentence (no screenshots, could not open images, pages behind sign-in)."
 }
 ```
 
