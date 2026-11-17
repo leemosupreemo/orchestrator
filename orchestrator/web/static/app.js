@@ -5818,6 +5818,9 @@ pages.job = async ([id]) => {
     ...getStepState(4),
   };
 
+  const nextAction = s.state.next?.action;
+  const planSummary = String(job.plan?.summary || "").trim();
+  const showSummary = planSummary && planSummary.toLowerCase() !== "summary";
   const hasBuildWork = allFiles.length > 0 || filesChanged > 0 || isJobComplete || currentPhaseIndex >= 2;
   const prUrl = (links || []).find((l) => l?.url && /pr|pull|merge/i.test(l.label || ""))?.url || job.merge_request_url || job.pr_url || "";
   const builderSummaryDoc = otherDocs.find((d) => d.name === "builder_summary.md" && d.text?.trim()) || null;
@@ -5895,13 +5898,10 @@ pages.job = async ([id]) => {
 
   // Approving (or starting) a plan: the plan is shown right under the decision, with what each task is done when,
   // the files it touches, and what the AI assumed. GitHub puts Approve beside the changes; this is the same idea.
-  const nextAction = s.state.next?.action;
   const reviewingPlan = ["approve", "schedule"].includes(nextAction) && s.status !== "designing" && !activeRun && tasks.length > 0;
   const listOf = (v) => (Array.isArray(v) ? v : typeof v === "string" && v.trim().startsWith("[") ? (() => { try { return JSON.parse(v); } catch { return []; } })() : [])
     .filter((x) => typeof x === "string" && x.trim());
   const risks = listOf(job.plan?.risks), constraints = listOf(job.plan?.constraints);
-  const planSummary = String(job.plan?.summary || "").trim();
-  const showSummary = planSummary && planSummary.toLowerCase() !== "summary";
   const notes = [["What the AI assumed", assumptions], ["Risks", risks], ["Constraints", constraints]].filter(([, list]) => list.length);
   const taskRowsHtml = (withDetail) => tasks.map((t, i) => {
     const title = typeof t === "string" ? t : (t.title || t.name || t.description || `Task ${i + 1}`);

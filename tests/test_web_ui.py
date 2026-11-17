@@ -8041,6 +8041,68 @@ for (const issue of [null, {sign_in: {provider: 'claude', name: 'Claude'}}]) {
         result = subprocess.run(["node", "-e", script], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_job_page_renders_without_temporal_dead_zone_errors(self):
+        script = r"""
+const fs = require('fs');
+const source = fs.readFileSync(process.argv[1], 'utf8');
+require(process.argv[2]);
+const esc = Html.escape, pages = {};
+const state = { project: { dirty_files: 0, languages: [] }, you: { role: 'owner' }, runs: [] };
+const SIDE_RUNS = new Set(['export_job', 'web_preview', 'dev_preview']);
+const act = () => '';
+const ago = () => 'just now';
+const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
+const clamped = t => esc(t);
+const matchMedia = () => ({ matches: false });
+const formatJobTests = () => '';
+const jiraChip = () => '';
+const featureChip = () => '';
+const jobPill = () => '';
+const runPill = () => '';
+const runItem = () => '';
+const phaseProgressBarHtml = () => '';
+const jobHeaderActions = () => '';
+const jobRunsCard = () => '';
+const jobChangeSummary = () => '';
+const jobDocsOutlineHtml = () => '';
+const uxReviewCard = () => '';
+const testCaseSummaryHtml = () => '';
+const testCaseRowsHtml = () => '';
+const clarificationQuestionsHtml = () => '';
+const jobStatusBanner = () => '';
+const autoresponseNote = () => '';
+const jobContextRail = () => '';
+const clarificationThread = () => '';
+const runningMark = '';
+const Markdown = { render: t => esc(t) };
+const status = 'review-needed';
+async function api(path) {
+  if (path.startsWith('jobs/')) {
+    return {
+      summary: { id: 'j1', title: 'Quick change', status: 'review-needed', type: 'quick', state: { label: 'Ready to merge', group: 'needs_you', next: { action: 'merge', label: 'Merge' } } },
+      job: { job_id: 'j1', title: 'Quick change', status: 'review-needed', base_branch: 'main', plan: { summary: 'Did the thing', tasks: [] } },
+      outputs: [], runs: [], docs: [], changes: { files: ['a.swift'], base: 'main' }, links: [],
+      test_summary: {}, pipeline: {}, tasks: [], completed_tasks: [],
+    };
+  }
+  if (path === 'ai/abilities') return { highlights: [] };
+  if (path === 'visual-checks') return { checks: [] };
+  if (path === 'docs') return { features: [], jobs: [] };
+  return {};
+}
+const block = source.slice(source.indexOf('let aiAbilities ='), source.indexOf('const JOB_TYPE_INFO'));
+eval(block);
+pages.job(['j1']).then(res => {
+  if (!res || !res.html || !res.html.includes('Did the thing')) throw new Error('Missing plan summary');
+}).catch(err => { console.error(err); process.exit(1); });
+"""
+        result = subprocess.run(
+            ["node", "-e", script, str(PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js"),
+             str(PACKAGE_ROOT / "orchestrator" / "web" / "static" / "html.js")],
+            capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_job_after_hook_handles_absent_optional_forms(self):
         match = re.search(r"    after: \(\) => \{\n(.*?)\n    \},\n  \};\n\};", self.job_page, re.S)
         self.assertIsNotNone(match)
