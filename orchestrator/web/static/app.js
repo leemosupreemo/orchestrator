@@ -5817,7 +5817,7 @@ pages.job = async ([id]) => {
   const changeSummaryText = jobChangeSummary(otherDocs, changes);
   // Task progress lives in the hero (a bar under Now/Next) only while building; the stepper and hero cover every other stage.
   const showTaskBar = tasksTotal > 0 && currentPhase === "build" && tasksDone > 0;
-  const phaseTargets = [!tasksTotal && !showSummary && hasBuildWork ? "#brief-section" : "#plan-section", tasksTotal ? "#plan-section" : (hasBuildWork ? "#changes-section" : "#plan-section"), "#verify-section", "#document-section", "#finalize-section"];
+  const phaseTargets = [!tasksTotal && !showSummary && hasBuildWork ? "#brief-section" : "#plan-section", tasksTotal ? "#plan-section" : (hasBuildWork ? "#changes-section" : "#plan-section"), "#verify-section", "#document-section", "#job-hero"]; // Finalize: the status box holds the merge decision
   const heroTone = ["merge", "complete"].includes(nextAction) && s.state.tone !== "failed" ? "done" : (s.state.tone || "");
   const phasesInfo = [planStep, buildStep, verifyStep, docStep, reviewStep];
   ["plan", "build", "verify", "document", "finalize"].forEach((phase, i) => {
@@ -6012,7 +6012,7 @@ pages.job = async ([id]) => {
         `).join("")}
       </nav>
 
-      ${reviewingPlan ? "" : `<section class="job-hero tone-${esc(heroTone)}${(activeRun && !activeRun.waiting) || s.state.label === "Building" ? " is-running" : ""}">
+      ${reviewingPlan ? "" : `<section id="job-hero" tabindex="-1" class="job-hero tone-${esc(heroTone)}${(activeRun && !activeRun.waiting) || s.state.label === "Building" ? " is-running" : ""}">
         <div class="job-hero-main">
           <h2 class="job-hero-title">${(activeRun && !activeRun.waiting) || s.state.label === "Building" ? runningMark : ""}${esc(s.state.label || s.status)}</h2>
           <p class="job-hero-reason">${heroReason}</p>
@@ -6113,11 +6113,6 @@ pages.job = async ([id]) => {
       ${uxReviewCard(s, data.ux_review, visualChecks)}
 
       ${jobDocsOutlineHtml({ s, featureName, docFilesChanged, otherDocs, docsIndex, relatedDocs: data.related_docs || [] })}
-      <section class="card mb-16" id="finalize-section" tabindex="-1">
-        <div class="card-h"><h2>Finalize</h2></div>
-        <div class="card-b stack"><p class="muted">${isJobComplete ? "Merged" : currentPhase === "review" ? "Ready for review and merge." : "Review and merge follow verification and documentation."}</p>
-          ${currentPhase === "review" ? `<div class="row">${heroAction}</div>` : ""}</div>
-      </section>
 
       <!-- Jobs this one was split into (if any) -->
       ${(job.subtask_job_ids && job.subtask_job_ids.length) ? `
