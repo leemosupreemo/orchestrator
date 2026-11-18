@@ -22,6 +22,11 @@ import simulator_visual_check  # noqa: E402
 
 
 class VisualDeliveryConfigTests(unittest.TestCase):
+    def setUp(self):
+        revision = patch("orchestrator.job_review.source_revision", return_value="a" * 40)
+        revision.start()
+        self.addCleanup(revision.stop)
+
     def test_distribution_script_options_reflect_project_script_contract(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             script = Path(temp_dir) / "ship.sh"
@@ -201,6 +206,7 @@ class VisualDeliveryConfigTests(unittest.TestCase):
 
             config = MagicMock()
             config.validate_distribution_config.return_value = []
+            config.runtime_dir = root / ".orchestrator"
             config.distribution_script_path = "scripts/distribute_ios.sh"
             config.xcode_project = "SampleApp.xcodeproj"
             config.xcode_workspace = None
@@ -263,6 +269,7 @@ class VisualDeliveryConfigTests(unittest.TestCase):
 
             config = MagicMock()
             config.validate_distribution_config.return_value = []
+            config.runtime_dir = root / ".orchestrator"
 
             with (
                 patch.object(deliver_build, "ROOT", root),

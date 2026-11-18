@@ -10,6 +10,7 @@ import selectors
 import subprocess
 import threading
 import time
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -35,7 +36,7 @@ from model_registry import get_all_models, ModelTier
 from probe_machine import load_machines, probe_machine
 from orchestrator.project_config import PACKAGE_ROOT, PROJECT_CONFIG
 
-from orchestrator import __version__
+from orchestrator import __version__, job_review
 
 def input(prompt: str = "") -> str:
     """Wrapper around get_key that avoids termios raw/cooked mode input lockups during pauses."""
@@ -3737,20 +3738,69 @@ def handle_manage_tests(session_allowed_machines: list[str], session_allowed_mod
 
 handle_app_tests = handle_manage_tests
 
+def review_job_completion(job: dict[str, Any]) -> dict[str, Any]:
+    """Validate an attestation, or obtain one from a person at the console; never save it early."""
+    from common import interactive
+
+    root = job_review.project_root(Path(job["_path"]))
+    saved = job.get("manual_review")
+    if isinstance(saved, dict) and saved:
+        if not saved.get("revision"):
+            raise ValueError("The saved review has no revision. Review this job again before completing it.")
+        approved = job_review.approve(root, job, reviewed=True, expected_revision=saved["revision"],
+                                      reviewer=saved.get("reviewed_by") or "Console")
+        approved["reviewed_at"] = saved.get("reviewed_at") or approved["reviewed_at"]
+        return approved
+    if not interactive():
+        raise ValueError("Manual review is required before completing this job. Use --reviewed after reviewing the work.")
+    state = job_review.review_state(root, job)
+    print(f"\nReview & approve: {job.get('title') or job.get('job_id')}")
+    print(state["reason"])
+    delivery = state["delivery"]
+    print(f"App delivery ({delivery['status']}): {delivery['reason']}")
+    if delivery.get("url"):
+        print(f"Review the delivered app: {delivery['url']}")
+    for key in ("version", "build", "built_at"):
+        if delivery.get(key) is not None:
+            print(f"  {key}: {delivery[key]}")
+    if not state["can_approve"]:
+        raise ValueError(state["reason"])
+    if not prompt_confirm("I reviewed this work and approve completing this job.", default=False):
+        raise ValueError("Final approval was not given. The job remains open for review.")
+    return job_review.approve(root, job, reviewed=True, expected_revision=state["revision"], reviewer="Console")
+
+
 def archive_job(job: dict[str, Any], status: str = "completed"):
-    print(f"      - Archiving job {job.get('job_id')}...")
-    job["status"] = status
-    job["completed_at"] = now_iso()
-    
+    if status == "completed" and not (isinstance(job.get("manual_review"), dict) and job["manual_review"].get("revision")):
+        raise ValueError("Manual review is required before archiving a completed job.")
     job_path = Path(job["_path"])
     archive_path = ARCHIVE_DIR / job_path.name
-    
-    # Remove _path from dict before saving to avoid issues
-    path_to_save = job.pop("_path")
-    write_json(path_to_save, job)
-    
-    import shutil
-    shutil.move(str(path_to_save), str(archive_path))
+    ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
+    if archive_path.exists():
+        raise FileExistsError(f"An archived job already exists: {archive_path}")
+    payload = {key: value for key, value in job.items() if key != "_path"}
+    payload.update(status=status, completed_at=now_iso())
+    print(f"      - Archiving job {job.get('job_id')}...")
+    temporary = None
+    published = False
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=ARCHIVE_DIR,
+                                         prefix=f".{job_path.stem}-", suffix=".tmp", delete=False) as handle:
+            temporary = Path(handle.name)
+            json.dump(payload, handle, indent=2, ensure_ascii=False)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, archive_path)
+        published = True
+        job_path.unlink()
+    except Exception:
+        if published:
+            archive_path.unlink(missing_ok=True)
+        raise
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
     return archive_path
 
 def handle_cleanup_closed(silent: bool = False, confirm: bool = True):
@@ -3778,17 +3828,30 @@ def handle_cleanup_closed(silent: bool = False, confirm: bool = True):
         return
 
     archived_count = 0
+    pending_count = 0
     for job in jobs:
         issue_num = job.get("issue_number")
         if issue_num and issue_num in closed_numbers:
+            if not job.get("manual_review"):
+                print(f"  - Issue #{issue_num} is closed. Job stays open pending manual review.")
+                pending_count += 1
+                continue
+            try:
+                approval = review_job_completion(job)
+            except ValueError as exc:
+                print(f"  - Issue #{issue_num} is closed. Job stays open for review: {exc}")
+                pending_count += 1
+                continue
             print(f"  - Issue #{issue_num} is closed. Archiving...")
-            archive_job(job, status="completed")
+            archive_job({**job, "manual_review": approval}, status="completed")
             archived_count += 1
             
     if archived_count > 0:
         print(f"\n✅ Sync complete: Archived {archived_count} jobs found closed on GitHub.")
-    else:
+    elif not pending_count:
         print(f"\n✅ Sync complete: Verified {len(jobs)} active jobs are still open on GitHub.")
+    if pending_count:
+        print(f"\n{pending_count} closed-issue jobs remain active pending manual review.")
     
     if not silent and confirm:
         input("\n\033[1;96mTap Enter to return to menu...\033[0m")
@@ -4130,6 +4193,22 @@ def _back_to_menu() -> None:
         input("\n\033[1;96mTap Enter to return to menu...\033[0m")
 
 
+def handle_close_issue(job: dict[str, Any]) -> bool:
+    issue_num = job.get("issue_number")
+    if not issue_num:
+        print("No issue number associated with this job.")
+        return False
+    print(f"This will close GitHub Issue #{issue_num}. The local job stays open pending final review.")
+    if not prompt_confirm("Close this issue in GitHub?", default=False):
+        return False
+    result = subprocess.run(["gh", "issue", "close", str(issue_num)], cwd=str(ROOT))
+    if result.returncode != 0:
+        print("Issue closure failed. The local job remains open.")
+        return False
+    print("Issue closed. The local job remains open pending final review and approval.")
+    return True
+
+
 def handle_merge_cleanup(job: dict[str, Any]):
     pr_number = job.get("pr_number")
     branch = job.get("branch")
@@ -4140,6 +4219,16 @@ def handle_merge_cleanup(job: dict[str, Any]):
         print("!!! Error: No PR number found for this job.")
         return False
 
+    try:
+        approval = review_job_completion(job)
+    except ValueError as exc:
+        print(f"!!! Final review required: {exc}")
+        return False
+    commit = str(approval.get("commit") or "")
+    if not re.fullmatch(r"[0-9a-f]{40,64}", commit):
+        print("!!! Cannot merge: the reviewed branch has no matching Git commit.")
+        return False
+    job = {**job, "manual_review": approval}
     print_header(f"Merging & Cleaning up PR #{pr_number}")
 
     # 1. Mark draft PRs ready for review automatically so Merge & complete actually completes on GitHub
@@ -4161,7 +4250,8 @@ def handle_merge_cleanup(job: dict[str, Any]):
 
     # 2. Attempt Merge
     print(f"      - Merging PR #{pr_number}...")
-    merge_res = subprocess.run(["gh", "pr", "merge", str(pr_number), "--merge", "--delete-branch"], cwd=str(ROOT))
+    merge_res = subprocess.run(["gh", "pr", "merge", str(pr_number), "--merge", "--delete-branch",
+                                "--match-head-commit", commit], cwd=str(ROOT))
 
     if merge_res.returncode != 0:
         print("\n\033[1;91m!!! Error: PR merge failed.\033[0m")
@@ -4189,23 +4279,36 @@ def handle_merge_cleanup(job: dict[str, Any]):
     # 4. Tell linked tickets/cards/issues (best effort), then archive the job with that log
     try:
         from orchestrator.integrations_sync import notify_job_event
-        notify_job_event(job, "merged", CONFIG_DIR / "settings.json", Path(job["_path"]) if job.get("_path") else None,
+        notify_job_event(job, "merged", CONFIG_DIR / "settings.json", None,
                          pr_number=pr_number)
     except Exception as exc:
         print(f"      - Note: couldn't update linked apps: {exc}")
 
     # 5. Archive Job
-    archive_path = archive_job(job)
+    try:
+        archive_path = archive_job(job)
+    except (OSError, ValueError) as exc:
+        print(f"!!! Could not archive the job after merging: {exc}")
+        return False
 
     print(f"\n✅ Successfully merged and archived to {archive_path.name}")
     _back_to_menu()
 
 def handle_local_merge(job: dict[str, Any]):
     """Merge & complete without a pull request (plain git): merge the job's branch into its base on this computer."""
+    try:
+        job = {**job, "manual_review": review_job_completion(job)}
+    except ValueError as exc:
+        print(f"!!! Final review required: {exc}")
+        return False
     branch = job["branch"]
     base = job.get("base_branch") or PROJECT_CONFIG.base_branch
     if branch == base:  # the job worked on the base branch itself: nothing to merge
-        archive_path = archive_job(job)
+        try:
+            archive_path = archive_job(job)
+        except (OSError, ValueError) as exc:
+            print(f"!!! Could not archive the job: {exc}")
+            return False
         print(f"\n✅ The changes are already on {base}. Archived to {archive_path.name}")
         _back_to_menu()
         return
@@ -4221,10 +4324,14 @@ def handle_local_merge(job: dict[str, Any]):
         subprocess.run(["git", "branch", "-d", branch], cwd=str(ROOT), capture_output=True)
     try:
         from orchestrator.integrations_sync import notify_job_event
-        notify_job_event(job, "merged", CONFIG_DIR / "settings.json", Path(job["_path"]) if job.get("_path") else None)
+        notify_job_event(job, "merged", CONFIG_DIR / "settings.json", None)
     except Exception as exc:
         print(f"      - Note: couldn't update linked apps: {exc}")
-    archive_path = archive_job(job)
+    try:
+        archive_path = archive_job(job)
+    except (OSError, ValueError) as exc:
+        print(f"!!! Could not archive the job after merging: {exc}")
+        return False
     print(f"\n✅ Merged and archived to {archive_path.name}")
     _back_to_menu()
 
@@ -5033,20 +5140,8 @@ def handle_job_selection(job: dict[str, Any], session_allowed_machines: list[str
                 break
             elif choice == "c":
                 open_action_screen("Close Issue in GitHub")
-                issue_num = job.get("issue_number")
-                if issue_num:
-                    print(f"This will close GitHub Issue #{issue_num} and archive this local job.")
-                    print("\033[90mUse this only when the issue is no longer needed or was handled elsewhere.\033[0m\n")
-                    if prompt_confirm("Close this issue and archive the job?", default=False):
-                        print(f"Closing Issue #{issue_num}...")
-                        subprocess.run(["gh", "issue", "close", str(issue_num)], cwd=str(ROOT))
-                        archive_job(job)
-                        print(f"Job archived.")
-                        input("\n\033[1;96mTap Enter to return to menu...\033[0m")
-                        break # Back to main menu since job is archived
-                else:
-                    print("No issue number associated with this job.")
-                    input("\n\033[1;96mTap Enter to return to menu...\033[0m")
+                handle_close_issue(job)
+                input("\n\033[1;96mTap Enter to return to menu...\033[0m")
             elif choice == "l":
                 open_action_screen()
                 try:

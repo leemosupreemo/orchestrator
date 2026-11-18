@@ -85,7 +85,7 @@ class OwnershipTests(unittest.TestCase):
         self.assertFalse(ui.mark_job_moved(self.root, "j1", "MacBook Air"))  # already
         job = json.loads(self.path.read_text())
         state = ui.job_state(job)
-        self.assertEqual((state["group"], state["label"], state["next"]), ("done", "Moved to MacBook Air", None))
+        self.assertEqual((state["group"], state["label"], state["next"]), ("done", "Moved", None))
         with mock.patch.object(worker, "read_json", return_value=job), mock.patch.object(worker, "remove_task_views"), \
              mock.patch.object(worker, "prepare_git_branch") as prepare:
             worker.execute_job(self.path, resume=True)

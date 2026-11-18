@@ -138,10 +138,10 @@ class ServerTests(ServerTestCase):
 
     def test_a_waiting_job_says_what_it_waits_for(self):
         state = ui.job_state({"status": "planned", "waiting_for": {"title": "Add login page"}, "worker_pid": os.getpid(), "worker_host": ui.socket.gethostname()})
-        self.assertEqual(state["label"], "Waiting")
+        self.assertEqual(state["label"], "Queued")
         self.assertIn("Add login page", state["reason"])
         stale = ui.job_state({"status": "planned", "waiting_for": {"title": "Add login page"}, "worker_pid": 0})
-        self.assertNotEqual(stale["label"], "Waiting")  # its worker was stopped: it isn't waiting any more
+        self.assertNotEqual(stale["label"], "Queued")  # its worker was stopped: it isn't waiting any more
 
 
 class WorkerTests(unittest.TestCase):

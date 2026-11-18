@@ -73,6 +73,7 @@ from orchestrator import epics as epic_store
 from orchestrator import project_chat
 from orchestrator import folder_lock
 from orchestrator import job_overlap
+from orchestrator import job_review
 from orchestrator import plan_run
 from orchestrator import ux_review
 from orchestrator import inbox as inbox_view
@@ -895,52 +896,55 @@ def question_is_blocker(text: Any) -> bool:
 def job_state(job: dict[str, Any], root: Path | None = None) -> dict[str, Any]:
     """What the job is waiting on, in plain words, and the one action that moves
     it forward. `group` is needs_you | working | done; `tone` drives colour:
-    attention (amber) = your move, working (blue), done (green), failed (red)."""
+    attention (amber) = your move, working (blue), done (green), failed (red).
+    `in_progress` keeps Home and bulk actions independent of the display label."""
     status = job.get("status") or "unknown"
     tests = job.get("test_status")
     pr = job.get("pr_number")
     tasks = job_task_list(job)
     remaining = len(tasks) - len(job.get("completed_tasks") or []) if tasks else 0
 
-    def state(group, tone, label, reason, action=None, action_label=None):
+    def state(group, tone, label, reason, action=None, action_label=None, *, in_progress=False):
         return {"group": group, "tone": tone, "label": label, "reason": reason,
+                "in_progress": group == "working" or in_progress,
                 "next": {"action": action, "label": action_label} if action else None}
 
     if job.get("moved_to"):  # continued on another computer: owned and worked on there now
-        return state("done", "neutral", f"Moved to {job['moved_to']}",
+        return state("done", "neutral", "Moved",
                      f"This job was continued on {job['moved_to']}, which works on it now. Open it from that computer's jobs on Home; "
                      "Continue here on it brings it back.")
     waiting = job.get("waiting_for")
     if isinstance(waiting, dict) and worker_alive(job) is not False:  # see folder_lock: one job works in a project folder at a time
-        return state("working", "working", "Waiting",
+        return state("working", "working", "Queued",
                      f"Waiting for “{waiting.get('title') or 'another job'}” to finish. One job works in the project folder at a time; "
                      "this one starts on its own after that.")
     verification = job.get("verification") or {}
     if status == "human-needed" and verification.get("status") in ("rejected", "concerns"):
-        return state("needs_you", "attention", "Review suggestions",
+        return state("needs_you", "attention", "Needs approval",
                      f"The architect has {verification['status']}: {verification.get('comments') or 'see details'}".strip(),
                      "approve", "Accept suggestions")
     growth = job.get("task_growth")
     if (status == "human-needed" and isinstance(growth, dict) and isinstance(growth.get("task"), int)
             and growth["task"] in (job.get("completed_task_indices") or [])):  # undoing that task ends the pause
-        return state("needs_you", "attention", f"Task {growth['task'] + 1} grew past its plan",
-                     f"{growth.get('text') or ''} Keep going if that's fine, or undo the task and revise the plan to make it smaller.".strip(),
+        return state("needs_you", "attention", "Needs approval",
+                     f"Task {growth['task'] + 1} grew past its plan. {growth.get('text') or ''} Keep going if that's fine, or undo the task and revise the plan to make it smaller.".strip(),
                      "resume", "Keep going")
     blocker = job.get("blocker")
     if status == "human-needed" and isinstance(blocker, dict) and blocker.get("kind"):
         # Stopped by the machine, not the code (blockers.py): say what blocks it, checked now, not when it stopped.
         from orchestrator import blockers
         if root is not None and blockers.is_cleared(blocker, root):
-            return state("needs_you", "attention", "Blocker cleared",
+            return state("needs_you", "attention", "Paused",
                          f"{blocker.get('title')}: that's fixed now. Resume carries on from where it stopped.", "resume", "Resume")
-        blocked = state("needs_you", "failed", str(blocker.get("title") or "Blocked"), str(blocker.get("detail") or ""), "resume", "Try again")
+        reason = ": ".join(str(part) for part in (blocker.get("title"), blocker.get("detail")) if part)
+        blocked = state("needs_you", "failed", "Blocked", reason, "resume", "Try again")
         sign_in = {"provider": blocker.get("provider"), "name": blocker.get("name")} if blocker.get("kind") == "sign_in" and blocker.get("provider") != "ai" else None
         return {**blocked, "steps": blockers.steps(blocker, root or Path(".")), "sign_in": sign_in, "blocker_kind": blocker.get("kind")}
     if status == "human-needed" and isinstance(job.get("passed_uncommitted"), dict):
         # The work is done and tested; only saving it to git failed (worker_run). Resume commits it without building again.
         files = len(job["passed_uncommitted"].get("files") or [])
         error = str(job.get("last_error") or "").strip()
-        return state("needs_you", "attention", "Tests passed, not committed",
+        return state("needs_you", "attention", "Blocked",
                      f"The work is done and its tests passed ({plural_count(files, 'file')} changed), but saving it to git failed"
                      f"{': ' + error if error else ''}. Resume commits it; nothing is built again.", "resume", "Commit the work")
     if status == "human-needed":
@@ -950,83 +954,83 @@ def job_state(job: dict[str, Any], root: Path | None = None) -> dict[str, Any]:
             # needed fixing) and gives the one button that retries with what's needed, plus the steps when something is left to do.
             from orchestrator import blocker_fix
             fix = blocker_fix.diagnose(question, job, root)
-            blocked = state("needs_you", "failed", "The AI couldn't continue", fix["reason"], fix["action"], fix["label"])
+            blocked = state("needs_you", "failed", "Blocked", fix["reason"], fix["action"], fix["label"])
             blocked["next"]["params"] = fix["params"]
             return {**blocked, "steps": fix["steps"], "sign_in": fix["sign_in"], "blocker": question}
         if question:
             asker = "builder" if str(job.get("last_error") or "").startswith("Builder clarification needed") else "planner"
-            return state("needs_you", "attention", "Question for you", f"The {asker} needs an answer to continue.", "answer", "Answer")
+            return state("needs_you", "attention", "Needs input", f"The {asker} needs an answer to continue.", "answer", "Answer")
         error = str(job.get("last_error") or "").strip()
         if job.get("build_no_changes"):  # the builder changed no files (worker_run.no_change_stop): the build isn't done
-            return state("needs_you", "failed", "Nothing was built", error or "The build finished without changing any files.", "resume", "Run the build again")
+            return state("needs_you", "failed", "Needs a fix", error or "The build finished without changing any files.", "resume", "Run the build again")
         check = job.get("test_validation") or {}
         added = len(job.get("output_digests") or {})
         files = f"{added} test file{'' if added == 1 else 's'}"
         if added and check.get("kind") in ("environment", "pending", "unregistered"):  # the tests were written, then checking them was cut short
-            return state("needs_you", "attention", "Partially complete",
+            return state("needs_you", "attention", "Paused",
                          (f"Paused: {files} added, but some never ran. {error}" if check.get("kind") == "unregistered" else f"Paused: {files} added but not checked yet. {error}").strip(), "resume", "Try again")
         if added and check.get("kind") == "tests" and not check.get("passed"):  # written and checked, and some didn't pass
             failed = check.get("failures") or []
             what = f"{plural_count(len(failed), 'test')} didn't pass ({', '.join(f['test'].split('.')[-1] for f in failed[:2])}{', …' if len(failed) > 2 else ''})" \
                 if failed else "the tests didn't pass"
-            return state("needs_you", "attention", "Partially complete",
+            return state("needs_you", "attention", "Paused",
                          f"Paused: {files} added, but {what}. Fix the tests if they expect the wrong thing; if the code is wrong, report it as a bug.",
                          "debug", "Fix the tests")
         finished = len(job.get("completed_tasks") or job.get("completed_task_indices") or [])
         changed = len(job.get("ai_modified_files") or []) + len(job.get("ai_untracked_files") or [])
         if finished or changed >= PARTIAL_FILES:  # real code was written before it stopped: that work is kept, so say so
             progress = f"{finished} of {len(tasks)} tasks done" if finished and tasks else f"{plural_count(changed, 'file')} changed"
-            return state("needs_you", "attention", "Partially complete",
+            return state("needs_you", "attention", "Paused",
                          f"Paused: {progress}. {('It stopped with an error: ' + error) if error else 'It stopped before finishing.'}".strip(),
                          *(("resume", "Resume") if (remaining or not error) else ("debug", "Run a fix")))
         reason = f"It stopped with an error: {error}" if error else "It stopped before finishing."
         if remaining or not error or check.get("kind") != "tests":
-            return state("needs_you", "failed" if error else "attention", "Stopped", reason, "resume", "Resume")
-        return state("needs_you", "failed", "Stopped", reason, "debug", "Run a fix")
+            return state("needs_you", "failed" if error else "attention", "Paused", reason, "resume", "Resume")
+        return state("needs_you", "failed", "Paused", reason, "debug", "Run a fix")
     if status == "designing":
-        return state("needs_you", "attention", "Design ready", "Approve the design to plan its implementation, or ask for changes.", "approve", "Approve design")
+        return state("needs_you", "attention", "Needs approval", "Approve the design to plan its implementation, or ask for changes.", "approve", "Approve design")
     if status == "planned":
         if job.get("type") == "feature-plan" and not job.get("approved"):
-            return state("needs_you", "attention", "Pending approval", "Approve the plan to start building its tasks.", "approve", "Approve plan")
-        return state("needs_you", "attention", "Planned", "Start building when you're happy with the plan.", "schedule", "Start")
+            return state("needs_you", "attention", "Needs approval", "Approve the plan to start building its tasks.", "approve", "Approve plan")
+        return state("needs_you", "attention", "Ready", "Start building when you're happy with the plan.", "schedule", "Start")
     if status == "review-needed":
         base = job.get("base_branch")
         if not pr and base and job.get("branch") == base:
-            return state("needs_you", "attention", "Ready for review",
+            return state("needs_you", "attention", "Needs review",
                          f"The changes are committed on {base} on this computer: the job worked on the current branch, so there "
                          f"is nothing to merge, and {base} wasn't pushed. Mark it complete when you're happy.", "complete", "Mark complete")
         if pr:
-            return state("needs_you", "attention", "Ready to merge", f"PR #{pr} is ready for your review.", "merge", "Merge & complete")
+            return state("needs_you", "attention", "Needs review", f"PR #{pr} is ready for your review.", "merge", "Merge & complete")
         if job.get("code_host") == "git" and job.get("branch"):
             where = " A merge request link is on the job." if job.get("merge_request_url") else ""
-            return state("needs_you", "attention", "Ready to merge",
+            return state("needs_you", "attention", "Needs review",
                          f"The changes are on {job['branch']}. Merge & complete merges it into {job.get('base_branch') or 'the base branch'} "
                          f"on this computer; or merge it on your git host and mark it complete.{where}", "merge", "Merge & complete")
         found = [d for d in job.get("production_defects") or [] if isinstance(d, dict) and d.get("summary")]
         if job.get("output_scope") == "tests-only" and found:  # the tests are done; what's left is the code they found fault with
-            return state("needs_you", "attention", "Tests added, defects found",
+            return state("needs_you", "attention", "Needs review",
                          f"The tests are written and passing. {plural_count(len(found), 'test')} left out because the code is wrong: details and the recommended next step are below. "
                          "No pull request was opened, so there is nothing to merge.", "complete", "Mark complete")
-        return state("needs_you", "attention", "Ready for review", "Changes are ready. No pull request was opened, so there is nothing to merge here. Mark it complete when you're happy.", "complete", "Mark complete")
+        return state("needs_you", "attention", "Needs review", "Changes are ready. No pull request was opened, so there is nothing to merge here. Mark it complete when you're happy.", "complete", "Mark complete")
     if status == "debugging":
         if tests in FAILING_TEST_STATUSES:
             label = "Build failing" if tests == "build-failed" else "Tests failing"
-            return state("needs_you", "failed", label, "Run a fix attempt, optionally with fresh device logs.", "debug", "Run fix")
+            return state("needs_you", "failed", "Needs a fix", f"{label}. Run a fix attempt, optionally with fresh device logs.", "debug", "Run fix")
         return state("needs_you", "attention", "Needs a fix", "Run a fix attempt, optionally with fresh device logs.", "debug", "Run fix")
     if status == "backlog":
-        return state("backlog", "idle", "Epic · no plan yet", "Approved, and waiting. Make a plan when you're ready; nothing runs until then.", "plan_epic", "Make a plan")
+        return state("backlog", "idle", "Needs plan", "Approved, and waiting. Make a plan when you're ready; nothing runs until then.", "plan_epic", "Make a plan")
     if status == "scheduled":
         return state("working", "working", "Queued", "Dispatched and waiting for a worker.", "execute", "Run now")
     if status in {"executing", "running", "in-progress"} and worker_alive(job) is False:
         done = len(tasks) - remaining if tasks else 0
         progress = f": {done} of {len(tasks)} tasks done" if tasks else ""
-        return state("needs_you", "attention", "Paused", f"Stopped before it finished{progress}.", "resume", "Resume")  # the page says where Resume picks up
+        return state("needs_you", "attention", "Paused", f"Stopped before it finished{progress}.", "resume", "Resume", in_progress=True)  # the page says where Resume picks up
     if status in {"executing", "running", "in-progress", "decomposed"}:
         return state("working", "working", "Building", "A worker is implementing this.")
     if status == "completed":
-        return state("done", "done", "Completed", "Merged and archived." if pr else "Finished.")
+        return state("done", "done", "Done", "Merged and archived." if pr else "Finished.")
     if status == "failed":
-        return state("needs_you", "failed", "Failed", "Last run failed; try a fix.", "debug", "Run fix")
+        return state("needs_you", "failed", "Needs a fix", "Last run failed; try a fix.", "debug", "Run fix")
     if remaining:
         return state("working", "working", status.replace("-", " ").capitalize(), f"{remaining} task(s) left.", "resume", "Resume")
     return state("working", "working", status.replace("-", " ").capitalize(), "")
@@ -1719,7 +1723,7 @@ def epics_overview(root: Path) -> dict[str, Any]:
         state = (job or {}).get("state") or {}
         epics.append({**epic, "feature_name": (features.get(epic.get("feature") or "") or {}).get("name") or "",
                       "job_info": {"id": job["id"], "label": state.get("label", ""), "group": state.get("group", ""), "tone": state.get("tone", ""),
-                                   "backlog": job.get("status") == "backlog", "plan_ready": state.get("label") == "Pending approval"} if job else None})
+                                   "backlog": job.get("status") == "backlog", "plan_ready": job.get("status") == "planned" and (state.get("next") or {}).get("action") == "approve"} if job else None})
     jira = saved_integrations(root).get("jira") or {}
     site = re.sub(r"^https?://", "", str(jira.get("site") or "")).strip("/")
     prd_text = prd_doc.Prd(root, runtime).read() or ""
@@ -2519,6 +2523,7 @@ def job_problem_for(job: dict[str, Any], out_dir: Path) -> dict[str, Any] | None
 def job_detail(root: Path, job_id: str) -> dict[str, Any]:
     path = resolve_job_path(root, job_id)
     job = read_json_file(path)
+    job.setdefault("job_id", path.stem)
     out_dir = runtime_dir(root) / "output" / job_id
     outputs = []
     if out_dir.is_dir():
@@ -2571,6 +2576,7 @@ def job_detail(root: Path, job_id: str) -> dict[str, Any]:
         "test_cases": test_case_view(root, test_case_lib.job_cases(job), {c["id"] for c in test_case_lib.due_cases(job)},
                                      test_case_lib.satisfied_cases(job), test_case_lib.skipped_cases(job)),
         "delivery": run_result.delivery_report(job, root),
+        "final_review": job_review.review_state(root, job),
         "problem": job_problem_for(job, out_dir),  # what needs fixing, in words, for a job waiting on a fix
         "parent": job_stub(root, job.get("parent_job_id")),
         "pipeline": pipeline,
@@ -4389,6 +4395,20 @@ def _choice(params: dict[str, Any], key: str, choices: list[str], default: str |
 
 def _job_path(params: dict[str, Any], root: Path) -> str:
     return str(resolve_job_path(root, _text(params, "job", required=True)))
+
+
+def build_final_approval(action: str, params: dict[str, Any], root: Path) -> list[str]:
+    path = _job_path(params, root)
+    revision = _text(params, "review_revision", required=True)
+    job = read_json_file(Path(path))
+    job.setdefault("job_id", Path(path).stem)
+    try:
+        job_review.approve(root, job, reviewed=params.get("reviewed") is True,
+                           expected_revision=revision, reviewer=str(params.get("_reviewer") or "Web UI"))
+    except ValueError as exc:
+        raise UIError(str(exc)) from exc
+    return orchestrator_argv("script", "job_actions.py", action, path, "--reviewed", "--review-revision", revision,
+                             "--reviewer", str(params.get("_reviewer") or "Web UI"))
 
 
 def _session_id(params: dict[str, Any]) -> str | None:
@@ -6338,13 +6358,13 @@ ACTIONS: dict[str, Action] = {
     "git_checkout": Action("Switch branch", build_git_checkout, fields=["branch"]),
     "stash_checkout": Action("Stash changes & switch branch", build_stash_checkout, fields=["branch"]),
     "git_new_branch": Action("New branch", build_git_new_branch, fields=["name"]),
-    "merge": Action("Merge & complete", lambda p, r: orchestrator_argv("script", "job_actions.py", "merge", _job_path(p, r)),
-                    confirm="Merges the job's PR on GitHub, deletes its AI branch and archives the job.", fields=["job"]),
+    "merge": Action("Approve & merge", lambda p, r: build_final_approval("merge", p, r),
+                    confirm="Approves the reviewed work, merges its branch and archives the job.", fields=["job", "reviewed", "review_revision"]),
     "discard": Action("Discard job", lambda p, r: orchestrator_argv("script", "job_actions.py", "discard", _job_path(p, r)),
                       confirm="Reverts the files this job changed, deletes its AI branch and archives the job. This can't be undone.", fields=["job"]),
     "delete_job": Action("Delete job", build_delete_job, fields=["job", "keep_changes"]),
-    "complete": Action("Mark complete", lambda p, r: orchestrator_argv("script", "job_actions.py", "complete", _job_path(p, r)),
-                       confirm="Archives the job as completed. Its branch is left as it is. You can bring it back from the Archived filter on Home.", fields=["job"]),
+    "complete": Action("Approve & complete", lambda p, r: build_final_approval("complete", p, r),
+                       confirm="Approves the reviewed work and archives the job as completed. Its branch is left as it is.", fields=["job", "reviewed", "review_revision"]),
     "web_preview": Action("Publish preview link", build_web_preview, fields=["branch"],
                           confirm="Builds this branch's latest commit and publishes it on a Firebase preview link that anyone with the link can open. It expires in 7 days."),
     "dev_preview": Action("Live preview", build_dev_preview, fields=["branch"]),
@@ -9316,6 +9336,8 @@ class UIHandler(BaseHTTPRequestHandler):
             # A job is building in this folder on its own branch: switching or pulling here would pull it out from under it.
             raise UIError(f"“{busy.get('title') or 'A job'}” is working in the project folder on its branch. "
                           "Switch branches or pull once it finishes.", HTTPStatus.CONFLICT)
+        if key in {"merge", "complete"}:
+            params["_reviewer"] = str(self._principal.get("email") or self._principal.get("id") or "Web UI")
         argv = action.build(params, root)
         title = action.title
         job_title = ""
@@ -9423,7 +9445,7 @@ class UIHandler(BaseHTTPRequestHandler):
         """The Home page's In progress list: building, queued, paused, or with a run going."""
         running = set(self.server.sessions.running_job_ids())
         return [job for job in list_jobs(root)
-                if job["state"]["group"] == "working" or job["state"]["label"] == "Paused" or job["id"] in running]
+                if job["state"]["in_progress"] or job["id"] in running]
 
     def _yolo_all_off(self, root: Path) -> dict[str, Any]:
         """Turn YOLO off for every in-progress job: each stops for review and confirmations again from its next step.
@@ -9449,7 +9471,7 @@ class UIHandler(BaseHTTPRequestHandler):
         started, switched, failed = [], [], []
         for job in list_jobs(root):
             state = job["state"]
-            if not (state["group"] == "working" or state["label"] == "Paused" or job["id"] in running):  # the Home page's In progress list
+            if not (state["in_progress"] or job["id"] in running):  # the Home page's In progress list
                 continue
             path = jobs_dir(root) / f"{job['id']}.json"
             record = read_json_file(path)

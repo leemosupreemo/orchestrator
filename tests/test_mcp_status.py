@@ -854,7 +854,7 @@ class ProjectDocumentationSectionTests(unittest.TestCase):
             '<details class="fold docs-group"${c.id === "core" ? " open" : ""}>',  # grouped by kind, the core docs open
             '["Documentation", "#/project-docs"',
             'title: "Document"',
-            'title: "Finalize"',
+            'title: "Review & approve"',
             'const phasesInfo = [planStep, buildStep, verifyStep, docStep, reviewStep];',
             'phasesInfo.map((p) => `${esc(p.title)}: ${esc(p.subtitle)}`).join(" · ")',
             'jobDocsOutlineHtml(',
@@ -862,7 +862,7 @@ class ProjectDocumentationSectionTests(unittest.TestCase):
             self.assertIn(snippet, app)
 
     @unittest.skipUnless(shutil.which("node"), "node is required")
-    def test_job_documentation_card_renders_table_of_contents_outline(self):
+    def test_job_documentation_card_only_lists_this_jobs_documents(self):
         app = APP.read_text(encoding="utf-8")
         start = app.index("function jobDocsOutlineHtml(")
         end = app.index("\n// The run working on the job", start)
@@ -905,27 +905,29 @@ console.log(JSON.stringify({{ withIndex, fallback }}));
         with_index = out["withIndex"]
         for expected in (
             'id="document-section"',
+            '<h2>Job documentation</h2>',
             'href="#/project-docs">Open project docs</a>',
-            'Updated by this job:',
+            'Updated by this job',
             'href="#/docs/file?path=README.md"',
-            'href="#/docs/product"',
-            '4/6 sections written',
-            'Architecture',
-            'More repository docs',
-            '1 more markdown file in Project docs',
             'Feature spec · Auth',
             'href="#/docs/feature/feat-auth"',
             'href="#/docs/job/job-1"',
             'Builder summary',
-            '1 feature · 2 job records',
         ):
             self.assertIn(expected, with_index)
+        for unrelated in ('Product requirements', '#/docs/product', 'Architecture',
+                          'docs/architecture.md', 'More repository docs', 'Feature &amp; job doc index',
+                          '1 feature · 2 job records', '#/docs/job/job-2'):
+            self.assertNotIn(unrelated, with_index)
+        self.assertEqual(with_index.count('href="#/project-docs"'), 1)
         fallback = out["fallback"]
-        self.assertIn('aria-label="Documentation table of contents"', fallback)
-        self.assertIn('Product requirements', fallback)
-        self.assertIn('Repository docs', fallback)
+        self.assertIn('aria-label="Job documentation"', fallback)
         self.assertIn('href="#/docs/job/job-2"', fallback)
-        self.assertNotIn('>Project docs</p>', fallback)
+        self.assertNotIn('Product requirements', fallback)
+        self.assertNotIn('Repository docs', fallback)
+        self.assertNotIn('#/docs/feature/', fallback)
+        self.assertNotIn('Updated by this job', fallback)
+        self.assertEqual(fallback.count('href="#/project-docs"'), 1)
 
     def test_job_prompts_include_documentation_updates_and_review(self):
         prompts = APP.parents[3] / "orchestrator" / "prompts"
@@ -1029,7 +1031,7 @@ console.log(JSON.stringify({{ withIndex, fallback }}));
     def test_run_action_shows_busy_state_and_navigates_immediately(self):
         app = APP.read_text(encoding="utf-8")
         start = app.index("async function runAction(")
-        block = app[start:start + 1300]
+        block = app[start:app.index("\nfunction formDialog(", start)]
         self.assertIn('button.setAttribute("aria-busy", "true")', block)
         self.assertIn("Starting…", block)
         self.assertIn("state.runs.unshift(run)", block)

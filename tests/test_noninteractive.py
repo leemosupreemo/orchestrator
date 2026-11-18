@@ -142,35 +142,35 @@ class JobsNeverSendYouToTheConsoleTests(unittest.TestCase):
     def test_a_job_that_stopped_after_writing_real_code_is_partially_complete_not_just_stopped(self):
         plan = {"tasks": [{"title": "a"}, {"title": "b"}, {"title": "c"}]}
         part = ui.job_state({"type": "feature-plan", "status": "human-needed", "last_error": "Task 3 failed", "plan": plan, "completed_tasks": [0, 1]})
-        self.assertEqual((part["label"], part["tone"], part["next"]["action"]), ("Partially complete", "attention", "resume"))
+        self.assertEqual((part["label"], part["tone"], part["next"]["action"]), ("Paused", "attention", "resume"))
         self.assertIn("Paused: 2 of 3 tasks done. It stopped with an error: Task 3 failed", part["reason"])
         files = ui.job_state({"type": "bug-fix", "status": "human-needed", "last_error": "boom", "ai_modified_files": ["a.py", "b.py"], "ai_untracked_files": ["c.py"]})
-        self.assertEqual((files["label"], files["next"]["action"]), ("Partially complete", "debug"))
+        self.assertEqual((files["label"], files["next"]["action"]), ("Paused", "debug"))
         self.assertIn("3 files changed", files["reason"])
         little = ui.job_state({"type": "bug-fix", "status": "human-needed", "last_error": "boom", "ai_modified_files": ["a.py"]})
-        self.assertEqual(little["label"], "Stopped")  # one touched file isn't significant work
+        self.assertEqual(little["label"], "Paused")  # one touched file isn't significant work
 
     def test_a_job_that_stopped_with_an_error_says_so_and_offers_to_try_again(self):
         st = ui.job_state({"type": "feature-plan", "status": "human-needed", "last_error": "No module named 'x'",
                            "plan": {"tasks": [{"title": "a"}]}})
-        self.assertEqual((st["label"], st["next"]["action"], st["next"]["label"]), ("Stopped", "resume", "Resume"))
+        self.assertEqual((st["label"], st["next"]["action"], st["next"]["label"]), ("Paused", "resume", "Resume"))
         self.assertIn("No module named 'x'", st["reason"])
         stopped = ui.job_state({"type": "quick", "status": "human-needed"})
-        self.assertEqual((stopped["label"], stopped["next"]["action"], stopped["next"]["label"]), ("Stopped", "resume", "Resume"))
+        self.assertEqual((stopped["label"], stopped["next"]["action"], stopped["next"]["label"]), ("Paused", "resume", "Resume"))
 
 
     def test_tests_that_were_written_but_couldnt_run_offer_try_again_not_a_fix(self):
         st = ui.job_state({"type": "test-audit", "status": "human-needed", "last_error": "The tests couldn't run.",
                            "test_validation": {"kind": "environment", "passed": False},
                            "output_digests": {"tests/a.py": "x", "tests/b.py": "y"}})
-        self.assertEqual((st["label"], st["next"]["action"], st["next"]["label"]), ("Partially complete", "resume", "Try again"))
+        self.assertEqual((st["label"], st["next"]["action"], st["next"]["label"]), ("Paused", "resume", "Try again"))
         self.assertIn("2 test files added but not checked", st["reason"])
         failing = ui.job_state({"type": "test-audit", "status": "human-needed", "last_error": "Test validation failed.",
                                 "test_validation": {"kind": "tests", "passed": False}})
         self.assertEqual(failing["next"]["action"], "debug")
         written = ui.job_state({"type": "test-audit", "status": "human-needed", "last_error": "Test validation failed.",
                                 "test_validation": {"kind": "tests", "passed": False}, "output_digests": {"tests/a.py": "x"}})
-        self.assertEqual((written["label"], written["next"]["action"], written["next"]["label"]), ("Partially complete", "debug", "Fix the tests"))
+        self.assertEqual((written["label"], written["next"]["action"], written["next"]["label"]), ("Paused", "debug", "Fix the tests"))
         self.assertIn("Paused: 1 test file added, but the tests didn't pass", written["reason"])
         named = ui.job_state({"type": "test-audit", "status": "human-needed", "output_digests": {"t/a.swift": "x"},
                               "test_validation": {"kind": "tests", "passed": False, "failures": [{"test": "ParserTests.testCRLF", "message": "m"}, {"test": "ParserTests.testB", "message": "m"}, {"test": "X.testC", "message": "m"}]}})

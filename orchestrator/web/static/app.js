@@ -488,6 +488,7 @@ async function projectHasTests() {
 }
 
 async function runAction(action, params = {}, { skipConfirm = false, button = null } = {}) {
+  if (["merge", "complete"].includes(action) && !(skipConfirm && params.reviewed === true && params.review_revision)) return dialogs[action](params);
   const meta = state.actions[action] || {};
   if (action === "test" && !(await projectHasTests())) {
     if (await formDialog("No tests to run", `<p>This project has no tests yet. Add them now: a job writes tests for your code and measures coverage.</p>`, "Add tests", { compact: true })) await dialogs.add_tests();
@@ -869,7 +870,64 @@ function addProjectsDialog(trackedProjects) {
   });
 }
 
+function jobReviewCanApprove(review) {
+  return Boolean(review?.ready && review.can_approve && review.revision
+    && (!review.delivery?.required || review.delivery.status === "delivered"));
+}
+
+function jobReviewDeliveryHtml(id, review) {
+  const delivery = review?.delivery;
+  if (!delivery) return `<p class="muted">Delivery information is unavailable.</p>`;
+  const delivered = delivery.status === "delivered";
+  let url = "";
+  if (delivered && /^https?:\/\//i.test(delivery.url || "")) {
+    try { const parsed = new URL(delivery.url); if (["http:", "https:"].includes(parsed.protocol)) url = delivery.url; } catch { /* invalid receipt links stay plain text */ }
+  }
+  const details = [["Version", delivery.version], ["Build", delivery.build], ["Built", delivery.built_at]]
+    .filter(([, value]) => value != null && value !== "")
+    .map(([label, value]) => `<span>${label}: ${esc(value)}</span>`).join(" · ");
+  const blocked = delivery.required && !delivered;
+  return `<div class="stack"><strong>${delivered ? "App delivered" : delivery.status === "unavailable" ? "App delivery unavailable" : "App delivery needed"}</strong>
+    <p class="muted">${esc(delivery.reason || (delivered ? "The app build matches this job's current revision." : "No app delivery is available for this job."))}</p>
+    ${url ? `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer">Open delivered app ↗</a>` : ""}
+    ${delivered && details ? `<p class="muted">${details}</p>` : ""}
+    ${blocked ? `<div class="row"><button type="button" class="btn small" ${act("deliver", { job: id })}>${["failed", "stale"].includes(delivery.status) ? "Retry delivery" : "Deliver"}</button><a class="btn small ghost" href="#/delivery">App delivery setup</a></div>` : ""}</div>`;
+}
+
+function jobFinalReviewHtml({ id, review, next, isComplete = false, activeRun = false }) {
+  const canApprove = jobReviewCanApprove(review) && !activeRun;
+  const finalAction = ["merge", "complete"].includes(next?.action);
+  const approval = review?.approval;
+  const reason = isComplete ? (approval ? "Approved" : "Completed")
+    : review?.reason || "Final review information is unavailable. Reload this job before approving.";
+  return `<section class="card mb-16" id="finalize-section" tabindex="-1">
+    <div class="card-h"><h2>Review &amp; approve</h2></div><div class="card-b stack">
+      <p class="muted">${esc(reason)}</p>
+      ${jobReviewDeliveryHtml(id, review)}
+      ${approval ? `<p class="muted">Reviewed by ${esc(approval.reviewed_by || "you")}${approval.reviewed_at ? ` · ${esc(approval.reviewed_at)}` : ""}</p>` : ""}
+      ${!isComplete && review?.ready && finalAction ? `<div class="row"><button type="button" class="btn small primary" ${act(next.action, { job: id })}${canApprove ? "" : " disabled"}>${next.action === "merge" ? "Review &amp; approve merge…" : "Review &amp; approve completion…"}</button></div>` : ""}
+      ${!isComplete && !review?.ready && next ? `<div class="row"><button type="button" class="btn small" ${act(next.action, { job: id, ...(next.params || {}) })}${activeRun ? " disabled" : ""}>${esc(next.label || "Continue")}</button></div>` : ""}
+    </div></section>`;
+}
+
+async function reviewJobDialog(action, params = {}) {
+  const data = await api(`jobs/${encodeURIComponent(params.job || "")}`);
+  const review = data.final_review;
+  const canApprove = jobReviewCanApprove(review);
+  const body = `<p>Review <strong>${esc(data.job?.title || data.summary?.title || params.job)}</strong> and its changes before ${action === "merge" ? "merging" : "completing"} this job.</p>
+    <p class="muted">${esc(review?.reason || "Final review information is unavailable. Reload this job before approving.")}</p>
+    ${jobReviewDeliveryHtml(params.job, review)}
+    ${canApprove ? `<label class="check"><input type="checkbox" name="reviewed" required><span>I reviewed this work and approve ${action === "merge" ? "merging" : "completing"} this job.</span></label>` : ""}`;
+  const result = formDialog("Review & approve", body, action === "merge" ? "Approve & merge" : "Approve & complete");
+  if (!canApprove) $("#dialog-ok").disabled = true;
+  const values = await result;
+  if (!canApprove || !values?.reviewed) return;
+  return runAction(action, { job: params.job, reviewed: true, review_revision: review.revision }, { skipConfirm: true });
+}
+
 const dialogs = {
+  merge(params) { return reviewJobDialog("merge", params); },
+  complete(params) { return reviewJobDialog("complete", params); },
   // Sign in to an AI tool on the spot (from a failed job's card): the same modal as the AI tools page, not a new run.
   // Closing it redraws the page under it, so a job that asked for this sign-in stops asking once it is done.
   ai_connect(params) {
@@ -4476,15 +4534,16 @@ pages.home = async (_, query) => {
     const remoteState = (j) => {
       const st = String(j.status || "");
       // Same grouping as the server's job_state, so a job lands in the same section wherever it runs.
-      if (st === "human-needed") return { group: "needs_you", tone: "failed", label: "Stopped" };
+      if (st === "human-needed") return { group: "needs_you", tone: "failed", label: "Paused", in_progress: false };
       if (st === "review-needed") return { group: "needs_you", tone: "attention", label: "Needs review" };
       if (st === "completed") return { group: "done", tone: "done", label: "Done" };
-      if (st === "failed") return { group: "needs_you", tone: "failed", label: "Failed" };
-      if (st === "planned") return { group: "needs_you", tone: "attention", label: "Planned" };
-      if (st === "designing") return { group: "needs_you", tone: "attention", label: "Design ready" };
+      if (st === "failed") return { group: "needs_you", tone: "failed", label: "Needs a fix" };
+      if (st === "planned") return { group: "needs_you", tone: "attention", label: j.type === "feature-plan" && !j.approved ? "Needs approval" : "Ready" };
+      if (st === "designing") return { group: "needs_you", tone: "attention", label: "Needs approval" };
       if (st === "debugging") return { group: "needs_you", tone: "attention", label: "Needs a fix" };
       if (st === "scheduled") return { group: "working", tone: "working", label: "Queued" };
-      if (["running", "executing", "in-progress", "decomposed"].includes(st)) return { group: "working", tone: "working", label: "Running" };
+      if (["running", "executing", "in-progress", "decomposed"].includes(st)) return { group: "working", tone: "working", label: "Building" };
+      if (st === "backlog") return { group: "backlog", tone: "neutral", label: "Needs plan" };
       return { group: "backlog", tone: "neutral", label: st ? st.replace(/-/g, " ").replace(/^./, (c) => c.toUpperCase()) : "Planned" };
     };
     const myRepo = normRepo(p.repo || p.github_repo || p.git_remote || "");
@@ -4544,7 +4603,7 @@ pages.home = async (_, query) => {
   const HOME_FILTERS = {
     all: ["All", (j) => !isFinished(j)],
     needs_you: ["Needs you", (j) => j.state.group === "needs_you" && !j.active_run],
-    working: ["In progress", (j) => j.state.group === "working" || j.active_run || j.state.label === "Paused"], // a paused job is mid-build
+    working: ["In progress", (j) => Boolean(j.active_run) || (j.state.in_progress ?? (j.state.group === "working" || j.state.label === "Paused"))],
     backlog: ["Backlog", (j) => j.state.group === "backlog"],
   };
   const requested = (query && query.get("filter")) || "all";
@@ -5530,47 +5589,19 @@ function jobChangeSummary(otherDocs, changes) {
   return "";
 }
 
-// Compact table of contents for project documentation, shown inside a job's Documentation card.
-function jobDocsOutlineHtml({ s, featureName, docFilesChanged, otherDocs, docsIndex }) {
-  const product = docsIndex?.product || null;
-  const prdPath = product?.path || "docs/product/prd.md";
-  const allFiles = Array.isArray(docsIndex?.files) ? docsIndex.files : [];
-  const repoFiles = allFiles.filter((f) => f?.path && f.path !== prdPath);
-  const features = Array.isArray(docsIndex?.features) ? docsIndex.features : [];
-  const jobs = Array.isArray(docsIndex?.jobs) ? docsIndex.jobs : [];
-  const items = [];
+// Documentation belonging to this job, with one link to the project-wide index.
+function jobDocsOutlineHtml({ s, featureName, docFilesChanged, otherDocs }) {
+  const items = [{
+    href: `#/docs/job/${encodeURIComponent(s.id)}`,
+    title: "This job record",
+    meta: otherDocs.length ? otherDocs.map((d) => d.title || d.name).join(" · ") : "Brief, changes, and verification summary",
+  }];
 
-  items.push({
-    href: product ? (product.exists ? "#/docs/product" : "#/product") : "#/docs/product",
-    title: "Product requirements",
-    meta: product
-      ? `${product.exists ? `${product.written || 0}/${product.total || 0} sections written` : "Not created yet"} · ${prdPath}`
-      : `Pitch, users, features, and architecture · ${prdPath}`,
-    side: product ? (product.exists ? `${product.written || 0}/${product.total || 0}` : "Empty") : "",
-  });
-
-  if (repoFiles.length) {
-    const shown = repoFiles.slice(0, 6);
-    for (const f of shown) {
-      items.push({
-        href: `#/docs/file?path=${encodeURIComponent(f.path)}`,
-        title: f.title || f.path,
-        meta: `${f.group || "Project"} · ${f.path}`,
-      });
-    }
-    if (repoFiles.length > shown.length) {
-      items.push({
-        href: "#/project-docs",
-        title: "More repository docs",
-        meta: `${repoFiles.length - shown.length} more markdown ${repoFiles.length - shown.length === 1 ? "file" : "files"} in Project docs`,
-        side: String(repoFiles.length),
-      });
-    }
-  } else if (!docsIndex) {
+  for (const path of docFilesChanged) {
     items.push({
-      href: "#/project-docs",
-      title: "Repository docs",
-      meta: "README, architecture, and markdown guides",
+      href: `#/docs/file?path=${encodeURIComponent(path)}`,
+      title: path,
+      meta: "Updated by this job",
     });
   }
 
@@ -5582,41 +5613,21 @@ function jobDocsOutlineHtml({ s, featureName, docFilesChanged, otherDocs, docsIn
     });
   }
 
-  items.push({
-    href: `#/docs/job/${encodeURIComponent(s.id)}`,
-    title: "This job record",
-    meta: otherDocs.length ? otherDocs.map((d) => d.title || d.name).join(" · ") : "Brief, changes, and verification summary",
-  });
-
-  if (docsIndex) {
-    items.push({
-      href: "#/project-docs",
-      title: "Feature & job doc index",
-      meta: `${plural(features.length, "feature")} · ${plural(jobs.length, "job record")}`,
-    });
-  }
-
-  const changedCaption = docFilesChanged.length
-    ? `<div class="card-caption t-secondary"><strong>Updated by this job:</strong> ${docFilesChanged.map((f) => `<a class="mono" href="#/docs/file?path=${encodeURIComponent(f)}">${esc(f)}</a>`).join(", ")}</div>`
-    : "";
-
   const rows = items.map((item) => `
     <a class="item" href="${item.href}">
       <div class="main-col">
         <div class="title">${esc(item.title)}</div>
         <div class="meta">${esc(item.meta)}</div>
       </div>
-      ${item.side ? `<div class="side"><span class="count">${esc(item.side)}</span></div>` : ""}
     </a>`).join("");
 
   return `
     <section class="card mb-16" id="document-section" tabindex="-1">
       <div class="card-h">
-        <h2>Documentation</h2>
+        <h2>Job documentation</h2>
         <div class="card-actions"><a class="btn small" href="#/project-docs">Open project docs</a></div>
       </div>
-      ${changedCaption}
-      <div class="list" aria-label="Documentation table of contents">${rows}</div>
+      <div class="list" aria-label="Job documentation">${rows}</div>
     </section>`;
 }
 
@@ -5679,9 +5690,8 @@ pages.job = async ([id]) => {
   };
   const otherDocs = (docs || []).filter((d) => d !== briefDoc && d.name !== "brief.md" && (d.title || "").toLowerCase() !== "brief");
 
-  const [vcRes, docsRes] = await Promise.allSettled([api("visual-checks"), api("docs")]);
-  const visualChecks = vcRes.status === "fulfilled" ? (vcRes.value?.checks || []).filter((c) => c.job === id) : [];
-  const docsIndex = docsRes.status === "fulfilled" ? docsRes.value : null;
+  const vcRes = await api("visual-checks").catch(() => null);
+  const visualChecks = (vcRes?.checks || []).filter((c) => c.job === id);
   const canSplinter = (kindUpper === "FEATURE" || kindUpper === "PLAN" || s.type === "feature-plan" || job.type === "feature-plan") && tasksTotal > 0 && s.status !== "decomposed";
 
   // Delta calculations
@@ -5706,6 +5716,9 @@ pages.job = async ([id]) => {
 
   const problem = s.state.next?.action === "debug" && data.problem ? data.problem : null; // what needs fixing, in words
   const next = s.state.next;
+  const nextAction = next?.action;
+  const planSummary = String(job.plan?.summary || "").trim();
+  const showSummary = planSummary && planSummary.toLowerCase() !== "summary";
   const isStoppingActive = activeRun && (stoppingRuns.has(activeRun.id) || Boolean(activeRun.stopping));
   // The one way to start a fix from here: the same dialog as the More menu's, with the error already in it.
   // Only while something is wrong: a job ready to approve, merge or finish keeps an old attempt's error, which isn't a reason to fix.
@@ -5731,7 +5744,7 @@ pages.job = async ([id]) => {
   let currentPhase = "plan";
   if (status === "completed" || status === "archived") {
     currentPhase = "review";
-  } else if (status === "review-needed") {
+  } else if (status === "review-needed" || data.final_review?.ready) {
     currentPhase = "review";
   } else if (status === "debugging" || (tasksTotal > 0 && tasksDone >= tasksTotal && !["planned", "designing", "human-needed"].includes(status))) {
     currentPhase = "verify";
@@ -5788,13 +5801,13 @@ pages.job = async ([id]) => {
       ? `${plural(docFilesChanged.length, "doc")} updated`
       : isJobComplete || currentPhaseIndex > 3
         ? "Checked"
-        : "Project docs",
+        : "Job docs",
     ...getStepState(3),
   };
 
   const reviewStep = {
-    title: "Finalize",
-    subtitle: isJobComplete ? "Merged" : status === "review-needed" ? "Ready to merge" : "PR & merge",
+    title: "Review & approve",
+    subtitle: isJobComplete ? (data.final_review?.approval ? "Approved" : "Completed") : data.final_review?.ready ? "Needs your approval" : "After verification",
     ...getStepState(4),
   };
 
@@ -5875,13 +5888,10 @@ pages.job = async ([id]) => {
 
   // Approving (or starting) a plan: the plan is shown right under the decision, with what each task is done when,
   // the files it touches, and what the AI assumed. GitHub puts Approve beside the changes; this is the same idea.
-  const nextAction = s.state.next?.action;
   const reviewingPlan = ["approve", "schedule"].includes(nextAction) && s.status !== "designing" && !activeRun && tasks.length > 0;
   const listOf = (v) => (Array.isArray(v) ? v : typeof v === "string" && v.trim().startsWith("[") ? (() => { try { return JSON.parse(v); } catch { return []; } })() : [])
     .filter((x) => typeof x === "string" && x.trim());
   const risks = listOf(job.plan?.risks), constraints = listOf(job.plan?.constraints);
-  const planSummary = String(job.plan?.summary || "").trim();
-  const showSummary = planSummary && planSummary.toLowerCase() !== "summary";
   const notes = [["What the AI assumed", assumptions], ["Risks", risks], ["Constraints", constraints]].filter(([, list]) => list.length);
   const taskRowsHtml = (withDetail) => tasks.map((t, i) => {
     const title = typeof t === "string" ? t : (t.title || t.name || t.description || `Task ${i + 1}`);
@@ -6121,12 +6131,8 @@ pages.job = async ([id]) => {
         ${changes?.diffstat ? `<details class="raw diffstat-details"><summary>View diff summary (${allFiles.length} files)</summary><pre class="file">${esc(changes.diffstat)}</pre></details>` : ""}
       </section>
 
-      ${jobDocsOutlineHtml({ s, featureName, docFilesChanged, otherDocs, docsIndex })}
-      <section class="card mb-16" id="finalize-section" tabindex="-1">
-        <div class="card-h"><h2>Finalize</h2></div>
-        <div class="card-b stack"><p class="muted">${isJobComplete ? "Merged" : currentPhase === "review" ? "Ready for review and merge." : "Review and merge follow verification and documentation."}</p>
-          ${currentPhase === "review" ? `<div class="row">${heroAction}</div>` : ""}</div>
-      </section>
+      ${jobDocsOutlineHtml({ s, featureName, docFilesChanged, otherDocs })}
+      ${jobFinalReviewHtml({ id: s.id, review: data.final_review, next, isComplete: isJobComplete, activeRun: Boolean(activeRun) })}
 
       ${uxReviewCard(s, data.ux_review)}
 

@@ -713,7 +713,13 @@ class EpicsJiraTests(ServerTestCase):
         _, data = self.request("GET", "/api/epics")
         self.assertEqual(data["jira"], {"connected": True, "site": "team.atlassian.net", "project": "APP"})
         self.assertNotIn("tok", json.dumps(data))  # the token never leaves the computer
-        self.assertEqual(data["epics"][0]["job_info"]["label"], "Epic · no plan yet")
+        self.assertEqual(data["epics"][0]["job_info"]["label"], "Needs plan")
+        path = ui.jobs_dir(self.root) / f"{self.approved['job']}.json"
+        job = ui.read_json_file(path)
+        for status, ready in (("planned", True), ("designing", False)):
+            ui.write_json_file(path, {**job, "status": status, "type": "feature-plan", "approved": False})
+            _, overview = self.request("GET", "/api/epics")
+            self.assertEqual(overview["epics"][0]["job_info"]["plan_ready"], ready)
 
     def test_send_to_jira_creates_each_approved_epic_once_and_links_it_to_its_job(self):
         http = self.http({"/rest/api/3/issue": {"key": "APP-5"}})
@@ -3036,6 +3042,13 @@ class ActionTests(unittest.TestCase):
             if key == "package_update":
                 (self.root / "package.json").write_text(json.dumps({"dependencies": {"left-pad": "^1.3.0"}}))
                 chosen = {"ecosystem": "npm", "name": "left-pad", "manifest": "package.json"}
+            if key in {"merge", "complete"}:
+                job_path = ui.jobs_dir(self.root) / f"{params['job']}.json"
+                job = ui.read_json_file(job_path)
+                job.update(job_id=params["job"], status="review-needed", completed_tasks=[0, 1])
+                ui.write_json_file(job_path, job)
+                review = ui.job_review.review_state(self.root, job)
+                chosen = {**params, "reviewed": True, "review_revision": review["revision"]}
             argv = action.build(chosen, self.root)
             if key == "stash_checkout":
                 self.assertEqual(argv[:2], ["sh", "-c"], key)
@@ -3227,16 +3240,16 @@ class JobStateTests(unittest.TestCase):
 
     def test_debugging_is_red_only_when_tests_fail(self):
         failing = self.state(status="debugging", test_status="tests-failed")
-        self.assertEqual((failing["tone"], failing["label"], failing["next"]["action"]), ("failed", "Tests failing", "debug"))
+        self.assertEqual((failing["tone"], failing["label"], failing["next"]["action"]), ("failed", "Needs a fix", "debug"))
         self.assertEqual(self.state(status="debugging")["tone"], "attention")
 
     def test_approvals(self):
         self.assertEqual(self.state(status="designing")["next"]["action"], "approve")
         self.assertEqual(self.state(status="planned", type="feature-plan")["next"]["label"], "Approve plan")
-        self.assertEqual(self.state(status="planned", type="feature-plan")["label"], "Pending approval")  # the status; the button says what to do
+        self.assertEqual(self.state(status="planned", type="feature-plan")["label"], "Needs approval")  # the status; the button says what to do
         self.assertEqual(self.state(status="planned", type="feature-plan", approved=True)["next"]["action"], "schedule")
         review = self.state(status="human-needed", verification={"status": "concerns", "comments": "Missing tests"})
-        self.assertEqual((review["next"]["action"], review["label"]), ("approve", "Review suggestions"))
+        self.assertEqual((review["next"]["action"], review["label"]), ("approve", "Needs approval"))
         self.assertIn("Missing tests", review["reason"])
 
     def test_question_needs_an_answer(self):
@@ -6389,6 +6402,7 @@ class YoloAllTests(ServerTestCase):
     def test_it_continues_paused_and_queued_jobs_and_leaves_the_rest_alone(self):
         self.write("queued", "scheduled")
         self.write("paused", "executing", worker_pid=0, tasks=[{"x": 1}, {"x": 2}], completed_tasks=[0])
+        self.write("partial", "human-needed", ai_modified_files=["a.py", "b.py", "c.py"], last_error="Test failed")
         self.write("waiting", "planned")  # waits on your decision
         self.write("review", "review-needed")
         self.write("done", "completed")
@@ -6400,8 +6414,26 @@ class YoloAllTests(ServerTestCase):
         self.assertEqual(sorted(e["id"] for e in data["started"]), ["paused", "queued"])
         for job in ("queued", "paused"):
             self.assertTrue(self.read(job)["yolo"] and self.read(job)["is_yolo"], job)  # the worker reads both spellings
-        for job in ("waiting", "review", "done"):
+        for job in ("waiting", "review", "done", "partial"):
             self.assertNotIn("yolo", self.read(job), job)
+
+    def test_progress_membership_uses_metadata_and_accepts_older_remote_snapshots(self):
+        app = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
+        helper = "const jobInProgress = " + re.search(r'working: \["In progress", (.*)\],', app).group(1) + ";"
+        self.write("interrupted", "executing", worker_pid=0)
+        self.write("partial", "human-needed", ai_modified_files=["a", "b", "c"])
+        snapshot = {job["job_id"]: job for job in ui.account.build_snapshot(root=self.root)["recent_jobs"]}
+        jobs = [
+            snapshot["interrupted"],
+            snapshot["partial"],
+            {"state": {"group": "working", "label": "Queued"}},
+            {"state": {"group": "needs_you", "label": "Paused"}},
+            {"state": {"group": "needs_you", "label": "Partially complete"}},
+            {"state": {"in_progress": False}, "active_run": {"label": "Fix attempt"}},
+        ]
+        script = helper + "\nconsole.log(JSON.stringify(JSON.parse(process.argv[1]).map(jobInProgress)));"
+        result = subprocess.run(["node", "-e", script, json.dumps(jobs)], capture_output=True, text=True, check=True)
+        self.assertEqual(json.loads(result.stdout), [True, False, True, True, False, True])
 
     def test_a_job_that_is_building_is_switched_over_not_started_twice(self):
         self.write("building", "executing", worker_pid=os.getpid())
@@ -6481,7 +6513,7 @@ class YoloAllTests(ServerTestCase):
         self.assertIn("inProgress.length", home)  # only when there is something to continue
         # the button counts what the In progress filter shows, minus jobs on other computers (the endpoint can't change those)
         self.assertIn("const inProgress = sortedJobs.filter((j) => !j.remote_machine && HOME_FILTERS.working[1](j))", home)
-        self.assertIn('j.state.label === "Paused"', home)
+        self.assertIn("j.state.in_progress", home)
         yolo = app[app.index("async function yoloAll("):app.index("pages.home = async")]
         self.assertIn("formDialog(", yolo)  # asks first: it removes the review stops
         self.assertIn('api("jobs/yolo-all"', yolo)
@@ -6685,6 +6717,7 @@ class BuildingMeansActiveTests(unittest.TestCase):
         dead.wait()
         st = self.state(worker_pid=dead.pid, worker_host=socket.gethostname())
         self.assertEqual((st["label"], st["group"], st["next"]["action"]), ("Paused", "needs_you", "resume"))
+        self.assertTrue(st["in_progress"])
         self.assertIn("1 of 3 tasks done", st["reason"])
 
     def test_no_worker_recorded_is_not_building(self):
@@ -6707,16 +6740,16 @@ class TaskGrowthStateTests(unittest.TestCase):
 
     def test_the_pause_says_which_task_and_offers_keep_going(self):
         st = self.state()
-        self.assertEqual((st["label"], st["group"], st["next"]["action"], st["next"]["label"]), ("Task 1 grew past its plan", "needs_you", "resume", "Keep going"))
+        self.assertEqual((st["label"], st["group"], st["next"]["action"], st["next"]["label"]), ("Needs approval", "needs_you", "resume", "Keep going"))
         self.assertIn("added 950 lines", st["reason"])
         self.assertIn("undo the task", st["reason"])
 
     def test_undoing_that_task_ends_the_pause(self):
         st = self.state(completed_task_indices=[])  # the task was reverted, so the stored note no longer applies
-        self.assertNotEqual(st["label"], "Task 1 grew past its plan")
+        self.assertNotEqual(st["label"], "Needs approval")
 
     def test_a_note_on_a_job_that_is_not_waiting_is_ignored(self):
-        self.assertNotEqual(self.state(status="executing")["label"], "Task 1 grew past its plan")
+        self.assertNotEqual(self.state(status="executing")["label"], "Needs approval")
 
     def test_the_page_puts_undo_beside_keep_going(self):
         source = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
@@ -8097,7 +8130,7 @@ after();
     @unittest.skipUnless(shutil.which("node"), "node is required")
     def test_ready_to_merge_shows_changes_summary_and_built_progress_when_no_tasks(self):
         start = self.source.index("function jobChangeSummary(")
-        end = self.source.index("\n// Compact table of contents", start)
+        end = self.source.index("\nfunction jobDocsOutlineHtml(", start)
         fn = self.source[start:end]
         script = f"""
 {fn}

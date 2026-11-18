@@ -175,7 +175,7 @@ def deliver_with_adapter(job: dict[str, Any], adapter: "delivery_adapters.Adapte
     sys.exit(0)
 
 
-def deliver_build(job_path: Path):
+def _deliver_build(job_path: Path):
     job = read_json(job_path)
     
     branch = job.get("branch")
@@ -541,6 +541,34 @@ If you prefer to sign builds manually:
     except Exception as e:
         print(f"\n!!! Error during distribution: {e}")
         sys.exit(1)
+
+def deliver_build(job_path: Path):
+    """Keep the latest attempt and the exact source commit with its delivery receipt."""
+    from orchestrator import job_review
+    job = read_json(job_path)
+    job_id = str(job.get("job_id") or job_path.stem)
+    if Path(job_id).name != job_id or job_id in {".", ".."}:
+        raise ValueError("Invalid delivery job ID")
+    receipt_path = PROJECT_CONFIG.runtime_dir / "output" / "delivery" / f"{job_id}.json"
+    receipt_path.parent.mkdir(parents=True, exist_ok=True)
+    commit = job_review.source_revision(ROOT, job)
+    attempt = {"status": "delivering", "job_id": job_id, "branch": job.get("branch"), "commit": commit}
+    write_json(receipt_path, attempt)  # retrying cannot leave an older success looking current
+    successful = False
+    try:
+        _deliver_build(job_path)
+        successful = True
+    except SystemExit as exc:
+        successful = exc.code in (None, 0)
+        raise
+    finally:
+        receipt = read_json(receipt_path) if receipt_path.is_file() else {}
+        if successful and receipt.get("status") == "delivered":
+            receipt["commit"] = commit
+            write_json(receipt_path, receipt)
+        else:
+            write_json(receipt_path, {**attempt, "status": "failed"})
+
 
 def main() -> None:
     parser = argparse.ArgumentParser()

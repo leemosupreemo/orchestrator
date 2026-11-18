@@ -154,7 +154,7 @@ class PlainGitPipelineTests(unittest.TestCase):
         cls.steps["approve"] = action(p, "approve")
         cls.after_run = p.job()
         cls.main_before_merge = p.git("rev-parse", "main")
-        cls.steps["merge"] = p.orchestrator("script", "job_actions.py", "merge", str(p.jobs()[-1]), input="\n")
+        cls.steps["merge"] = p.orchestrator("script", "job_actions.py", "merge", str(p.jobs()[-1]), "--reviewed", input="\n")
 
     @classmethod
     def tearDownClass(cls):
@@ -443,7 +443,8 @@ class BlockedJobRecoveryTests(unittest.TestCase):
         self.assertEqual(len([c for c in self.project.llm_calls() if c["role"] == "debugger"]), 0)
 
     def test_it_says_what_blocks_it_and_keeps_the_finished_work(self):
-        self.assertEqual(self.state["label"], "Git is locked in this project")
+        self.assertEqual(self.state["label"], "Blocked")
+        self.assertIn("Git is locked in this project", self.state["reason"])
         self.assertTrue(self.state["steps"])
         self.assertIn("wordgame/scoring.py", (self.blocked.get("passed_uncommitted") or {}).get("files", []), self.explain())
         self.assertFalse(self.cleared_before)  # checked, not assumed: the lock was still there
@@ -500,7 +501,7 @@ class ParallelJobTests(unittest.TestCase):
         cls.branch_tests = subprocess.run([_sys.executable, "-m", "unittest", "discover", "-s", "tests"], cwd=cls.worktree, capture_output=True,
                                           env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}).returncode if cls.worktree_existed else 1
         cls.branch_has_bonus = cls.worktree_existed and "LONG_WORD_BONUS" in (cls.worktree / "wordgame" / "scoring.py").read_text()
-        cls.merge = p.orchestrator("script", "job_actions.py", "merge", str(p.jobs()[-1]), input="\n")
+        cls.merge = p.orchestrator("script", "job_actions.py", "merge", str(p.jobs()[-1]), "--reviewed", input="\n")
 
     @classmethod
     def tearDownClass(cls):

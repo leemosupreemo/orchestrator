@@ -457,7 +457,7 @@ A **job** is a whole piece of work and its five stages: Plan, Build, Verify, Doc
 
 ### When the build changes nothing
 
-The Build step only counts as done when the builder changed files. If it finishes without changing any, the job stops as **Nothing was built**: it doesn't go on to test unchanged code or start fix attempts. The timeline marks Build with "No files changed", and **Run the build again** retries it. The usual cause is an AI tool that refused to edit files; the message says so when the builder reported it. Claude, when building or fixing, is allowed to edit files in the project (its other roles stay read-only). A fix attempt that changes nothing stops the same way, and an investigation may change nothing.
+The Build step only counts as done when the builder changed files. If it finishes without changing any, the job shows **Needs a fix**, with a message that no files changed: it doesn't go on to test unchanged code or start fix attempts. The timeline marks Build with "No files changed", and **Run the build again** retries it. The usual cause is an AI tool that refused to edit files; the message says so when the builder reported it. Claude, when building or fixing, is allowed to edit files in the project (its other roles stay read-only). A fix attempt that changes nothing stops the same way, and an investigation may change nothing.
 
 ### When the tests still fail after a run
 
@@ -808,7 +808,7 @@ From the top:
 
 The sidebar's **Primary machine** dropdown switches between your computers. The one marked **Primary** starts this project's jobs. Another computer can look at the project, but it can't start work until it's made primary.
 
-**Jobs on your other computers.** Home also lists the jobs your other computers run in this project, with the same state their own job page shows ("Blocked: Git is locked", "Tests passed, not committed", the run working now and its step), usually within 10 seconds of a change. The computer running a job is its one source of truth; your account only holds a read-only copy for the others. While a job runs, each finished task is pushed to the job's own branch (never the base branch), so if that computer fails, at most the task in progress is lost. **Continue here** moves a job to the computer you're on, using what reached the branch: the computer it left marks it **Moved to <computer>** and won't run it again until you continue it back. It can't be moved while a run is working on it there.
+**Jobs on your other computers.** Home also lists the jobs your other computers run in this project, with the same state their own job page shows (for example, **Blocked**, with the specific Git or commit problem in its explanation, or the run working now and its step), usually within 10 seconds of a change. The computer running a job is its one source of truth; your account only holds a read-only copy for the others. While a job runs, each finished task is pushed to the job's own branch (never the base branch), so if that computer fails, at most the task in progress is lost. **Continue here** moves a job to the computer you're on, using what reached the branch: the computer it left marks it **Moved**, with the destination computer in its explanation, and won't run it again until you continue it back. It can't be moved while a run is working on it there.
 
 ### Ask AI
 

@@ -20,7 +20,7 @@ WRITE_ACCESS = ("Rerun this task with workspace write access so the mandatory fa
 class QuestionBlockerTests(unittest.TestCase):
     def test_a_blocker_saved_before_planning_offers_to_plan_again_not_to_answer(self):
         state = ui.job_state({"status": "human-needed", "human_clarification_question": WRITE_ACCESS})
-        self.assertEqual(state["label"], "The AI couldn't continue")
+        self.assertEqual(state["label"], "Blocked")
         self.assertIn("planning doesn't need it", state["reason"])  # fixed by the button itself: nothing for the person to do
         self.assertEqual((state["next"]["action"], state["next"]["label"]), ("revise", "Plan again"))
         self.assertIn("don't need write access", state["next"]["params"]["change"])  # the re-plan tells the planner so
@@ -63,7 +63,7 @@ class QuestionBlockerTests(unittest.TestCase):
 
     def test_a_real_question_is_still_asked_and_says_who_asks(self):
         planner = ui.job_state({"status": "human-needed", "human_clarification_question": "Should the timer reset on rematch?"})
-        self.assertEqual((planner["label"], planner["next"]["action"]), ("Question for you", "answer"))
+        self.assertEqual((planner["label"], planner["next"]["action"]), ("Needs input", "answer"))
         self.assertIn("The planner needs an answer", planner["reason"])
         builder = ui.job_state({"status": "human-needed", "human_clarification_question": "Which icon set should I use?",
                                 "last_error": "Builder clarification needed: Which icon set should I use?"})

@@ -288,6 +288,7 @@ def _job_state(job: dict[str, Any], root: Path) -> dict[str, Any] | None:
         return None
     nxt = state.get("next") or None
     return {"group": state.get("group"), "tone": state.get("tone"), "label": state.get("label"),
+            "in_progress": state.get("in_progress", False),
             "reason": str(state.get("reason") or "")[:600],
             "next": {"action": nxt.get("action"), "label": nxt.get("label")} if isinstance(nxt, dict) else None}
 

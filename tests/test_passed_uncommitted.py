@@ -25,7 +25,7 @@ class PassedUncommittedTests(unittest.TestCase):
                "debug_history": [{"result": {"build_ok": True, "tests_ok": False}}]}
         state = ui.job_state(job)
         self.assertEqual((state["label"], state["next"]["action"], state["next"]["label"]),
-                         ("Tests passed, not committed", "resume", "Commit the work"))
+                         ("Blocked", "resume", "Commit the work"))
         self.assertIn("2 files changed", state["reason"])
         self.assertIn("nothing is built again", state["reason"])
 

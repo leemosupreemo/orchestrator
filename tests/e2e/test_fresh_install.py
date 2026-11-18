@@ -50,13 +50,17 @@ class FreshInstallTests(unittest.TestCase):
             cls.remote_main = app.project.git("rev-parse", "origin/main")
             cls.first = app.run("new_job", new_job_form("feature", FEATURE, free=True))  # the form's default: the current branch
             cls.first_job = next(iter(app.jobs()), {})
-            cls.complete = app.run(cls.first_job["state"]["next"]["action"], {"job": cls.first_job["id"]}) if cls.first_job.get("state", {}).get("next") else None
+            first_review = app.api(f"jobs/{cls.first_job['id']}")[1]["final_review"]
+            cls.complete = app.run(cls.first_job["state"]["next"]["action"], {"job": cls.first_job["id"], "reviewed": True,
+                                                                                 "review_revision": first_review["revision"]}) if cls.first_job.get("state", {}).get("next") else None
             cls.second = app.run("new_job", new_job_form("quick", QUICK, branch_mode="new"))
             cls.second_job = next((j for j in app.jobs() if j["id"] == cls.second.get("result_job")), {})
             branch = cls.second_job.get("branch") or "main"
             cls.second_changed = app.project.git("diff", "--name-only", f"main...{branch}").splitlines()
             cls.second_readme = app.project.git("show", f"{branch}:README.md")
-            cls.merge = app.run("merge", {"job": cls.second_job["id"]}) if cls.second_job else None
+            second_review = app.api(f"jobs/{cls.second_job['id']}")[1]["final_review"]
+            cls.merge = app.run("merge", {"job": cls.second_job["id"], "reviewed": True,
+                                          "review_revision": second_review["revision"]}) if cls.second_job else None
         except Exception:
             cls.app.stop()
             raise

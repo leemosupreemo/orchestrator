@@ -290,15 +290,15 @@ class DeliverScriptTests(unittest.TestCase):
         self.assertEqual((code, notified, logged), (0, True, True))
         self.assertEqual((receipt["job_id"], receipt["branch"], receipt["platform"]), ("job-1", "job-branch", "android"))
 
-    def test_an_unconfirmed_delivery_exits_1_without_a_receipt(self):
+    def test_an_unconfirmed_delivery_records_failure_and_exits_1(self):
         code, receipt, _, notified, logged = self.run_script({})
-        self.assertEqual((code, receipt, notified, logged), (1, None, False, True))
+        self.assertEqual((code, receipt["status"], notified, logged), (1, "failed", False, True))
 
     def test_bad_config_or_the_wrong_branch_stops_before_building(self):
         code, receipt, called, *_ = self.run_script({"status": "delivered"}, errors=["firebase_app_id missing"])
-        self.assertEqual((code, receipt, called), (1, None, False))
+        self.assertEqual((code, receipt["status"], called), (1, "failed", False))
         code, receipt, called, *_ = self.run_script({"status": "delivered"}, branch="other")
-        self.assertEqual((code, receipt, called), (1, None, False))
+        self.assertEqual((code, receipt["status"], called), (1, "failed", False))
 
 
 if __name__ == "__main__":

@@ -56,7 +56,7 @@ class JobActionsTests(unittest.TestCase):
             path = Path(tmp) / "job.json"
             path.write_text(json.dumps({"status": "review-needed", "pr_number": 141}))
             with patch("dev_console.handle_merge_cleanup") as merge:
-                self.assertEqual(job_actions.main(["merge", str(path)]), 0)
+                self.assertEqual(job_actions.main(["merge", str(path), "--reviewed"]), 0)
         job = merge.call_args[0][0]
         self.assertEqual((job["pr_number"], job["_path"]), (141, path.resolve()))
 
@@ -77,7 +77,7 @@ class JobActionsTests(unittest.TestCase):
                  patch.object(dev_console.subprocess, "run", side_effect=fake_run), \
                  patch.object(dev_console, "archive_job", return_value=Path(tmp) / "job-17.json"), \
                  patch.object(dev_console, "_back_to_menu"):
-                self.assertEqual(job_actions.main(["merge", str(path)]), 0)
+                self.assertEqual(job_actions.main(["merge", str(path), "--reviewed"]), 0)
 
         self.assertIn(["gh", "pr", "ready", "17"], commands)
         self.assertIn(["gh", "pr", "merge", "17", "--merge", "--delete-branch"], commands)
@@ -90,13 +90,13 @@ class JobActionsTests(unittest.TestCase):
             with patch.object(dev_console.subprocess, "check_output", return_value=b'{"isDraft": true}'), \
                  patch.object(dev_console.subprocess, "run", return_value=SimpleNamespace(returncode=1, stdout="", stderr="failed")), \
                  patch.object(dev_console, "_back_to_menu"):
-                self.assertEqual(job_actions.main(["merge", str(path)]), 1)
+                self.assertEqual(job_actions.main(["merge", str(path), "--reviewed"]), 1)
     def test_complete_archives_a_job_without_a_pr(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "job.json"
             path.write_text(json.dumps({"status": "review-needed", "branch": "ai/issue-3"}))
             with patch("dev_console.archive_job") as archive:
-                self.assertEqual(job_actions.main(["complete", str(path)]), 0)
+                self.assertEqual(job_actions.main(["complete", str(path), "--reviewed"]), 0)
         archive.assert_called_once()
         self.assertEqual(archive.call_args.kwargs["status"], "completed")
         self.assertEqual(archive.call_args[0][0]["restore_status"], "review-needed")  # lets the web UI undo it
@@ -106,7 +106,7 @@ class JobActionsTests(unittest.TestCase):
             path = Path(tmp) / "job.json"
             path.write_text(json.dumps({"status": "review-needed", "pr_number": 7}))
             with patch("dev_console.archive_job") as archive:
-                self.assertEqual(job_actions.main(["complete", str(path)]), 1)
+                self.assertEqual(job_actions.main(["complete", str(path), "--reviewed"]), 1)
         archive.assert_not_called()
 
 

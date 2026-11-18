@@ -135,7 +135,7 @@ class JobPageTests(unittest.TestCase):
     def test_the_server_says_nothing_was_built_and_offers_to_run_the_build_again(self):
         state = ui.job_state({"status": "human-needed", "build_no_changes": True, "last_error": "The build finished without changing any files."})
         self.assertEqual((state["label"], state["tone"], state["next"]["action"], state["next"]["label"]),
-                         ("Nothing was built", "failed", "resume", "Run the build again"))
+                         ("Needs a fix", "failed", "resume", "Run the build again"))
 
     def test_the_timeline_marks_build_failed_when_no_files_changed(self):
         app = (ROOT / "orchestrator/web/static/app.js").read_text(encoding="utf-8")

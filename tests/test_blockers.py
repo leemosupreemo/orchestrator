@@ -80,11 +80,12 @@ class LifecycleTests(unittest.TestCase):
     def test_the_job_page_says_what_blocks_it_checked_now(self):
         job = {"status": "human-needed", "blocker": {**blockers.detect("bash: zzz-missing-tool: command not found"), "detected_at": 1.0}}
         state = ui.job_state(job, self.root)
-        self.assertEqual((state["label"], state["next"]["label"]), ("zzz-missing-tool isn't installed", "Try again"))
+        self.assertEqual((state["label"], state["next"]["label"]), ("Blocked", "Try again"))
+        self.assertIn("zzz-missing-tool isn't installed", state["reason"])
         self.assertIn("Install zzz-missing-tool", state["steps"][0])
         with mock.patch("shutil.which", return_value="/usr/local/bin/zzz-missing-tool"):
             cleared = ui.job_state(job, self.root)
-        self.assertEqual((cleared["label"], cleared["next"]["action"]), ("Blocker cleared", "resume"))
+        self.assertEqual((cleared["label"], cleared["next"]["action"]), ("Paused", "resume"))
 
 
 class AutoResumeTests(unittest.TestCase):

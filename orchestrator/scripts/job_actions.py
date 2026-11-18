@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any
 
 from common import read_json, record_clarification, write_json
+from orchestrator import job_review
 
 SCRIPTS_DIR = Path(__file__).resolve().parent
 
@@ -83,6 +84,7 @@ def run_script(name: str, args: list[str]) -> int:
 
 def load_job(path: Path) -> dict[str, Any]:
     job = read_json(path)
+    job.setdefault("job_id", path.stem)
     job["_path"] = path
     return job
 
@@ -99,21 +101,33 @@ def drop_worktree(job: dict, force: bool = False) -> None:
         parallel_jobs.remove(ROOT, job, force=force)
 
 
-def merge(path: Path) -> int:
+def merge(path: Path, *, reviewed: bool = False, review_revision: str | None = None, reviewer: str = "CLI") -> int:
     from dev_console import handle_merge_cleanup
 
     job = load_job(path)
+    try:
+        job["manual_review"] = job_review.approve(job_review.project_root(path), job, reviewed=reviewed,
+                                                expected_revision=review_revision, reviewer=reviewer)
+    except ValueError as exc:
+        print(str(exc))
+        return 1
     drop_worktree(job)
     return 0 if handle_merge_cleanup(job) is not False else 1
 
 
-def complete(path: Path) -> int:
+def complete(path: Path, *, reviewed: bool = False, review_revision: str | None = None, reviewer: str = "CLI") -> int:
     """Archive a reviewed job that has no PR to merge. Its branch is left alone."""
     from dev_console import archive_job
 
     job = load_job(path)
     if job.get("pr_number"):
         print("This job has a pull request; use Merge & complete so the PR is merged.")
+        return 1
+    try:
+        job["manual_review"] = job_review.approve(job_review.project_root(path), job, reviewed=reviewed,
+                                                expected_revision=review_revision, reviewer=reviewer)
+    except ValueError as exc:
+        print(str(exc))
         return 1
     job["restore_status"] = job.get("status")  # so the web UI can undo this
     drop_worktree(job)
@@ -523,7 +537,12 @@ def main(argv: list[str] | None = None) -> int:
     for name, help_text in [("merge", "Merge the job's PR, clean up its branch and archive it"),
                             ("approve", "Accept architect suggestions, approve a design, or approve a plan"),
                             ("complete", "Archive a reviewed job that has no PR to merge")]:
-        sub.add_parser(name, help=help_text).add_argument("job_file")
+        final_parser = sub.add_parser(name, help=help_text)
+        final_parser.add_argument("job_file")
+        if name in {"merge", "complete"}:
+            final_parser.add_argument("--reviewed", action="store_true", help="Confirm that you manually reviewed this job")
+            final_parser.add_argument("--review-revision", help="Reject approval if the reviewed revision changed")
+            final_parser.add_argument("--reviewer", default="CLI", help="Who approved the work")
     for name, help_text in [("discard", "Revert the job's AI changes, delete its AI branch and archive it"),
                             ("delete", "Delete a job, optionally keeping code changes and branch")]:
         p = sub.add_parser(name, help=help_text)
@@ -580,11 +599,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Job not found: {path}")
         return 1
     if args.action == "merge":
-        return merge(path)
+        return merge(path, reviewed=args.reviewed, review_revision=args.review_revision, reviewer=args.reviewer)
     if args.action == "approve":
         return approve(path)
     if args.action == "complete":
-        return complete(path)
+        return complete(path, reviewed=args.reviewed, review_revision=args.review_revision, reviewer=args.reviewer)
     if args.action in ("discard", "delete"):
         return discard(path, keep_changes=bool(getattr(args, "keep_changes", False)))
     if args.action == "revise":
