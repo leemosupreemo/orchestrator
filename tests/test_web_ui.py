@@ -8179,6 +8179,9 @@ console.log(JSON.stringify({{ fromHyp, fromDoc }}));
         self.assertIn('const heroTone = ["merge", "complete"].includes(nextAction) && s.state.tone !== "failed" ? "done" : (s.state.tone || "");', self.job_page)
         self.assertIn('const showTaskBar = tasksTotal > 0 && currentPhase === "build" && tasksDone > 0;', self.job_page)
         self.assertNotIn('<h2>Progress</h2>', self.job_page)  # the stepper and hero carry status; no separate card
+        # A Quick change has no planner: no Plan card repeating the brief, and the empty Test cases card says why.
+        self.assertIn('const quickNoPlan = job.type === "quick-fix" && !tasksTotal;', self.job_page)
+        self.assertIn("Quick changes skip planning, so no test cases were listed.", self.job_page)
         self.assertIn("!reviewingPlan && (tasksTotal > 0 || showSummary || !hasBuildWork)", self.job_page)
         self.assertIn('!["debug", "answer", "merge", "complete", "approve", "schedule", "execute"].includes(next?.action)', self.job_page)
 

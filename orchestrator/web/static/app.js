@@ -5819,7 +5819,9 @@ pages.job = async ([id]) => {
 
   const nextAction = s.state.next?.action;
   const planSummary = String(job.plan?.summary || "").trim();
-  const showSummary = planSummary && planSummary.toLowerCase() !== "summary";
+  // A Quick change skips the planner: its "plan" is the instructions again, with no tasks or test cases. The brief says it.
+  const quickNoPlan = job.type === "quick-fix" && !tasksTotal;
+  const showSummary = planSummary && planSummary.toLowerCase() !== "summary" && !quickNoPlan;
   const hasBuildWork = allFiles.length > 0 || filesChanged > 0 || isJobComplete || currentPhaseIndex >= 2;
   const prUrl = (links || []).find((l) => l?.url && /pr|pull|merge/i.test(l.label || ""))?.url || job.merge_request_url || job.pr_url || "";
   const builderSummaryDoc = otherDocs.find((d) => d.name === "builder_summary.md" && d.text?.trim()) || null;
@@ -6092,6 +6094,7 @@ pages.job = async ([id]) => {
         ${canEditPlan ? `<div class="card-actions"><button class="btn small" data-job-tc-op="add" title="Add a test case">Add</button></div>` : ""}</div>
         ${testCases.cases.length ? `<div class="card-b">${testCaseSummaryHtml(testCases.summary)}${missingTests ? `<div class="notice bad mt-8">${missingTests} automated case${missingTests === 1 ? "" : "s"} due now ${missingTests === 1 ? "has" : "have"} no test yet.</div>` : ""}${unwrittenCases ? `<div class="notice mt-8">${plural(unwrittenCases, "case")} could not be written as automated ${unwrittenCases === 1 ? "test" : "tests"}. Open ${unwrittenCases === 1 ? "it" : "each"} below for the reason.</div>` : ""}</div>
         <div class="list">${canEditPlan ? testCaseRowsHtml(testCases.cases, { editable: true, actionPrefix: "job-tc" }) : testCaseRowsHtml(testCases.cases)}</div>`
+          : quickNoPlan ? `<div class="empty">Quick changes skip planning, so no test cases were listed. Use a Feature or Bug job when you want them.</div>`
           : `<div class="empty">No test cases yet. Plans list them for every feature, bug fix and coverage job.</div>`}
 </section>
 
