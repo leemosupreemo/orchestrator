@@ -5548,13 +5548,11 @@ function jobChangeSummary(otherDocs, changes) {
 }
 
 // Compact table of contents for project documentation, shown inside a job's Documentation card.
-function jobDocsOutlineHtml({ s, featureName, docFilesChanged, otherDocs, docsIndex }) {
+function jobDocsOutlineHtml({ s, featureName, docFilesChanged, otherDocs, docsIndex, relatedDocs = [] }) {
   const product = docsIndex?.product || null;
   const prdPath = product?.path || "docs/product/prd.md";
   const allFiles = Array.isArray(docsIndex?.files) ? docsIndex.files : [];
   const repoFiles = allFiles.filter((f) => f?.path && f.path !== prdPath);
-  const features = Array.isArray(docsIndex?.features) ? docsIndex.features : [];
-  const jobs = Array.isArray(docsIndex?.jobs) ? docsIndex.jobs : [];
   const items = [];
 
   items.push({
@@ -5566,23 +5564,22 @@ function jobDocsOutlineHtml({ s, featureName, docFilesChanged, otherDocs, docsIn
     side: product ? (product.exists ? `${product.written || 0}/${product.total || 0}` : "Empty") : "",
   });
 
+  // Only docs that concern this job (it changed them, or they name its files), never the first few in the repository.
+  for (const f of relatedDocs) {
+    items.push({
+      href: `#/docs/file?path=${encodeURIComponent(f.path)}`,
+      title: f.title || f.path,
+      meta: `${f.why} · ${f.path}`,
+    });
+  }
   if (repoFiles.length) {
-    const shown = repoFiles.slice(0, 6);
-    for (const f of shown) {
-      items.push({
-        href: `#/docs/file?path=${encodeURIComponent(f.path)}`,
-        title: f.title || f.path,
-        meta: `${f.group || "Project"} · ${f.path}`,
-      });
-    }
-    if (repoFiles.length > shown.length) {
-      items.push({
-        href: "#/project-docs",
-        title: "More repository docs",
-        meta: `${repoFiles.length - shown.length} more markdown ${repoFiles.length - shown.length === 1 ? "file" : "files"} in Project docs`,
-        side: String(repoFiles.length),
-      });
-    }
+    items.push({
+      href: "#/project-docs",
+      title: relatedDocs.length ? "All project docs" : "Project docs",
+      meta: relatedDocs.length ? `${plural(repoFiles.length, "markdown file")} in the repository`
+        : `None of the ${plural(repoFiles.length, "markdown file")} mention this job's files`,
+      side: String(repoFiles.length),
+    });
   } else if (!docsIndex) {
     items.push({
       href: "#/project-docs",
@@ -5604,14 +5601,6 @@ function jobDocsOutlineHtml({ s, featureName, docFilesChanged, otherDocs, docsIn
     title: "This job record",
     meta: otherDocs.length ? otherDocs.map((d) => d.title || d.name).join(" · ") : "Brief, changes, and verification summary",
   });
-
-  if (docsIndex) {
-    items.push({
-      href: "#/project-docs",
-      title: "Feature & job doc index",
-      meta: `${plural(features.length, "feature")} · ${plural(jobs.length, "job record")}`,
-    });
-  }
 
   const changedCaption = docFilesChanged.length
     ? `<div class="card-caption t-secondary"><strong>Updated by this job:</strong> ${docFilesChanged.map((f) => `<a class="mono" href="#/docs/file?path=${encodeURIComponent(f)}">${esc(f)}</a>`).join(", ")}</div>`
@@ -6123,7 +6112,7 @@ pages.job = async ([id]) => {
 
       ${uxReviewCard(s, data.ux_review, visualChecks)}
 
-      ${jobDocsOutlineHtml({ s, featureName, docFilesChanged, otherDocs, docsIndex })}
+      ${jobDocsOutlineHtml({ s, featureName, docFilesChanged, otherDocs, docsIndex, relatedDocs: data.related_docs || [] })}
       <section class="card mb-16" id="finalize-section" tabindex="-1">
         <div class="card-h"><h2>Finalize</h2></div>
         <div class="card-b stack"><p class="muted">${isJobComplete ? "Merged" : currentPhase === "review" ? "Ready for review and merge." : "Review and merge follow verification and documentation."}</p>

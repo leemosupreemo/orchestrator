@@ -891,6 +891,7 @@ const withIndex = jobDocsOutlineHtml({{
     features: [{{ id: 'feat-auth', name: 'Auth' }}],
     jobs: [{{ id: 'job-1' }}, {{ id: 'job-2' }}],
   }},
+  relatedDocs: [{{ path: 'docs/api.md', title: 'API reference', why: 'Mentions AuthClient' }}],
 }});
 const fallback = jobDocsOutlineHtml({{
   s: {{ id: 'job-2', feature: '' }},
@@ -910,16 +911,18 @@ console.log(JSON.stringify({{ withIndex, fallback }}));
             'href="#/docs/file?path=README.md"',
             'href="#/docs/product"',
             '4/6 sections written',
-            'Architecture',
-            'More repository docs',
-            '1 more markdown file in Project docs',
+            'API reference',
+            'Mentions AuthClient · docs/api.md',
+            'All project docs',
+            '7 markdown files in the repository',
             'Feature spec · Auth',
             'href="#/docs/feature/feat-auth"',
             'href="#/docs/job/job-1"',
             'Builder summary',
-            '1 feature · 2 job records',
         ):
             self.assertIn(expected, with_index)
+        for unrelated in ('Architecture', 'Agent notes', 'job records'):  # only docs that concern the job
+            self.assertNotIn(unrelated, with_index)
         fallback = out["fallback"]
         self.assertIn('aria-label="Documentation table of contents"', fallback)
         self.assertIn('Product requirements', fallback)

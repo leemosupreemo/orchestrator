@@ -2610,6 +2610,7 @@ def job_detail(root: Path, job_id: str) -> dict[str, Any]:
         "completed_tasks": completed,
         "next_task": next_task,
         "approach": job.get("approach") or job.get("execution_strategy") or "Standard workflow",
+        "related_docs": project_docs.related_files(root, job),  # the project's docs that concern this job
     }
 
 

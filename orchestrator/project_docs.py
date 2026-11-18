@@ -249,6 +249,60 @@ def project_files(root: Path) -> list[dict[str, Any]]:
     return out
 
 
+AI_TOOL_NOTES = {"AGENTS.md", "CLAUDE.md", "GEMINI.md"}  # instructions for AI tools, not documentation about the project
+_TEXT_CACHE: dict[Path, tuple[float, str]] = {}  # the job page refreshes live; reread a doc only when it changes
+
+
+def _cached_text(path: Path) -> str | None:
+    try:
+        mtime = path.stat().st_mtime
+        if path not in _TEXT_CACHE or _TEXT_CACHE[path][0] != mtime:
+            _TEXT_CACHE[path] = (mtime, path.read_text(encoding="utf-8", errors="replace")[:200_000])
+        return _TEXT_CACHE[path][1]
+    except OSError:
+        return None
+
+
+def job_files(job: dict[str, Any]) -> list[str]:
+    """The files a job changed or planned to change."""
+    plan = job.get("plan") if isinstance(job.get("plan"), dict) else {}
+    paths = [*(job.get("ai_modified_files") or []), *(job.get("ai_untracked_files") or []), *(plan.get("likely_files") or [])]
+    for task in plan.get("tasks") or []:
+        if isinstance(task, dict):
+            paths += task.get("likely_files") or []
+    # Tool state in hidden folders (.claude/, .github/) says nothing about what the job is about.
+    return list(dict.fromkeys(str(p) for p in paths if isinstance(p, str) and p.strip()
+                              and not any(part.startswith(".") for part in Path(p).parts)))
+
+
+def related_files(root: Path, job: dict[str, Any], limit: int = 6) -> list[dict[str, Any]]:
+    """The project's docs that concern this job: ones it changed, then ones that name the files it touched or planned to
+    touch (by path or file name), most mentions first. Never the AI tools' instruction files. Empty when nothing matches."""
+    root = Path(root)
+    files = job_files(job)
+    changed = set(files)
+    names = {Path(f).stem for f in files if len(Path(f).stem) >= 4} | {f for f in files if "/" in f}
+    pattern = re.compile("|".join(sorted((re.escape(n) for n in names), key=len, reverse=True))) if names else None
+    scored = []
+    for entry in project_files(root):
+        if Path(entry["path"]).name in AI_TOOL_NOTES and "/" not in entry["path"]:
+            continue
+        if entry["path"] in changed:
+            scored.append((10_000, {**entry, "why": "Changed by this job"}))
+            continue
+        if not pattern:
+            continue
+        text = _cached_text(root / entry["path"])
+        if text is None:
+            continue
+        hits = pattern.findall(text)
+        if hits:
+            top = sorted(set(hits), key=hits.count, reverse=True)[:3]
+            scored.append((len(hits), {**entry, "why": "Mentions " + ", ".join(Path(h).name for h in top)}))
+    scored.sort(key=lambda pair: -pair[0])
+    return [entry for _, entry in scored[:limit]]
+
+
 def _file_title(f: Path, rel: str) -> str:
     try:
         for line in f.read_text(encoding="utf-8", errors="replace").splitlines()[:30]:

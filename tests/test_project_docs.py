@@ -123,5 +123,31 @@ class ExportTests(unittest.TestCase):
         self.assertNotIn("Product", md.split("\n", 1)[1][:40])
 
 
+class RelatedDocsTests(unittest.TestCase):
+    """A job's Documentation card lists the docs that concern it, not the first few in the repository."""
+
+    def test_docs_it_changed_or_that_name_its_files_most_mentions_first(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "docs").mkdir()
+            (root / "README.md").write_text("# Game\nAbout the game.\n")
+            (root / "CLAUDE.md").write_text("# Tool rules\nGrassSystem everywhere GrassSystem.\n")
+            (root / "docs" / "wind.md").write_text("# Wind\nTreeWind and GrassSystem; GrassSystem again.\n")
+            (root / "docs" / "trees.md").write_text("# Trees\nTreeWind sway.\n")
+            (root / "docs" / "server.md").write_text("# Server\nNothing related.\n")
+            (root / "docs" / "changelog.md").write_text("# Changes\n")
+            job = {"ai_modified_files": ["Assets/World/GrassSystem.cs", "docs/changelog.md", ".claude/helpers/intelligence.cjs"],
+                   "plan": {"tasks": [{"title": "t", "likely_files": ["Assets/World/TreeWind.cs"]}]}}
+            found = pd.related_files(root, job)
+        self.assertEqual([f["path"] for f in found], ["docs/changelog.md", "docs/wind.md", "docs/trees.md"])
+        self.assertEqual(found[0]["why"], "Changed by this job")
+        self.assertEqual(found[1]["why"], "Mentions GrassSystem, TreeWind")
+
+    def test_nothing_matches_means_no_docs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "README.md").write_text("# Game\n")
+            self.assertEqual(pd.related_files(Path(tmp), {"ai_modified_files": [".claude/helpers/statusline.cjs"]}), [])
+
+
 if __name__ == "__main__":
     unittest.main()
