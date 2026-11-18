@@ -353,7 +353,7 @@ def _job_state(job: dict[str, Any], root: Path) -> dict[str, Any] | None:
 # job up with its history (answers, fix attempts, models, task commits) rather than a summary. Trimmed to stay small.
 RECORD_FIELDS = ("clarification_history", "debug_history", "allowed_models", "allowed_machines", "planner", "builder", "reviewer",
                  "task_commits", "iteration", "max_iterations", "debug_phase", "debug_pause_reason", "feature", "epic",
-                 "test_command_override", "ai_modified_files", "ai_untracked_files")
+                 "test_command_override", "ai_modified_files", "ai_untracked_files", "wip_backup")
 MAX_RECORD_BYTES = 30_000
 PLAN_FIELDS = ("risks", "constraints", "assumptions", "likely_files", "acceptance_criteria", "test_cases")
 
@@ -383,6 +383,123 @@ def job_record(job: dict[str, Any]) -> dict[str, Any] | None:
             break
         record.pop(bulky, None)
     return record or None
+
+
+def _job_entry(jdata: dict[str, Any], stem: str, proj_root: Path, repo: str | None,
+               live: dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:
+    """What the account keeps of one job: its summary, state, and (for work still to do) its whole plan and history."""
+    plan_obj = jdata.get("plan") or {}
+    tasks_raw = plan_obj.get("tasks") or []
+    done_indices = _snapshot_job_progress(jdata)
+    verification = jdata.get("verification")
+    if not isinstance(verification, dict):
+        verification = {}
+    return {
+        "job_id": jdata.get("job_id"),
+        "project": proj_root.name,
+        "repo": repo,
+        "title": jdata.get("title") or plan_obj.get("title") or jdata.get("job_id"),
+        "type": jdata.get("type", "generic"),
+        "status": jdata.get("status", "planned"),
+        "branch": jdata.get("branch"),
+        "base_branch": jdata.get("base_branch"),
+        "branch_mode": jdata.get("branch_mode"),
+        "last_error": jdata.get("last_error"),
+        "yolo": bool(jdata.get("yolo")),
+        "requirements": jdata.get("requirements"),
+        "created_at": jdata.get("created_at"),
+        "updated_at": jdata.get("updated_at"),
+        "issue_number": jdata.get("issue_number"),
+        "pr_number": jdata.get("pr_number"),
+        "summary": plan_obj.get("summary") or "",
+        "code_host": jdata.get("code_host"),
+        "approved": bool(jdata.get("approved")),
+        "human_clarification_question": jdata.get("human_clarification_question"),
+        "test_status": jdata.get("test_status"),
+        "verification": {"status": verification.get("status"),
+                         "comments": str(verification.get("comments") or "")[:2000]} if verification else None,
+        "state": _job_state(jdata, proj_root),
+        "active_run": (live or {}).get(stem) or (live or {}).get(str(jdata.get("job_id") or "")),
+        "blocker": {k: jdata["blocker"].get(k) for k in ("kind", "title", "detail")} if isinstance(jdata.get("blocker"), dict) else None,
+        "imported_from_machine": jdata.get("imported_from_machine"),
+        "imported_at": jdata.get("imported_at"),
+        "record": job_record(jdata),
+        "moved_to": jdata.get("moved_to"),
+        "owner_epoch": job_epoch(jdata),
+        "tasks_count": len(tasks_raw),
+        "tasks_done": len(done_indices),
+        "completed_task_indices": done_indices,
+        # The whole plan travels for work still to do, so "Continue on this computer" resumes with
+        # every task; a finished job only needs its counts.
+        "tasks": [] if jdata.get("status") == "completed" else [
+            {k: v[:4000] if isinstance(v, str) else v for k, v in t.items()}  # very long text trimmed
+            for t in tasks_raw if isinstance(t, dict)],
+    }
+
+
+# Every job, one record each on the account (control plane account_jobs), so another computer can pick up any of them while
+# this one is offline, not only the newest 20 the snapshot carries. Only the jobs that changed since the last send go, so a
+# send stays small; what was sent is remembered here and only after the account took it.
+MAX_JOB_UPDATES = 60
+
+
+def _jobs_sent_file() -> Path:
+    return user_state_dir() / "account_jobs_sent.json"
+
+
+def _entry_hash(entry: dict[str, Any]) -> str:
+    stable = {k: v for k, v in entry.items() if k != "active_run"}  # a live run's step changes by the second
+    return hashlib.sha256(json.dumps(stable, sort_keys=True, default=str).encode()).hexdigest()[:20]
+
+
+def _jobs_sent() -> dict[str, str]:
+    try:
+        data = json.loads(_jobs_sent_file().read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def job_updates(roots: list[Path], repo_by_root: dict[str, str | None] | None = None,
+                live: dict[str, dict[str, Any]] | None = None, now: float | None = None) -> list[dict[str, Any]]:
+    """The jobs whose record changed since the account last took them: every job still in a project, and those put away
+    in the last 30 days (so the account's copy says archived). Oldest change first is fine: the rest go with the next send."""
+    now = time.time() if now is None else now
+    sent = _jobs_sent()
+    out: list[dict[str, Any]] = []
+    for root in roots:
+        repo = project_repo(root, (repo_by_root or {}).get(str(root)))
+        jobs = root / ".orchestrator" / "jobs"
+        paths = sorted(jobs.glob("*.json"), reverse=True) + [p for p in sorted((jobs / "archive").glob("*.json"), reverse=True)
+                                                              if now - p.stat().st_mtime < ARCHIVE_WINDOW]
+        for path in paths:
+            try:
+                job = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if not isinstance(job, dict) or not job.get("job_id"):
+                continue
+            entry = _job_entry(job, path.stem, root, repo, live)
+            entry["job_id"] = path.stem  # the id every computer uses for it (its file name)
+            digest = _entry_hash(entry)
+            if sent.get(path.stem) != digest:
+                out.append({**entry, "_digest": digest})
+            if len(out) >= MAX_JOB_UPDATES:
+                return out
+    return out
+
+
+def mark_jobs_sent(updates: list[dict[str, Any]]) -> None:
+    """The account took these: don't send them again until they change."""
+    if not updates:
+        return
+    sent = _jobs_sent()
+    sent.update({u["job_id"]: u["_digest"] for u in updates if u.get("job_id") and u.get("_digest")})
+    try:
+        _jobs_sent_file().parent.mkdir(parents=True, exist_ok=True)
+        _jobs_sent_file().write_text(json.dumps(sent), encoding="utf-8")
+    except OSError:
+        pass
 
 
 def build_snapshot(root: Path | None = None, live: dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:
@@ -422,53 +539,7 @@ def build_snapshot(root: Path | None = None, live: dict[str, dict[str, Any]] | N
                 try:
                     jdata = json.loads(jpath.read_text(encoding="utf-8"))
                     if isinstance(jdata, dict) and jdata.get("job_id"):
-                        plan_obj = jdata.get("plan") or {}
-                        tasks_raw = plan_obj.get("tasks") or []
-                        done_indices = _snapshot_job_progress(jdata)
-                        verification = jdata.get("verification")
-                        if not isinstance(verification, dict):
-                            verification = {}
-                        proj_jobs.append({
-                            "job_id": jdata.get("job_id"),
-                            "project": proj_root.name,
-                            "repo": repo,
-                            "title": jdata.get("title") or plan_obj.get("title") or jdata.get("job_id"),
-                            "type": jdata.get("type", "generic"),
-                            "status": jdata.get("status", "planned"),
-                            "branch": jdata.get("branch"),
-                            "base_branch": jdata.get("base_branch"),
-                            "branch_mode": jdata.get("branch_mode"),
-                            "last_error": jdata.get("last_error"),
-                            "yolo": bool(jdata.get("yolo")),
-                            "requirements": jdata.get("requirements"),
-                            "created_at": jdata.get("created_at"),
-                            "updated_at": jdata.get("updated_at"),
-                            "issue_number": jdata.get("issue_number"),
-                            "pr_number": jdata.get("pr_number"),
-                            "summary": plan_obj.get("summary") or "",
-                            "code_host": jdata.get("code_host"),
-                            "approved": bool(jdata.get("approved")),
-                            "human_clarification_question": jdata.get("human_clarification_question"),
-                            "test_status": jdata.get("test_status"),
-                            "verification": {"status": verification.get("status"),
-                                             "comments": str(verification.get("comments") or "")[:2000]} if verification else None,
-                            "state": _job_state(jdata, proj_root),
-                            "active_run": (live or {}).get(jpath.stem) or (live or {}).get(str(jdata.get("job_id") or "")),
-                            "blocker": {k: jdata["blocker"].get(k) for k in ("kind", "title", "detail")} if isinstance(jdata.get("blocker"), dict) else None,
-                            "imported_from_machine": jdata.get("imported_from_machine"),
-                            "imported_at": jdata.get("imported_at"),
-                            "record": job_record(jdata),
-                            "moved_to": jdata.get("moved_to"),
-                            "owner_epoch": job_epoch(jdata),
-                            "tasks_count": len(tasks_raw),
-                            "tasks_done": len(done_indices),
-                            "completed_task_indices": done_indices,
-                            # The whole plan travels for work still to do, so "Continue on this computer" resumes with
-                            # every task; a finished job only needs its counts.
-                            "tasks": [] if jdata.get("status") == "completed" else [
-                                {k: v[:4000] if isinstance(v, str) else v for k, v in t.items()}  # very long text trimmed
-                                for t in tasks_raw if isinstance(t, dict)],
-                        })
+                        proj_jobs.append(_job_entry(jdata, jpath.stem, proj_root, repo, live))
                 except Exception:
                     continue
         latest_job = proj_jobs[0] if proj_jobs else None
@@ -486,6 +557,7 @@ def build_snapshot(root: Path | None = None, live: dict[str, dict[str, Any]] | N
         "projects": projects_list,
         "recent_jobs": jobs_list[:50],
         "job_archives": job_archive_events(roots_to_check[:10]),
+        "job_updates": job_updates(roots_to_check[:10], repo_by_root, live),
         "metadata": {"os": os_label(), "version": package_version()},
     }
 
@@ -494,7 +566,9 @@ def sync_snapshot(machine: dict[str, Any], snapshot: dict[str, Any] | None = Non
                   live: dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:
     """Sync offline project & job metadata to the control plane for browsing when this computer is offline."""
     payload = snapshot if snapshot is not None else build_snapshot(root=root, live=live)
-    return call("machine/sync", payload, machine=machine)
+    reply = call("machine/sync", payload, machine=machine)
+    mark_jobs_sent(payload.get("job_updates") or [])
+    return reply
 
 
 def disconnect() -> bool:

@@ -153,6 +153,61 @@ class JobOwnerTests(PlaneCase):
         return next(iter(docs.values()))
 
 
+class AccountJobsTests(PlaneCase):
+    """Every job has its own record on the account, so another computer can continue any of them while the one holding it
+    is offline: not only the newest few in its snapshot. An older copy can't overwrite a newer one."""
+
+    def sync(self, machine_id, secret, recent, updates):
+        return self.call("POST", "/cp/machine/sync", {"projects": [], "recent_jobs": recent, "job_updates": updates},
+                         machine_auth=f"Machine {machine_id}:{secret}")
+
+    def snapshot_jobs(self, machine_id):
+        status, reply = self.call("POST", "/cp/machine/snapshot", {"machine_id": machine_id}, user="alice-token")
+        self.assertEqual(status, 200)
+        return [j["job_id"] for j in reply["snapshot"]["recent_jobs"]]
+
+    def test_an_old_unfinished_job_is_listed_while_its_computer_is_offline(self):
+        pro, air = self.pair(name="MacBook Pro"), self.pair(name="MacBook Air")
+        old = {"job_id": "old", "owner_epoch": 1, "status": "human-needed", "tasks": [{"title": "t"}], "_digest": "x"}
+        done = {"job_id": "done", "owner_epoch": 1, "status": "archived"}
+        self.sync(*pro, [{"job_id": "new", "owner_epoch": 1, "status": "planned"}], [old, done])
+        self.assertEqual(self.snapshot_jobs(pro[0]), ["new", "old"])
+        self.sync(*air, [], [{**old, "owner_epoch": 2, "status": "executing"}])  # continued on the Air
+        self.sync(*pro, [{"job_id": "new", "owner_epoch": 1, "status": "planned"}], [old])  # the Pro's stale copy, sent late
+        self.assertEqual(self.snapshot_jobs(pro[0]), ["new"])
+        self.assertEqual(self.snapshot_jobs(air[0]), ["old"])
+        doc = next(iter(d for d in self.plane.store.data["account_jobs"].values() if d["job_id"] == "old"))
+        self.assertEqual((doc["machine_name"], doc["epoch"], doc["job"]["status"]), ("MacBook Air", 2, "executing"))
+        self.assertNotIn("_digest", doc["job"])
+
+
+class JobUpdatesTests(unittest.TestCase):
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp())
+        self.jobs = self.root / ".orchestrator" / "jobs"
+        (self.jobs / "archive").mkdir(parents=True)
+        state = tempfile.mkdtemp()
+        patcher = patch.dict(os.environ, {"ORCHESTRATOR_USER_STATE_DIR": state})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def write(self, name, folder="", **fields):
+        (self.jobs / folder / f"{name}.json").write_text(json.dumps({"job_id": name, "title": name, **fields}))
+
+    def test_only_changed_jobs_are_sent_and_only_once_the_account_took_them(self):
+        for n in range(25):  # more than the snapshot's newest 20
+            self.write(f"2026-{n:02d}", status="planned")
+        self.write("put-away", "archive", status="archived")
+        first = account.job_updates([self.root])
+        self.assertEqual(len(first), 26)
+        self.assertEqual(account.job_updates([self.root]), first)  # not taken yet: sent again
+        account.mark_jobs_sent(first)
+        self.assertEqual(account.job_updates([self.root]), [])
+        self.write("2026-03", status="executing")
+        self.assertEqual([u["job_id"] for u in account.job_updates([self.root])], ["2026-03"])
+        self.assertEqual(account.job_updates([self.root], live={"2026-04": {"label": "Build"}}), [u for u in account.job_updates([self.root])])
+
+
 class JobOwnerApplyTests(unittest.TestCase):
     def setUp(self):
         self.root = Path(tempfile.mkdtemp())
@@ -169,6 +224,17 @@ class JobOwnerApplyTests(unittest.TestCase):
         marked = ui.apply_moved_jobs({"behind": {"to": "Air", "epoch": 2}, "ahead": {"to": "Air", "epoch": 2},
                                       "legacy": {"to": "MacBook Pro", "epoch": 1}}, roots=[self.root])
         self.assertEqual(sorted(marked), ["behind", "legacy"])
+
+    def test_continuing_back_raises_the_number_and_keeps_both_histories(self):
+        self.job("j1", owner_epoch=1, moved_to="Air", debug_history=[{"n": 1}, {"n": "late, only here"}])
+        raw = {"job_id": "j1", "status": "review-needed", "owner_epoch": 2,
+               "record": {"debug_history": [{"n": 1}, {"n": 2}]}}
+        with patch("shutil.which", return_value=None):  # no git fetch in a throwaway folder
+            ui.import_remote_job(self.root, {"job": raw, "source_machine_name": "Air"})
+        job = json.loads((self.jobs / "j1.json").read_text())
+        self.assertEqual(job["owner_epoch"], 3)
+        self.assertEqual(job["debug_history"], [{"n": 1}, {"n": 2}, {"n": "late, only here"}])
+        self.assertNotIn("moved_to", job)
 
     def test_the_number_rules(self):
         self.assertEqual(account.job_epoch({}), 1)

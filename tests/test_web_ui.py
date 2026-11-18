@@ -8065,6 +8065,8 @@ const jobHeaderActions = () => '';
 const jobRunsCard = () => '';
 const jobChangeSummary = () => '';
 const overlapAdviceHtml = () => '';
+const wipRestoreNote = () => '';
+const strandedNote = () => '';
 const jobDocsOutlineHtml = () => '';
 const uxReviewCard = () => '';
 const testCaseSummaryHtml = () => '';

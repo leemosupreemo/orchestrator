@@ -69,6 +69,8 @@ CODE_LENGTH = 8
 SETUP_PROFILE_LIMIT = 200_000  # characters of settings and prompts one computer may share per project
 MAX_MACHINES_PER_USER = 20
 MAX_MOVED_JOBS = 200  # jobs another computer took over, kept per computer for its heartbeat reply
+MAX_JOB_UPDATES = 60  # changed jobs one computer sends per sync (account_jobs: one record per job)
+DONE_STATUSES = {"completed", "archived", "discarded", "done"}
 MAX_JOB_OWNERS = 500  # which computer owns each job (highest ownership number), per account
 MAX_JOB_ARCHIVES = 300  # the newest archive or restore of each job, per account, for every computer's heartbeat reply
 MAX_DEVICES_PER_USER = 20
@@ -528,7 +530,10 @@ class ControlPlane:
         self.store.update("machines", machine_id, {"has_snapshot": True, "snapshot_synced_at": now})
         self._record_moves(machine_id, machine, recent_jobs)
         self._record_archives(machine, body.get("job_archives"))
-        self._record_owners(machine_id, machine, recent_jobs)
+        updates = [j for j in (body.get("job_updates") if isinstance(body.get("job_updates"), list) else [])[:MAX_JOB_UPDATES]
+                   if isinstance(j, dict)]
+        self._record_owners(machine_id, machine, recent_jobs + [j for j in updates if j.get("status") not in DONE_STATUSES])
+        self._record_jobs(machine_id, machine, updates)
         return {"ok": True, "synced_at": now}
 
     def _record_archives(self, machine: dict[str, Any], events: Any) -> None:
@@ -585,6 +590,36 @@ class ControlPlane:
             if merged != current:
                 newest = sorted(merged.items(), key=lambda kv: kv[1].get("imported_at") or 0, reverse=True)[:MAX_MOVED_JOBS]
                 self.store.update("machines", other_id, {"moved_jobs": dict(newest)})
+
+    @staticmethod
+    def _job_doc_id(owner_uid: str, job_id: str) -> str:
+        return f"{owner_uid}__{hashlib.sha256(job_id.encode()).hexdigest()[:32]}"
+
+    def _record_jobs(self, machine_id: str, machine: dict[str, Any], updates: list[dict[str, Any]]) -> None:
+        """One record per job on the account (account_jobs), so any of the owner's computers can pick up any job while the
+        one that holds it is offline. A record is only replaced by the same computer or one with a higher ownership number
+        (the fencing token): a computer that comes back late with an older copy can't overwrite the newer one."""
+        for entry in updates:
+            job_id, epoch = entry.get("job_id"), entry.get("owner_epoch")
+            if not (isinstance(job_id, str) and 0 < len(job_id) <= 120 and isinstance(epoch, int) and not isinstance(epoch, bool)):
+                continue
+            job = {k: v for k, v in entry.items() if k != "_digest"}
+            if len(json.dumps(job, default=str)) > 200_000:
+                continue  # far beyond a job's usual size: not stored rather than fail the whole sync
+
+            def transform(doc, job=job, job_id=job_id, epoch=epoch):
+                if doc and doc.get("machine_id") != machine_id and int(doc.get("epoch") or 0) >= epoch:
+                    return None, None  # another computer holds a copy at least as new
+                return {"owner_uid": machine["owner_uid"], "machine_id": machine_id, "machine_name": _clean(machine.get("name") or "", 80),
+                        "job_id": job_id, "epoch": epoch, "updated_at": self.now(), "job": job}, None
+
+            self.store.mutate("account_jobs", self._job_doc_id(machine["owner_uid"], job_id), transform)
+
+    def _jobs_held_by(self, machine_id: str, owner_uid: str) -> list[dict[str, Any]]:
+        """The unfinished jobs this computer holds on the account, beyond what its snapshot lists."""
+        return [doc["job"] for _, doc in self.store.where("account_jobs", "machine_id", machine_id)
+                if doc.get("owner_uid") == owner_uid and isinstance(doc.get("job"), dict)
+                and doc["job"].get("status") not in DONE_STATUSES and not doc["job"].get("moved_to")]
 
     def _record_owners(self, machine_id: str, machine: dict[str, Any], recent_jobs: list[Any]) -> None:
         """One owner per job, by its ownership number (owner_epoch; Continue here raises it). The account remembers the
@@ -836,6 +871,10 @@ class ControlPlane:
     def get_snapshot(self, user: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
         machine_id, machine = self._owned(user, body.get("machine_id"))
         snapshot = self.store.get("machine_snapshots", machine_id)
+        if snapshot is not None:  # every unfinished job it holds, not only the newest the snapshot carries
+            listed = {j.get("job_id") for j in snapshot.get("recent_jobs") or [] if isinstance(j, dict)}
+            extra = [j for j in self._jobs_held_by(machine_id, machine["owner_uid"]) if j.get("job_id") not in listed]
+            snapshot = {**snapshot, "recent_jobs": list(snapshot.get("recent_jobs") or []) + extra}
         return {"snapshot": snapshot, "machine": self._view(machine_id, machine)}
 
     def issue_ticket(self, user: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:

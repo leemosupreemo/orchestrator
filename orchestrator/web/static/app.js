@@ -3396,7 +3396,7 @@ document.addEventListener("click", (e) => {
 
 function jobTableRow(j, { hidden = false, number = null } = {}) {
   const parts = [
-    j.remote_machine ? `on ${esc(j.remote_machine.name)}` : "",
+    j.remote_machine ? `on ${esc(j.remote_machine.name)}${!j.remote_machine.online && j.synced_at ? ` (offline, synced ${esc(ago(j.synced_at))})` : ""}` : "",
     j.continued_on ? `continued on ${esc(j.continued_on)}` : "", // another computer took this job over (Continue here)
     j.branch ? `<span class="mono">${esc(j.branch)}</span>` : "",
     j.tasks_total ? `${j.tasks_done}/${j.tasks_total} tasks` : "",
@@ -4536,6 +4536,7 @@ pages.home = async (_, query) => {
           tasks_done: Number.isInteger(rj.tasks_done) ? rj.tasks_done : (Array.isArray(rj.completed_task_indices) ? rj.completed_task_indices.length : 0),
           state: rj.state?.label ? { ...rj.state, next: null, reason: rj.active_run ? `${rj.active_run.label}${rj.active_run.step ? ` · ${rj.active_run.step}` : ""}` : rj.state.reason } : remoteState(rj),
           remote_machine: { id: item.m.id, name: item.m.name, online: Boolean(item.m.online), reachable: Boolean(item.m.reachable) },
+          synced_at: item.snap.synced_at || 0, // how fresh this copy is: the computer may have newer work it hasn't uploaded
         });
       }
     }
@@ -5305,6 +5306,28 @@ function clarificationThread(history) {
 }
 
 // YOLO answered the AI's questions for the person: said in the job's hero, with the count against the limit.
+// Continued here from a computer that left uncommitted work (wip_backup.py backs it up to a hidden ref on origin): offer to
+// bring it back once. Only for the copy that came from that computer, and not after it's been brought back.
+function wipRestoreNote(job, idle) {
+  const b = job.wip_backup;
+  if (!b?.commit || !job.imported_from_machine || b.machine !== job.imported_from_machine || job.moved_to) return "";
+  if (job.wip_restored?.commit === b.commit) return "";
+  const n = (b.files || []).length;
+  return `<div class="job-hero-reason job-overlap"><p>${esc(b.machine)} left ${n === 1 ? "1 unfinished file" : `${n} unfinished files`} on this job${b.at ? `, saved ${esc(ago(b.at))}` : ""}. Bring ${n === 1 ? "it" : "them"} here to carry on from where it stopped.</p>
+    ${idle ? `<div class="row wrap gap-8"><button type="button" class="btn small" data-restore-wip="${esc(job.job_id || "")}" title="Switches to this job's branch if needed; never overwrites files with changes here">Bring the unfinished work here</button></div>` : ""}</div>`;
+}
+
+document.addEventListener("click", async (e) => {
+  const button = e.target.closest("[data-restore-wip]");
+  if (!button) return;
+  button.disabled = true;
+  try {
+    const { files } = await api(`jobs/${encodeURIComponent(current.args?.[0] || button.dataset.restoreWip)}/restore-wip`, { method: "POST", body: {} });
+    toast(`Brought back ${plural(files.length, "unfinished file")}`);
+    route();
+  } catch (err) { button.disabled = false; toast(err.message, true); }
+});
+
 function autoresponseNote(job) {
   const auto = (job.clarification_history || []).filter((h) => h.auto);
   if (!auto.length) return "";
@@ -5419,6 +5442,25 @@ async function setUpFreeAi() {
   if (cancel) cancel.hidden = true; // finished: one button to close it
 }
 
+// How fresh another computer's copy of a job is. Offline, it may hold newer work it hasn't uploaded: say when it last
+// synced, and whether its unfinished files are backed up (wip_backup.py), so Continue here is a choice made knowingly.
+function remoteFreshnessHtml(machine, label, syncedAt, wip) {
+  if (!syncedAt) return "";
+  const synced = `Last synced from ${esc(label)} ${esc(ago(syncedAt))}.`;
+  if (machine?.online) return `<p class="muted">${synced}</p>`;
+  const backed = wip?.commit ? ` Its unfinished files were backed up ${esc(ago(wip.at))} and come with Continue here.` : "";
+  return `<div class="notice warn"><p>${esc(label)} is offline. ${synced} Anything it did after that, or didn't upload, isn't here yet.${backed}</p>
+    <p class="muted">Wait for it to come back online, or Continue here from this copy. If it had newer work, it keeps it on a side branch when it reconnects; nothing is lost.</p></div>`;
+}
+
+function strandedNote(job) {
+  const k = job.stranded;
+  if (!k || !(k.branch || k.wip_commit)) return "";
+  const bits = [k.branch ? `${plural(k.commits || 0, "commit")} on branch <span class="mono">${esc(k.branch)}</span>` : "",
+    k.wip_commit ? `${plural((k.wip_files || []).length, "unfinished file")}` : ""].filter(Boolean).join(" and ");
+  return `<p class="job-hero-reason">This computer had work it hadn't uploaded when the job moved on: ${bits}, saved on GitHub so nothing is lost. Bring it into the job there if it's still needed.</p>`;
+}
+
 pages["remote-job"] = async ([machineId, jobId]) => {
   if (typeof Account === "undefined" || !Account.active?.()) return { title: "Remote job", sub: "", html: `<section class="card"><div class="empty">Sign in to view jobs on a remote machine.</div></section>` };
   const [{ machines = [] }, snapRes] = await Promise.all([
@@ -5447,6 +5489,7 @@ pages["remote-job"] = async ([machineId, jobId]) => {
         ${rj.active_run ? `<p><span class="pill working">Running</span> ${esc(rj.active_run.label)}${rj.active_run.step ? ` · ${esc(rj.active_run.step)}` : ""}</p>` : ""}
         ${rj.state?.next?.label ? `<p class="muted">Next on ${esc(machineLabel)}: ${esc(rj.state.next.label)}. Open remote to do it there.</p>` : ""}
         ${rj.last_error && !rj.state?.reason ? `<div class="notice warn"><strong>Last error:</strong> ${esc(rj.last_error)}</div>` : ""}
+        ${remoteFreshnessHtml(machine, machineLabel, snapRes?.snapshot?.synced_at, rj.record?.wip_backup)}
         <div class="row gap-8 wrap">
           ${machine?.reachable ? `<button type="button" class="btn primary" id="open-remote-machine-job">Open remote</button>` : ""}
           <button type="button" class="btn ${machine?.reachable ? "" : "primary"}" id="continue-remote-job-here">Continue here</button>
@@ -6091,6 +6134,8 @@ pages.job = async ([id]) => {
           <p class="job-hero-reason">${heroReason}</p>
           ${heroReasonDetails}
           ${autoresponseNote(job)}
+          ${wipRestoreNote(job, !activeRun)}
+          ${strandedNote(job)}
           ${s.state.steps?.length ? `<ol class="job-hero-reason blocker-steps">${s.state.steps.map((step) => `<li>${esc(step)}</li>`).join("")}</ol>` : ""}
           ${job.worktree ? `<p class="job-hero-reason muted">Builds alongside other jobs in its own checkout (<span class="mono">${esc(job.worktree)}</span>).</p>` : ""}
           ${overlapAdviceHtml(data.overlaps, { readyHere: ["merge", "complete"].includes(nextAction), idle: !activeRun })}

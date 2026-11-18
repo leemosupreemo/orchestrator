@@ -73,6 +73,7 @@ from orchestrator import epics as epic_store
 from orchestrator import project_chat
 from orchestrator import folder_lock
 from orchestrator import job_overlap
+from orchestrator import wip_backup
 from orchestrator import plan_run
 from orchestrator import ux_review
 from orchestrator import inbox as inbox_view
@@ -1883,6 +1884,14 @@ def import_remote_job(root: Path, body: dict[str, Any]) -> dict[str, Any]:
             doc["plan"].update({k: v for k, v in record["plan_extra"].items() if k in account.PLAN_FIELDS})
         if body.get("source_machine_name"):
             doc["imported_from_machine"] = str(body["source_machine_name"])
+        if taking_back:  # history this copy has that the newer one doesn't (a race while it moved) is kept, never dropped
+            older = read_json_file(target)
+            for key in ("clarification_history", "debug_history"):
+                mine, theirs = older.get(key), doc.get(key)
+                if isinstance(mine, list) and mine:
+                    theirs = theirs if isinstance(theirs, list) else []
+                    seen = {json.dumps(e, sort_keys=True, default=str) for e in theirs}
+                    doc[key] = theirs + [e for e in mine if json.dumps(e, sort_keys=True, default=str) not in seen]
         doc["imported_at"] = time.time()  # the newer copy is the job's owner (see mark_job_moved)
         # the ownership number goes up: the account makes this copy the owner and tells the one it came from that it moved
         doc["owner_epoch"] = max(account.job_epoch(raw), account.job_epoch(read_json_file(target)) if taking_back else 0) + 1
@@ -1974,6 +1983,15 @@ def apply_moved_jobs(moves: Any, roots: list[Path] | None = None) -> list[str]:
                 behind = float(local.get("imported_at") or 0) < float(move.get("imported_at") or 0)
             if not local.get("moved_to") and behind and mark_job_moved(root, job_id, str(move.get("to") or "")):
                 marked.append(job_id)
+                try:  # work this computer never uploaded: a side branch and a hidden ref, never lost, never forced in
+                    repo = Path(local["worktree"]) if local.get("worktree") and Path(local["worktree"]).is_dir() else root
+                    name = (account.load_machine() or {}).get("name") or socket.gethostname()
+                    if kept := wip_backup.keep_stranded(repo, job_id, local, str(name)):
+                        job = read_json_file(path)
+                        job["stranded"] = kept
+                        write_json_file(path, job)
+                except Exception:
+                    pass
     return marked
 
 
@@ -6730,6 +6748,37 @@ class UIServer(ThreadingHTTPServer):
                                   "step": str(progress.get("step") or progress.get("label") or "")[:200]}
         return live
 
+    def _back_up_unfinished_work(self) -> None:
+        """Each heartbeat, in the background: the uncommitted files of this project's paused or failed jobs go to a hidden
+        ref on origin (wip_backup), so another computer can continue from them while this one is offline. One at a time."""
+        if getattr(self, "_wip_busy", False):
+            return
+        self._wip_busy = True
+        running = set(self.sessions.running_job_ids())
+        name = (account.load_machine() or {}).get("name") or socket.gethostname()
+
+        def work() -> None:
+            try:
+                for path in sorted(jobs_dir(self.root).glob("*.json")):
+                    if path.stem in running:
+                        continue
+                    job = read_json_file(path)
+                    repo = Path(job["worktree"]) if job.get("worktree") and Path(job["worktree"]).is_dir() else self.root
+                    try:
+                        record = wip_backup.backup_job(repo, path.stem, job, machine=str(name))
+                    except Exception:
+                        continue
+                    if record is None:
+                        continue
+                    fresh = read_json_file(path)  # the job may have moved on while git pushed
+                    if fresh.get("updated_at") == job.get("updated_at"):
+                        fresh["wip_backup"] = record
+                        write_json_file(path, fresh)
+            finally:
+                self._wip_busy = False
+
+        threading.Thread(target=work, daemon=True).start()
+
     def send_snapshot_if_changed(self, machine: dict[str, Any], sent: str) -> str:
         """Builds this computer's snapshot and sends it only when it differs from the last one sent (`sent`, its hash).
         Returns the hash now on the account: the new one, or `sent` when nothing changed or sending failed."""
@@ -6774,6 +6823,7 @@ class UIServer(ThreadingHTTPServer):
                             print(f"  Moved to another computer: {', '.join(marked)}", flush=True)
                     except Exception:
                         pass
+                self._back_up_unfinished_work()
                 if isinstance(reply, dict) and reply.get("job_archives"):
                     try:  # archived or restored on another of the owner's computers: the same here
                         if changed := apply_job_archives(reply["job_archives"], running=set(self.sessions.running_job_ids())):
@@ -8335,6 +8385,25 @@ class UIHandler(BaseHTTPRequestHandler):
                 job.pop("cruft_accepted", None)
             write_json_file(job_path, job)
             self._json({"ok": True, "cruft": job_cruft(root, job)})
+        elif method == "POST" and len(parts) == 3 and parts[0] == "jobs" and parts[2] == "restore-wip":
+            # Continued here from a computer that left unfinished work (wip_backup): bring those files back
+            self._require_owner("bring back a job's unfinished work")
+            if parts[1] in self.server.sessions.running_job_ids():
+                raise UIError("This job has a run going. Wait for it to finish.", HTTPStatus.CONFLICT)
+            job_path = resolve_job_path(root, parts[1])
+            job = read_json_file(job_path)
+            if job.get("moved_to"):
+                raise UIError(f"This job continues on {job['moved_to']}. Continue it here first.")
+            repo = Path(job["worktree"]) if job.get("worktree") and Path(job["worktree"]).is_dir() else root
+            try:
+                files = wip_backup.restore(repo, parts[1], job)
+            except RuntimeError as exc:
+                raise UIError(str(exc))
+            job = read_json_file(job_path)
+            job["wip_restored"] = {"commit": (job.get("wip_backup") or {}).get("commit"), "at": time.time()}
+            write_json_file(job_path, job)
+            _sync_snapshot_async(root)
+            self._json({"ok": True, "files": files})
         elif method == "POST" and len(parts) == 3 and parts[0] == "jobs" and parts[2] == "plan-tasks":
             job_path = resolve_job_path(root, parts[1])
             if parts[1] in self.server.sessions.running_job_ids():

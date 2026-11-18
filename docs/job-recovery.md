@@ -143,6 +143,27 @@ Continue here is refused while the snapshot shows a run working on the job on th
 **Limits.** The account route needs the control plane deployed with `_record_moves`. Until it is, only Home marks a
 moved job. A computer that's offline learns of a move at its next heartbeat.
 
+## When the computer that has the job is offline
+
+Nothing has to be fetched from another computer: what a job needs is on the account or on origin before that computer goes
+away. The rules, from local-first sync practice:
+
+| What | Where it lives | How |
+|---|---|---|
+| Who owns a job | `job_owners` on the account | An ownership number, `owner_epoch` (`account.job_epoch`), is the fencing token. Continue here raises it. The computer holding the highest number owns the job (`ControlPlane._record_owners`); a copy elsewhere at or below it hears it moved through its heartbeat (`moved_jobs` with `epoch`; `apply_moved_jobs`), even if it syncs late. Copies from old project downloads count as 0 and never win. |
+| Every job's record | `account_jobs`, one document per job | Each send carries the jobs that changed since the account last took them (`account.job_updates`, up to 60; remembered in `account_jobs_sent.json` once accepted). A record is replaced only by the same computer or a higher ownership number (`_record_jobs`). The remote job page and Continue here see every unfinished job a computer holds, not only the 20 newest in its snapshot (`get_snapshot`). |
+| Committed work | the job's branch on origin | `backup_push`, as above. |
+| Uncommitted work | `refs/orchestrator/wip/<job id>` on origin | Each heartbeat, a paused or failed job's uncommitted files are committed in a scratch index and pushed there (`wip_backup.backup_job`; never touches the working tree, the index or the branch). The record (`wip_backup`) travels with the job; Continue here offers **Bring the unfinished work here** (`wip_backup.restore`, `/api/jobs/<id>/restore-wip`), which never overwrites files with changes. |
+| Archive and Restore | `job_archives` on the account | The newest one per job wins on every computer (`apply_job_archives`). |
+| Work a computer never uploaded | side branch `<branch>-from-<computer>`, ref `<job id>-from-<computer>` | When a job is marked moved, unpushed commits and uncommitted files go there (`wip_backup.keep_stranded`), not onto the job's branch; the moved job's page says where. |
+| History when a job comes back | the job | Taking a job back keeps both copies' answers and fix attempts, without repeats. |
+
+The remote job page says when the other computer last synced and, offline, that it may have newer work not uploaded yet
+(`remoteFreshnessHtml`). Home's row says "offline, synced 3h ago".
+
+**The one limit:** work a computer did after its last upload, while it was cut off, can't reach another computer until it
+reconnects. That's why everything uploads early and often; and when it reconnects, that work is kept on a side branch.
+
 ## Tests
 
 | Area | Tests |

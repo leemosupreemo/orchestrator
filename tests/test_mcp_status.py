@@ -683,6 +683,7 @@ const code = fs.readFileSync(process.argv[1], 'utf8');
 const start = code.indexOf('pages["remote-job"] = async');
 const end = code.indexOf('pages.job = async');
 const pages = {};
+const remoteFreshnessHtml = () => '';
 const listeners = {};
 const buttons = {};
 const makeBtn = (id) => ({
