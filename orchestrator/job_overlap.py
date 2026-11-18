@@ -121,7 +121,11 @@ def planned_files(job: dict[str, Any]) -> set[str]:
 
 def file_overlaps(job_id: str, job: dict[str, Any], others: list[tuple[str, dict[str, Any]]]) -> list[dict[str, Any]]:
     """Other open jobs that plan to change, or have changed, any of the same files: [{id, title, files}], most shared first.
-    Nothing is refused: the job page says so, so the person can finish one first, merge them, or carry on knowing."""
+    Nothing is refused: the job page says so, so the person can finish one first, merge them, or carry on knowing.
+    Each also says what the job page needs to give one plain next step: `duplicate` (the same request twice, by title),
+    `running` (that job is building now), `ready` (it waits to be merged) and `pr` (it has a pull request)."""
+    from orchestrator.parallel_jobs import _alive  # parallel_jobs imports this module
+
     mine = planned_files(job)
     if not mine or job.get("status") in ("completed", "archived") or job.get("moved_to"):
         return []
@@ -133,6 +137,9 @@ def file_overlaps(job_id: str, job: dict[str, Any], others: list[tuple[str, dict
             continue
         shared = sorted(mine & planned_files(other))
         if shared:
-            found.append({"id": other_id, "title": other.get("title") or other_id, "files": shared[:10], "count": len(shared)})
+            found.append({"id": other_id, "title": other.get("title") or other_id, "files": shared[:10], "count": len(shared),
+                          "duplicate": bool(similarity(str(job.get("title") or ""), str(other.get("title") or ""))),
+                          "running": _alive(other), "ready": other.get("status") == "review-needed",
+                          "pr": bool(other.get("pr_number"))})
     return sorted(found, key=lambda o: -o["count"])[:MAX_MATCHES]
 

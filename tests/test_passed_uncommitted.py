@@ -42,7 +42,9 @@ class PassedUncommittedTests(unittest.TestCase):
 
     def test_a_job_ready_to_merge_offers_no_fix_for_an_old_error(self):
         app = (ROOT / "orchestrator" / "web" / "static" / "app.js").read_text(encoding="utf-8")
-        self.assertIn('!["debug", "answer", "merge", "complete", "approve", "schedule", "execute"].includes(next?.action)', app)
+        # ready to merge, the status box asks for changes; "Run fix" only comes after it, for a job with no merge waiting
+        self.assertIn(': ["merge", "complete"].includes(nextAction) ? { mode: "iterate"', app)
+        self.assertLess(app.index('{ mode: "iterate"'), app.index('{ mode: "debug"'))
         source = (ROOT / "orchestrator" / "scripts" / "worker_run.py").read_text(encoding="utf-8")
         self.assertIn('        # SUCCESS POINT\n        job.pop("last_error", None)', source)
 

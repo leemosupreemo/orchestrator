@@ -165,7 +165,7 @@ class PageTests(unittest.TestCase):
         self.server = (ROOT / "orchestrator/web/server.py").read_text(encoding="utf-8")
 
     def test_the_job_page_lists_every_run_and_labels_the_live_one(self):
-        self.assertIn("${jobRunsCard(jobRuns, runRel)}", self.app)
+        self.assertIn("${jobRunsCard(jobRuns, runRel, ", self.app)
         self.assertIn("activeRunCard(r, (jobRuns || []).find((x) => x.id === r.id)", self.app)
         self.assertIn("· run in progress", self.app)
         self.assertIn("This job ran in one go", self.app)  # 1:1

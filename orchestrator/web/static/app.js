@@ -4282,7 +4282,7 @@ document.addEventListener("click", async (e) => {
   button.disabled = true;
   try {
     const { archived } = await api("jobs/archive", { method: "POST", body: { ids } });
-    if (current.page === "job") location.hash = "#/"; else route();
+    if (current.page === "job" && !("archiveStay" in button.dataset)) location.hash = "#/"; else route();
     toast(`Archived ${archived.length === 1 ? "1 job" : `${archived.length} jobs`}`, false, { label: "Undo", run: async () => {
       for (const id of archived) await api("config/archived-restore", { method: "POST", body: { id } });
       route();
@@ -5552,6 +5552,34 @@ function jobRunsCard(runs, rel, extraDetailsHtml = "") {
 }
 
 // Extract a short 1-sentence summary of what a job actually changed, from its diff hypothesis or builder summary.
+// Two open jobs changing the same files (job_overlap.file_overlaps): one plain next step for the closest one, in the
+// order that keeps either from undoing the other. The same request twice: keep one. The other building now: wait. One
+// ready to merge: merge it first. The file names are a fold away; they don't help decide.
+function overlapAdviceHtml(overlaps, { readyHere = false, idle = true } = {}) {
+  if (!overlaps?.length) return "";
+  const o = overlaps[0];
+  const link = (x) => `<a href="#/jobs/${encodeURIComponent(x.id)}">${esc(x.title)}</a>`;
+  const others = overlaps.slice(1);
+  let advice, actions = "";
+  if (o.duplicate) {
+    advice = `This looks like the same request as ${link(o)}. Keep one and archive the other, so neither undoes the other's work.`;
+    if (idle && !o.running) actions = `<button type="button" class="btn small" data-archive-jobs='${attrJSON([o.id])}' data-archive-stay title="Archives the other job; its branch and files stay, and you can restore it from Home">Keep this one</button>`
+      + `<a class="btn small" href="#/jobs/${encodeURIComponent(o.id)}">Open the other</a>`;
+  } else if (o.running) {
+    advice = `${link(o)} is building and changes the same files. Wait for it to finish before you merge this one.`;
+  } else if (readyHere) {
+    advice = `${link(o)} also changes these files. Merge this one first, then finish that one${o.pr ? "; its pull request may need updating before it can merge" : ""}.`;
+  } else if (o.ready) {
+    advice = `${link(o)} changes the same files and is ready to merge. Merge it first, then come back to this one.`;
+  } else {
+    advice = `${link(o)} also changes these files. Finish one before you build the other.`;
+  }
+  const files = overlaps.map((x) => `<li>${link(x)}: ${x.files.map((f) => `<span class="mono">${esc(f)}</span>`).join(", ")}${x.count > x.files.length ? `, +${x.count - x.files.length} more` : ""}</li>`).join("");
+  return `<div class="job-hero-reason job-overlap"><p>${advice}${others.length ? ` ${others.length === 1 ? "One more job also overlaps" : `${others.length} more jobs also overlap`}.` : ""}</p>
+    ${actions ? `<div class="row wrap gap-8">${actions}</div>` : ""}
+    <details class="fold"><summary class="linklike muted">Which files?</summary><ul class="muted">${files}</ul></details></div>`;
+}
+
 function jobChangeSummary(otherDocs, changes, max = 220) {
   const raw = String(changes?.hypothesis || "").trim();
   if (raw) return raw.length > max ? `${raw.slice(0, max - 3).trimEnd()}…` : raw;
@@ -5744,11 +5772,13 @@ pages.job = async ([id]) => {
     ? `<button type="button" class="btn small primary" ${act("ai_connect", { provider: signIn.provider, name: signIn.name })}>Sign in to ${esc(signIn.name)}</button>`
     : "";
   const nextBtnClass = signInAction ? "btn small" : "btn small primary";
+  // Another job building the same files right now: merging this one would race it, so Merge waits (overlapAdviceHtml says why).
+  const overlapHold = next?.action === "merge" ? (data.overlaps || []).find((o) => o.running) : null;
   const heroAction = activeRun
     ? (isStoppingActive
       ? `<button class="btn small" data-stop="${esc(activeRun.id)}" data-why="Already stopping." disabled aria-busy="true"><span class="spinner inline-spinner" aria-hidden="true"></span>Stopping…</button>`
       : `<button class="btn small" data-stop="${esc(activeRun.id)}" title="Stops the worker. Resume continues from the next task.">Pause</button>`)
-    : `${signInAction}${next ? `<button class="${nextBtnClass}" ${act(next.action, { job: s.id, ...(next.params || {}) })}>${esc(next.label)}</button>` : ""}${next && job.task_growth && data.undoable_task === job.task_growth.task
+    : `${signInAction}${next ? `<button class="${nextBtnClass}" ${act(next.action, { job: s.id, ...(next.params || {}) })}${overlapHold ? ` disabled data-why="Wait for ${esc(overlapHold.title)} to finish building first."` : ""}>${esc(next.label)}</button>` : ""}${next && job.task_growth && data.undoable_task === job.task_growth.task
       ? `<button class="btn small" data-undo-task="${job.task_growth.task}" title="Reverts what that task changed. Then revise the plan to make it smaller.">Undo task ${job.task_growth.task + 1}</button>` : ""}`;
 
   // 5-Phase Lifecycle determination (Plan -> Build -> Verify -> Document -> Review)
@@ -6056,7 +6086,7 @@ pages.job = async ([id]) => {
           ${autoresponseNote(job)}
           ${s.state.steps?.length ? `<ol class="job-hero-reason blocker-steps">${s.state.steps.map((step) => `<li>${esc(step)}</li>`).join("")}</ol>` : ""}
           ${job.worktree ? `<p class="job-hero-reason muted">Builds alongside other jobs in its own checkout (<span class="mono">${esc(job.worktree)}</span>).</p>` : ""}
-          ${(data.overlaps || []).length ? `<p class="job-hero-reason job-overlap">Overlaps with ${data.overlaps.map((o) => `<a href="#/jobs/${encodeURIComponent(o.id)}">${esc(o.title)}</a> (${esc(o.files.slice(0, 2).join(", "))}${o.count > 2 ? `, +${o.count - 2}` : ""})`).join("; ")}. Both change the same files: finish one first, or merge them, so neither takes the other's work.</p>` : ""}
+          ${overlapAdviceHtml(data.overlaps, { readyHere: ["merge", "complete"].includes(nextAction), idle: !activeRun })}
           ${s.state.blocker ? `<details class="fold"><summary class="linklike muted">What the AI said</summary><p class="muted">${esc(s.state.blocker)}</p></details>` : ""}
           ${runRel?.unreported ? `<p class="job-hero-reason run-unreported">The last run (${esc(runRel.unreported.label)}) ${runRel.unreported.status === "failed" ? "failed" : "ended without reporting back"} before it could update this job. <a href="#/runs/${encodeURIComponent(runRel.unreported.id)}">Open its log</a> to see what happened.</p>` : ""}
           ${reviewContextHtml}

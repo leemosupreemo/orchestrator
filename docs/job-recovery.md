@@ -78,7 +78,7 @@ Guards, so jobs never step on each other's work:
 | Guard | Where | What happens |
 |---|---|---|
 | The same request twice, typos and all | `job_overlap.similarity` (near matches for long words) | New job asks: open that one, or create anyway |
-| Two open jobs changing the same files | `job_overlap.file_overlaps`, on the job page | "Overlaps with …": finish one first, or merge them |
+| Two open jobs changing the same files | `job_overlap.file_overlaps`, on the job page (`overlapAdviceHtml`) | One next step: the same request twice → Keep this one (archives the other); the other building → Merge waits; one ready → merge it first. Files behind "Which files?" |
 | A running job changes the same files | `parallel_jobs.decide` | The job waits instead of building alongside |
 | A job on the current branch, or with branch switching off | `parallel_jobs.decide` | Waits for the project folder (git can't check out one branch twice) |
 | Another open job's uncommitted work is in the folder | `blockers.other_jobs_work`, checked before the worker touches git | Pauses as blocked, "“…” has uncommitted work here"; starts by itself once that work is committed |

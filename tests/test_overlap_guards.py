@@ -43,9 +43,55 @@ class FileOverlapTests(unittest.TestCase):
         found = job_overlap.file_overlaps("me", mine, others)
         self.assertEqual([(o["id"], o["files"]) for o in found], [("a", ["World/GrassSystem.cs", "World/TreeWind.cs"])])
 
-    def test_the_job_page_says_so(self):
+    def test_each_overlap_says_what_decides_the_next_step(self):
+        mine = {"status": "review-needed", "title": "Quick: The vegetatation needs to look more realistic",
+                "ai_modified_files": ["World/TreeWind.cs"]}
+        others = [("dup", {"status": "review-needed", "title": "Quick: Make vegetation more realistic", "pr_number": 18,
+                           "ai_modified_files": ["World/TreeWind.cs"]}),
+                  ("busy", {"status": "executing", "title": "Night lighting", "worker_pid": 4242,
+                            "ai_modified_files": ["World/TreeWind.cs"]})]
+        with mock.patch("os.kill") as kill:  # pid 4242 is alive
+            found = {o["id"]: o for o in job_overlap.file_overlaps("me", mine, others)}
+        kill.assert_called_with(4242, 0)
+        self.assertEqual({k: found["dup"][k] for k in ("duplicate", "running", "ready", "pr")},
+                         {"duplicate": True, "running": False, "ready": True, "pr": True})
+        self.assertEqual({k: found["busy"][k] for k in ("duplicate", "running", "ready", "pr")},
+                         {"duplicate": False, "running": True, "ready": False, "pr": False})
+
+    @unittest.skipUnless(__import__("shutil").which("node"), "node is required")
+    def test_the_job_page_gives_one_plain_next_step(self):
+        import json
         app = (ROOT / "orchestrator" / "web" / "static" / "app.js").read_text(encoding="utf-8")
-        self.assertIn("Both change the same files: finish one first, or merge them", app)
+        start = app.index("function overlapAdviceHtml(")
+        fn = app[start:app.index("\nfunction jobChangeSummary(", start)]
+        script = f"""
+const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+const attrJSON = (o) => esc(JSON.stringify(o));
+{fn}
+const base = {{ id: "o", title: "Other", files: ["A.cs", "B.cs"], count: 3, duplicate: false, running: false, ready: false, pr: false }};
+console.log(JSON.stringify({{
+  dup: overlapAdviceHtml([{{ ...base, duplicate: true }}]),
+  busy: overlapAdviceHtml([{{ ...base, running: true }}], {{ readyHere: true }}),
+  mergeFirst: overlapAdviceHtml([{{ ...base, pr: true }}], {{ readyHere: true }}),
+  otherFirst: overlapAdviceHtml([{{ ...base, ready: true }}]),
+  none: overlapAdviceHtml([]),
+}}));
+"""
+        out = json.loads(subprocess.run(["node", "-e", script], capture_output=True, text=True, check=True).stdout)
+        self.assertIn("the same request as", out["dup"])
+        self.assertIn(">Keep this one</button>", out["dup"])
+        self.assertIn("data-archive-stay", out["dup"])
+        self.assertIn("Wait for it to finish before you merge this one", out["busy"])
+        self.assertNotIn("Keep this one", out["busy"])
+        self.assertIn("Merge this one first", out["mergeFirst"])
+        self.assertIn("Merge it first, then come back to this one", out["otherFirst"])
+        self.assertIn("<summary class=\"linklike muted\">Which files?</summary>", out["dup"])
+        self.assertIn("+1 more", out["dup"])
+        self.assertEqual(out["none"], "")
+        self.assertIn('overlapHold ? ` disabled data-why="Wait for', app)
+        self.assertIn('!("archiveStay" in button.dataset)', app)
+
+    def test_the_server_sends_them(self):
         server = (ROOT / "orchestrator" / "web" / "server.py").read_text(encoding="utf-8")
         self.assertIn('"overlaps": job_overlap.file_overlaps(path.stem, job,', server)
 
