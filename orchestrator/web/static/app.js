@@ -4636,6 +4636,21 @@ pages.home = async (_, query) => {
         kept.delete("jump");
         history.replaceState(null, "", `#/${kept.toString() ? `?${kept}` : ""}`);
       }
+      // Tapped on Home itself: filter in place and glide down, instead of a hash change that reloads the whole page first.
+      $("#home-project-status a.pill.attention")?.addEventListener("click", async (e) => {
+        e.preventDefault();
+        const glide = () => requestAnimationFrame(() => $("#home-jobs")?.scrollIntoView({ behavior: "smooth", block: "start" }));
+        if (filter === "needs_you") return glide();
+        const token = routeToken;
+        history.replaceState(null, "", "#/?filter=needs_you");
+        current.query = new URLSearchParams("filter=needs_you");
+        try {
+          const result = await pages.home(current.args, current.query);
+          if (token !== routeToken || current.page !== "home" || result?.stale) return;
+          apply(result);
+        } catch { /* the next refresh redraws it */ }
+        glide();
+      });
       $("#yolo-all")?.addEventListener("change", (e) => yoloAll(e.currentTarget, inProgress));
       view.querySelectorAll("[data-restore-job]").forEach((b) => b.addEventListener("click", async () => {
         b.disabled = true;
