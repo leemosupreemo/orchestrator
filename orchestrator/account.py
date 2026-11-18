@@ -273,6 +273,51 @@ def project_repo(root: Path, github_repo: str | None = None) -> str:
     return _origin_repo_cache[stamp]
 
 
+# Archiving and restoring travel between the owner's computers: each sends its recent ones with its snapshot, the account
+# keeps the newest per job, and every computer applies them to its own copy (server.apply_job_archives). Without this, a job
+# copied to another computer (a project download, Continue here) comes back there after being archived here.
+ARCHIVE_WINDOW = 30 * 86400  # older archives have long since been seen everywhere
+MAX_ARCHIVE_EVENTS = 200
+
+
+def _stamp(value: Any) -> float:
+    """An epoch time from a job field: a number, or an ISO date (completed_at); 0 when there's none."""
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    if isinstance(value, str) and value:
+        from datetime import datetime
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            return 0.0
+    return 0.0
+
+
+def job_archive_events(roots: list[Path], now: float | None = None) -> dict[str, dict[str, Any]]:
+    """{job id: {archived, at}} for jobs put away (the archive folder) or brought back (restored_at) lately, newest first."""
+    now = time.time() if now is None else now
+    events: dict[str, dict[str, Any]] = {}
+    for root in roots:
+        jobs = root / ".orchestrator" / "jobs"
+        candidates = [(p, True) for p in (jobs / "archive").glob("*.json")] + [(p, False) for p in jobs.glob("*.json")]
+        for path, archived in candidates:
+            if now - path.stat().st_mtime > ARCHIVE_WINDOW and not archived:
+                continue  # an untouched active job has no recent restore
+            try:
+                job = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if not isinstance(job, dict):
+                continue
+            at = _stamp(job.get("archived_at")) or _stamp(job.get("completed_at")) if archived else _stamp(job.get("restored_at"))
+            if not at or now - at > ARCHIVE_WINDOW:
+                continue
+            if at > float((events.get(path.stem) or {}).get("at") or 0):
+                events[path.stem] = {"archived": archived, "at": round(at, 3)}
+    newest = sorted(events.items(), key=lambda kv: kv[1]["at"], reverse=True)[:MAX_ARCHIVE_EVENTS]
+    return dict(newest)
+
+
 def _snapshot_job_progress(jdata: dict[str, Any]) -> list[int]:
     done = jdata.get("completed_task_indices") or jdata.get("completed_tasks") or []
     return sorted({i for i in done if isinstance(i, int)}) if isinstance(done, list) else []
@@ -427,6 +472,7 @@ def build_snapshot(root: Path | None = None, live: dict[str, dict[str, Any]] | N
     return {
         "projects": projects_list,
         "recent_jobs": jobs_list[:50],
+        "job_archives": job_archive_events(roots_to_check[:10]),
         "metadata": {"os": os_label(), "version": package_version()},
     }
 

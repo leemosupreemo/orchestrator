@@ -69,6 +69,7 @@ CODE_LENGTH = 8
 SETUP_PROFILE_LIMIT = 200_000  # characters of settings and prompts one computer may share per project
 MAX_MACHINES_PER_USER = 20
 MAX_MOVED_JOBS = 200  # jobs another computer took over, kept per computer for its heartbeat reply
+MAX_JOB_ARCHIVES = 300  # the newest archive or restore of each job, per account, for every computer's heartbeat reply
 MAX_DEVICES_PER_USER = 20
 MAX_EVENTS_PER_CALL = 10
 PAIR_START_LIMIT = (10, 3600)  # at most this many pairing codes (count, seconds) from one address
@@ -404,6 +405,9 @@ class ControlPlane:
                  "reset_tunnel": reset_tunnel_requested}
         if isinstance(machine.get("moved_jobs"), dict) and machine["moved_jobs"]:
             reply["moved_jobs"] = machine["moved_jobs"]  # jobs another computer took over: this one stops working on them
+        archives = (self.store.get("job_archives", machine["owner_uid"]) or {}).get("jobs")
+        if isinstance(archives, dict) and archives:
+            reply["job_archives"] = {k: {"archived": v.get("archived"), "at": v.get("at")} for k, v in archives.items()}
         if command is not None and api_version >= 4:
             reply["connection_command"] = command
         operation = self._update_operation(machine_id, ack=body.get("update_ack"), delivery=True)
@@ -522,7 +526,36 @@ class ControlPlane:
         self.store.set("machine_snapshots", machine_id, snapshot)
         self.store.update("machines", machine_id, {"has_snapshot": True, "snapshot_synced_at": now})
         self._record_moves(machine_id, machine, recent_jobs)
+        self._record_archives(machine, body.get("job_archives"))
         return {"ok": True, "synced_at": now}
+
+    def _record_archives(self, machine: dict[str, Any], events: Any) -> None:
+        """Jobs archived or restored on this computer ({job id: {archived, at}}): the account keeps the newest per job, and
+        every one of the owner's computers applies it to its own copy (heartbeat reply), so a job archived on one computer
+        doesn't come back from a copy on another."""
+        if not isinstance(events, dict) or not events:
+            return
+        clean: dict[str, dict[str, Any]] = {}
+        for job_id, event in list(events.items())[:MAX_JOB_ARCHIVES]:
+            at = event.get("at") if isinstance(event, dict) else None
+            if (isinstance(job_id, str) and 0 < len(job_id) <= 120 and isinstance(event.get("archived"), bool)
+                    and isinstance(at, (int, float)) and not isinstance(at, bool) and 0 < at <= self.now() + 300):
+                clean[job_id] = {"archived": event["archived"], "at": float(at), "by": _clean(machine.get("name") or "", 80)}
+        if not clean:
+            return
+
+        def transform(doc):
+            current = (doc or {}).get("jobs") if isinstance((doc or {}).get("jobs"), dict) else {}
+            merged = dict(current)
+            for job_id, event in clean.items():
+                if float((current.get(job_id) or {}).get("at") or 0) < event["at"]:
+                    merged[job_id] = event
+            if merged == current:
+                return None, None
+            newest = sorted(merged.items(), key=lambda kv: kv[1].get("at") or 0, reverse=True)[:MAX_JOB_ARCHIVES]
+            return {"owner_uid": machine["owner_uid"], "jobs": dict(newest)}, None
+
+        self.store.mutate("job_archives", machine["owner_uid"], transform)
 
     def _record_moves(self, machine_id: str, machine: dict[str, Any], recent_jobs: list[Any]) -> None:
         """A job this computer continued from another of the owner's computers (Continue here) is owned here now. Tell the

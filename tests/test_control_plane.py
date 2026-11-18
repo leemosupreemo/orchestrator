@@ -95,6 +95,77 @@ class MovedJobTests(PlaneCase):
         self.assertNotIn("moved_jobs", self.beat(*other)[1])
 
 
+class JobArchiveSyncTests(PlaneCase):
+    """Archive and Restore travel to all the owner's computers: a job copied to another computer (a project download,
+    Continue here) doesn't come back there after it was archived here."""
+
+    def sync(self, machine_id, secret, archives):
+        return self.call("POST", "/cp/machine/sync", {"projects": [], "recent_jobs": [], "job_archives": archives},
+                         machine_auth=f"Machine {machine_id}:{secret}")
+
+    def test_every_computer_of_the_account_hears_the_newest_archive_or_restore(self):
+        pro, air = self.pair(name="MacBook Pro"), self.pair(name="MacBook Air")
+        other = self.pair(user="bob-token", name="MacBook Air")
+        self.assertNotIn("job_archives", self.beat(*air)[1])
+        self.sync(*pro, {"j1": {"archived": True, "at": 900_000.0}, "bad": {"archived": "yes", "at": 1.0},
+                         "future": {"archived": True, "at": 9_999_999.0}})
+        self.assertEqual(self.beat(*air)[1]["job_archives"], {"j1": {"archived": True, "at": 900_000.0}})
+        self.assertEqual(self.beat(*pro)[1]["job_archives"], {"j1": {"archived": True, "at": 900_000.0}})
+        self.assertNotIn("job_archives", self.beat(*other)[1])
+        self.sync(*air, {"j1": {"archived": False, "at": 950_000.0}})  # restored on the Air later: that wins
+        self.sync(*pro, {"j1": {"archived": True, "at": 900_000.0}})   # the Pro's older archive, sent again: ignored
+        self.assertEqual(self.beat(*pro)[1]["job_archives"], {"j1": {"archived": False, "at": 950_000.0}})
+
+
+class JobArchiveApplyTests(unittest.TestCase):
+    """What a computer does with the account's archives: its own copy follows the newest, never a running one, never a
+    job merged here."""
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp())
+        self.jobs = self.root / ".orchestrator" / "jobs"
+        (self.jobs / "archive").mkdir(parents=True)
+
+    def job(self, name, folder="", **fields):
+        path = (self.jobs / folder if folder else self.jobs) / f"{name}.json"
+        path.write_text(json.dumps({"job_id": name, "status": "review-needed", **fields}))
+        return path
+
+    def test_a_copy_here_is_archived_and_restored_like_the_other_computers(self):
+        self.job("j1")
+        self.job("busy")
+        self.job("restored-later", restored_at=2000.0)
+        self.assertEqual(ui.apply_job_archives({"j1": {"archived": True, "at": 1000.0}, "busy": {"archived": True, "at": 1000.0},
+                                                "restored-later": {"archived": True, "at": 1000.0}},
+                                               roots=[self.root], running={"busy"}), ["j1"])
+        archived = json.loads((self.jobs / "archive" / "j1.json").read_text())
+        self.assertEqual((archived["status"], archived["restore_status"], archived["archived_at"]), ("archived", "review-needed", 1000.0))
+        self.assertTrue((self.jobs / "busy.json").is_file())  # a run going: left for the next heartbeat
+        self.assertEqual(ui.apply_job_archives({"j1": {"archived": False, "at": 3000.0}}, roots=[self.root]), ["j1"])
+        restored = json.loads((self.jobs / "j1.json").read_text())
+        self.assertEqual((restored["status"], restored["restored_at"]), ("review-needed", 3000.0))
+        self.assertNotIn("archived_at", restored)
+
+    def test_a_job_merged_here_never_comes_back(self):
+        self.job("merged", "archive", status="completed", completed_at="2026-11-01T10:00:00")
+        self.assertEqual(ui.apply_job_archives({"merged": {"archived": False, "at": 5000.0}}, roots=[self.root]), [])
+        self.assertFalse((self.jobs / "merged.json").exists())
+
+    def test_the_snapshot_lists_recent_archives_and_restores(self):
+        now = 10_000_000.0
+        self.job("put-away", "archive", status="archived", archived_at=now - 60)
+        self.job("old", "archive", status="archived", archived_at=now - account.ARCHIVE_WINDOW - 1)
+        self.job("legacy", "archive", status="archived", completed_at="1970-04-26T17:46:00")  # no archived_at: completed_at
+        self.job("back", restored_at=now - 30)
+        self.job("plain")
+        events = account.job_archive_events([self.root], now=now)
+        self.assertEqual(events["put-away"], {"archived": True, "at": now - 60})
+        self.assertEqual(events["back"], {"archived": False, "at": now - 30})
+        self.assertNotIn("old", events)
+        self.assertNotIn("plain", events)
+        self.assertIn("job_archives", account.build_snapshot(root=self.root))
+
+
 class RateLimitTests(PlaneCase):
     def start(self, ip):
         return self.plane.handle("POST", "/cp/pair/start", {"fastly-client-ip": ip}, {}, verify_user)[0]

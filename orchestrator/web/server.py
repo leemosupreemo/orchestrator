@@ -1897,6 +1897,58 @@ def import_remote_job(root: Path, body: dict[str, Any]) -> dict[str, Any]:
     return {"ok": True, "id": job_id, "already_existed": existed and not taking_back, "fetched_branch": fetched}
 
 
+def restore_archived_job(root: Path, name: str, at: float | None = None) -> None:
+    """Bring an archived job back to Home as it was. `restored_at` goes to the owner's other computers with the snapshot;
+    `at` is when another computer restored it."""
+    src = jobs_dir(root) / "archive" / f"{name}.json"
+    if not re.fullmatch(r"[A-Za-z0-9._-]+", name) or not src.is_file():
+        raise UIError("Archived job not found")
+    dest = jobs_dir(root) / src.name
+    if dest.exists():
+        raise UIError("A job with that id already exists")
+    shutil.move(str(src), str(dest))
+    job = read_json_file(dest)
+    if job.get("restore_status"):  # undo of "Mark complete": back to where it was, not "completed"
+        job["status"] = job.pop("restore_status")
+        job.pop("completed_at", None)
+    job.pop("archived_at", None)
+    job["restored_at"] = at or time.time()
+    write_json_file(dest, job)
+
+
+def apply_job_archives(archives: Any, roots: list[Path] | None = None, running: set[str] | None = None) -> list[str]:
+    """The account's newest archive or restore of each job (heartbeat reply: {job id: {archived, at}}), applied to the copy
+    here when it's older: a job archived on one computer is archived on all of them, and Restore brings it back on all.
+    A copy with a run going is left until its next heartbeat; a job merged or discarded here never comes back. Returns
+    the ids changed."""
+    if not isinstance(archives, dict) or not archives:
+        return []
+    if roots is None:
+        roots = [Path(p["root"]).expanduser() for p in load_recent_projects().get("projects", []) if p.get("root")]
+    changed = []
+    for job_id, event in archives.items():
+        if not isinstance(event, dict) or not isinstance(job_id, str) or not re.fullmatch(r"[A-Za-z0-9._-]{1,120}", job_id):
+            continue
+        at = event.get("at")
+        if not isinstance(at, (int, float)) or isinstance(at, bool) or at <= 0:
+            continue
+        for root in roots:
+            active, put_away = jobs_dir(root) / f"{job_id}.json", jobs_dir(root) / "archive" / f"{job_id}.json"
+            try:
+                if event.get("archived") is True and active.is_file() and not put_away.exists():
+                    local = read_json_file(active)
+                    if float(local.get("restored_at") or 0) < at and archive_jobs(root, [job_id], running or set(), at=float(at)):
+                        changed.append(job_id)
+                elif event.get("archived") is False and put_away.is_file() and not active.exists():
+                    local = read_json_file(put_away)
+                    if local.get("status") == "archived" and float(local.get("archived_at") or 0) < at:
+                        restore_archived_job(root, job_id, at=float(at))
+                        changed.append(job_id)
+            except (OSError, UIError, ValueError):
+                continue
+    return changed
+
+
 def apply_moved_jobs(moves: Any, roots: list[Path] | None = None) -> list[str]:
     """The account's list of jobs another computer took over (heartbeat reply: {job id: {to, imported_at}}). Each copy here
     that is older than the one there is marked moved, in whichever recent project holds it. Returns the ids marked."""
@@ -1932,9 +1984,10 @@ def mark_job_moved(root: Path, job_id: str, machine_name: str) -> bool:
     return True
 
 
-def archive_jobs(root: Path, job_ids: list[str], running: set[str]) -> list[str]:
+def archive_jobs(root: Path, job_ids: list[str], running: set[str], at: float | None = None) -> list[str]:
     """Put jobs away without touching their branch or files: the job file moves to the archive and remembers its
-    status, so Home's Archived filter can restore it exactly. Running jobs are left alone."""
+    status, so Home's Archived filter can restore it exactly. Running jobs are left alone. `archived_at` goes to the
+    owner's other computers with the snapshot (account.job_archive_events); `at` is when another computer archived it."""
     archived = []
     folder = jobs_dir(root) / "archive"
     for job_id in job_ids:
@@ -1945,6 +1998,8 @@ def archive_jobs(root: Path, job_ids: list[str], running: set[str]) -> list[str]
         job["restore_status"] = job.get("status")
         job["status"] = "archived"
         job["completed_at"] = datetime.now().isoformat()
+        job["archived_at"] = at or time.time()
+        job.pop("restored_at", None)
         folder.mkdir(parents=True, exist_ok=True)
         write_json_file(job_path, job)
         shutil.move(str(job_path), str(folder / job_path.name))
@@ -5568,19 +5623,8 @@ def config_update(root: Path, part: str, body: dict[str, Any]) -> dict[str, Any]
     elif part == "setup-seen":
         settings["setup_seen"] = True
     elif part == "archived-restore":
-        name = _text(body, "id", required=True, limit=200)
-        src = jobs_dir(root) / "archive" / f"{name}.json"
-        if not re.fullmatch(r"[A-Za-z0-9._-]+", name) or not src.is_file():
-            raise UIError("Archived job not found")
-        dest = jobs_dir(root) / src.name
-        if dest.exists():
-            raise UIError("A job with that id already exists")
-        shutil.move(str(src), str(dest))
-        job = read_json_file(dest)
-        if job.get("restore_status"):  # undo of "Mark complete": back to where it was, not "completed"
-            job["status"] = job.pop("restore_status")
-            job.pop("completed_at", None)
-            write_json_file(dest, job)
+        restore_archived_job(root, _text(body, "id", required=True, limit=200))
+        _sync_snapshot_async(root)  # so the owner's other computers bring their copy back too
         return {"ok": True}
     elif part == "models":
         assignments = body.get("models")
@@ -6722,6 +6766,13 @@ class UIServer(ThreadingHTTPServer):
                     try:  # jobs another computer took over (Continue here there): stop working on them here
                         if marked := apply_moved_jobs(reply["moved_jobs"]):
                             print(f"  Moved to another computer: {', '.join(marked)}", flush=True)
+                    except Exception:
+                        pass
+                if isinstance(reply, dict) and reply.get("job_archives"):
+                    try:  # archived or restored on another of the owner's computers: the same here
+                        if changed := apply_job_archives(reply["job_archives"], running=set(self.sessions.running_job_ids())):
+                            print(f"  Archived or restored on another computer: {', '.join(changed)}", flush=True)
+                            _sync_snapshot_async(self.root)
                     except Exception:
                         pass
                 if isinstance(reply, dict) and reply.get("reset_tunnel") and manager:
