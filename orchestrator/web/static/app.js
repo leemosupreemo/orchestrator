@@ -4282,6 +4282,13 @@ document.addEventListener("click", async (e) => {
   button.disabled = true;
   try {
     const { archived } = await api("jobs/archive", { method: "POST", body: { ids } });
+    // The server leaves a job with a run going (archive_jobs): say so, rather than "Archived 0 jobs" and a job that stays.
+    if (!archived.length) {
+      button.disabled = false;
+      toast(ids.length === 1 ? "Not archived: this job has a run going. Stop it first, then archive." : "Not archived: these jobs have runs going. Stop them first.", true);
+      return;
+    }
+    if (archived.length < ids.length) toast(`${plural(ids.length - archived.length, "job")} with a run going stayed.`, true);
     if (current.page === "job" && !("archiveStay" in button.dataset)) location.hash = "#/"; else route();
     toast(`Archived ${archived.length === 1 ? "1 job" : `${archived.length} jobs`}`, false, { label: "Undo", run: async () => {
       for (const id of archived) await api("config/archived-restore", { method: "POST", body: { id } });
