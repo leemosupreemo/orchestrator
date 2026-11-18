@@ -901,6 +901,16 @@ const dialogs = {
       </label>`, "Run fix");
     if (values) runAction("debug", { job: params.job, logs: values.device_logs ? "cloud:latest" : "", feedback: values.feedback });
   },
+  // More work on a job that passed and waits to merge: the same loop as Run fix, on the same branch and PR, but told it is a
+  // change request rather than a failure. The job comes back here for review when its tests pass again.
+  async iterate(params) {
+    const values = await formDialog("Keep iterating", `
+      <label class="field"><span>What should change next?</span>
+        <textarea name="feedback" required placeholder="e.g. Denser grass near paths, and slower sway on the big oaks"></textarea>
+        <small>Builds it on this job's branch, runs the tests and updates the pull request. You review again before merging.</small>
+      </label>`, "Keep iterating");
+    if (values?.feedback.trim()) runAction("debug", { job: params.job, logs: "", feedback: `CHANGE REQUEST: ${values.feedback.trim()}` });
+  },
   async answer(params) {
     const job = await api(`jobs/${encodeURIComponent(params.job)}`);
     const fix = job.summary?.state?.next;
@@ -5730,7 +5740,8 @@ pages.job = async ([id]) => {
     ? (isStoppingActive
       ? `<button class="btn small" data-stop="${esc(activeRun.id)}" data-why="Already stopping." disabled aria-busy="true"><span class="spinner inline-spinner" aria-hidden="true"></span>Stopping…</button>`
       : `<button class="btn small" data-stop="${esc(activeRun.id)}" title="Stops the worker. Resume continues from the next task.">Pause</button>`)
-    : `${signInAction}${next ? `<button class="${nextBtnClass}" ${act(next.action, { job: s.id, ...(next.params || {}) })}>${esc(next.label)}</button>` : ""}${recommendFixBtn}${next && job.task_growth && data.undoable_task === job.task_growth.task
+    : `${signInAction}${next ? `<button class="${nextBtnClass}" ${act(next.action, { job: s.id, ...(next.params || {}) })}>${esc(next.label)}</button>` : ""}${recommendFixBtn}${["merge", "complete"].includes(next?.action) && !["completed", "archived"].includes(s.status)
+      ? `<button class="btn small" ${act("iterate", { job: s.id })} title="Ask for more changes on this branch before merging">Keep iterating…</button>` : ""}${next && job.task_growth && data.undoable_task === job.task_growth.task
       ? `<button class="btn small" data-undo-task="${job.task_growth.task}" title="Reverts what that task changed. Then revise the plan to make it smaller.">Undo task ${job.task_growth.task + 1}</button>` : ""}`;
 
   // 5-Phase Lifecycle determination (Plan -> Build -> Verify -> Document -> Review)

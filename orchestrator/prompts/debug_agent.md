@@ -20,6 +20,7 @@ Human Feedback (Highest Priority):
 {{human_feedback}}
 
 ### Rules:
+0. **Change requests:** If the Human Feedback starts with `CHANGE REQUEST:`, nothing is failing: the work passed and the person wants more done on it. Don't hunt for a failure. Set `hypothesis` to what will change and where, choose "patch", and make exactly the requested change on top of the existing work, keeping what already passes.
 1. **Evidence-First:** Before forming a hypothesis, you MUST identify the specific log line or file content that proves the failure.
 2. **Anti-Hallucination:** If the logs show environmental errors (disk full, permissions, timeouts), do NOT propose code changes. Hypothesize about the environment instead.
 3. **Autonomous Discovery:** You have access to Search and Read tools (grep, read_file, glob). Use them to explore the workspace and follow code trails to find the root cause.

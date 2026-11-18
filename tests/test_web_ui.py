@@ -8181,6 +8181,11 @@ console.log(JSON.stringify({{ fromHyp, fromDoc }}));
         self.assertNotIn('<h2>Progress</h2>', self.job_page)  # the stepper and hero carry status; no separate card
         self.assertNotIn('<h2>Finalize</h2>', self.job_page)  # the hero holds the merge decision; Finalize links to it
         self.assertIn('"#document-section", "#job-hero"]', self.job_page)
+        # Ready to merge: "Keep iterating…" beside Merge sends a change request through the fix loop on the same branch.
+        self.assertIn('act("iterate", { job: s.id })', self.job_page)
+        app_js = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
+        self.assertIn('feedback: `CHANGE REQUEST: ${values.feedback.trim()}`', app_js)
+        self.assertIn("starts with `CHANGE REQUEST:`", (PACKAGE_ROOT / "orchestrator" / "prompts" / "debug_agent.md").read_text())
         # A Quick change has no planner: no Plan card repeating the brief, and the empty Test cases card says why.
         self.assertIn('const quickNoPlan = job.type === "quick-fix" && !tasksTotal;', self.job_page)
         self.assertIn("Quick changes skip planning, so no test cases were listed.", self.job_page)
