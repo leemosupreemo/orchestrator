@@ -5552,12 +5552,12 @@ function jobRunsCard(runs, rel, extraDetailsHtml = "") {
 }
 
 // Extract a short 1-sentence summary of what a job actually changed, from its diff hypothesis or builder summary.
-function jobChangeSummary(otherDocs, changes) {
+function jobChangeSummary(otherDocs, changes, max = 220) {
   const raw = String(changes?.hypothesis || "").trim();
-  if (raw) return raw.length > 220 ? `${raw.slice(0, 217).trimEnd()}…` : raw;
+  if (raw) return raw.length > max ? `${raw.slice(0, max - 3).trimEnd()}…` : raw;
   const doc = (otherDocs || []).find((d) => d.name === "builder_summary.md" && d.text);
   if (!doc) return "";
-  const clip = (t) => (t.length > 220 ? `${t.slice(0, 217).trimEnd()}…` : t);
+  const clip = (t) => (t.length > max ? `${t.slice(0, max - 3).trimEnd()}…` : t);
   try { // some builders save their summary as JSON: say its summary, never its first brace
     const parsed = JSON.parse(doc.text);
     const said = String(parsed?.summary || parsed?.hypothesis || "").trim();
@@ -5566,7 +5566,7 @@ function jobChangeSummary(otherDocs, changes) {
   for (const line of String(doc.text).split(/\r?\n/)) {
     const clean = line.trim().replace(/^[-*#>\s`]+/, "").replace(/`+/g, "");
     if (!clean || /^[{}\[\],]+$/.test(clean) || /^(\d+\.|summary|changes|files|verification|tests)\b:?$/i.test(clean)) continue;
-    return clean.length > 220 ? `${clean.slice(0, 217).trimEnd()}…` : clean;
+    return clip(clean);
   }
   return "";
 }
@@ -5832,7 +5832,7 @@ pages.job = async ([id]) => {
   const hasBuildWork = allFiles.length > 0 || filesChanged > 0 || isJobComplete || currentPhaseIndex >= 2;
   const prUrl = (links || []).find((l) => l?.url && /pr|pull|merge/i.test(l.label || ""))?.url || job.merge_request_url || job.pr_url || "";
   const builderSummaryDoc = otherDocs.find((d) => d.name === "builder_summary.md" && d.text?.trim()) || null;
-  const changeSummaryText = jobChangeSummary(otherDocs, changes);
+  const changeSummaryFull = jobChangeSummary(otherDocs, changes, Infinity); // what the builder did, at the top of Changes (not the status box)
   // Task progress lives in the hero (a bar under Now/Next) only while building; the stepper and hero cover every other stage.
   const showTaskBar = tasksTotal > 0 && currentPhase === "build" && tasksDone > 0;
   const phaseTargets = [!tasksTotal && !showSummary && hasBuildWork ? "#brief-section" : "#plan-section", tasksTotal ? "#plan-section" : (hasBuildWork ? "#changes-section" : "#plan-section"), "#verify-section", "#document-section", "#job-hero"]; // Finalize: the status box holds the merge decision
@@ -5901,8 +5901,8 @@ pages.job = async ([id]) => {
     nextExecutionPreview = `<span class="job-hero-next-label">Next:</span> debug failing tests`;
   }
 
-  const reviewContextHtml = (currentPhase === "review" || ["merge", "complete"].includes(nextAction)) && (allFiles.length || changeSummaryText || prUrl)
-    ? `<div class="job-hero-next-preview">${allFiles.length ? `<span class="job-hero-next-label">Changed:</span> ${esc(deltaUnsaved || plural(allFiles.length, "file"))} · ${filesHtml} · <button type="button" class="linklike" data-scroll-to="#changes-section">Inspect diff ↓</button>` : ""}${prUrl ? `${allFiles.length ? " · " : ""}<a href="${esc(prUrl)}" target="_blank" rel="noopener">Open PR${job.pr_number ? ` #${esc(job.pr_number)}` : ""} ↗</a>` : ""}</div>${changeSummaryText ? `<p class="job-hero-reason muted">${esc(changeSummaryText)}</p>` : ""}`
+  const reviewContextHtml = (currentPhase === "review" || ["merge", "complete"].includes(nextAction)) && (allFiles.length || prUrl)
+    ? `<div class="job-hero-next-preview">${allFiles.length ? `<span class="job-hero-next-label">Changed:</span> ${esc(deltaUnsaved || plural(allFiles.length, "file"))} · ${filesHtml} · <button type="button" class="linklike" data-scroll-to="#changes-section">Inspect diff ↓</button>` : ""}${prUrl ? `${allFiles.length ? " · " : ""}<a href="${esc(prUrl)}" target="_blank" rel="noopener">Open PR${job.pr_number ? ` #${esc(job.pr_number)}` : ""} ↗</a>` : ""}</div>`
     : "";
 
   // Approving (or starting) a plan: the plan is shown right under the decision, with what each task is done when,
@@ -5913,8 +5913,7 @@ pages.job = async ([id]) => {
   // works or the AI waits on an answer (the question card takes the reply), and on plan review (its card has Revise).
   const steer = activeRun || s.question || reviewingPlan ? null
     : isJobComplete ? { mode: "fix", button: "Reopen and change", hint: "Reopens this job with your note and builds it.", required: true }
-    : ["merge", "complete"].includes(nextAction) ? { mode: "iterate", button: "Request changes", required: true,
-      hint: `Builds it on this branch and runs the tests${prUrl ? `, then updates the pull request` : ""}. You review again before merging.` }
+    : ["merge", "complete"].includes(nextAction) ? { mode: "iterate", button: "Request changes", required: true, hint: "" }
     : hasBuildWork || ["debugging", "failed"].includes(status) ? { mode: "debug", button: "Run fix", required: false,
       hint: "Say what you saw, or leave it blank for another automatic attempt. The tests run again after." }
     : ["planned", "designing", "human-needed", "scheduled"].includes(status) ? { mode: "revise", button: "Re-plan", required: true,
@@ -5923,7 +5922,7 @@ pages.job = async ([id]) => {
   const steerHtml = steer ? `<form class="job-steer" id="job-steer" data-mode="${steer.mode}">
       <label class="sr-only" for="job-steer-text">Tell the AI what to change</label>
       <textarea id="job-steer-text" name="text" rows="2"${steer.required ? " required" : ""} placeholder="Tell the AI what to change${steer.required ? "" : ", or what went wrong"}"></textarea>
-      <div class="job-steer-foot"><small class="muted">${esc(steer.hint)}</small>
+      <div class="job-steer-foot">${steer.hint ? `<small class="muted">${esc(steer.hint)}</small>` : ""}
         ${steer.mode === "debug" && state.project?.remote_logs ? `<label class="check"><input type="checkbox" name="device_logs" checked><span>Include newest device logs</span></label>` : ""}
         <button type="submit" class="btn small">${esc(steer.button)}</button></div>
     </form>` : "";
@@ -6138,7 +6137,7 @@ pages.job = async ([id]) => {
       <section class="card mb-16" id="changes-section">
         <div class="card-h"><h2>Changes</h2>${changes?.base ? `<span class="count">vs ${esc(changes.base)}</span>` : ""}
           ${(allFiles.length || changes?.diffstat) ? `<div class="card-actions"><button type="button" class="btn small" id="download-job-diff" title="Download the full unified git diff as a .patch file">Download full diff (.patch)</button></div>` : ""}</div>
-        ${changes?.hypothesis ? `<div class="card-b card-b-split t-secondary"><strong>What changed:</strong> ${esc(changes.hypothesis)}</div>` : ""}
+        ${changeSummaryFull ? `<div class="card-b card-b-split t-secondary"><strong>What changed:</strong> ${esc(changeSummaryFull)}</div>` : ""}
         <div class="card-b delta-summary-line">
           ${deltaUnsaved ? `<div class="delta-line unsaved">${esc(deltaUnsaved)}</div>` : ""}
           <div class="row wrap gap-8 muted t-secondary"><span>${state.project?.dirty_files ? `${plural(state.project.dirty_files, "uncommitted file")} in workspace.` : "Working tree clean."}</span><a href="#/git?show=changes">Open Git setup</a></div>

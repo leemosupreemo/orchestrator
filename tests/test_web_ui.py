@@ -8177,6 +8177,9 @@ console.log(JSON.stringify({{ fromHyp, fromDoc }}));
         self.assertEqual(out["fromHyp"], "Updated vegetation rendering shader.")
         self.assertEqual(out["fromDoc"], "Added instanced grass shader and LOD culling.")
         self.assertIn("${reviewContextHtml}", self.job_page)
+        # what the builder did heads the Changes card, in full; the status box keeps only the file count and PR link
+        self.assertIn("<strong>What changed:</strong> ${esc(changeSummaryFull)}", self.job_page)
+        self.assertNotIn('<p class="job-hero-reason muted">${esc(changeSummary', self.job_page)
         self.assertIn('const heroTone = ["merge", "complete"].includes(nextAction) && s.state.tone !== "failed" ? "done" : (s.state.tone || "");', self.job_page)
         self.assertIn('const showTaskBar = tasksTotal > 0 && currentPhase === "build" && tasksDone > 0;', self.job_page)
         self.assertNotIn('<h2>Progress</h2>', self.job_page)  # the stepper and hero carry status; no separate card
