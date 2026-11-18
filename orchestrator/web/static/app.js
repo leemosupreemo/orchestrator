@@ -869,6 +869,8 @@ function addProjectsDialog(trackedProjects) {
   });
 }
 
+const steerDrafts = new Map(); // job id -> a half-written "Tell the AI what to change" note, kept across live redraws
+
 const dialogs = {
   // Sign in to an AI tool on the spot (from a failed job's card): the same modal as the AI tools page, not a new run.
   // Closing it redraws the page under it, so a job that asked for this sign-in stops asking once it is done.
@@ -900,16 +902,6 @@ const dialogs = {
         <textarea name="feedback" placeholder="e.g. Still shows the empty seat after 40s in the background">${esc(params.feedback || "")}</textarea>
       </label>`, "Run fix");
     if (values) runAction("debug", { job: params.job, logs: values.device_logs ? "cloud:latest" : "", feedback: values.feedback });
-  },
-  // More work on a job that passed and waits to merge: the same loop as Run fix, on the same branch and PR, but told it is a
-  // change request rather than a failure. The job comes back here for review when its tests pass again.
-  async iterate(params) {
-    const values = await formDialog("Keep iterating", `
-      <label class="field"><span>What should change next?</span>
-        <textarea name="feedback" required placeholder="e.g. Denser grass near paths, and slower sway on the big oaks"></textarea>
-        <small>Builds it on this job's branch, runs the tests and updates the pull request. You review again before merging.</small>
-      </label>`, "Keep iterating");
-    if (values?.feedback.trim()) runAction("debug", { job: params.job, logs: "", feedback: `CHANGE REQUEST: ${values.feedback.trim()}` });
   },
   async answer(params) {
     const job = await api(`jobs/${encodeURIComponent(params.job)}`);
@@ -4665,11 +4657,12 @@ function jobHeaderActions(s, links = [], ctx = {}) {
   const simulator = state.project?.mobile_app !== false && (!state.project?.languages?.length || state.project.languages.some((l) => l.name === "Swift"));
   const groups = [
     [
-      idle && !ctx.fixShown && next !== "debug" && ["review-needed", "completed", "debugging", "failed"].includes(s.status)
+      // Run a fix and Revise plan live in the status box's "Tell the AI what to change" box; here only when it is hidden.
+      idle && !ctx.steerShown && next !== "debug" && ["review-needed", "completed", "debugging", "failed"].includes(s.status)
         && ["Run a fix…", act("debug", j), "Describe what you saw, or leave it blank for another automatic attempt"],
       idle && !reviewed && s.tasks_total && s.tasks_done < s.tasks_total && next !== "resume" && ["Resume", act("resume", j), "Continue from the next task"],
       idle && s.status === "scheduled" && next !== "execute" && ["Run now", act("execute", j)],
-      idle && !ctx.planShown && ["planned", "designing", "human-needed", "debugging"].includes(s.status)
+      idle && !ctx.planShown && !ctx.steerShown && ["planned", "designing", "human-needed", "debugging"].includes(s.status)
         && ["Revise plan…", act("revise", j), "Ask the AI to re-plan with what should change"],
       idle && !reviewed && !ctx.planShown && ctx.canSplinter && ["Split into jobs…", act("splinter_job", j), "Each task becomes its own job, with a GitHub sub-issue"],
       idle && simulator && ctx.hasChanges && ["Check on simulator", act("run_visual_check", j), "Boot the simulator and capture screenshots"],
@@ -5549,9 +5542,15 @@ function jobChangeSummary(otherDocs, changes) {
   if (raw) return raw.length > 220 ? `${raw.slice(0, 217).trimEnd()}…` : raw;
   const doc = (otherDocs || []).find((d) => d.name === "builder_summary.md" && d.text);
   if (!doc) return "";
+  const clip = (t) => (t.length > 220 ? `${t.slice(0, 217).trimEnd()}…` : t);
+  try { // some builders save their summary as JSON: say its summary, never its first brace
+    const parsed = JSON.parse(doc.text);
+    const said = String(parsed?.summary || parsed?.hypothesis || "").trim();
+    return said ? clip(said) : "";
+  } catch { /* markdown: the first real line below */ }
   for (const line of String(doc.text).split(/\r?\n/)) {
     const clean = line.trim().replace(/^[-*#>\s`]+/, "").replace(/`+/g, "");
-    if (!clean || /^(\d+\.|summary|changes|files|verification|tests)\b:?$/i.test(clean)) continue;
+    if (!clean || /^[{}\[\],]+$/.test(clean) || /^(\d+\.|summary|changes|files|verification|tests)\b:?$/i.test(clean)) continue;
     return clean.length > 220 ? `${clean.slice(0, 217).trimEnd()}…` : clean;
   }
   return "";
@@ -5725,12 +5724,6 @@ pages.job = async ([id]) => {
   const problem = s.state.next?.action === "debug" && data.problem ? data.problem : null; // what needs fixing, in words
   const next = s.state.next;
   const isStoppingActive = activeRun && (stoppingRuns.has(activeRun.id) || Boolean(activeRun.stopping));
-  // The one way to start a fix from here: the same dialog as the More menu's, with the error already in it.
-  // Only while something is wrong: a job ready to approve, merge or finish keeps an old attempt's error, which isn't a reason to fix.
-  const recommendFixBtn = !activeRun && job.last_error && !["debug", "answer", "merge", "complete", "approve", "schedule", "execute"].includes(next?.action)
-    && s.state.group !== "done"
-    ? `<button class="btn small" ${act("debug", { job: s.id, feedback: String(job.last_error).slice(0, 2000) })}>Run a fix…</button>`
-    : "";
   const signIn = problem?.sign_in || s.state.sign_in; // a failed fix's sign-in, or a blocker that needs one
   const signInAction = !activeRun && signIn
     ? `<button type="button" class="btn small primary" ${act("ai_connect", { provider: signIn.provider, name: signIn.name })}>Sign in to ${esc(signIn.name)}</button>`
@@ -5740,8 +5733,7 @@ pages.job = async ([id]) => {
     ? (isStoppingActive
       ? `<button class="btn small" data-stop="${esc(activeRun.id)}" data-why="Already stopping." disabled aria-busy="true"><span class="spinner inline-spinner" aria-hidden="true"></span>Stopping…</button>`
       : `<button class="btn small" data-stop="${esc(activeRun.id)}" title="Stops the worker. Resume continues from the next task.">Pause</button>`)
-    : `${signInAction}${next ? `<button class="${nextBtnClass}" ${act(next.action, { job: s.id, ...(next.params || {}) })}>${esc(next.label)}</button>` : ""}${recommendFixBtn}${["merge", "complete"].includes(next?.action) && !["completed", "archived"].includes(s.status)
-      ? `<button class="btn small" ${act("iterate", { job: s.id })} title="Ask for more changes on this branch before merging">Keep iterating…</button>` : ""}${next && job.task_growth && data.undoable_task === job.task_growth.task
+    : `${signInAction}${next ? `<button class="${nextBtnClass}" ${act(next.action, { job: s.id, ...(next.params || {}) })}>${esc(next.label)}</button>` : ""}${next && job.task_growth && data.undoable_task === job.task_growth.task
       ? `<button class="btn small" data-undo-task="${job.task_growth.task}" title="Reverts what that task changed. Then revise the plan to make it smaller.">Undo task ${job.task_growth.task + 1}</button>` : ""}`;
 
   // 5-Phase Lifecycle determination (Plan -> Build -> Verify -> Document -> Review)
@@ -5901,6 +5893,25 @@ pages.job = async ([id]) => {
   // Approving (or starting) a plan: the plan is shown right under the decision, with what each task is done when,
   // the files it touches, and what the AI assumed. GitHub puts Approve beside the changes; this is the same idea.
   const reviewingPlan = ["approve", "schedule"].includes(nextAction) && s.status !== "designing" && !activeRun && tasks.length > 0;
+  // The one place to tell the AI what to change, in the status box. What it runs follows the stage: re-plan before the
+  // build, request changes when it waits to merge, run a fix when it failed, reopen it once merged. Hidden while a run
+  // works or the AI waits on an answer (the question card takes the reply), and on plan review (its card has Revise).
+  const steer = activeRun || s.question || reviewingPlan ? null
+    : isJobComplete ? { mode: "fix", button: "Reopen and change", hint: "Reopens this job with your note and builds it.", required: true }
+    : ["merge", "complete"].includes(nextAction) ? { mode: "iterate", button: "Request changes", required: true,
+      hint: `Builds it on this branch and runs the tests${prUrl ? `, then updates the pull request` : ""}. You review again before merging.` }
+    : hasBuildWork || ["debugging", "failed"].includes(status) ? { mode: "debug", button: "Run fix", required: false,
+      hint: "Say what you saw, or leave it blank for another automatic attempt. The tests run again after." }
+    : ["planned", "designing", "human-needed", "scheduled"].includes(status) ? { mode: "revise", button: "Re-plan", required: true,
+      hint: "Re-plans the job with this; you approve the new plan before anything is built." }
+    : null;
+  const steerHtml = steer ? `<form class="job-steer" id="job-steer" data-mode="${steer.mode}">
+      <label class="sr-only" for="job-steer-text">Tell the AI what to change</label>
+      <textarea id="job-steer-text" name="text" rows="2"${steer.required ? " required" : ""} placeholder="Tell the AI what to change${steer.required ? "" : ", or what went wrong"}"></textarea>
+      <div class="job-steer-foot"><small class="muted">${esc(steer.hint)}</small>
+        ${steer.mode === "debug" && state.project?.remote_logs ? `<label class="check"><input type="checkbox" name="device_logs" checked><span>Include newest device logs</span></label>` : ""}
+        <button type="submit" class="btn small">${esc(steer.button)}</button></div>
+    </form>` : "";
   const listOf = (v) => (Array.isArray(v) ? v : typeof v === "string" && v.trim().startsWith("[") ? (() => { try { return JSON.parse(v); } catch { return []; } })() : [])
     .filter((x) => typeof x === "string" && x.trim());
   const risks = listOf(job.plan?.risks), constraints = listOf(job.plan?.constraints);
@@ -5986,7 +5997,7 @@ pages.job = async ([id]) => {
   return {
     title: s.title,
     sub: subParts.length ? `<span class="status-line">${subParts.join('<span class="sep">·</span>')}</span>` : "",
-    actions: jobHeaderActions(summary, links, { canSplinter, planShown: reviewingPlan, fixShown: Boolean(recommendFixBtn), hasChanges: allFiles.length > 0,
+    actions: jobHeaderActions(summary, links, { canSplinter, planShown: reviewingPlan, steerShown: Boolean(steer), hasChanges: allFiles.length > 0,
       abilities: aiAbilities.highlights }),
     html: `<div class="job-layout"><div class="job-top">
       ${runs.filter((r) => r.running && !isPreviewRun(r)).map((r) => activeRunCard(r, (jobRuns || []).find((x) => x.id === r.id), r.id === activeRun?.id ? activeTimeline : null)).join("")}
@@ -6040,6 +6051,7 @@ pages.job = async ([id]) => {
           ${uxWarning ? `<p class="job-hero-reason"><button type="button" class="linklike" data-scroll-to="#ux-section">UX and design check: ${plural(uxWarning, "major finding")}. Look before you ${s.state.next?.action === "merge" ? "merge" : "finish"}.</button></p>` : ""}
         </div>
         <div class="job-hero-action">${heroAction}</div>
+        ${steerHtml}
       </section>`}
 
       ${unvalidatedTestsHtml}
@@ -6159,6 +6171,29 @@ pages.job = async ([id]) => {
     after: () => {
       hydrateAuthImages(); // the UX and design check's screenshots
       wireImagePreviews(view);
+      const steerForm = view.querySelector("#job-steer");
+      if (steerForm) { // the page refreshes live: keep a half-written note across redraws
+        steerForm.text.value = steerDrafts.get(s.id) || "";
+        steerForm.text.addEventListener("input", () => steerDrafts.set(s.id, steerForm.text.value));
+      }
+      steerForm?.text.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); steerForm.requestSubmit(); } });
+      steerForm?.addEventListener("submit", (e) => {
+        e.preventDefault();
+        const text = steerForm.text.value.trim();
+        const mode = steerForm.dataset.mode;
+        if (text || mode === "debug") steerDrafts.delete(s.id);
+        if (mode === "debug") {
+          runAction("debug", { job: s.id, logs: steerForm.device_logs?.checked ? "cloud:latest" : "", feedback: text || String(job.last_error || "").slice(0, 2000) });
+        } else if (!text) {
+          steerForm.text.focus();
+        } else if (mode === "iterate") { // passed and waits to merge: a change request, not a failure (debug_agent.md rule 0)
+          runAction("debug", { job: s.id, logs: "", feedback: `CHANGE REQUEST: ${text}` });
+        } else if (mode === "revise") {
+          runAction("revise", { job: s.id, change: text });
+        } else if (mode === "fix") {
+          runAction("fix", { job: s.id, feedback: text });
+        }
+      });
       const reply = view.querySelector("#clarify-reply");
       reply?.answer.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); reply.requestSubmit(); } });
       reply?.addEventListener("submit", (e) => {

@@ -356,8 +356,9 @@ class PrimaryOnThisComputerTests(unittest.TestCase):
     def test_recommend_fix_button_shows_with_error(self):
         app = APP.read_text(encoding="utf-8")
         self.assertIn('data-attempt-fix="${esc(err)}" data-attempt-job="${esc(targetJob)}">Attempt fix</button>', app)
-        self.assertIn('${act("debug", { job: s.id, feedback: String(job.last_error).slice(0, 2000) })}>Run a fix…</button>', app)  # the job page: same dialog as the menu
-        self.assertIn('!["debug", "answer", "merge", "complete", "approve", "schedule", "execute"].includes(next?.action)', app)
+        # The job page: a failed job's status box offers the Tell-the-AI box as Run fix; blank sends the last error.
+        self.assertIn('{ mode: "debug", button: "Run fix", required: false', app)
+        self.assertIn('feedback: text || String(job.last_error || "").slice(0, 2000)', app)
 
     def test_swipe_left_on_job_reveals_archive_button(self):
         app = APP.read_text(encoding="utf-8")

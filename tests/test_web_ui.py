@@ -8095,6 +8095,7 @@ eval(block);
 pages.job(['j1']).then(res => {
   if (!res || !res.html || !res.html.includes('Did the thing')) throw new Error('Missing plan summary');
   if (!res.html.includes('job-hero tone-done')) throw new Error('Merge status container should be green (tone-done)');
+  if (!res.html.includes('id="job-steer" data-mode="iterate"') || !res.html.includes('>Request changes</button>')) throw new Error('Ready to merge should offer the Tell-the-AI box as Request changes');
   if (res.html.includes('>Progress<')) throw new Error('Redundant Progress card should be omitted during review without tasks');
 }).catch(err => { console.error(err); process.exit(1); });
 """
@@ -8181,16 +8182,18 @@ console.log(JSON.stringify({{ fromHyp, fromDoc }}));
         self.assertNotIn('<h2>Progress</h2>', self.job_page)  # the stepper and hero carry status; no separate card
         self.assertNotIn('<h2>Finalize</h2>', self.job_page)  # the hero holds the merge decision; Finalize links to it
         self.assertIn('"#document-section", "#job-hero"]', self.job_page)
-        # Ready to merge: "Keep iterating…" beside Merge sends a change request through the fix loop on the same branch.
-        self.assertIn('act("iterate", { job: s.id })', self.job_page)
+        # One "Tell the AI what to change" box in the status box; ready to merge, it sends a change request through the fix
+        # loop on the same branch. The old separate buttons and menu items are gone while it shows.
         app_js = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
-        self.assertIn('feedback: `CHANGE REQUEST: ${values.feedback.trim()}`', app_js)
+        self.assertIn('runAction("debug", { job: s.id, logs: "", feedback: `CHANGE REQUEST: ${text}` });', app_js)
+        self.assertIn('mode: "iterate", button: "Request changes"', self.job_page)
+        self.assertIn("idle && !ctx.steerShown && next !== \"debug\"", app_js)
+        self.assertNotIn("Keep iterating", app_js)
         self.assertIn("starts with `CHANGE REQUEST:`", (PACKAGE_ROOT / "orchestrator" / "prompts" / "debug_agent.md").read_text())
         # A Quick change has no planner: no Plan card repeating the brief, and the empty Test cases card says why.
         self.assertIn('const quickNoPlan = job.type === "quick-fix" && !tasksTotal;', self.job_page)
         self.assertIn("Quick changes skip planning, so no test cases were listed.", self.job_page)
         self.assertIn("!reviewingPlan && (tasksTotal > 0 || showSummary || !hasBuildWork)", self.job_page)
-        self.assertIn('!["debug", "answer", "merge", "complete", "approve", "schedule", "execute"].includes(next?.action)', self.job_page)
 
     def test_job_changes_offers_downloadable_full_patch_diff(self):
         self.assertIn('id="download-job-diff"', self.job_page)
@@ -8288,15 +8291,14 @@ console.log(JSON.stringify({{ fromHyp, fromDoc }}));
         fn = self.source[self.source.index("function jobHeaderActions"):self.source.index('document.addEventListener("click", async (e)', self.source.index("function jobHeaderActions"))]
         self.assertNotIn('"header"', fn)  # dividers, not headings over one or two items
         self.assertNotIn("Still broken?", fn)  # one way to ask for a fix
-        self.assertIn('idle && !ctx.fixShown && next !== "debug"', fn)  # not when the page already offers Run a fix…
+        self.assertIn('idle && !ctx.steerShown && next !== "debug"', fn)  # not when the status box offers Run fix
         self.assertIn('idle && !reviewed && !ctx.planShown && ctx.canSplinter', fn)  # the plan card has its own Split
         self.assertIn("idle && simulator && ctx.hasChanges", fn)  # only once there is something to look at
         self.assertIn('idle && s.status !== "completed" && ["Choose models…"', fn)
         self.assertIn('idle && s.issue_number && [`Close issue #${s.issue_number} and finish job`', fn)  # says it finishes the job; not mid-run
         self.assertIn('["Download ZIP", `data-open="/api/jobs/', fn)
-        page = self.source[self.source.index("const recommendFixBtn"):][:400]
-        self.assertIn('act("debug", { job: s.id, feedback:', page)  # the page's fix button opens the same dialog, error filled in
-        self.assertIn("fixShown: Boolean(recommendFixBtn), hasChanges: allFiles.length > 0", self.source)
+        self.assertNotIn("const recommendFixBtn", self.source)  # the status box's one Tell-the-AI box replaced the page's fix button
+        self.assertIn("steerShown: Boolean(steer), hasChanges: allFiles.length > 0", self.source)
 
     def test_choosing_models_uses_the_model_team_list_and_can_go_back_to_the_projects_choice(self):
         dialog = self.source[self.source.index("async select_models(params)"):self.source.index("async export_context(params)")]
