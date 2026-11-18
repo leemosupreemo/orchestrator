@@ -6085,7 +6085,7 @@ pages.job = async ([id]) => {
       </section>
 
       ${!reviewingPlan && (tasksTotal > 0 || showSummary || !hasBuildWork) ? `<section class="card mb-16" id="plan-section" tabindex="-1">
-        <div class="card-h"><h2>Plan</h2></div>
+        <div class="card-h"><h2>Plan</h2>${job.plan?.fast_tracked ? `<span class="count" title="A Quick change: planned in one pass and started without approval">Fast-tracked</span>` : ""}</div>
         ${showSummary ? `<div class="card-b"><p>${esc(planSummary)}</p></div>` : ""}
         <div class="list">${taskRowsHtml(true)}</div>
       </section>` : ""}

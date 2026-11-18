@@ -453,7 +453,44 @@ def build_design_issue_body(plan: dict, verification: dict | None = None, yolo: 
 
 def build_quick_issue_body(plan: dict, yolo: bool = False) -> str:
     yolo_status = "✅ ON (Automated)" if yolo else "❌ OFF (Manual Step Mode)"
-    return f"## Summary\n{plan['summary']}\n\n## Metadata\n- **YOLO Mode**: {yolo_status}\n\n## Instructions\n{plan['instructions']}"
+    body = f"## Summary\n{plan['summary']}\n\n## Metadata\n- **YOLO Mode**: {yolo_status}\n\n## Instructions\n{plan['instructions']}"
+    if plan.get("fast_tracked"):
+        body += "\n\n## Fast-tracked plan\n" + "\n".join(
+            f"{i}. **{t.get('title', f'Task {i}')}**" + (f": {t['description']}" if t.get("description") else "")
+            for i, t in enumerate(plan.get("tasks") or [], start=1))
+        sections = [("Acceptance Criteria", "acceptance_criteria"), ("Assumptions", "assumptions"), ("Likely Files", "likely_files")]
+        for heading, key in sections:
+            if _list_items(plan.get(key)):
+                body += f"\n\n## {heading}\n" + "\n".join(f"- {x}" for x in _list_items(plan.get(key)))
+    return body
+
+
+def fast_track_quick_plan(instructions: str, *, planner: str, allowed_models: list | None) -> tuple[dict | None, str, list[dict], str]:
+    """One planner call for a Quick change: a short plan and its test cases, with no questions, verifier or approval.
+    Returns (fields to merge into the plan, model used, llm sessions, note). Any failure returns (None, ...) so a
+    Quick job still starts from the instruction alone."""
+    template = (PROMPTS_DIR / "planner_quick.md").read_text(encoding="utf-8")
+    context = "\n".join(filter(None, [tc.PLANNER_INSTRUCTIONS, tc.library_index(ROOT), prd.context_block(ROOT),
+                                      architecture.context_block(ROOT, "planner"), project_docs.context_block(ROOT)]))
+    try:
+        raw, used, sid = run_llm(planner, f"{template}\n{context}\n\nThe person's request:\n{instructions}\n",
+                                 cwd=ROOT, allowed_models=allowed_models, role=ModelRole.PLANNER)
+        found = json.loads(extract_json_block(raw), strict=False)
+    except Exception as exc:  # no plan is never a reason to stop a Quick change
+        return None, "user-prompt", [], f"Fast-track planning failed ({str(exc)[:200]}); building from the instruction alone."
+    if isinstance(found, list):
+        found = next((x for x in found if isinstance(x, dict)), {})
+    tasks = [t for t in (found.get("tasks") or []) if isinstance(t, dict) and str(t.get("title") or "").strip()][:3] \
+        if isinstance(found, dict) else []
+    if not tasks:
+        return None, used, [{"id": sid, "model": used}], "The fast-track planner returned no tasks; building from the instruction alone."
+    fields = {"tasks": tasks, "fast_tracked": True}
+    for key in ("likely_files", "acceptance_criteria", "assumptions", "test_cases"):
+        if isinstance(found.get(key), list) and found[key]:
+            fields[key] = found[key]
+    if str(found.get("summary") or "").strip():
+        fields["plan_summary"] = str(found["summary"]).strip()
+    return fields, used, [{"id": sid, "model": used}], ""
 
 
 def main(args_override: list[str] | None = None) -> None:
@@ -724,21 +761,35 @@ def main(args_override: list[str] | None = None) -> None:
             "acceptance_criteria": ["Implementation matches provided instructions."]
         }
         
+        # Fast track: one planner call turns the instruction into a short plan and test cases, with no questions,
+        # verifier or approval, so the job still starts at once. If it fails, the instruction alone is the plan.
+        print(f"[1/3] Fast-tracking a plan and test cases using {planner}...", flush=True)
+        fast, actual_planner, llm_sessions, fast_note = fast_track_quick_plan(instructions, planner=planner, allowed_models=allowed_models)
+        if fast:
+            fast_summary = fast.pop("plan_summary", "")
+            plan.update(fast)
+            if fast_summary:
+                plan["summary"] = fast_summary
+            problems = tc.plan_problems(plan) if plan.get("test_cases") else []
+            if problems:
+                plan["test_case_problems"] = problems
+            print(f"      - {len(plan['tasks'])} task(s), {len(plan.get('test_cases') or [])} test case(s).", flush=True)
+        else:
+            print(f"      - {fast_note}", flush=True)
+
         title = plan["title"]
         body = build_quick_issue_body(plan, yolo=args.yolo)
         labels = ["job:quick", "status:planned"]
-        
-        # The instruction is the plan: no planner, no verification. The job and its one issue are created below.
+
+        # No verifier and no approval: the job and its one issue are created below and start right away.
         job_id_kind = "quick"
-        actual_planner = "user-prompt"
         verification = None
         job_type = "quick-fix"
         raw_input_text = instructions
         clarification = None
         clarification_history = []
-        llm_sessions = []
         last_manual_logs = []
-        needs_test_cases = False
+        needs_test_cases = bool(plan.get("test_cases"))
 
     else:
         if file_spec_content:

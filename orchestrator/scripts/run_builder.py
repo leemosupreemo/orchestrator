@@ -99,7 +99,9 @@ Title: {job["title"]}
 
 Instructions:
 {plan.get("instructions", "No instructions provided.")}
-
+''' + ("\nFast-tracked plan (build all of it in this one pass):\n" + "\n".join(
+        f"{i}. {t.get('title', '')}" + (f": {t['description']}" if t.get("description") else "")
+        for i, t in enumerate(plan.get("tasks") or [], start=1)) + "\n" if plan.get("tasks") else "") + f'''
 Summary:
 {plan.get("summary", "No summary provided.")}
 {clarification_text}

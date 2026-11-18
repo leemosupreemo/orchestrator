@@ -1243,6 +1243,10 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
             return
         if changed_now:
             job.pop("build_no_changes", None)
+            # A Quick change builds its whole fast-tracked plan in one pass, so a passing pass completes every task.
+            quick_tasks = (job.get("plan") or {}).get("tasks") or [] if job.get("type") == "quick-fix" else []
+            if quick_tasks and build_ok and test_ok:
+                job["completed_task_indices"] = list(range(len(quick_tasks)))
             write_json(job_path, job)
 
         # Commit changes if any
