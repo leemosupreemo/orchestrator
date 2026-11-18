@@ -5520,7 +5520,7 @@ function jobRunRow(r) {
     <div class="side"><span class="pill ${tone}">${esc(label)}</span></div></a>`;
 }
 
-function jobRunsCard(runs, rel) {
+function jobRunsCard(runs, rel, extraDetailsHtml = "") {
   if (!runs) return "";
   const work = runs.filter((r) => !r.side);
   const stages = Object.entries(rel?.per_phase || {}).filter(([, n]) => n).map(([phase, n]) => `${phase[0].toUpperCase()}${phase.slice(1)} ${n}`);
@@ -5528,7 +5528,7 @@ function jobRunsCard(runs, rel) {
     : rel?.single ? "This job ran in one go: a single run did the work. Open it for its steps and full output."
     : "Each run is one go at part of this job: planning, a build, a fix attempt. Newest first; open one for its steps and full output.";
   return `<section class="card mb-16" id="job-runs"><div class="card-h"><h2>${rel?.single ? "Run" : "Runs"}</h2>${work.length > 1 ? `<span class="count">${work.length}</span>` : ""}</div>
-    <div class="card-b stack"><span class="muted">${esc(intro)}</span>${stages.length > 1 ? `<span class="muted">By stage: ${esc(stages.join(" · "))}</span>` : ""}</div>
+    <div class="card-b stack"><span class="muted">${esc(intro)}</span>${stages.length > 1 ? `<span class="muted">By stage: ${esc(stages.join(" · "))}</span>` : ""}${extraDetailsHtml}</div>
     ${runs.length ? `<div class="list" id="job-run-list">${runs.map((r, n) => n < 8 ? jobRunRow(r) : jobRunRow(r).replace('<a class="item', '<a hidden class="item')).join("")}</div>
       ${runs.length > 8 ? `<div class="card-b"><button type="button" class="btn small" data-show-all="job-run-list">Show all ${runs.length}</button></div>` : ""}` : ""}</section>`;
 }
@@ -5675,7 +5675,6 @@ pages.job = async ([id]) => {
   const nextTask = jobNextTask || (tasksTotal > tasksDone && tasks[tasksDone] ? (typeof tasks[tasksDone] === "object" ? (tasks[tasksDone].name || tasks[tasksDone].title || tasks[tasksDone].description || `Task ${tasksDone + 1}`) : String(tasks[tasksDone])) : null);
 
   const kindUpper = (s.type || s.kind || "FEATURE").toUpperCase();
-  const testsDisplay = formatJobTests(testSummary);
   const scope = data.scope || null;
   const actionableFindings = (scope?.findings || []).filter((f) => f.id !== "no_plan_files");
   const hasNoPlanFiles = (scope?.findings || []).some((f) => f.id === "no_plan_files");
@@ -5777,7 +5776,7 @@ pages.job = async ([id]) => {
     if (nothingBuilt && idx === 1) return { state: "active failed", icon: "!" };
     if (isJobComplete || idx < currentPhaseIndex) return { state: "done", icon: "✓" };
     if (idx === currentPhaseIndex) {
-      const tone = s.state.tone === "failed" ? "failed" : s.state.group === "needs_you" ? "attention" : "active";
+      const tone = s.state.tone === "failed" ? "failed" : ["merge", "complete"].includes(s.state.next?.action) ? "done" : s.state.group === "needs_you" ? "attention" : "active";
       const icon = s.state.tone === "failed" ? "!" : String(idx + 1);
       return { state: `active ${tone}`, icon };
     }
@@ -5825,7 +5824,10 @@ pages.job = async ([id]) => {
   const prUrl = (links || []).find((l) => l?.url && /pr|pull|merge/i.test(l.label || ""))?.url || job.merge_request_url || job.pr_url || "";
   const builderSummaryDoc = otherDocs.find((d) => d.name === "builder_summary.md" && d.text?.trim()) || null;
   const changeSummaryText = jobChangeSummary(otherDocs, changes);
-  const phaseTargets = [!tasksTotal && !showSummary && hasBuildWork ? "#brief-section" : "#plan-section", "#build-section", "#verify-section", "#document-section", "#finalize-section"];
+  // Task progress lives in the hero (a bar under Now/Next) only while building; the stepper and hero cover every other stage.
+  const showTaskBar = tasksTotal > 0 && currentPhase === "build" && tasksDone > 0;
+  const phaseTargets = [!tasksTotal && !showSummary && hasBuildWork ? "#brief-section" : "#plan-section", tasksTotal ? "#plan-section" : (hasBuildWork ? "#changes-section" : "#plan-section"), "#verify-section", "#document-section", "#finalize-section"];
+  const heroTone = ["merge", "complete"].includes(nextAction) && s.state.tone !== "failed" ? "done" : (s.state.tone || "");
   const phasesInfo = [planStep, buildStep, verifyStep, docStep, reviewStep];
   ["plan", "build", "verify", "document", "finalize"].forEach((phase, i) => {
     const n = runRel?.per_phase?.[phase] || 0;
@@ -6021,7 +6023,7 @@ pages.job = async ([id]) => {
         `).join("")}
       </nav>
 
-      ${reviewingPlan ? "" : `<section class="job-hero tone-${esc(s.state.tone || "")}${(activeRun && !activeRun.waiting) || s.state.label === "Building" ? " is-running" : ""}">
+      ${reviewingPlan ? "" : `<section class="job-hero tone-${esc(heroTone)}${(activeRun && !activeRun.waiting) || s.state.label === "Building" ? " is-running" : ""}">
         <div class="job-hero-main">
           <h2 class="job-hero-title">${(activeRun && !activeRun.waiting) || s.state.label === "Building" ? runningMark : ""}${esc(s.state.label || s.status)}</h2>
           <p class="job-hero-reason">${heroReason}</p>
@@ -6034,6 +6036,7 @@ pages.job = async ([id]) => {
           ${runRel?.unreported ? `<p class="job-hero-reason run-unreported">The last run (${esc(runRel.unreported.label)}) ${runRel.unreported.status === "failed" ? "failed" : "ended without reporting back"} before it could update this job. <a href="#/runs/${encodeURIComponent(runRel.unreported.id)}">Open its log</a> to see what happened.</p>` : ""}
           ${reviewContextHtml}
           ${nextExecutionPreview ? `<div class="job-hero-next-preview">${nextExecutionPreview}</div>` : ""}
+          ${showTaskBar ? `<div class="tasks-progress-wrap"><div class="progress-bar-container" role="progressbar" aria-label="Tasks built" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${tasksPct}"><div class="progress-bar-fill" style="width: ${tasksPct}%"></div></div><span class="progress-text">${tasksDone}/${tasksTotal}</span></div>` : ""}
           ${uxWarning ? `<p class="job-hero-reason"><button type="button" class="linklike" data-scroll-to="#ux-section">UX and design check: ${plural(uxWarning, "major finding")}. Look before you ${s.state.next?.action === "merge" ? "merge" : "finish"}.</button></p>` : ""}
         </div>
         <div class="job-hero-action">${heroAction}</div>
@@ -6069,37 +6072,6 @@ pages.job = async ([id]) => {
       ${jobContextRail(s, data.context)}
 
       <div class="job-body">
-      <section class="card mb-16" id="build-section" tabindex="-1">
-        <div class="card-h"><h2>Progress</h2>${tasksTotal ? `<span class="count">${tasksDone}/${tasksTotal} tasks</span>` : hasBuildWork && allFiles.length ? `<span class="count">${plural(allFiles.length, "file")} changed</span>` : ""}</div>
-        <div class="card-b stack">
-          ${tasksTotal ? `<div class="tasks-progress-wrap">
-            <div class="progress-bar-container" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${tasksPct}"><div class="progress-bar-fill" style="width: ${tasksPct}%"></div></div>
-            <span class="progress-text">${tasksPct}%</span>
-          </div>
-          <div class="progress-now">
-            ${activeRun
-              ? `<span class="pill working">Building now</span><strong>${esc(nextTask || "Active task")}</strong>`
-              : nextTask
-                ? `<span class="label">Next</span><strong>${esc(nextTask)}</strong><span class="muted">${tasksTotal - tasksDone} left</span>`
-                : tasksDone === tasksTotal
-                  ? `<span class="pill done">All tasks built</span><span class="muted">Ready for verification &amp; review</span>`
-                  : ""}
-          </div>` : hasBuildWork ? `<div class="progress-now">
-            <span class="pill done">${allFiles.length ? "Implemented" : "Built"}</span>
-            <strong>${esc(deltaUnsaved || (allFiles.length ? `${plural(allFiles.length, "file")} changed` : "Implemented in a single pass"))}</strong>
-            ${allFiles.length ? `<button type="button" class="linklike" data-scroll-to="#changes-section">Inspect diff ↓</button>` : ""}
-          </div>${allFiles.length ? `<div class="muted t-secondary">${filesHtml}</div>` : ""}` : `<div class="empty-state"><strong>No tasks yet</strong><span class="muted">Tasks appear once planned.</span></div>`}
-          <div class="progress-foot muted">
-            ${esc(testsDisplay)}${docFilesChanged.length ? ` · Docs updated: ${docFilesChanged.slice(0, 3).map((f) => `<span class="mono">${esc(f)}</span>`).join(", ")}${docFilesChanged.length > 3 ? ` +${docFilesChanged.length - 3} more` : ""}` : ` · <a href="#/project-docs">Docs</a>`}${pipe?.planner || pipe?.builder || pipe?.reviewer ? ` · ${esc(pipeline.planner === pipeline.builder && pipeline.builder === pipeline.reviewer ? pipeline.planner : `${pipeline.planner} → ${pipeline.builder} → ${pipeline.reviewer}`)}` : ""}
-          </div>
-          <details class="hero-error-details">
-            <summary class="linklike muted">Stage &amp; model details</summary>
-            <div class="progress-foot muted">${phasesInfo.map((p) => `${esc(p.title)}: ${esc(p.subtitle)}`).join(" · ")}</div>
-            ${job.auto_assignment ? `<div class="progress-foot muted">Picked by Auto (${esc(job.auto_assignment.complexity || "standard")}): ${esc((job.auto_assignment.reasons || []).join("; "))}.</div>` : ""}
-          </details>
-        </div>
-      </section>
-
       <!-- Brief: title and actions in the header, where the file lives in a caption under it, long text folds -->
       <section class="card mb-16" id="brief-section">
         <div class="card-h"><h2>Brief</h2>
@@ -6129,7 +6101,12 @@ pages.job = async ([id]) => {
         <div class="card-b"><ul class="assumptions">${assumptions.map((t) => `<li>${esc(t)}</li>`).join("")}</ul>
         <div class="muted">Wrong about something? Use Revise plan in the menu.</div></div></section>` : ""}
 
-      ${jobRunsCard(jobRuns, runRel)}
+      ${jobRunsCard(jobRuns, runRel, `<details class="hero-error-details">
+            <summary class="linklike muted">Stage &amp; model details</summary>
+            <div class="progress-foot muted">${phasesInfo.map((p) => `${esc(p.title)}: ${esc(p.subtitle)}`).join(" · ")}</div>
+            ${pipe?.planner || pipe?.builder || pipe?.reviewer ? `<div class="progress-foot muted">Models: ${esc(pipeline.planner === pipeline.builder && pipeline.builder === pipeline.reviewer ? pipeline.planner : `plan ${pipeline.planner} → build ${pipeline.builder} → review ${pipeline.reviewer}`)}</div>` : ""}
+            ${job.auto_assignment ? `<div class="progress-foot muted">Picked by Auto (${esc(job.auto_assignment.complexity || "standard")}): ${esc((job.auto_assignment.reasons || []).join("; "))}.</div>` : ""}
+          </details>`)}
       <section class="card mb-16" id="changes-section">
         <div class="card-h"><h2>Changes</h2>${changes?.base ? `<span class="count">vs ${esc(changes.base)}</span>` : ""}
           ${(allFiles.length || changes?.diffstat) ? `<div class="card-actions"><button type="button" class="btn small" id="download-job-diff" title="Download the full unified git diff as a .patch file">Download full diff (.patch)</button></div>` : ""}</div>

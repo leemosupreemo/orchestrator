@@ -8094,6 +8094,8 @@ const block = source.slice(source.indexOf('let aiAbilities ='), source.indexOf('
 eval(block);
 pages.job(['j1']).then(res => {
   if (!res || !res.html || !res.html.includes('Did the thing')) throw new Error('Missing plan summary');
+  if (!res.html.includes('job-hero tone-done')) throw new Error('Merge status container should be green (tone-done)');
+  if (res.html.includes('>Progress<')) throw new Error('Redundant Progress card should be omitted during review without tasks');
 }).catch(err => { console.error(err); process.exit(1); });
 """
         result = subprocess.run(
@@ -8174,7 +8176,9 @@ console.log(JSON.stringify({{ fromHyp, fromDoc }}));
         self.assertEqual(out["fromHyp"], "Updated vegetation rendering shader.")
         self.assertEqual(out["fromDoc"], "Added instanced grass shader and LOD culling.")
         self.assertIn("${reviewContextHtml}", self.job_page)
-        self.assertIn("hasBuildWork ? `<div class=\"progress-now\">", self.job_page)
+        self.assertIn('const heroTone = ["merge", "complete"].includes(nextAction) && s.state.tone !== "failed" ? "done" : (s.state.tone || "");', self.job_page)
+        self.assertIn('const showTaskBar = tasksTotal > 0 && currentPhase === "build" && tasksDone > 0;', self.job_page)
+        self.assertNotIn('<h2>Progress</h2>', self.job_page)  # the stepper and hero carry status; no separate card
         self.assertIn("!reviewingPlan && (tasksTotal > 0 || showSummary || !hasBuildWork)", self.job_page)
         self.assertIn('!["debug", "answer", "merge", "complete", "approve", "schedule", "execute"].includes(next?.action)', self.job_page)
 
