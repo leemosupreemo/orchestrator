@@ -69,6 +69,7 @@ CODE_LENGTH = 8
 SETUP_PROFILE_LIMIT = 200_000  # characters of settings and prompts one computer may share per project
 MAX_MACHINES_PER_USER = 20
 MAX_MOVED_JOBS = 200  # jobs another computer took over, kept per computer for its heartbeat reply
+MAX_JOB_OWNERS = 500  # which computer owns each job (highest ownership number), per account
 MAX_JOB_ARCHIVES = 300  # the newest archive or restore of each job, per account, for every computer's heartbeat reply
 MAX_DEVICES_PER_USER = 20
 MAX_EVENTS_PER_CALL = 10
@@ -527,6 +528,7 @@ class ControlPlane:
         self.store.update("machines", machine_id, {"has_snapshot": True, "snapshot_synced_at": now})
         self._record_moves(machine_id, machine, recent_jobs)
         self._record_archives(machine, body.get("job_archives"))
+        self._record_owners(machine_id, machine, recent_jobs)
         return {"ok": True, "synced_at": now}
 
     def _record_archives(self, machine: dict[str, Any], events: Any) -> None:
@@ -582,6 +584,55 @@ class ControlPlane:
                     merged[job_id] = move
             if merged != current:
                 newest = sorted(merged.items(), key=lambda kv: kv[1].get("imported_at") or 0, reverse=True)[:MAX_MOVED_JOBS]
+                self.store.update("machines", other_id, {"moved_jobs": dict(newest)})
+
+    def _record_owners(self, machine_id: str, machine: dict[str, Any], recent_jobs: list[Any]) -> None:
+        """One owner per job, by its ownership number (owner_epoch; Continue here raises it). The account remembers the
+        computer with the highest number; a copy elsewhere with a lower or equal number is stale (a computer that was offline
+        while the job moved on, or a copy from an old project download), and that computer is told, through its heartbeat,
+        that the job moved. The number is the fencing token: a returning computer can't take a job back by syncing late."""
+        seen: dict[str, int] = {}
+        for job in recent_jobs[:100]:
+            if not isinstance(job, dict) or job.get("moved_to"):
+                continue
+            job_id, epoch = job.get("job_id"), job.get("owner_epoch")
+            if isinstance(job_id, str) and 0 < len(job_id) <= 120 and isinstance(epoch, int) and not isinstance(epoch, bool) and 0 <= epoch < 10**6:
+                seen[job_id] = epoch
+        if not seen:
+            return
+        name = _clean(machine.get("name") or "another computer", 80)
+        now = self.now()
+        notices: dict[str, dict[str, dict[str, Any]]] = {}  # machine id -> {job id: move}
+
+        def transform(doc):
+            current = (doc or {}).get("jobs") if isinstance((doc or {}).get("jobs"), dict) else {}
+            merged = dict(current)
+            for job_id, epoch in seen.items():
+                held = current.get(job_id) or {}
+                owner, held_epoch = held.get("machine_id"), int(held.get("epoch") or 0)
+                if not owner or owner == machine_id or epoch > held_epoch:
+                    if owner and owner != machine_id:  # taken over here: the old owner's copy is stale
+                        notices.setdefault(owner, {})[job_id] = {"to": name, "epoch": epoch}
+                    merged[job_id] = {"machine_id": machine_id, "name": name, "epoch": max(epoch, held_epoch if owner == machine_id else 0), "at": now}
+                else:  # this copy is behind the owner's (or a tie with the first one seen): it moved there
+                    notices.setdefault(machine_id, {})[job_id] = {"to": _clean(held.get("name") or "another computer", 80), "epoch": held_epoch}
+            if merged == current:
+                return None, None
+            newest = sorted(merged.items(), key=lambda kv: kv[1].get("at") or 0, reverse=True)[:MAX_JOB_OWNERS]
+            return {"owner_uid": machine["owner_uid"], "jobs": dict(newest)}, None
+
+        self.store.mutate("job_owners", machine["owner_uid"], transform)
+        for other_id, moves in notices.items():
+            other = machine if other_id == machine_id else self.store.get("machines", other_id)
+            if not other or other.get("owner_uid") != machine["owner_uid"]:
+                continue
+            current = other.get("moved_jobs") if isinstance(other.get("moved_jobs"), dict) else {}
+            merged = dict(current)
+            for job_id, move in moves.items():
+                if int((current.get(job_id) or {}).get("epoch") or -1) < move["epoch"] or (current.get(job_id) or {}).get("to") != move["to"]:
+                    merged[job_id] = {**(current.get(job_id) or {}), **move}
+            if merged != current:
+                newest = sorted(merged.items(), key=lambda kv: (kv[1].get("epoch") or 0, kv[1].get("imported_at") or 0), reverse=True)[:MAX_MOVED_JOBS]
                 self.store.update("machines", other_id, {"moved_jobs": dict(newest)})
 
     # -- setup profiles: what a computer has set up for a project, so a computer that is further behind can copy it

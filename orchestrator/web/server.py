@@ -1884,6 +1884,8 @@ def import_remote_job(root: Path, body: dict[str, Any]) -> dict[str, Any]:
         if body.get("source_machine_name"):
             doc["imported_from_machine"] = str(body["source_machine_name"])
         doc["imported_at"] = time.time()  # the newer copy is the job's owner (see mark_job_moved)
+        # the ownership number goes up: the account makes this copy the owner and tells the one it came from that it moved
+        doc["owner_epoch"] = max(account.job_epoch(raw), account.job_epoch(read_json_file(target)) if taking_back else 0) + 1
         write_json_file(target, doc)
 
     branch = str(raw.get("branch") or "").strip()
@@ -1965,8 +1967,12 @@ def apply_moved_jobs(moves: Any, roots: list[Path] | None = None) -> list[str]:
             if not path.is_file():
                 continue
             local = read_json_file(path)
-            if not local.get("moved_to") and float(local.get("imported_at") or 0) < float(move.get("imported_at") or 0) \
-                    and mark_job_moved(root, job_id, str(move.get("to") or "")):
+            epoch = move.get("epoch")
+            if isinstance(epoch, int) and not isinstance(epoch, bool):
+                behind = account.job_epoch(local) <= epoch  # the owner's number is at least ours: this copy is stale
+            else:  # a notice from before ownership numbers: by when it was continued
+                behind = float(local.get("imported_at") or 0) < float(move.get("imported_at") or 0)
+            if not local.get("moved_to") and behind and mark_job_moved(root, job_id, str(move.get("to") or "")):
                 marked.append(job_id)
     return marked
 

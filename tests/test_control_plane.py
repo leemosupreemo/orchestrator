@@ -117,6 +117,66 @@ class JobArchiveSyncTests(PlaneCase):
         self.assertEqual(self.beat(*pro)[1]["job_archives"], {"j1": {"archived": False, "at": 950_000.0}})
 
 
+class JobOwnerTests(PlaneCase):
+    """One owner per job, by ownership number (the fencing token): Continue here raises it; a copy with a lower or equal
+    number elsewhere hears it moved, even when its computer was offline during the takeover and syncs late."""
+
+    def sync(self, machine_id, secret, jobs):
+        return self.call("POST", "/cp/machine/sync", {"projects": [], "recent_jobs": jobs}, machine_auth=f"Machine {machine_id}:{secret}")
+
+    def test_a_takeover_tells_the_old_owner_even_if_it_was_offline(self):
+        pro, air = self.pair(name="MacBook Pro"), self.pair(name="MacBook Air")
+        self.sync(*pro, [{"job_id": "j1", "owner_epoch": 1}])
+        self.assertNotIn("j1", self.beat(*pro)[1].get("moved_jobs", {}))
+        self.sync(*air, [{"job_id": "j1", "owner_epoch": 2}])  # Continue here on the Air while the Pro is away
+        self.assertEqual(self.beat(*pro)[1]["moved_jobs"]["j1"], {"to": "MacBook Air", "epoch": 2})
+        self.sync(*pro, [{"job_id": "j1", "owner_epoch": 1}])  # the Pro comes back with its old copy: still not the owner
+        self.assertEqual(self.store_doc("job_owners")["jobs"]["j1"]["name"], "MacBook Air")
+        self.assertNotIn("j1", self.beat(*air)[1].get("moved_jobs", {}))
+
+    def test_a_copy_from_an_old_download_loses_to_the_original(self):
+        pro, air = self.pair(name="MacBook Pro"), self.pair(name="MacBook Air")
+        self.sync(*air, [{"job_id": "j1", "owner_epoch": 0}])  # the Air syncs first, with its never-continued copy
+        self.sync(*pro, [{"job_id": "j1", "owner_epoch": 1}])
+        self.assertEqual(self.beat(*air)[1]["moved_jobs"]["j1"], {"to": "MacBook Pro", "epoch": 1})
+        self.assertNotIn("j1", self.beat(*pro)[1].get("moved_jobs", {}))
+
+    def test_two_copies_with_the_same_number_keep_the_first_owner(self):
+        pro, air = self.pair(name="MacBook Pro"), self.pair(name="MacBook Air")
+        self.sync(*pro, [{"job_id": "j1", "owner_epoch": 1}])
+        self.sync(*air, [{"job_id": "j1", "owner_epoch": 1}, {"job_id": "gone", "owner_epoch": 1, "moved_to": "MacBook Pro"}])
+        self.assertEqual(self.beat(*air)[1]["moved_jobs"], {"j1": {"to": "MacBook Pro", "epoch": 1}})
+
+    def store_doc(self, collection):
+        docs = self.plane.store.data.get(collection, {})
+        self.assertEqual(len(docs), 1)
+        return next(iter(docs.values()))
+
+
+class JobOwnerApplyTests(unittest.TestCase):
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp())
+        self.jobs = self.root / ".orchestrator" / "jobs"
+        self.jobs.mkdir(parents=True)
+
+    def job(self, name, **fields):
+        (self.jobs / f"{name}.json").write_text(json.dumps({"job_id": name, "status": "review-needed", **fields}))
+
+    def test_only_a_copy_at_or_behind_the_owners_number_is_marked_moved(self):
+        self.job("behind")
+        self.job("ahead", owner_epoch=3)  # continued back here since: the old notice doesn't apply
+        self.job("legacy", imported_from_machine="MacBook Pro")
+        marked = ui.apply_moved_jobs({"behind": {"to": "Air", "epoch": 2}, "ahead": {"to": "Air", "epoch": 2},
+                                      "legacy": {"to": "MacBook Pro", "epoch": 1}}, roots=[self.root])
+        self.assertEqual(sorted(marked), ["behind", "legacy"])
+
+    def test_the_number_rules(self):
+        self.assertEqual(account.job_epoch({}), 1)
+        self.assertEqual(account.job_epoch({"imported_from_machine": "Pro"}), 0)
+        self.assertEqual(account.job_epoch({"imported_from_machine": "Pro", "imported_at": 5.0}), 2)
+        self.assertEqual(account.job_epoch({"owner_epoch": 7}), 7)
+
+
 class JobArchiveApplyTests(unittest.TestCase):
     """What a computer does with the account's archives: its own copy follows the newest, never a running one, never a
     job merged here."""

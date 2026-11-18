@@ -318,6 +318,18 @@ def job_archive_events(roots: list[Path], now: float | None = None) -> dict[str,
     return dict(newest)
 
 
+def job_epoch(job: dict[str, Any]) -> int:
+    """A job's ownership number: Continue here raises it, and the copy with the highest one owns the job (the account's
+    job_owners; a lower copy is told it moved). Jobs from before the number: made here 1, continued here 2, and a copy an
+    old project download brought over (it names where it came from but was never continued) 0, so it never wins."""
+    value = job.get("owner_epoch")
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+        return value
+    if job.get("imported_at"):
+        return 2
+    return 0 if job.get("imported_from_machine") else 1
+
+
 def _snapshot_job_progress(jdata: dict[str, Any]) -> list[int]:
     done = jdata.get("completed_task_indices") or jdata.get("completed_tasks") or []
     return sorted({i for i in done if isinstance(i, int)}) if isinstance(done, list) else []
@@ -447,6 +459,7 @@ def build_snapshot(root: Path | None = None, live: dict[str, dict[str, Any]] | N
                             "imported_at": jdata.get("imported_at"),
                             "record": job_record(jdata),
                             "moved_to": jdata.get("moved_to"),
+                            "owner_epoch": job_epoch(jdata),
                             "tasks_count": len(tasks_raw),
                             "tasks_done": len(done_indices),
                             "completed_task_indices": done_indices,
