@@ -5888,8 +5888,6 @@ pages.job = async ([id]) => {
     nextExecutionPreview = tasksTotal > 0
       ? `<span class="job-hero-next-label">Next:</span> <strong>${esc(nextTask || "next task")}</strong> (${plural(tasksLeft, "task")} left)`
       : `<span class="job-hero-next-label">Next:</span> continue setup`;
-  } else if (s.state.next?.action === "merge") {
-    nextExecutionPreview = `<span class="job-hero-next-label">Next:</span> merge into ${esc(job.base_branch || "main")}`;
   } else if (s.state.next?.action === "debug") {
     nextExecutionPreview = `<span class="job-hero-next-label">Next:</span> debug failing tests`;
   }
