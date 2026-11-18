@@ -372,3 +372,39 @@ class NativeCaptureWiringTests(unittest.TestCase):
             self.assertEqual(found["web"]["url"], "http://localhost:4321")
             self.assertEqual(found["web"]["start_command"], "npm run preview")
             self.assertEqual(found["web"]["why"], "Preview settings")
+
+
+class DetectedDeviceTests(unittest.TestCase):
+    """A UI job gets native screenshots from the simulator/device setup the project already has."""
+
+    def detect(self, raw, *, files="App.xcodeproj/project.pbxproj", xcode=True, xcrun="/usr/bin/xcrun", adb=None):
+        import ux_review_run as runner
+        project = type("P", (), {"uses_xcode": xcode})()
+        with (
+            patch.object(runner, "git_out", return_value=files),
+            patch.object(runner, "PROJECT_CONFIG", project),
+            patch.object(runner.shutil, "which", return_value=xcrun),
+            patch.object(runner.native, "find_adb", return_value=adb),
+        ):
+            return runner.with_detected_devices(ux.settings(raw), raw)
+
+    def test_xcode_project_turns_on_the_simulator_with_a_note(self):
+        cfg, note = self.detect({})
+        self.assertTrue(cfg["simulator"])
+        self.assertIn("iOS simulator", note)
+
+    def test_explicit_false_keeps_the_simulator_off(self):
+        cfg, note = self.detect({"ui_review": {"simulator": False}})
+        self.assertFalse(cfg["simulator"])
+        self.assertEqual(note, "")
+
+    def test_configured_targets_are_left_alone(self):
+        raw = {"ui_review": {"macos": {"app": "build/My.app"}}}
+        cfg, note = self.detect(raw)
+        self.assertFalse(cfg["simulator"])
+        self.assertEqual(note, "")
+
+    def test_no_xcrun_means_no_simulator(self):
+        cfg, note = self.detect({}, xcrun=None)
+        self.assertFalse(cfg["simulator"])
+        self.assertEqual(note, "")

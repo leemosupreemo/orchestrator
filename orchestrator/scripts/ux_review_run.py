@@ -84,6 +84,27 @@ def preview_web_target(cfg: dict, *, branch: str = "") -> tuple[dict, str]:
     return cfg, ""
 
 
+def with_detected_devices(cfg: dict, raw: dict) -> tuple[dict, str]:
+    """When ui_review names no native target, use the simulator or device setup the project already has, so a job's UI
+    change still gets screenshots. A target set to false in ui_review stays off. Returns (cfg, note); note is "" if unchanged."""
+    if cfg["simulator"] or cfg["android"] or cfg["macos"]:
+        return cfg, ""
+    ui = raw.get("ui_review") if isinstance(raw.get("ui_review"), dict) else {}
+    found = ux.inferred_targets(ROOT, git_out("ls-files").splitlines(), config=raw)
+    used = []
+    if ui.get("simulator") is not False and "ios" in found and PROJECT_CONFIG.uses_xcode and shutil.which("xcrun"):
+        cfg = {**cfg, "simulator": True}
+        used.append("iOS simulator")
+    android = found.get("android") or {}
+    if ui.get("android") is not False and android.get("package") and native.find_adb():
+        cfg = {**cfg, "android": {"package": android["package"], "apk": "", "avd": "", "build_command": android.get("build_command", ""), "screens": []}}
+        used.append("Android device")
+    if not used:
+        return cfg, ""
+    return cfg, (f"Screens came from the project's {' and '.join(used)} setup, at launch only. "
+                 "Add ui_review to project.json to choose screens, or set a target to false to skip it.")
+
+
 def capture(cfg: dict, screens_dir: Path, *, dark: bool | None, job_id: str = "", branch: str = "") -> tuple[list[dict], list[str]]:
     limits = []
     shots: list[dict] = []
@@ -239,6 +260,11 @@ def job_review(job_path: Path) -> int:
             plan_limits.append(f"Capture plan could not be read: {exc}. Only configured pages were captured.")
     else:
         plan_limits.append("No capture plan was provided for this UI change. Only configured pages were captured; new pages and interactive states may be missing.")
+    project_file = ROOT / ".orchestrator" / "project.json"
+    raw_project = read_json(project_file) if project_file.exists() else {}
+    cfg, device_note = with_detected_devices(cfg, raw_project if isinstance(raw_project, dict) else {})
+    if device_note:
+        plan_limits.append(device_note)
     try:
         shots, limits = capture(cfg, pending_dir, dark=None, job_id=job["job_id"], branch=branch or "")
     except (OSError, subprocess.SubprocessError, ux.BrowserError) as exc:

@@ -6143,16 +6143,14 @@ pages.job = async ([id]) => {
         ${changes?.diffstat ? `<details class="raw diffstat-details"><summary>View diff summary (${allFiles.length} files)</summary><pre class="file">${esc(changes.diffstat)}</pre></details>` : ""}
       </section>
 
+      ${uxReviewCard(s, data.ux_review, visualChecks)}
+
       ${jobDocsOutlineHtml({ s, featureName, docFilesChanged, otherDocs, docsIndex })}
       <section class="card mb-16" id="finalize-section" tabindex="-1">
         <div class="card-h"><h2>Finalize</h2></div>
         <div class="card-b stack"><p class="muted">${isJobComplete ? "Merged" : currentPhase === "review" ? "Ready for review and merge." : "Review and merge follow verification and documentation."}</p>
           ${currentPhase === "review" ? `<div class="row">${heroAction}</div>` : ""}</div>
       </section>
-
-      ${uxReviewCard(s, data.ux_review, visualChecks)}
-
-
 
       <!-- Jobs this one was split into (if any) -->
       ${(job.subtask_job_ids && job.subtask_job_ids.length) ? `
