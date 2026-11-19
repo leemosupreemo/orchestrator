@@ -77,7 +77,7 @@
       <div id="connect-browser" class="stack"></div>
       <div id="connect-code-row" class="stack" hidden><label class="field"><span>2. Paste the code it shows</span><input id="connect-code" autocomplete="off" spellcheck="false" placeholder="Paste code or key"></label><div><button type="button" class="btn primary" id="connect-code-send">Submit code</button></div></div>
       <div class="row gap-8 wrap"><button type="button" class="btn primary" id="connect-agree" hidden>Agree and continue</button><button type="button" class="btn" id="connect-continue" hidden>Continue</button></div>
-      <p class="muted t-secondary">You can close this: sign-in keeps going under Running now<span id="connect-log"></span>.</p>`, "Done", {cancelLabel: "Close"});
+      `, "Done", {cancelLabel: "Close"});
     promise.then(() => {closed = true; onClose();});
     const el = id => doc.getElementById(id);
     const ok = el("dialog-ok"); if (ok) ok.hidden = true;
@@ -97,7 +97,6 @@
     try {
       const response = await api("runs", {method:"POST",body:{action:"ai_connect",params:{provider,title:`Connect ${name}`}}});
       runId=response.run.id;
-      if(el("connect-log"))el("connect-log").innerHTML=`, where <a href="#/runs/${encodeURIComponent(runId)}">its terminal</a> answers anything else it asks`;
       const decoder = new TextDecoder();
       while (!closed && !finished) {
         const out=await api(`runs/${encodeURIComponent(runId)}/output?offset=${offset}&wait=1`);
@@ -126,7 +125,7 @@
           shownLinks=links;
           const url=state.urls.at(-1);
           el("connect-browser").innerHTML=url?`<div class="stack gap-8"><span>1. Open the sign-in page and approve</span>
-            <div class="row gap-8 wrap"><a class="btn primary" href="${esc(url)}" target="_blank" rel="noopener noreferrer">Open sign-in ↗</a><button type="button" class="btn" data-connect-copy="${esc(url)}">Copy link</button></div>
+            <div class="row gap-8 wrap"><a class="btn primary" href="${esc(url)}" target="_blank" rel="noopener noreferrer">Open</a><button type="button" class="btn" data-connect-copy="${esc(url)}">Copy link</button></div>
             ${state.code?`<span>2. Enter this code there: <strong class="mono connect-approval-code">${esc(state.code)}</strong></span>`:""}</div>`:"";
           el("connect-browser").querySelectorAll("[data-connect-copy]").forEach(btn=>{btn.onclick=async()=>{ // to sign in on another device
             try{await root.navigator.clipboard.writeText(btn.dataset.connectCopy);btn.textContent="Copied";}

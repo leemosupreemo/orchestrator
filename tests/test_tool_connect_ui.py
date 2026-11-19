@@ -216,7 +216,7 @@ ToolConnect.open("claude", "Claude", {api, formDialog: () => dialog, onConnected
         source=MODULE.read_text(encoding='utf-8')
         for gone in ('Sign-in details and advanced input','connect-details','connect-input','readonly value'):
             self.assertNotIn(gone,source)
-        self.assertIn('its terminal</a> answers anything else it asks',source)  # the way out for an unexpected question
+        self.assertNotIn('You can close this:',source)
         seen=self.drive_dialog('claude','@@ORCHESTRATOR_CONNECT@@{"step":"install","detail":"Installing"}\nLicense: MIT\nAgree to terms? [Y/n]')
         self.assertTrue(seen['agree'])
         self.assertIn('Agree to terms? [Y/n]',seen['question'])
