@@ -616,7 +616,7 @@ def refresh_provider_models(timeout: int = 15) -> dict[str, Any]:
     if agy in {"agy", "antigravity"} and shutil.which(agy):
         try:
             res = subprocess.run([agy, "models"], capture_output=True, text=True, timeout=timeout)
-            found = [{"slug": slug, "name": name} for slug, name in parse_agy_models_with_names(res.stdout) if slug.startswith("gemini")]
+            found = [{"slug": slug, "name": name} for slug, name in parse_agy_models_with_names(res.stdout) if not _NOT_FOR_CODE.search(slug)]
             if res.returncode == 0 and found:
                 data["agy"] = found
         except Exception:
@@ -646,6 +646,8 @@ def refresh_provider_models(timeout: int = 15) -> dict[str, Any]:
         path.write_text(json.dumps(data), encoding="utf-8")
     except OSError:
         pass
+    global _ALL_MODELS_CACHE
+    _ALL_MODELS_CACHE = None
     return data
 
 def provider_cache_age() -> float | None:
@@ -676,18 +678,27 @@ def _norm(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", str(text).lower())
 
 def _agy_tier(slug: str) -> ModelTier:
-    base = ModelTier.MEDIUM if "flash" in slug else ModelTier.HIGH
+    if "opus" in slug:
+        base = ModelTier.EXTREME
+    elif "flash" in slug or "oss" in slug:
+        base = ModelTier.MEDIUM
+    else:
+        base = ModelTier.HIGH
     return ModelTier(min(int(base) + 1, int(ModelTier.LOW))) if slug.endswith("-low") else base
 
 def agy_models_metadata() -> list[ModelMetadata]:
-    """The Gemini models Antigravity offers, run by their display names (what `agy --model` is given)."""
+    """The models Antigravity offers (Gemini, Claude, etc.), run by their display names (what `agy --model` is given)."""
     out = []
     for entry in read_provider_cache().get("agy") or []:
-        tier = _agy_tier(entry["slug"])
-        out.append(ModelMetadata(id=entry["slug"], family="gemini", tier=tier,
+        slug = str(entry.get("slug") or "")
+        name = str(entry.get("name") or "")
+        if not slug or not name or _NOT_FOR_CODE.search(slug):
+            continue
+        tier = _agy_tier(slug)
+        out.append(ModelMetadata(id=slug, family="gemini", tier=tier,
                                  capabilities=[ModelCapability.CODING, ModelCapability.REASONING, ModelCapability.CONTEXT, ModelCapability.VISION],
-                                 cost_factor={ModelTier.HIGH: 5.0, ModelTier.MEDIUM: 1.0, ModelTier.LOW: 0.5}.get(tier, 5.0),
-                                 api_model_id=entry["name"], required_clis=["gemini"]))
+                                 cost_factor={ModelTier.EXTREME: 10.0, ModelTier.HIGH: 5.0, ModelTier.MEDIUM: 1.0, ModelTier.LOW: 0.5}.get(tier, 5.0),
+                                 api_model_id=name, required_clis=["gemini"]))
     return out
 
 def opencode_models_metadata() -> list[ModelMetadata]:
@@ -770,7 +781,7 @@ def model_substitute(m: ModelMetadata) -> ModelMetadata | None:
     pool = [c for c in provider_login_metadata() if set(c.required_clis) & set(m.required_clis) and c.id != m.id and model_usable(c)]
     if not pool:
         return None
-    return min(pool, key=lambda c: (abs(int(c.tier) - int(m.tier)), 0 if c.id.endswith("-high") else 1 if c.id.endswith("-medium") else 2, c.id))
+    return min(pool, key=lambda c: (abs(int(c.tier) - int(m.tier)), 0 if c.id.split("-", 1)[0] == m.id.split("-", 1)[0] else 1, 0 if c.id.endswith("-high") else 1 if c.id.endswith("-medium") else 2, c.id))
 
 # --------------------------------------------------------------------------- when the list changes
 # A computer-wide note of which models were available when the person last looked, so a change (a refresh, a new model in the

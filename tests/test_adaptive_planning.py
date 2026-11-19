@@ -900,8 +900,8 @@ class ExperienceApiAndUiTests(unittest.TestCase):
     def test_ui_includes_experience_workspace_and_convergence_metrics(self):
         app_js = (ROOT_DIR / "orchestrator" / "web" / "static" / "app.js").read_text(encoding="utf-8")
         for expected in (
-            'id="experience-workspace"',
-            "Experience &amp; Refine · Version",
+            'class="job-stepper-history"',
+            "Version history (",
             "data-experience-undo",
             "data-experience-chip",
             "Architectural refactor guardrail active",
@@ -914,6 +914,9 @@ class ExperienceApiAndUiTests(unittest.TestCase):
             "User interaction burden",
         ):
             self.assertIn(expected, app_js)
+        self.assertNotIn('id="experience-workspace"', app_js)
+        self.assertNotIn("Experience &amp; Refine · Version", app_js)
+        self.assertNotIn("continue setup", app_js)
 
 
 class PipelineDebloatingTests(unittest.TestCase):

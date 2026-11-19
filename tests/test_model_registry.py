@@ -551,6 +551,37 @@ class ProviderModelsTests(unittest.TestCase):
         self.assertEqual(model_registry.read_provider_cache()["opencode"], data["opencode"])
         self.assertLess(model_registry.provider_cache_age(), 5)
 
+    def test_antigravity_hosted_claude_models_are_kept_and_routed_via_agy(self):
+        import llm
+        agy_out = (
+            self.AGY
+            + "claude-sonnet-5-5-high\tClaude Sonnet 5.5 (High)\n"
+            + "gemini-image-2\tGemini Image 2\n"
+        )
+        with patch.object(model_registry, "preferred_cli", return_value="agy"), \
+             patch.object(llm, "preferred_cli", return_value="agy"), \
+             patch.object(model_registry.shutil, "which", return_value="/bin/x"), \
+             patch.object(model_registry.subprocess, "run", side_effect=[MagicMock(returncode=0, stdout=agy_out, stderr=""),
+                                                                        MagicMock(returncode=1, stdout="", stderr="")]), \
+             patch("urllib.request.urlopen", side_effect=OSError("no ollama")):
+            data = model_registry.refresh_provider_models()
+            slugs = {e["slug"] for e in data["agy"]}
+            self.assertIn("claude-opus-5-5-high", slugs)
+            self.assertIn("claude-sonnet-5-5-high", slugs)
+            self.assertIn("gpt-oss-120b-medium", slugs)
+            self.assertNotIn("gemini-image-2", slugs)  # image models stay out
+            opus = model_registry.get_model("claude-opus-5-5-high")
+            sonnet = model_registry.get_model("claude-sonnet-5-5-high")
+            self.assertEqual((opus.family, opus.required_clis, opus.tier, opus.api_model_id),
+                             ("gemini", ["gemini"], model_registry.ModelTier.EXTREME, "Claude Opus 5.5 (High)"))
+            self.assertEqual((sonnet.family, sonnet.required_clis, sonnet.tier),
+                             ("gemini", ["gemini"], model_registry.ModelTier.HIGH))
+            self.assertTrue(model_registry.model_usable(sonnet))
+            cmd = llm.get_llm_command("claude-sonnet-5-5-high", "/tmp/p.txt")
+            self.assertIn("agy --model 'Claude Sonnet 5.5 (High)'", cmd)
+            self.assertNotIn("claude -p", cmd)
+            self.assertFalse(llm.web_capable("claude-sonnet-5-5-high"))
+
 
 class ModelsNoticeTests(unittest.TestCase):
     """The page points out a change to the list of models once, until it is dismissed."""

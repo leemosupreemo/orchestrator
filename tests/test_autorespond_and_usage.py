@@ -92,6 +92,113 @@ class SwitchingTests(StateDirCase):
         self.assertNotIn("HANDOFF", prompts[1][1])  # nothing was half done in the files
 
 
+class SignInFallbackTests(StateDirCase):
+    AUTH_EXPIRED = "Failed to authenticate. API Error: 401 OAuth access token has expired. Re-authenticate to continue."
+
+    def setUp(self):
+        super().setUp()
+        codex_env = patch.dict(os.environ, {"CODEX_HOME": str(Path(self.tmp.name) / "no-codex")})
+        codex_env.start()
+        self.addCleanup(codex_env.stop)
+
+    def test_expired_claude_login_falls_back_to_ready_antigravity_claude_and_blocks_cli_siblings(self):
+        import json
+        import model_registry
+        from orchestrator import job_problem, project_setup, setup_checklist
+
+        cache_path = model_registry.provider_cache_path()
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_text(json.dumps({
+            "fetched_at": time.time(),
+            "agy": [
+                {"slug": "claude-sonnet-5-5-high", "name": "Claude Sonnet 5.5 (High)"},
+                {"slug": "gemini-4-argon-high", "name": "Gemini 4 Argon (High)"},
+            ],
+        }))
+        model_registry._ALL_MODELS_CACHE = None
+        self.addCleanup(setattr, model_registry, "_ALL_MODELS_CACHE", None)
+
+        tried = []
+
+        def fake_single(model, prompt, cwd, timeout, **_options):
+            tried.append(model)
+            if model == OTHER_CLAUDE:
+                raise RuntimeError(self.AUTH_EXPIRED)
+            return '```json\n{"summary": "fixed via agy"}\n```'
+
+        with patch.object(model_registry, "preferred_cli", return_value="agy"), \
+             patch.object(llm, "_run_llm_single", side_effect=fake_single), \
+             patch.object(project_setup, "models_ready_here", return_value=["gemini-4-argon-high", "claude-sonnet-5-5-high", OPENAI]):
+            out, used, _ = llm.run_llm(OTHER_CLAUDE, "FIX IT", allowed_models=[OTHER_CLAUDE], role=ModelRole.BUILDER)
+
+        self.assertEqual(used, "claude-sonnet-5-5-high")
+        self.assertEqual(tried, [OTHER_CLAUDE, "claude-sonnet-5-5-high"])
+        self.assertIn("fixed via agy", out)
+        # Sibling Claude CLI models are blocked too, while Antigravity-hosted Claude stays usable.
+        self.assertTrue(project_chat.is_model_blocked(OTHER_CLAUDE))
+        self.assertTrue(project_chat.is_model_blocked(CLAUDE))
+        self.assertFalse(project_chat.is_model_blocked("claude-sonnet-5-5-high"))
+        self.assertTrue(setup_checklist._cli_auth_rejected("claude"))
+        self.assertFalse(setup_checklist._cli_auth_rejected("agy"))
+        # Signing back in to Claude immediately clears the rejection for Claude CLI models.
+        job_problem.record_sign_in("claude", at=time.time() + 10)
+        self.assertFalse(project_chat.is_model_blocked(OTHER_CLAUDE))
+        self.assertFalse(project_chat.is_model_blocked(CLAUDE))
+        self.assertFalse(setup_checklist._cli_auth_rejected("claude"))
+
+    def test_sibling_claude_cli_models_are_skipped_before_expanding_to_ready_providers(self):
+        from orchestrator import project_setup
+
+        tried = []
+
+        def fake_single(model, prompt, cwd, timeout, **_options):
+            tried.append(model)
+            if model == OTHER_CLAUDE:
+                raise RuntimeError(self.AUTH_EXPIRED)
+            return '```json\n{"summary": "done via openai"}\n```'
+
+        with patch.object(llm, "_run_llm_single", side_effect=fake_single), \
+             patch.object(llm, "get_prioritized_models", side_effect=lambda role=None, allowed_models=None, preferred_family=None: list(allowed_models or [OTHER_CLAUDE, CLAUDE])), \
+             patch.object(project_setup, "models_ready_here", return_value=[OPENAI]):
+            _, used, _ = llm.run_llm(OTHER_CLAUDE, "BUILD IT", allowed_models=[OTHER_CLAUDE, CLAUDE], role=ModelRole.BUILDER)
+
+        self.assertEqual(used, OPENAI)
+        self.assertEqual(tried, [OTHER_CLAUDE, OPENAI])  # CLAUDE skipped without calling it
+
+    def test_free_only_allowlist_never_escapes_to_paid_models_on_auth_error(self):
+        from orchestrator import project_setup
+
+        free_model = "opencode/nemotron-3-ultra-free"
+        tried = []
+
+        def fake_single(model, prompt, cwd, timeout, **_options):
+            tried.append(model)
+            raise RuntimeError(self.AUTH_EXPIRED)
+
+        with patch.object(llm, "_run_llm_single", side_effect=fake_single), \
+             patch.object(project_setup, "models_ready_here", return_value=[OPENAI]):
+            with self.assertRaises(RuntimeError):
+                llm.run_llm(free_model, "BUILD IT", allowed_models=[free_model], role=ModelRole.BUILDER)
+
+        self.assertEqual(tried, [free_model])
+
+    def test_non_auth_error_never_escapes_allowlist(self):
+        from orchestrator import project_setup
+
+        tried = []
+
+        def fake_single(model, prompt, cwd, timeout, **_options):
+            tried.append(model)
+            raise llm.LLMTimeoutError(model, 30, 30.0, 10, 0, "waiting")
+
+        with patch.object(llm, "_run_llm_single", side_effect=fake_single), \
+             patch.object(project_setup, "models_ready_here", return_value=[OPENAI]):
+            with self.assertRaises(RuntimeError):
+                llm.run_llm(OTHER_CLAUDE, "BUILD IT", allowed_models=[OTHER_CLAUDE], role=ModelRole.BUILDER)
+
+        self.assertEqual(tried, [OTHER_CLAUDE])
+
+
 class AutorespondTests(unittest.TestCase):
     def test_yolo_answers_up_to_three_times_then_waits(self):
         job = {"yolo": True}

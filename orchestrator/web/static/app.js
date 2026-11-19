@@ -5731,13 +5731,55 @@ function jobChangeSummary(otherDocs, changes, max = 220) {
     const parsed = JSON.parse(doc.text);
     const said = String(parsed?.summary || parsed?.hypothesis || "").trim();
     return said ? clip(said) : "";
-  } catch { /* markdown: the first real line below */ }
+  } catch { /* markdown: collect real bullet/summary lines below */ }
+  const lines = [];
   for (const line of String(doc.text).split(/\r?\n/)) {
-    const clean = line.trim().replace(/^[-*#>\s`]+/, "").replace(/`+/g, "");
+    const clean = line.trim().replace(/^[-*•#>\s`]+/, "").replace(/`+/g, "");
     if (!clean || /^[{}\[\],]+$/.test(clean) || /^(\d+\.|summary|changes|files|verification|tests)\b:?$/i.test(clean)) continue;
-    return clip(clean);
+    lines.push(clean);
+    if (max !== Infinity || lines.length >= 6) break;
   }
-  return "";
+  return lines.length ? clip(lines.join("\n")) : "";
+}
+
+function jobChangeSummaryBullets(text, maxBullets = 6) {
+  const cleaned = String(text || "").trim().replace(/^what\s+changed\s*:\s*/i, "");
+  if (!cleaned) return [];
+  const rawLines = cleaned.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  let items = [];
+  if (rawLines.length > 1) {
+    items = rawLines.map((l) => l.replace(/^(?:[-*•]|\d+[.)])\s+/, "").trim()).filter(Boolean);
+  } else {
+    items = cleaned
+      .split(/(?<=[.!?])\s+(?=[A-Z])/)
+      .map((s) => s.replace(/^(?:[-*•]|\d+[.)])\s+/, "").trim())
+      .filter(Boolean);
+  }
+  const tighten = (item) => {
+    let s = item.replace(/\s+/g, " ").replace(/`+/g, "").trim();
+    if (s.length > 90) {
+      s = s.replace(/\s*\([^)]{20,}\)/g, "");
+      s = s.replace(/\s+[—–-]\s+[^—–]{10,}\s+[—–-]\s+/g, " ");
+    }
+    if (s.length > 110) {
+      s = s.replace(/\s+(?:so\s+(?:each|that|the)\b|rather\s+than\b|in\s+order\s+to\b|for\s+natural,\s+).*$/i, "");
+    }
+    s = s.replace(/\s+/g, " ").replace(/[.;,\s]+$/, "").trim();
+    return s.length > 140 ? `${s.slice(0, 137).trimEnd()}…` : s;
+  };
+  const deduped = [];
+  for (const raw of items) {
+    const bullet = tighten(raw);
+    if (bullet && !deduped.includes(bullet)) deduped.push(bullet);
+    if (deduped.length >= maxBullets) break;
+  }
+  return deduped;
+}
+
+function jobChangeSummaryHtml(text) {
+  const bullets = jobChangeSummaryBullets(text);
+  if (!bullets.length) return "";
+  return `<div class="card-b card-b-split t-secondary change-summary"><strong>What changed</strong><ul class="change-summary-list">${bullets.map((b) => `<li>${esc(b)}</li>`).join("")}</ul></div>`;
 }
 
 // Compact table of contents for project documentation, shown inside a job's Documentation card.
@@ -6106,24 +6148,10 @@ pages.job = async ([id]) => {
       ${defectRowsHtml}
     </div></section>` : "";
 
-  // Contextual consequence preview for hero
-  let nextExecutionPreview = "";
-  const tasksLeft = Math.max(0, tasksTotal - tasksDone);
-  if (activeRun) {
-    nextExecutionPreview = `<span class="job-hero-next-label">Now:</span> <strong>${esc(runRel?.active?.now || nextTask || "working")}</strong>${runRel?.active ? ` <span class="muted">(${esc(runRel.active.label)} run)</span>` : ""}`;
-  } else if (s.state.next?.action === "approve" || s.state.next?.action === "schedule" || s.state.next?.action === "execute") {
-    nextExecutionPreview = `<span class="job-hero-next-label">Next:</span> start <strong>${esc(nextTask || "Task 1")}</strong>`;
-  } else if (s.state.next?.action === "resume" && job.passed_uncommitted) {
-    nextExecutionPreview = `<span class="job-hero-next-label">Next:</span> commit the finished work`;
-  } else if (s.state.next?.action === "resume" && ["environment", "pending", "unregistered"].includes(job.test_validation?.kind)) {
-    nextExecutionPreview = `<span class="job-hero-next-label">Next:</span> re-run saved tests`;
-  } else if (s.state.next?.action === "resume") {
-    nextExecutionPreview = tasksTotal > 0
-      ? `<span class="job-hero-next-label">Next:</span> <strong>${esc(nextTask || "next task")}</strong> (${plural(tasksLeft, "task")} left)`
-      : `<span class="job-hero-next-label">Next:</span> continue setup`;
-  } else if (s.state.next?.action === "debug") {
-    nextExecutionPreview = `<span class="job-hero-next-label">Next:</span> debug failing tests`;
-  }
+  // Active-run live status preview for hero
+  const nextExecutionPreview = activeRun
+    ? `<span class="job-hero-next-label">Now:</span> <strong>${esc(runRel?.active?.now || nextTask || "working")}</strong>${runRel?.active ? ` <span class="muted">(${esc(runRel.active.label)} run)</span>` : ""}`
+    : "";
 
   const reviewContextHtml = (currentPhase === "review" || ["merge", "complete"].includes(nextAction)) && (allFiles.length || prUrl)
     ? `<div class="job-review-summary">
@@ -6165,11 +6193,30 @@ pages.job = async ([id]) => {
     .filter((x) => typeof x === "string" && x.trim());
   const risks = listOf(job.plan?.risks), constraints = listOf(job.plan?.constraints);
   const notes = [["What the AI assumed", assumptions], ["Risks", risks], ["Constraints", constraints]].filter(([, list]) => list.length);
+  const currentTaskActive = !isJobComplete && tasks.length > 0 && (
+    Boolean(activeRun)
+    || Boolean(job.approved)
+    || ["executing", "running", "in-progress", "scheduled", "debugging", "human-needed"].includes(status)
+    || (tasksDone > 0 && tasksDone < tasksTotal)
+  );
+  const pausedIdx = Number.isInteger(job.paused_at_task_index) ? job.paused_at_task_index : -1;
+  const firstUndoneIdx = tasks.findIndex((t, i) => {
+    const key = typeof t === "object" && t ? String(t.id ?? i) : String(i);
+    return !(done.has(key) || done.has(String(i)));
+  });
+  const currentTaskIndex = currentTaskActive
+    ? (pausedIdx >= 0 && pausedIdx < tasks.length && !done.has(String(pausedIdx)) ? pausedIdx : firstUndoneIdx)
+    : -1;
+  const currentTaskBadgeText = activeRun ? "In progress"
+    : status === "debugging" ? "Fixing"
+    : status === "human-needed" && pausedIdx === currentTaskIndex ? "Paused"
+    : "Current";
   const taskRowsHtml = (withDetail) => tasks.map((t, i) => {
     const title = typeof t === "string" ? t : (t.title || t.name || t.description || `Task ${i + 1}`);
     const detail = typeof t === "object" && t && t.title && t.description ? t.description : "";
     const key = typeof t === "object" && t ? String(t.id ?? i) : String(i);
     const isDone = done.has(key) || done.has(String(i));
+    const isCurrent = !isDone && i === currentTaskIndex;
     const doneWhen = withDetail && typeof t === "object" ? listOf(t.acceptance_criteria) : [];
     const files = withDetail && typeof t === "object" ? listOf(t.likely_files) : [];
     const controls = canEditPlan && !isDone ? `<div class="side task-controls"><details class="more task-more"><summary class="btn small ghost icon-only more-icon-btn" aria-label="Task actions: ${esc(title)}" title="Task actions"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-more"/></svg></summary><div class="more-menu">
@@ -6178,9 +6225,10 @@ pages.job = async ([id]) => {
         <button class="btn small" data-task-op="down" data-i="${i}" data-why="Already last." ${i === tasks.length - 1 ? "disabled" : ""}>Move down</button>
         <hr><button class="btn small" data-task-op="remove" data-i="${i}">Remove</button></div></details></div>` : "";
     const undo = data.undoable_task === i && !activeRun ? `<div class="side task-controls"><button class="btn small ghost" data-undo-task="${i}" aria-label="Undo task: ${esc(title)}">Undo</button></div>` : "";
-    const marker = `<span class="task-number${isDone ? " is-done" : ""}" role="img" aria-label="${isDone ? "Done" : "To do"}">${isDone ? "✓" : i + 1}</span>`;
+    const marker = `<span class="task-number${isDone ? " is-done" : isCurrent ? " is-current" : ""}" role="img" aria-label="${isDone ? "Done" : isCurrent ? "Current step" : "To do"}">${isDone ? "✓" : i + 1}</span>`;
+    const currentBadge = isCurrent ? `<span class="pill working task-current-badge">${esc(currentTaskBadgeText)}</span>` : "";
     const more = withDetail && (detail || doneWhen.length || files.length);
-    return `<div class="item task-row">${marker}<div class="main-col"><div class="title">${esc(title)}</div>${!withDetail && detail ? `<div class="meta">${esc(detail)}</div>` : ""}
+    return `<div class="item task-row${isCurrent ? " is-current" : ""}"${isCurrent ? ' aria-current="step"' : ""}>${marker}<div class="main-col"><div class="title">${esc(title)}${currentBadge}</div>${!withDetail && detail ? `<div class="meta">${esc(detail)}</div>` : ""}
       ${more ? `<details class="task-detail"><summary class="linklike muted">Details</summary>${detail ? `<div class="meta">${esc(detail)}</div>` : ""}
       ${doneWhen.length ? `<div class="task-done-when"><span class="label">Done when</span><ul>${doneWhen.slice(0, 4).map((c) => `<li>${esc(c)}</li>`).join("")}</ul></div>` : ""}
       ${files.length ? `<div class="task-files">${files.slice(0, 4).map((f) => `<code>${esc(f)}</code>`).join("")}${files.length > 4 ? `<span class="muted">+${files.length - 4} more</span>` : ""}</div>` : ""}</details>` : ""}</div>${controls}${undo}</div>`;
@@ -6230,6 +6278,23 @@ pages.job = async ([id]) => {
   const heroReasonDetails = job.moved_to ? "" : problem ? problemHtml : hasMoreReason // a copy elsewhere has no error to show
     ? `<details class="hero-error-details"><summary class="linklike muted">Error details</summary><pre class="hero-error-pre">${esc(rawHeroReason)}</pre></details>`
     : "";
+  const latestFailureRun = runRel?.unreported
+    || (jobRuns || []).find((r) => !r.side && r.status === "failed")
+    || (jobRuns || []).find((r) => !r.side)
+    || null;
+  const hasJobFailure = !job.moved_to && Boolean(
+    heroReasonDetails
+    || problem
+    || ["debugging", "failed"].includes(status)
+    || job.last_error
+    || runRel?.unreported
+  );
+  const copyFailureBtnHtml = hasJobFailure
+    ? `<button type="button" class="btn small ghost icon-only hero-copy-log-btn" id="copy-job-failure-log" aria-label="Copy failure details and logs" title="Copy failure details and logs"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-copy"/></svg></button>`
+    : "";
+  const heroErrorBlockHtml = (heroReasonDetails || copyFailureBtnHtml)
+    ? `<div class="hero-error-row">${heroReasonDetails}${copyFailureBtnHtml}</div>`
+    : "";
 
   const isAutoImprove = Boolean(s.is_orchestrator_improvement || s.tag === "improve_orchestrator" || job.is_orchestrator_improvement || job.tag === "improve_orchestrator");
 
@@ -6244,26 +6309,24 @@ pages.job = async ([id]) => {
   ].filter(Boolean);
 
   const exp = data.experience || null;
-  const experienceWorkspaceHtml = exp && (exp.preview_ready || (exp.versions && exp.versions.length))
-    ? `<section class="card mb-16" id="experience-workspace">
-        <div class="card-h">
-          <h2>Experience &amp; Refine · Version ${esc(exp.version || "0.1")}</h2>
-          <div class="row gap-8 align-center">
-            <span class="pill ${exp.preview_ready ? "done" : "working"}">${exp.preview_ready ? "Preview ready" : `Iteration ${exp.iteration || 1}`}</span>
-            ${(exp.versions || []).length >= 2 && !activeRun ? `<button type="button" class="btn small ghost" data-experience-undo="${esc(s.id)}">Undo last iteration</button>` : ""}
+  const expVersions = exp?.versions || [];
+  const expHypotheses = exp?.product_hypotheses || [];
+  const expHasFold = Boolean(exp && (expVersions.length || exp.churn_guardrail?.refactor_recommended || expHypotheses.length));
+  const experienceStepperHtml = expHasFold
+    ? `<div class="job-stepper-history">
+        ${exp.churn_guardrail?.refactor_recommended ? `<div class="notice warn mb-8"><strong>Architectural refactor guardrail active</strong><div class="muted">${esc(exp.churn_guardrail.directive || "Repeated changes detected; the next iteration will consolidate and refactor cleanly.")}</div></div>` : ""}
+        <details class="fold job-version-history">
+          <summary class="linklike muted">Version history (${expVersions.length} iteration${expVersions.length === 1 ? "" : "s"})${exp.version ? ` · v${esc(exp.version)}` : ""}</summary>
+          <div class="job-version-history-body stack mt-8">
+            ${expVersions.length ? `<ul class="assumptions">${expVersions.slice().reverse().map((v) => `<li><strong>v${esc(v.version)}</strong>${v.feedback_type ? ` <span class="pill idle">${esc(v.feedback_type.replace(/_/g, " "))}</span>` : ""}: ${esc(v.feedback || v.summary || "Initial prototype")}${v.commit ? ` <span class="mono muted">(${esc(String(v.commit).slice(0, 7))})</span>` : ""}</li>`).join("")}</ul>` : ""}
+            ${expHypotheses.length ? `<div class="stack">
+              <div class="label">Assumed defaults in v${esc(exp.version || "0.1")} (click to change)</div>
+              <div class="row wrap gap-8">${expHypotheses.slice(0, 6).map((h) => `<button type="button" class="btn small ghost" data-experience-chip="${esc(`Change "${h.chosen_default || h.question}": `)}" title="${esc(h.question || "")}">${esc(h.chosen_default || h.question)}</button>`).join("")}</div>
+            </div>` : ""}
+            ${expVersions.length >= 2 && !activeRun ? `<div><button type="button" class="btn small ghost" data-experience-undo="${esc(s.id)}">Undo last iteration</button></div>` : ""}
           </div>
-        </div>
-        <div class="card-b stack">
-          ${exp.churn_guardrail?.refactor_recommended ? `<div class="notice warn"><strong>Architectural refactor guardrail active</strong><div class="muted">${esc(exp.churn_guardrail.directive || "Repeated changes detected; the next iteration will consolidate and refactor cleanly.")}</div></div>` : ""}
-          ${(exp.product_hypotheses || []).length ? `<div class="stack">
-            <div class="label">Assumed defaults in v${esc(exp.version || "0.1")} (click to change)</div>
-            <div class="row wrap gap-8">${exp.product_hypotheses.slice(0, 6).map((h) => `<button type="button" class="btn small ghost" data-experience-chip="${esc(`Change "${h.chosen_default || h.question}": `)}" title="${esc(h.question || "")}">${esc(h.chosen_default || h.question)}</button>`).join("")}</div>
-          </div>` : ""}
-          ${(exp.versions || []).length ? `<details class="fold"><summary class="linklike muted">Version history (${exp.versions.length} iteration${exp.versions.length === 1 ? "" : "s"})</summary>
-            <ul class="assumptions mt-8">${exp.versions.slice().reverse().map((v) => `<li><strong>v${esc(v.version)}</strong>${v.feedback_type ? ` <span class="pill idle">${esc(v.feedback_type.replace(/_/g, " "))}</span>` : ""}: ${esc(v.feedback || v.summary || "Initial prototype")}${v.commit ? ` <span class="mono muted">(${esc(String(v.commit).slice(0, 7))})</span>` : ""}</li>`).join("")}</ul>
-          </details>` : ""}
-        </div>
-      </section>`
+        </details>
+      </div>`
     : "";
 
   return {
@@ -6295,7 +6358,7 @@ pages.job = async ([id]) => {
 
       <nav class="job-stepper" data-iterating="${isIterating ? "1" : "0"}" aria-label="Job lifecycle progress">
         <span class="job-iter-badge${iterationNum > 1 ? " has-loops" : ""}" title="${iterationNum > 1 ? `Iteration ${iterationNum}: Build → Verify → Document → Finalize loops on each change or fix` : "Iteration 1"}">
-          <span class="job-iter-icon" aria-hidden="true">↻</span>Iter ${iterationNum}
+          <span class="job-iter-icon" aria-hidden="true">↻</span>Iter ${iterationNum}${exp?.version ? ` · v${esc(exp.version)}` : ""}
         </span>
         <div class="job-stepper-track">
           ${stepperItems.map(({ p, idx, displayIcon }, pos) => `
@@ -6310,13 +6373,14 @@ pages.job = async ([id]) => {
           `).join("")}
         </div>
         ${iterationNum > 1 ? `<div class="job-loop-arc" aria-hidden="true"><span class="job-loop-line"></span><span class="job-loop-label">↻ Build → Verify → Finalize loop</span></div>` : ""}
+        ${experienceStepperHtml}
       </nav>
 
       ${reviewingPlan ? "" : `<section id="job-hero" tabindex="-1" class="job-hero tone-${esc(heroTone)}${(activeRun && !activeRun.waiting) || s.state.label === "Building" ? " is-running" : ""}">
         <div class="job-hero-main">
           <h2 class="job-hero-title">${(activeRun && !activeRun.waiting) || s.state.label === "Building" ? runningMark : ""}${esc(s.state.label || s.status)}</h2>
           <p class="job-hero-reason">${heroReason}</p>
-          ${heroReasonDetails}
+          ${heroErrorBlockHtml}
           ${autoresponseNote(job)}
           ${wipRestoreNote(job, !activeRun)}
           ${strandedNote(job)}
@@ -6335,7 +6399,6 @@ pages.job = async ([id]) => {
         ${steerHtml}
       </section>`}
 
-      ${experienceWorkspaceHtml}
       ${unvalidatedTestsHtml}
       ${defectsHtml}
 
@@ -6399,7 +6462,7 @@ pages.job = async ([id]) => {
       <section class="card mb-16" id="changes-section">
         <div class="card-h"><h2>Changes</h2>${changes?.base ? `<span class="count">vs ${esc(changes.base)}</span>` : ""}
           ${(allFiles.length || changes?.diffstat) ? `<div class="card-actions"><button type="button" class="btn small ghost icon-only" id="download-job-diff" aria-label="Download full diff (.patch)" title="Download full diff (.patch)"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-download"/></svg></button></div>` : ""}</div>
-        ${changeSummaryFull ? `<div class="card-b card-b-split t-secondary"><strong>What changed:</strong> ${esc(changeSummaryFull)}</div>` : ""}
+        ${changeSummaryFull ? (typeof jobChangeSummaryHtml === "function" ? jobChangeSummaryHtml(changeSummaryFull) : `<div class="card-b card-b-split t-secondary"><strong>What changed:</strong> ${esc(changeSummaryFull)}</div>`) : ""}
         <div class="card-b delta-summary-line">
           ${deltaUnsaved ? `<div class="delta-line unsaved">${esc(deltaUnsaved)}</div>` : ""}
           ${state.project?.dirty_files ? `<div class="row wrap gap-8 muted t-secondary"><span>${plural(state.project.dirty_files, "uncommitted file")} in workspace.</span><a href="#/git?show=changes">Open Git setup</a></div>` : ""}
@@ -6610,6 +6673,58 @@ pages.job = async ([id]) => {
         if (!ok) return;
         try { await api(`jobs/${encodeURIComponent(id)}/revert-task`, { method: "POST", body: { index: i } }); toast("Task undone"); route(); } catch (e) { toast(e.message, true); }
       }));
+      view.querySelector("#copy-job-failure-log")?.addEventListener("click", (e) => {
+        const btn = e.currentTarget;
+        btn.disabled = true;
+        const canReadLogs = state.you?.role !== "member";
+        const runLogPath = canReadLogs && latestFailureRun
+          ? (latestFailureRun.log || `logs/ui/${latestFailureRun.id}-${latestFailureRun.action}.log`)
+          : "";
+        const testLogFile = canReadLogs
+          ? (outputs || []).find((o) => /(?:^|\/)test\.log$/i.test(String(o.path || "")))
+          : null;
+        const buildReport = async () => {
+          let runLog = "";
+          if (runLogPath) {
+            try { runLog = plainLog((await api(`file?path=${encodeURIComponent(runLogPath)}`))?.text || "").trim(); } catch {}
+          }
+          let testLog = "";
+          if (!runLog && testLogFile?.path) {
+            try { testLog = plainLog((await api(`file?path=${encodeURIComponent(testLogFile.path)}`))?.text || "").trim(); } catch {}
+          }
+          const clipLog = (raw, maxLines = 250, maxChars = 20000) => {
+            const lines = raw.split(/\r?\n/);
+            let sliced = lines.length > maxLines ? lines.slice(-maxLines).join("\n") : raw;
+            const truncatedLines = lines.length > maxLines;
+            if (sliced.length > maxChars) sliced = sliced.slice(-maxChars);
+            return (truncatedLines || sliced.length < raw.length) ? `...(truncated; showing tail)\n${sliced}` : sliced;
+          };
+          const parts = [
+            `Job: ${s.title || s.id} (${s.id})`,
+            `Status: ${s.state.label || s.status}${job.branch ? ` · Branch: ${job.branch}` : ""}`,
+          ];
+          const summaryText = String(problem?.summary || rawHeroReason || "").trim();
+          if (summaryText) parts.push(`\nSummary:\n${summaryText}`);
+          if (problem?.lines?.length) parts.push(`\nDetails:\n${problem.lines.map((l) => `- ${l}`).join("\n")}`);
+          const lastErr = String(job.last_error || "").trim();
+          if (lastErr && lastErr !== summaryText && !summaryText.includes(lastErr)) parts.push(`\nLast error:\n${lastErr}`);
+          if (runLog) {
+            const label = latestFailureRun?.label || latestFailureRun?.action || "run";
+            parts.push(`\nLatest run log (${label}, ${latestFailureRun?.id || ""}):\n${clipLog(runLog)}`);
+          } else if (testLog) {
+            parts.push(`\nTest log:\n${clipLog(testLog)}`);
+          }
+          return parts.join("\n").trim() + "\n";
+        };
+        const fetched = buildReport();
+        const copied = window.ClipboardItem && navigator.clipboard?.write
+          ? navigator.clipboard.write([new ClipboardItem({ "text/plain": fetched.then((txt) => new Blob([txt], { type: "text/plain" })) })])
+          : fetched.then((txt) => navigator.clipboard.writeText(txt));
+        Promise.all([fetched, copied])
+          .then(() => toast("Failure details and logs copied"))
+          .catch(() => toast("Couldn't copy logs here. Open Runs or use Download ZIP in More.", true))
+          .finally(() => { btn.disabled = false; });
+      });
       view.querySelector("#download-job-diff")?.addEventListener("click", async (e) => {
         const btn = e.currentTarget;
         btn.disabled = true;
@@ -9151,7 +9266,7 @@ pages.docs = async (args, query) => {
     return {
       title: doc.title,
       sub: kind === "file" ? `<span class="mono">${esc(doc.path)}</span>` : "",
-      actions: `${open}<button class="btn" id="doc-download">Download .md</button>`,
+      actions: `${open}<button type="button" class="btn icon-only" id="doc-download" aria-label="Download .md" title="Download .md"><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg></button>`,
       html: `<section class="card"><div class="card-b"><div class="md">${Markdown.render(doc.markdown)}</div></div></section>`,
       after: () => $("#doc-download").addEventListener("click", () => downloadText(`${(doc.title || "document").replace(/[^A-Za-z0-9._-]+/g, "-")}.md`, doc.markdown)),
     };
@@ -9251,7 +9366,7 @@ pages["project-docs"] = async () => {
         <div class="card-h">
           <h2 id="proj-docs-preview-title">Preview</h2>
           <div class="card-actions">
-            <button type="button" class="btn small" id="proj-docs-preview-download">Download .md</button>
+            <button type="button" class="btn small ghost icon-only" id="proj-docs-preview-download" aria-label="Download .md" title="Download .md"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-download"/></svg></button>
             <button type="button" class="btn small" id="proj-docs-preview-close">Close</button>
           </div>
         </div>
@@ -15720,7 +15835,7 @@ function runStepEvent(e) {
 function runStepHtml(step, open, lines, { entering = false, extending = false } = {}) {
   const running = step.status === "running";
   const icon = RUN_STEP_ICONS[step.kind] || "i-terminal";
-  return `<li class="run-step is-${esc(step.status)}${open ? " is-open" : ""}${entering ? " is-entering" : ""}${extending ? " is-extending" : ""}" data-step="${step.id}">
+  return `<li class="run-step is-${esc(step.status)}${open ? " is-open" : ""}${entering ? " is-entering" : ""}${extending ? " is-extending" : ""}" data-step="${step.id}"${running ? ' aria-current="step"' : ""}>
     <span class="run-step-icon" aria-hidden="true">${step.status === "failed" ? `<svg class="icon"><use href="#i-alert"/></svg>` : `<svg class="icon"><use href="#${icon}"/></svg>`}</span>
     <div class="run-step-main">
       <button type="button" class="run-step-head" data-step-toggle="${step.id}" aria-expanded="${open}" data-why="No output for this step."${step.lines ? "" : " disabled"}>

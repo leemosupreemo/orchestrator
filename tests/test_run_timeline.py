@@ -214,6 +214,54 @@ class PageTests(unittest.TestCase):
         self.assertIn("white-space: normal;", sub_block)
         self.assertIn("overflow-wrap: anywhere;", sub_block)
 
+    def test_job_detail_and_timeline_step_lists_highlight_current_step(self):
+        app = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
+        css = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "style.css").read_text()
+        # 1. Job lifecycle stepper highlights the active/current step across tones
+        for snippet in (
+            '.job-step.active,\n.job-step[aria-current="step"] {',
+            "background: var(--accent-soft);",
+            "border-color: var(--accent);",
+            ".job-step.active.attention {",
+            ".job-step.active.failed {",
+            ".job-step.active.done {",
+        ):
+            self.assertIn(snippet, css)
+        # 2. Job detail Tasks / Steps list highlights the current task row and badge
+        for snippet in (
+            'class="item task-row${isCurrent ? " is-current" : ""}"${isCurrent ? \' aria-current="step"\' : ""}',
+            'task-current-badge',
+        ):
+            self.assertIn(snippet, app)
+        for snippet in (
+            ".task-row.is-current { background: var(--accent-soft); border-left: 3px solid var(--accent); }",
+            ".task-number.is-current { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }",
+        ):
+            self.assertIn(snippet, css)
+        # 3. Live run step timeline highlights the running step
+        self.assertIn('${running ? \' aria-current="step"\' : ""}', app)
+        self.assertIn(".run-step.is-running .run-step-main {", css)
+
+    def test_doc_download_uses_icon_in_upper_right_header(self):
+        app = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
+        css = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "style.css").read_text()
+        self.assertIn('id="doc-download" aria-label="Download .md" title="Download .md"><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg></button>', app)
+        self.assertIn('id="proj-docs-preview-download" aria-label="Download .md" title="Download .md"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-download"/></svg></button>', app)
+        self.assertIn(".topbar:has(> .topbar-actions > #doc-download)", css)
+        self.assertIn(".topbar:has(> .topbar-actions > :is(details.more, .btn.icon-only):only-child)", css)
+
+    def test_job_failure_copy_log_icon_sits_next_to_details(self):
+        app = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
+        css = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "style.css").read_text()
+        html = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "index.html").read_text()
+        self.assertIn('<symbol id="i-copy"', html)
+        self.assertIn('id="copy-job-failure-log"', app)
+        self.assertIn('<use href="#i-copy"/>', app)
+        self.assertIn('<div class="hero-error-row">${heroReasonDetails}${copyFailureBtnHtml}</div>', app)
+        self.assertIn('toast("Failure details and logs copied")', app)
+        self.assertIn(".hero-error-row {", css)
+        self.assertIn(".hero-copy-log-btn {", css)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -8172,17 +8172,27 @@ after();
         end = self.source.index("\n// Compact table of contents", start)
         fn = self.source[start:end]
         script = f"""
+const esc = (s) => String(s ?? '');
 {fn}
 const fromHyp = jobChangeSummary([], {{ hypothesis: 'Updated vegetation rendering shader.' }});
 const fromDoc = jobChangeSummary([{{ name: 'builder_summary.md', text: '# Summary\\n\\n- Added instanced grass shader and LOD culling.' }}], {{}});
-console.log(JSON.stringify({{ fromHyp, fromDoc }}));
+const prose = 'Added gust-frequency modulation and per-tree position hash to TreeWind.shader (both ForwardLit and ShadowCaster passes) for natural, non-synchronized canopy sway. Exposed GustFrequency as a public field on TreeWind.cs and pushed it to the GPU via MaterialPropertyBlock. Added ZoneFoliagePlacement.SlopeAttenuation — a Clamp-based ramp from 0.7 normalY — for density falloff on steep terrain. Added Shape field to GrassPatch and wired it through BuildPatches and Update so each patch selects the correct billboard mesh from defs[0].Shape rather than hardcoding zero.';
+const bullets = jobChangeSummaryBullets(prose);
+const html = jobChangeSummaryHtml(prose);
+console.log(JSON.stringify({{ fromHyp, fromDoc, bullets, html }}));
 """
         out = json.loads(subprocess.run(["node", "-e", script], capture_output=True, text=True, check=True).stdout)
         self.assertEqual(out["fromHyp"], "Updated vegetation rendering shader.")
         self.assertEqual(out["fromDoc"], "Added instanced grass shader and LOD culling.")
+        self.assertEqual(len(out["bullets"]), 4)
+        self.assertIn("TreeWind.shader", out["bullets"][0])
+        self.assertNotIn("ForwardLit and ShadowCaster", out["bullets"][0])
+        self.assertIn("ZoneFoliagePlacement.SlopeAttenuation", out["bullets"][2])
+        self.assertNotIn("rather than hardcoding zero", out["bullets"][3])
+        self.assertIn('<ul class="change-summary-list">', out["html"])
         self.assertIn("${reviewContextHtml}", self.job_page)
-        # what the builder did heads the Changes card, in full; the status box keeps only the file count and PR link
-        self.assertIn("<strong>What changed:</strong> ${esc(changeSummaryFull)}", self.job_page)
+        # what the builder did heads the Changes card as succinct bullets; the status box keeps only the file count and PR link
+        self.assertIn("jobChangeSummaryHtml(changeSummaryFull)", self.job_page)
         self.assertNotIn('<p class="job-hero-reason muted">${esc(changeSummary', self.job_page)
         self.assertIn('const heroTone = ["merge", "complete"].includes(nextAction) && s.state.tone !== "failed" ? "done" : (s.state.tone || "");', self.job_page)
         self.assertIn('const showTaskBar = tasksTotal > 0 && currentPhase === "build" && tasksDone > 0;', self.job_page)
@@ -8192,7 +8202,7 @@ console.log(JSON.stringify({{ fromHyp, fromDoc }}));
         # One "Tell the AI what to change" box in the status box; ready to merge, it sends a change request through the fix
         # loop on the same branch. The old separate buttons and menu items are gone while it shows.
         app_js = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
-        self.assertIn('runAction("debug", { job: s.id, logs: "", feedback: `CHANGE REQUEST: ${text}` });', app_js)
+        self.assertIn('runAction("refine", { job: s.id, feedback: text });', app_js)
         self.assertIn('mode: "iterate", button: "Request changes"', self.job_page)
         self.assertIn("idle && !ctx.steerShown && next !== \"debug\"", app_js)
         self.assertNotIn("Keep iterating", app_js)

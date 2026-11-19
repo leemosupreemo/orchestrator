@@ -14,7 +14,7 @@ Once you have successfully implemented and verified the fix, your final response
   "files_changed": ["list of files to change"],
   "test_command": "complete repository test command, or Xcode test selection flags for an Xcode project",
   "risks": "short list of risks",
-  "summary": "final summary of changes"
+  "summary": "2-4 succinct bullet points ('- ...', max ~12 words each) stating only what changed and where — no prose paragraphs"
 }
 
 Be careful with:

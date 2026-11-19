@@ -10,7 +10,7 @@ Your output must be a single JSON object with the following fields:
   "files_changed": ["list of files to change"],
   "test_command": "command to run tests (e.g. python3 ai/tests/test_something.py)",
   "risks": "short list of risks",
-  "summary": "final summary of changes",
+  "summary": "2-4 succinct bullet points ('- ...', max ~12 words each) stating only what changed and where — no prose paragraphs",
   "clarification_needed": "string (OPTIONAL: if you encounter uncertainty that requires human guidance)"
 }
 

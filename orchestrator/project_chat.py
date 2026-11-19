@@ -240,6 +240,62 @@ def out_of_usage(model_id: str, checks: dict[str, dict[str, Any]] | None = None,
 KEY_REJECTED = "its API key is rejected (check AI tools)"
 MODEL_UNAVAILABLE = "it isn't available from this provider"
 SHARED_KEY_EXEMPT = ("opencode", "ollama")  # these providers have models that need no key of their own
+_SINGLE_AUTH_CLIS = ("claude", "codex", "gemini", "pool")
+
+
+def _auth_cli_of(model_id: str) -> str:
+    """The single-account CLI that owns `model_id` (e.g. 'claude', 'codex', 'gemini', 'pool'), or '' for multi-provider/local models."""
+    try:
+        from orchestrator.scripts.model_registry import get_model
+        m = get_model(model_id)
+        if m and len(m.required_clis) == 1 and m.required_clis[0] in _SINGLE_AUTH_CLIS:
+            return m.required_clis[0]
+    except Exception:
+        pass
+    return ""
+
+
+def _cli_signed_in_at(cli: str) -> float:
+    """When the person last finished signing in to `cli` via Orchestrator (0.0 if unknown)."""
+    try:
+        from orchestrator import job_problem
+        names = (cli, "agy") if cli == "gemini" else (cli,)
+        return max((job_problem.signed_in_at(name) for name in names), default=0.0)
+    except Exception:
+        return 0.0
+
+
+def rejected_clis(checks: dict[str, dict[str, Any]] | None = None, now: float | None = None) -> dict[str, dict[str, Any]]:
+    """Single-account CLIs (claude, codex, gemini/agy, pool) whose login or API key was recently rejected and hasn't been
+    re-signed-in since or proven working by a newer ok check."""
+    checks = load_checks() if checks is None else checks
+    now = now or time.time()
+    latest_fail: dict[str, dict[str, Any]] = {}
+    latest_ok: dict[str, float] = {}
+    for model, check in checks.items():
+        if not isinstance(check, dict) or model.startswith("limit:"):
+            continue
+        cli = _auth_cli_of(model)
+        if not cli:
+            continue
+        at = float(check.get("at") or 0)
+        if check.get("ok"):
+            if at > latest_ok.get(cli, 0.0):
+                latest_ok[cli] = at
+            continue
+        if str(check.get("reason") or "") != KEY_REJECTED:
+            continue
+        if now - at >= KEY_HOLD:
+            continue
+        if cli not in latest_fail or at > float(latest_fail[cli].get("at") or 0):
+            latest_fail[cli] = {**check, "model": model, "cli": cli}
+    out: dict[str, dict[str, Any]] = {}
+    for cli, check in latest_fail.items():
+        at = float(check.get("at") or 0)
+        if latest_ok.get(cli, 0.0) > at or _cli_signed_in_at(cli) > at:
+            continue
+        out[cli] = check
+    return out
 
 
 def provider_of(model_id: str) -> str:
@@ -313,6 +369,9 @@ def is_model_blocked(model_id: str, checks: dict[str, dict[str, Any]] | None = N
     provider = provider_of(model_id)
     if provider and provider in rejected_providers(checks, now):
         return True
+    cli = _auth_cli_of(model_id)
+    if cli and cli in rejected_clis(checks, now):
+        return True
     entry = checks.get(model_id)
     if not isinstance(entry, dict) or entry.get("ok"):
         return False
@@ -321,6 +380,8 @@ def is_model_blocked(model_id: str, checks: dict[str, dict[str, Any]] | None = N
         return False
     hold = KEY_HOLD if reason == KEY_REJECTED else FAIL_HOLD
     at = float(entry.get("at") or 0)
+    if reason == KEY_REJECTED and cli and _cli_signed_in_at(cli) > at:
+        return False
     try:
         changed = credentials_file().stat().st_mtime
     except OSError:

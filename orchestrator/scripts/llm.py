@@ -159,8 +159,8 @@ def is_unusable_model_error(error_msg: str) -> tuple[bool, bool]:
     norm = low.replace("-", " ").replace("_", " ")
     key_markers = (
         "invalid api key", "fix external api key", "api key rejected", "missing api key", "unauthorized", "forbidden",
-        "bad credentials", "auth error", "authentication failed", "not logged in", "please run /login",
-        "auth source is set", "not signed in",
+        "bad credentials", "auth error", "authentication failed", "failed to authenticate", "not logged in", "please run /login",
+        "auth source is set", "not signed in", "oauth access token has expired", "token has expired", "re authenticate",
     )
     if any(m in norm for m in key_markers) or re.search(r"\b(?:401|403)\b", low):
         return True, True
@@ -191,6 +191,50 @@ JSON_REMINDER = (
     "Your previous reply was not a single JSON object. Reply again with ONLY the JSON object, as plain text in your message. "
     "Do not write it to a file, do not use tools, and do not add commentary before or after it."
 )
+
+
+def _is_free_only_allowlist(allowed_models: list[str] | None) -> bool:
+    """True when `allowed_models` is non-empty and every resolvable model in it is free (`cost_factor == 0.0`)."""
+    if not allowed_models:
+        return False
+    metas = [m for mid in allowed_models if (m := get_model(mid))]
+    return bool(metas) and all(m.cost_factor == 0.0 for m in metas)
+
+
+def _auth_fallback_models(
+    role: str | None,
+    failed_clis: set[str],
+    already_tried: set[str],
+    primary_id: str,
+    max_fallbacks: int = 5,
+) -> list[str]:
+    """Ready, signed-in models on this computer from OTHER providers when every allowed model's tool rejected auth."""
+    try:
+        from orchestrator.project_setup import models_ready_here
+        ready_ids = set(models_ready_here(ROOT))
+    except Exception:
+        ready_ids = set()
+    if not ready_ids:
+        return []
+    prioritized = get_prioritized_models(role=role, allowed_models=list(ready_ids))
+    candidates: list[str] = []
+    for mid in prioritized:
+        if mid in already_tried:
+            continue
+        m = get_model(mid)
+        if not m or not model_usable(m):
+            continue
+        if set(m.required_clis) & failed_clis:
+            continue
+        candidates.append(mid)
+    if not candidates:
+        return []
+    # If Claude CLI's sign-in expired, try Antigravity-hosted Claude models first before other providers.
+    if "claude" in failed_clis or primary_id.startswith("claude-"):
+        hosted_claude = [mid for mid in candidates if mid.startswith("claude-")]
+        others = [mid for mid in candidates if not mid.startswith("claude-")]
+        candidates = hosted_claude + others
+    return candidates[:max_fallbacks]
 
 
 def run_llm(model: str, prompt: str, cwd: Path | None = None, timeout: int = 300, allowed_models: list[str] | None = None, role: str | None = None, session_id: str | None = None, stream: bool = False, images: list[Path] | None = None, protected_paths: list[Path] | None = None, web: bool = False, raw: bool = False, on_chunk: Callable[[str | None], None] | None = None) -> tuple[str, str, str]:
@@ -231,11 +275,37 @@ def run_llm(model: str, prompt: str, cwd: Path | None = None, timeout: int = 300
     actual_session_id = session_id or str(uuid.uuid4())
 
     handoff = ""  # set when a model ran out of usage partway: the next one is told the work is already started
-    for idx, current_model in enumerate(attempts):
-        fallback_note = "Attempting fallback..." if idx + 1 < len(attempts) else "No fallback models remain."
-        if idx and _out_of_usage(current_model):  # its tool ran out a moment ago, in this same call
+    failed_auth_clis: set[str] = set()
+    attempted_models: list[str] = []
+    auth_failed_count = 0
+    expanded_auth_fallback = False
+    idx = 0
+    while True:
+        if idx >= len(attempts):
+            if (
+                not expanded_auth_fallback
+                and auth_failed_count > 0
+                and auth_failed_count == len(attempted_models)
+                and not _is_free_only_allowlist(allowed_models)
+            ):
+                expanded_auth_fallback = True
+                extras = _auth_fallback_models(role, failed_auth_clis, set(attempts), primary_id)
+                if extras:
+                    print(f"ℹ️  Primary tool sign-in expired or rejected; switching to ready signed-in AI model(s) on this computer: {', '.join(extras[:3])}...")
+                    attempts.extend(extras)
+                    continue
+            break
+        current_model = attempts[idx]
+        idx += 1
+        current_meta = get_model(current_model)
+        if current_meta and failed_auth_clis and (set(current_meta.required_clis) & failed_auth_clis):
+            print(f"⏭️  Skipping {current_model}: its tool's sign-in was rejected.")
+            continue
+        if len(attempted_models) > 0 and _out_of_usage(current_model):  # its tool ran out a moment ago, in this same call
             print(f"⏭️  Skipping {current_model}: {_out_of_usage(current_model).get('reason')}.")
             continue
+        attempted_models.append(current_model)
+        fallback_note = "Attempting fallback..." if idx < len(attempts) else "No fallback models remain."
         try:
             attempt_prompt = prompt + handoff if handoff and role in (ModelRole.BUILDER, ModelRole.DEBUGGER) else prompt
             raw_output = _run_llm_single(current_model, attempt_prompt, cwd, timeout, role=role, session_id=session_id, images=images, on_chunk=on_chunk, **protection, **({"web": True} if web else {}), **({"raw": True} if raw else {}))
@@ -302,6 +372,10 @@ def run_llm(model: str, prompt: str, cwd: Path | None = None, timeout: int = 300
                     record_model_failure(current_model, summary, key_rejected=key_rejected)
                 except Exception:
                     pass
+                if key_rejected:
+                    auth_failed_count += 1
+                    if current_meta:
+                        failed_auth_clis.update(current_meta.required_clis)
             print(f"⚠️  {current_model} failed ({summary}). {fallback_note}")
             last_error = exc
             continue
@@ -312,7 +386,7 @@ def run_llm(model: str, prompt: str, cwd: Path | None = None, timeout: int = 300
             last_error = exc
             continue
 
-    tried = ", ".join(attempts) or primary_id
+    tried = ", ".join(attempted_models) or primary_id
     raise RuntimeError(f"No model could answer (tried: {tried}). Last error: {summarize_cli_error(str(last_error))}")
 
 
@@ -342,10 +416,10 @@ def web_capable(model: str) -> bool:
     """Can this model look things up on the web when asked (`web=True`)? Claude Code and the Gemini CLI can; the others answer from memory."""
     m_meta = get_model(model)
     model_id = m_meta.id if m_meta else model
-    if model_id.startswith("claude-") or model_id == "claude":
-        return True
     if model_id.startswith("gemini-") or model_id == "gemini" or (m_meta and m_meta.family == "gemini"):
         return preferred_cli("gemini") != "agy"
+    if model_id.startswith("claude-") or model_id == "claude":
+        return True
     return False
 
 

@@ -113,12 +113,22 @@ def saved_api_keys(settings: dict[str, Any]) -> set[str]:
     return {key for key, env in API_KEY_ENV.items() if settings.get(key) or os.environ.get(env)}
 
 
+def _cli_auth_rejected(cli: str) -> bool:
+    """True when `cli` recently returned an auth/token-expired rejection and hasn't been signed in again since."""
+    try:
+        from orchestrator.project_chat import rejected_clis
+        target = "gemini" if cli == "agy" else cli
+        return target in rejected_clis()
+    except Exception:
+        return False
+
+
 def ready_llm_providers(settings: dict[str, Any]) -> list[str]:
     def probe() -> list[str]:
         with ThreadPoolExecutor(max_workers=len(LLM_CLIS)) as pool:
             results = list(pool.map(_cli_ready, LLM_CLIS))
         return [cli for cli, ok in zip(LLM_CLIS, results) if ok]
-    found = list(_cached("llm", 60, probe))
+    found = [cli for cli in _cached("llm", 60, probe) if not _cli_auth_rejected(cli)]
     found += [f"{key.split('_')[0]} API key" for key in API_KEY_ENV if key in saved_api_keys(settings)]
     return found
 

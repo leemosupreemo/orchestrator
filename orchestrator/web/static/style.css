@@ -2397,6 +2397,18 @@ dialog h2 {
 }
 .job-stepper[data-iterating="1"] .job-loop-line { border-color: var(--accent); opacity: 0.55; }
 .job-loop-label { white-space: nowrap; opacity: 0.85; }
+.job-stepper-history {
+  flex: 1 0 100%;
+  border-top: 1px solid var(--border);
+  padding-top: var(--space-2);
+  margin-top: var(--space-1);
+}
+.job-version-history > summary {
+  font-size: var(--type-secondary);
+}
+.job-version-history-body {
+  font-size: var(--type-secondary);
+}
 .job-step.reset .job-step-dot { border-style: dashed; }
 .job-step {
   display: flex;
@@ -2409,9 +2421,16 @@ dialog h2 {
   min-width: 0;
   max-width: 100%;
 }
-.job-step.active {
+.job-step.active,
+.job-step[aria-current="step"] {
+  background: var(--accent-soft);
+  border-color: var(--accent);
   color: var(--text);
-  font-weight: var(--weight-medium);
+  font-weight: var(--weight-bold);
+}
+.job-step.active .job-step-title,
+.job-step[aria-current="step"] .job-step-title {
+  color: var(--accent);
 }
 .job-step.done {
   color: var(--text);
@@ -2428,25 +2447,56 @@ dialog h2 {
   flex-shrink: 0;
   background: var(--panel-2);
 }
-.job-step.active .job-step-dot {
+.job-step.active .job-step-dot,
+.job-step[aria-current="step"] .job-step-dot {
   border-color: var(--accent);
-  background: var(--accent-soft);
-  color: var(--accent);
+  background: var(--accent);
+  color: var(--accent-ink);
 }
 .job-step.done .job-step-dot {
   border-color: var(--ok);
   background: var(--ok-soft);
   color: var(--ok);
 }
+.job-step.active.done {
+  background: var(--ok-soft);
+  border-color: var(--ok);
+}
+.job-step.active.done .job-step-title { color: var(--ok); }
+.job-step.active.done .job-step-dot {
+  border-color: var(--ok);
+  background: var(--ok);
+  color: var(--ok-solid-ink);
+}
 .job-step.attention .job-step-dot {
   border-color: var(--warn);
   background: var(--warn-soft);
   color: var(--warn);
 }
+.job-step.active.attention {
+  background: var(--warn-soft);
+  border-color: var(--warn);
+}
+.job-step.active.attention .job-step-title { color: var(--warn); }
+.job-step.active.attention .job-step-dot {
+  border-color: var(--warn);
+  background: var(--warn);
+  color: var(--warn-ink);
+}
 .job-step.failed .job-step-dot {
   border-color: var(--bad);
   background: var(--bad-soft);
   color: var(--bad);
+}
+.job-step.active.failed {
+  background: var(--bad-soft);
+  border-color: var(--bad);
+}
+.job-step.active.failed .job-step-title { color: var(--bad); }
+.job-step.active.failed .job-step-dot {
+  border-color: var(--bad);
+  background: var(--bad);
+  color: var(--bad-ink);
 }
 .job-step-meta {
   display: flex;
@@ -2600,8 +2650,11 @@ dialog h2 {
 .job-overlap p, .job-overlap ul { margin: 0; }
 .job-overlap ul { padding-left: 1.2em; }
 .blocker-steps { padding-left: 20px; }
+.hero-error-row { display: flex; align-items: flex-start; gap: var(--space-2); width: 100%; }
 .hero-error-details { width: 100%; margin-top: 2px; font-size: var(--type-secondary); }
-.hero-error-details > summary { cursor: pointer; display: inline-flex; align-items: center; gap: 4px; list-style: none; }
+.hero-error-row > .hero-error-details { flex: 0 1 auto; min-width: 0; width: auto; max-width: calc(100% - var(--control-sm) - var(--space-2)); margin-top: 0; }
+.hero-error-details > summary { cursor: pointer; display: inline-flex; align-items: center; gap: 4px; list-style: none; min-height: var(--control-sm); }
+.hero-copy-log-btn { flex-shrink: 0; }
 .hero-error-pre { margin: var(--space-2) 0 0; padding: var(--space-2) var(--space-3); border-radius: var(--r-sm); background: var(--panel-2); border: 1px solid var(--border); font-family: var(--mono); font-size: var(--type-secondary); line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 220px; overflow: auto; }
 .job-hero-action { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; flex-shrink: 0; }
 /* The one place to tell the AI what to change: full width under the status, whatever the stage. */
@@ -3817,41 +3870,46 @@ body[data-page="product"] .topbar-actions .btn:hover {
 .suite-group > summary.card-h { flex-wrap: wrap; row-gap: var(--space-0); }
 .suite-group > summary h3 { min-width: 0; flex: 0 1 auto; }
 @media (max-width: 760px) {
-  /* A job's More menu sits beside its title instead of on a row of its own */
-  .topbar:has(> .topbar-actions > details.more:only-child) { flex-direction: row; align-items: flex-start; }
-  .topbar-actions:has(> details.more:only-child) { width: auto; flex: none; }
+  /* A job's More menu or a single icon-only action sits beside its title instead of on a row of its own */
+  .topbar:has(> .topbar-actions > :is(details.more, .btn.icon-only):only-child) { flex-direction: row; align-items: flex-start; }
+  .topbar-actions:has(> :is(details.more, .btn.icon-only):only-child) { width: auto; flex: none; justify-content: flex-end; }
 }
 
-/* In-progress run screens: Stop button sits on the right side, same row as the title across desktop & mobile */
+/* In-progress run screens and document views: header action sits upper-right on the title row across desktop & mobile */
 .topbar:has(> .topbar-actions > [data-stop]),
+.topbar:has(> .topbar-actions > #doc-download),
 body[data-page="run"] .topbar {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   grid-template-areas:
     "title actions"
     "sub sub";
-  align-items: center;
+  align-items: start;
   gap: var(--space-1) var(--space-3);
 }
 
 .topbar:has(> .topbar-actions > [data-stop]) .topbar-text,
+.topbar:has(> .topbar-actions > #doc-download) .topbar-text,
 body[data-page="run"] .topbar-text {
   display: contents;
 }
 
 .topbar:has(> .topbar-actions > [data-stop]) .topbar-title-row,
+.topbar:has(> .topbar-actions > #doc-download) .topbar-title-row,
 body[data-page="run"] .topbar-title-row {
   grid-area: title;
   margin: 0;
 }
 
 .topbar:has(> .topbar-actions > [data-stop]) #page-title,
+.topbar:has(> .topbar-actions > #doc-download) #page-title,
 body[data-page="run"] #page-title {
   margin: 0;
   line-height: 1.25;
 }
 
 .topbar:has(> .topbar-actions > [data-stop]) #page-sub,
+.topbar:has(> .topbar-actions > #doc-download) #page-sub,
 body[data-page="run"] #page-sub {
   grid-area: sub;
   margin-top: 0;
@@ -3862,6 +3920,7 @@ body[data-page="run"] #page-sub {
 }
 
 .topbar:has(> .topbar-actions > [data-stop]) .topbar-actions,
+.topbar:has(> .topbar-actions > #doc-download) .topbar-actions,
 body[data-page="run"] .topbar-actions {
   grid-area: actions;
   width: auto;
@@ -3869,7 +3928,7 @@ body[data-page="run"] .topbar-actions {
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  align-self: center;
+  align-self: start;
 }
 
 @media (max-width: 760px) {
@@ -4194,8 +4253,13 @@ a.ticket-chip:hover { border-color: var(--accent); color: var(--accent); }
 .task-detail > summary { cursor: pointer; font-size: var(--type-secondary); width: fit-content; }
 .task-detail[open] > summary { margin-bottom: var(--space-1); }
 .task-row { align-items: flex-start; }
+.task-row.is-current { background: var(--accent-soft); border-left: 3px solid var(--accent); }
+.task-row.is-current .title { color: var(--text); font-weight: var(--weight-bold); }
 .task-number { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; margin-top: 1px;
   border-radius: var(--r-pill); background: var(--panel-2); border: 1px solid var(--border); font-size: var(--type-secondary); font-weight: var(--weight-bold); color: var(--muted); }
+.task-number.is-current { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.task-current-badge { margin-left: var(--space-2); vertical-align: middle; }
+.change-summary-list { margin: var(--space-1-5) 0 0; padding-left: var(--space-4); display: flex; flex-direction: column; gap: var(--space-1); color: var(--text); }
 .task-row .main-col { white-space: normal; display: flex; flex-direction: column; gap: var(--space-1); }
 .task-done-when ul { margin: var(--space-1) 0 0; padding-left: var(--space-5); color: var(--text); font-size: var(--type-secondary); }
 .task-files { display: flex; flex-wrap: wrap; gap: var(--space-1); }
@@ -5382,7 +5446,9 @@ dialog.ask-ai { width: min(34rem, 100vw); max-width: min(34rem, 100vw); height: 
 .run-step:last-child::before { display: none; }
 .run-step-icon { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); color: var(--muted); }
 .run-step-icon .icon { width: 15px; height: 15px; }
-.run-step.is-running .run-step-icon { color: var(--accent); border-color: var(--accent); }
+.run-step.is-running .run-step-icon { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+.run-step.is-running .run-step-main { padding: var(--space-1-5) var(--space-2-5); border: 1px solid var(--accent); border-radius: var(--r-md); background: var(--accent-soft); }
+.run-step.is-running .run-step-title { color: var(--accent); font-weight: var(--weight-bold); }
 .run-step.is-failed .run-step-icon { color: var(--bad); border-color: var(--bad); }
 .run-step-main { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .run-step-head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-3); width: 100%; padding: 3px 0 0; border: 0; background: none; color: var(--text); font: inherit; text-align: left; cursor: pointer; }
