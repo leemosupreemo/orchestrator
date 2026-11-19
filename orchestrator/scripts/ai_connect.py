@@ -33,10 +33,36 @@ def _installer(provider: dict, which: Callable[[str], str | None]) -> tuple[str 
     return None, missing
 
 
+KEYCHAIN_ITEM = "Claude Code-credentials"
+KEYCHAIN_HINT = ("If your Mac's keychain is locked or waiting for permission, unlock it on the Mac itself (a prompt may be on its screen), "
+                 "then press Connect again.")
+
+
+def claude_credentials_state(*, home: Path | None = None, security: Callable[[], str] | None = None) -> tuple:
+    """Where Claude Code keeps its sign-in, as something that changes whenever a sign-in is saved: the keychain item's
+    modification date (macOS) and the credentials file's. It never reads the secret. `claude auth login` can finish in the
+    browser and then fail to save ("Couldn't save your login"), leaving the old, possibly dead, sign-in in place, which
+    `claude auth status` still calls signed in."""
+    def keychain() -> str:
+        try:
+            out = subprocess.run(["security", "find-generic-password", "-s", KEYCHAIN_ITEM], capture_output=True, text=True,
+                                 timeout=5, check=False).stdout
+        except (OSError, subprocess.SubprocessError):
+            return ""
+        return next((line.strip() for line in out.splitlines() if '"mdat"' in line), "")
+    folder = Path(os.environ.get("CLAUDE_CONFIG_DIR") or ((home or Path.home()) / ".claude"))
+    try:
+        stamp = (folder / ".credentials.json").stat().st_mtime_ns
+    except OSError:
+        stamp = None
+    return ((security or keychain)(), stamp)
+
+
 def connect(provider_id: str, *, which: Callable[[str], str | None], run: Callable[[list[str]], int],
             ready: Callable[[str], bool], say: Callable[[str], None], after: Callable[[], None],
             ensure_prerequisites: Callable[[str], None] | None = None,
-            progress: Callable[[str, str], None] | None = None) -> int:
+            progress: Callable[[str, str], None] | None = None,
+            credentials: Callable[[], object] | None = None) -> int:
     if provider_id not in ai_providers.SIGN_IN_COMMANDS:
         raise ValueError("That AI tool has no sign-in to connect.")
     provider = next(p for p in ai_providers.PROVIDERS if p["id"] == provider_id)
@@ -77,10 +103,20 @@ def connect(provider_id: str, *, which: Callable[[str], str | None], run: Callab
     report("sign_in", f"Signing in to {name}. "
         + (ai_providers.SIGN_IN_HINTS.get(provider_id) or "Your browser opens to approve: sign in there, then come back here.")
         + (" Orchestrator finishes when sign-in is detected." if not ai_providers.SIGN_IN_COMMANDS[provider_id] else ""))
+    saved_before = credentials() if credentials else None
     try:
-        run([path, *ai_providers.SIGN_IN_COMMANDS[provider_id]])
+        result = run([path, *ai_providers.SIGN_IN_COMMANDS[provider_id]])
     except OSError as exc:
         report("error", f"Couldn't start sign-in for {name}: {exc}. Press Connect to try again.")
+        return 1
+    if isinstance(result, int) and result != 0:
+        report("error", f"{name}'s sign-in didn't finish (it stopped with code {result}). "
+               + (KEYCHAIN_HINT if provider_id == "claude" else "Press Connect to try again."))
+        return 1
+    if credentials and credentials() == saved_before:
+        # Signed in in the browser, but nothing was written: the old sign-in is still what jobs would use.
+        report("error", f"{name} didn't save the new sign-in, so this computer is still on the old one. "
+               + (KEYCHAIN_HINT if provider_id == "claude" else "Press Connect to try again."))
         return 1
     if ready(cli):
         report("ready", f"✅ {name} is connected. Its models are on for this computer's jobs. You can close this page.")
@@ -151,7 +187,8 @@ def main(argv: list[str] | None = None) -> int:
                    say=lambda line: print(f"\n{line}", flush=True), after=after,
                    ensure_prerequisites=ensure_prerequisites,
                    progress=lambda step, detail: print("@@ORCHESTRATOR_CONNECT@@" + json.dumps(
-                       {"step": step, "detail": detail}), flush=True))
+                       {"step": step, "detail": detail}), flush=True),
+                   credentials=claude_credentials_state if args.provider == "claude" else None)
 
 
 if __name__ == "__main__":

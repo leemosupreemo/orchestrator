@@ -52,6 +52,59 @@ class FakeComputer:
                                   ensure_prerequisites=self.prerequisites)
 
 
+class FalseSuccessTests(unittest.TestCase):
+    """`claude auth login` finished in the browser but couldn't save ("keychain is locked"); the stale sign-in still made
+    `claude auth status` say signed in, so Connect reported success and the next job got a 401."""
+
+    def connect(self, *, exit_code=0, states=("old", "old"), ready=True):
+        fake = FakeComputer(installed={"claude"})
+        fake.run = lambda argv: (fake.commands.append(argv), exit_code)[1]
+        seen = iter(states)
+        result = ai_connect.connect("claude", which=fake.which, run=fake.run, ready=lambda cli: ready, say=fake.out.append,
+                                    after=lambda: fake.out.append("(models refreshed)"), credentials=lambda: next(seen))
+        return result, fake.out
+
+    def test_a_sign_in_that_saved_nothing_is_not_connected_even_if_status_says_signed_in(self):
+        result, out = self.connect(states=("old", "old"))
+        self.assertEqual(result, 1)
+        self.assertNotIn("(models refreshed)", out)
+        self.assertFalse(any("is connected" in line for line in out))
+        self.assertIn("still on the old one", out[-1])
+        self.assertIn("unlock it on the Mac itself", out[-1])
+
+    def test_a_sign_in_that_exits_with_an_error_is_not_connected(self):
+        result, out = self.connect(exit_code=1, states=("old", "new"))
+        self.assertEqual(result, 1)
+        self.assertIn("stopped with code 1", out[-1])
+        self.assertIn("keychain", out[-1])
+
+    def test_a_sign_in_that_saved_a_new_login_is_connected(self):
+        result, out = self.connect(states=("old", "new"))
+        self.assertEqual(result, 0)
+        self.assertIn("is connected", out[-2])
+        self.assertEqual(out[-1], "(models refreshed)")
+
+    def test_other_tools_are_judged_as_before_when_no_credential_check_is_given(self):
+        fake = FakeComputer(installed={"codex"})
+        self.assertEqual(fake.connect("codex"), 0)
+
+    def test_a_tool_that_exits_with_an_error_says_to_try_again_without_the_keychain_advice(self):
+        fake = FakeComputer(installed={"codex"})
+        fake.run = lambda argv: 2
+        self.assertEqual(fake.connect("codex"), 1)
+        self.assertIn("stopped with code 2", fake.out[-1])
+        self.assertNotIn("keychain", fake.out[-1])
+
+    def test_the_credential_state_moves_when_either_store_changes(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp, patch.dict("os.environ", {"CLAUDE_CONFIG_DIR": tmp}):
+            nothing = ai_connect.claude_credentials_state(security=lambda: "mdat=1")
+            self.assertEqual(nothing, ai_connect.claude_credentials_state(security=lambda: "mdat=1"))
+            self.assertNotEqual(nothing, ai_connect.claude_credentials_state(security=lambda: "mdat=2"))  # the keychain item changed
+            (Path(tmp) / ".credentials.json").write_text("{}")
+            self.assertNotEqual(nothing, ai_connect.claude_credentials_state(security=lambda: "mdat=1"))  # the file appeared
+
+
 class ConnectTests(unittest.TestCase):
     def test_every_sign_in_tool_has_its_command(self):
         self.assertEqual(ai_providers.SIGN_IN_COMMANDS, {"claude": ["auth", "login"], "codex": ["login", "--device-auth"], "pool": ["login"], "agy": []})
