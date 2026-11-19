@@ -346,13 +346,18 @@ def remove_state(state: Path) -> None:
         pass
 
 
+def _runtime_dir(root: Path) -> Path:
+    env = os.environ.get("ORCHESTRATOR_RUNTIME_DIR")
+    return Path(env).resolve() if env else root / ".orchestrator"
+
+
 def show_running_app(root: Path, branch: str, slug: str, url: str) -> int:
     """Preview an app that's already running on this computer (preview_url in project.json) instead of starting one: the
     person runs it their own way, and the preview shows whatever it serves."""
     if not LOCAL_APP.fullmatch(url):
         print(f"❌ {url} isn't an address on this computer. Use one like http://localhost:3000.")
         return 1
-    state = root / ".orchestrator" / "output" / "dev-previews" / f"{slug}.json"
+    state = _runtime_dir(root) / "output" / "dev-previews" / f"{slug}.json"
     try:
         shown = start_proxy(url, remote_key_from(remote_file(state)))
     except OSError as exc:
@@ -379,8 +384,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--root", default=os.environ.get("ORCHESTRATOR_PROJECT_ROOT") or os.getcwd())
     args = parser.parse_args(argv)
     root = Path(args.root).resolve()
+    runtime = _runtime_dir(root)
     try:
-        config = json.loads((root / ".orchestrator" / "project.json").read_text(encoding="utf-8"))
+        config = json.loads((runtime / "project.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         config = {}
     if args.branch not in git(root, "branch", "--format=%(refname:short)").splitlines():
@@ -414,7 +420,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"❌ {' '.join(command)} failed. Fix the error above, or set preview_dev_command in .orchestrator/project.json.")
             return 1
 
-    state = root / ".orchestrator" / "output" / "dev-previews" / f"{slug}.json"
+    state = runtime / "output" / "dev-previews" / f"{slug}.json"
     print(f"$ {' '.join(server)}", flush=True)
     child = subprocess.Popen(server, cwd=folder, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
                              start_new_session=True, env={**os.environ, "BROWSER": "none", "FORCE_COLOR": "0", **dev_env(folder)})

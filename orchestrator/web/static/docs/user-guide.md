@@ -835,6 +835,30 @@ In the console, **Link Logs → Pull Device Logs (cloud)...** lists recent launc
 
 Logs reach Sentry within about 5 seconds, and immediately when the app is backgrounded. Sentry keeps them for 30 days.
 
+## Adaptive Planning & Prototype-First Experience Loop (`Build → Experience → Refine`)
+
+Orchestrator combines an **Adaptive Specification & Planning Pipeline** with a **Prototype-First Experience Loop**:
+
+1. **Say It Your Way (Default Entry Point)**:
+   - The **New job** page defaults to **Freestyle ("Say it your way")**, accepting anything from a one-sentence idea to a complete PRD with attachments, code examples, and design links.
+2. **Adaptive Rolling-Wave Planning (Single-Pass Fast-Track + Two-Pass Epics)**:
+   - **Pass A (Living Feature Spec & Ambiguity Assessment)**: Synthesizes a versioned `LivingFeatureSpec` (`.orchestrator/output/<job_id>/spec.json` and `spec.md`) with provenance tags (`[explicit]`, `[code_derived]`, `[inferred]`), checks for outdated/renamed repository paths, and evaluates uncertain decisions across **Confidence**, **Impact**, and **Reversibility**. For single-slice requests ($\le 3$ tasks, no deferred stories, no blocking ambiguity), Pass A collapses into a **single-pass fast-track** (`"pass": "combined"`) and generates tasks and test cases directly without a second Pass B LLM call.
+   - **Time to First Experience (TTFE) Optimization**: Unsafe or irreversible choices (privacy/PII, security/auth, billing, destructive data loss, or costly schema changes) pause at the **Intent Gate**, whereas reversible product-behavior defaults (such as initial scoring or tie-breaker rules) are recorded as v0.1 **Product Hypotheses** (`spec.product_hypotheses`) so the first playable slice builds immediately.
+   - **Pass B (Repository-Aware Execution Planning)**: Runs for multi-story epics or post-clarification plans to plan tasks and automated test cases for only the first ready vertical story slice, while turning remaining `deferred` stories into waiting `status: "backlog"` jobs linked to the same feature.
+   - **Auto-Passing Lightweight Gates**: Small, low-risk, reversible slices with clean test cases and no manifest changes automatically pass the Intent and Plan gates (`auto_passed_gates: true`).
+3. **Success Criteria, KPIs & Guardrail / Counter-KPI Metrics**:
+   - Every feature spec includes explicit or implied `success_criteria`.
+   - When an analytics or monitoring app (Mixpanel, Amplitude, PostHog, Sentry, Datadog, New Relic) is connected, `spec.kpi_metrics` ties those success criteria to a **Primary KPI** and at least one **Guardrail / Counter-KPI** metric (e.g., error rate, latency, or abandonment counter-KPI).
+   - When no analytics app is connected, Orchestrator recommends setting up analytics/KPIs **once** and then stays silent on KPIs until analytics is connected in setup.
+4. **Experience & Refine (`v0.1 → v0.2 → v0.3`)**:
+   - When a build reaches `review-needed`, the Job page shows the **Experience & Refine** workspace (`Version 0.1 · Preview ready`) with clickable **Assumed defaults** chips and a natural feedback prompt.
+   - Every reaction runs through a 5-way **Change-Impact Classifier** (`visual_or_copy`, `behavior_change`, `new_capability`, `fundamental_rethink`, `undo`), locks previously accepted criteria against regression (`locked_behaviors`), and triggers an **Architectural Refactor Guardrail** when the same files are patched $\ge 3$ times across iterations.
+   - The **Analytics** page tracks the 5 **Intent-Convergence Metrics**: **Time to first experience (TTFE)**, **Time per feedback iteration**, **Iterations to acceptance**, **Rework & regression rate**, and **User interaction burden**.
+5. **Lean LLM Execution & Prompt Guardrails**:
+   - Plan quality checks (test cases, size budget, and vertical slicing) run together with at most **1 combined self-correction retry**.
+   - Grounded, single-slice plans from high-tier planners that auto-pass the deterministic Plan Gate skip the redundant Senior Architect verification LLM call.
+   - Small cohesive tasks touching overlapping files ($\le 4$ unique files) batch into a single builder pass; failed builds capture output on the first run and extract compiler/test errors deterministically; UI screenshot instructions only appear for UI-touching tasks or configured `ui_review` projects; and visual/copy or undo refinements skip redundant post-job PRD update LLM calls.
+
 ## Troubleshooting
 
 Run both checks first:

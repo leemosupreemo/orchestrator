@@ -176,6 +176,14 @@ def approve(path: Path) -> int:
         print(f"Nothing to approve: the job is '{job.get('status')}'.")
         return 1
     job["approved"] = True
+    try:
+        from orchestrator import living_spec
+        rt_dir = path.parent.parent if path.parent.name == "jobs" else Path(".orchestrator")
+        created_deferred = living_spec.create_deferred_backlog_jobs(rt_dir, job)
+        if created_deferred:
+            print(f"Queued {len(created_deferred)} deferred story slice(s) in the backlog.")
+    except Exception:
+        pass
     write_json(path, job)
     print("Plan approved. Scheduling...\n")
     return run_script("schedule_job.py", [str(path)])
@@ -196,6 +204,77 @@ def revise(path: Path, change: str, where: str, done_when: str) -> int:
         args.append("--stitch")
     print("Revising the plan with your feedback...\n")
     return run_script("new_job.py", args)
+
+
+def refine(path: Path, feedback: str) -> int:
+    """Prototype-first Human Experience Loop (`Build -> Experience -> Refine`):
+    Classifies user reaction (`visual_or_copy`, `behavior_change`, `new_capability`,
+    `fundamental_rethink`, `undo`), updates the Living Feature Spec and version history,
+    checks the architectural churn/refactor guardrail, and executes the appropriate action.
+    """
+    from common import ROOT, now_iso, print_phase
+    from orchestrator import experience_loop
+
+    rt_dir = path.parent.parent if path.parent.name == "jobs" else ROOT / ".orchestrator"
+    proj_root = rt_dir.parent if path.parent.name == "jobs" else ROOT
+    job = read_json(path)
+    print_phase("analyzing_feedback")
+    outcome = experience_loop.apply_experience_feedback(
+        job,
+        feedback,
+        root=proj_root,
+        runtime_dir=rt_dir,
+        now_iso=now_iso(),
+    )
+    cls = outcome["classification"]
+    fb_type = cls["feedback_type"]
+    ver = outcome["version"]
+    print("[experience] " + json.dumps({
+        "version": ver,
+        "feedback_type": fb_type,
+        "impact": f"{fb_type} · {cls['default_action']}",
+        "stage": f"Experience v{ver} · {fb_type.replace('_', ' ')}",
+        "label": (
+            "Reverting last iteration" if fb_type == "undo"
+            else "Consolidating & refactoring" if outcome.get("refactor_recommended")
+            else "Refining from user feedback"
+        ),
+    }), flush=True)
+
+    job["updated_at"] = now_iso()
+    write_json(path, job)
+    try:
+        from orchestrator import living_spec
+        spec_out = rt_dir / "output" / str(job.get("job_id") or path.stem)
+        spec_out.mkdir(parents=True, exist_ok=True)
+        write_json(spec_out / "spec.json", job.get("spec") or {})
+        (spec_out / "spec.md").write_text(
+            living_spec.to_markdown(job.get("spec") or {}, job.get("risk_assessment") or {}),
+            encoding="utf-8",
+        )
+    except Exception:
+        pass
+
+    next_exec = outcome["next_execution"]
+    if next_exec == "reverted":
+        print_phase("reverting")
+        print(f"✅ Reverted last iteration (now on v{ver}).")
+        return 0
+    if next_exec == "backlog_slice_created":
+        created = outcome.get("created_backlog_jobs") or []
+        print(f"✅ Added new capability as a rolling-wave story slice in the backlog ({', '.join(created) or 'deferred'}).")
+        return 0
+    if next_exec == "replan":
+        print_phase("replanning")
+        return revise(path, experience_loop.format_refinement_prompt(job, feedback, outcome), "", "")
+
+    if outcome.get("refactor_recommended"):
+        print_phase("refactoring")
+    else:
+        print_phase("refining")
+    from worker_run import trigger_followup_iteration
+    trigger_followup_iteration(path, job, feedback)
+    return 0
 
 
 # --------------------------------------------------------------------------- tests
@@ -537,6 +616,9 @@ def main(argv: list[str] | None = None) -> int:
     revise_p.add_argument("--change", required=True)
     revise_p.add_argument("--where", default="")
     revise_p.add_argument("--done-when", default="")
+    refine_p = sub.add_parser("refine", help="Refine a working preview from user experience feedback")
+    refine_p.add_argument("job_file")
+    refine_p.add_argument("--feedback", required=True)
     tests_p = sub.add_parser("tests", help="List test suites, test plans and the last coverage result")
     tests_p.add_argument("--json", action="store_true")
     probe_p = sub.add_parser("probe", help="Ask the test frameworks what their tests are and whether they can run here")
@@ -589,6 +671,8 @@ def main(argv: list[str] | None = None) -> int:
         return discard(path, keep_changes=bool(getattr(args, "keep_changes", False)))
     if args.action == "revise":
         return revise(path, args.change.strip(), args.where.strip(), args.done_when.strip())
+    if args.action == "refine":
+        return refine(path, args.feedback.strip())
     return answer(path, args.answer.strip())
 
 

@@ -54,6 +54,7 @@ class JobProfileTests(unittest.TestCase):
         self.assertTrue(any("race condition" in r or "intermittent" in r for r in hard.reasons))
         self.assertEqual(model_router.profile_job("feature", "fix a typo on the settings screen").complexity, "simple")
         self.assertEqual(model_router.profile_job("quick", "Add a button").complexity, "simple")
+        self.assertEqual(model_router.profile_job("quick", "The vegetatation needs to look more realistic").complexity, "standard")
         self.assertEqual(model_router.profile_job("quick", "Refactor the sync engine").complexity, "complex")
         self.assertEqual(model_router.profile_job("feature", "add a favourites screen").complexity, "standard")
 

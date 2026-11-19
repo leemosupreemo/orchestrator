@@ -934,10 +934,22 @@ UPDATE_JOB_TYPES = {"feature-plan", "feature-design"}
 
 
 def should_check(job: dict[str, Any]) -> bool:
-    """Jobs that can teach us something about the product: features and designs, or anything the person answered questions on."""
+    """Jobs that can teach us something about the product: features and designs, or anything a human answered questions on.
+    Skips redundant PRD LLM checks for visual/copy or undo experience refinements and automated YOLO-only clarifications."""
     if job.get("prd_checked"):
         return False
-    return job.get("type") in UPDATE_JOB_TYPES or bool(job.get("clarification_history"))
+    exp_feedback = [f for f in (job.get("experience_feedback") or []) if isinstance(f, dict)]
+    if exp_feedback:
+        latest_type = str(exp_feedback[-1].get("feedback_type") or "").strip().lower()
+        if latest_type in ("visual_or_copy", "undo"):
+            return False
+    if job.get("type") in UPDATE_JOB_TYPES:
+        return True
+    human_clarifications = [
+        h for h in (job.get("clarification_history") or [])
+        if isinstance(h, dict) and not h.get("auto")
+    ]
+    return bool(human_clarifications)
 
 
 def job_digest(job: dict[str, Any]) -> str:

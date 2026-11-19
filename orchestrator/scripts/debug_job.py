@@ -24,23 +24,7 @@ MAX_LOG_ENTRY_CHARS = 15_000
 MAX_RUNTIME_LOG_CHARS = 100_000
 
 
-INTERNAL_TOOL_PREFIXES = (
-    ".orchestrator/",
-    ".claude/",
-    ".codex/",
-    ".gemini/",
-    ".poolside/",
-    ".cursor/",
-    ".agents/",
-    ".superpowers/",
-)
-
-
-def _is_internal_path(path: str) -> bool:
-    norm = str(path or "").strip()
-    while norm.startswith("./"):
-        norm = norm[2:]
-    return norm.startswith(INTERNAL_TOOL_PREFIXES) or norm in {p.rstrip("/") for p in INTERNAL_TOOL_PREFIXES}
+from orchestrator.scope_check import INTERNAL_TOOL_PREFIXES, is_internal_tool_path as _is_internal_path
 
 
 def build_iteration_ledger(job: dict[str, Any]) -> dict[str, Any]:
@@ -307,10 +291,15 @@ def run_propose(job: dict, job_path: Path, logs_path: str | None, feedback: str 
     auto_logs = []
     job_out_dir = OUTPUT_DIR / job["job_id"]
     
-    # Always include build log if it exists (captured compiler errors)
+    # Only include build log if it contains actual build failure output (skip "** BUILD SUCCEEDED **" marker)
     build_log = job_out_dir / "build.log"
     if build_log.exists():
-        auto_logs.append(str(build_log))
+        try:
+            b_text = build_log.read_text(encoding="utf-8", errors="replace").strip()
+        except OSError:
+            b_text = ""
+        if b_text and not b_text.startswith("** BUILD SUCCEEDED"):
+            auto_logs.append(str(build_log))
         
     # Always include test log
     test_log = job_out_dir / "test.log"

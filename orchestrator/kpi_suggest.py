@@ -64,13 +64,25 @@ def _object_from(reply: str) -> dict[str, Any]:
 
 
 def parse(reply: str, feature: dict[str, Any]) -> dict[str, Any]:
-    """The suggested KPI as form fields {name, event, direction, target, unit, why}. Raises KpiSuggestError if it can't be used."""
+    """The suggested KPI as form fields {name, event, direction, target, unit, why} (plus optional guardrail). Raises KpiSuggestError if it can't be used."""
     raw = _object_from(reply)
     try:
-        kpi = analytics.clean_kpi({k: raw.get(k) for k in ("name", "event", "direction", "target", "unit")})
+        kpi = analytics.clean_kpi({
+            **{k: raw.get(k) for k in ("name", "event", "direction", "target", "unit")},
+            **({"guardrail": raw.get("guardrail") or raw.get("counter_kpi")} if (raw.get("guardrail") or raw.get("counter_kpi")) else {}),
+        })
     except analytics.AnalyticsError as exc:
         raise KpiSuggestError(str(exc))
     if kpi["event"] in {k.get("event") for k in feature.get("kpis") or []}:
         raise KpiSuggestError("The suggested event is already used by another KPI.")
-    return {"name": kpi["name"], "event": kpi["event"], "direction": kpi["direction"], "target": kpi["target"], "unit": kpi["unit"],
-            "why": str(raw.get("why") or "").strip()[:300]}
+    out: dict[str, Any] = {
+        "name": kpi["name"],
+        "event": kpi["event"],
+        "direction": kpi["direction"],
+        "target": kpi["target"],
+        "unit": kpi["unit"],
+        "why": str(raw.get("why") or "").strip()[:300],
+    }
+    if kpi.get("guardrail"):
+        out["guardrail"] = kpi["guardrail"]
+    return out

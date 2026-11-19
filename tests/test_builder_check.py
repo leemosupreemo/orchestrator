@@ -244,6 +244,91 @@ class BuilderTests(unittest.TestCase):
         run_builder.run_builder(self.job_path, resume=True)
         self.assertEqual(self.llm_calls, 0)
 
+    def test_unplanned_quick_job_gets_scoping_guardrail(self):
+        captured: list[str] = []
+
+        def capture_llm(model, prompt, *args, **kwargs):
+            captured.append(prompt)
+            return ('{"summary": "done", "test_command": "n/a"}', "model-x", "sess")
+
+        with patch.object(run_builder, "run_llm", side_effect=capture_llm):
+            run_builder.run_builder(self.job_path)
+        self.assertEqual(len(captured), 1)
+        self.assertIn("QUICK TASK SCOPING GUARDRAIL", captured[0])
+        self.assertIn("wired into real runtime callers", captured[0])
+
+
+class SourceOnlyAndIgnoredPathTests(unittest.TestCase):
+    def test_is_ignored_tool_path_filters_agent_state_only(self):
+        for p in (".claude/helpers/hook-handler.cjs", "./.orchestrator/jobs/1.json", ".worktrees/a/b.py"):
+            self.assertTrue(builder_check.is_ignored_tool_path(p), p)
+        for p in ("DaocUnity/Assets/Shaders/TreeWind.shader", "tests/test_x.py", "src/claude_client.py"):
+            self.assertFalse(builder_check.is_ignored_tool_path(p), p)
+
+    def test_source_only_test_files_flags_grep_style_and_allows_real_tests(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            tests_dir = root / "tests" / "build_integrity"
+            tests_dir.mkdir(parents=True)
+            grep_test = tests_dir / "test_vegetation_realism.py"
+            grep_test.write_text(
+                "import os, unittest\n"
+                "class T(unittest.TestCase):\n"
+                "    def test_has_prop(self):\n"
+                "        with open('TreeWind.shader') as f:\n"
+                "            self.assertIn('_GustFrequency', f.read())\n"
+            )
+            real_test = tests_dir / "test_real.py"
+            real_test.write_text(
+                "import unittest\n"
+                "from myapp import wind\n"
+                "class T(unittest.TestCase):\n"
+                "    def test_gust(self):\n"
+                "        self.assertGreater(wind.gust(1.0), 0)\n"
+            )
+            subproc_test = tests_dir / "test_cli.py"
+            subproc_test.write_text(
+                "import subprocess, unittest\n"
+                "class T(unittest.TestCase):\n"
+                "    def test_cli(self):\n"
+                "        with open('README.md') as f:\n"
+                "            self.assertTrue(f.read())\n"
+                "        subprocess.run(['true'], check=True)\n"
+            )
+            self.assertEqual(
+                builder_check.source_only_test_files("python3 -m unittest discover -s tests/build_integrity -p test_vegetation_realism.py", root),
+                ["tests/build_integrity/test_vegetation_realism.py"],
+            )
+            self.assertEqual(builder_check.source_only_test_files("pytest tests/build_integrity/test_real.py", root), [])
+            self.assertEqual(builder_check.source_only_test_files("pytest tests/build_integrity/test_cli.py", root), [])
+
+    def test_source_only_override_falls_back_to_projects_own_tests(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            tests_dir = root / "tests" / "build_integrity"
+            tests_dir.mkdir(parents=True)
+            (tests_dir / "test_vegetation_realism.py").write_text(
+                "import unittest\n"
+                "class T(unittest.TestCase):\n"
+                "    def test_s(self):\n"
+                "        with open('a.cs') as f:\n"
+                "            self.assertIn('Slope', f.read())\n"
+            )
+            ran: list[str] = []
+
+            def fake_shell(cmd, cwd=None, check=False, capture=False, timeout=None):
+                ran.append(cmd)
+                return subprocess.CompletedProcess(args=[cmd], returncode=0, stdout="Ran 4 tests\nOK", stderr="")
+
+            job = {"job_id": "j-src", "test_command_override": "python3 -m unittest discover -s tests/build_integrity -p test_vegetation_realism.py"}
+            with patch.object(runner, "ROOT", root), patch.object(runner, "OUTPUT_DIR", root / "out"), \
+                 patch.object(runner, "get_best_simulator_destination", return_value="id=SIM"), \
+                 patch.object(runner, "extract_commands", return_value=("echo build", "dotnet test")), \
+                 patch.object(runner, "run_shell", side_effect=fake_shell):
+                self.assertEqual(runner.run_build_and_tests(job, root / "s.md"), (True, True))
+            self.assertIn("dotnet test", ran)
+            self.assertFalse(any("test_vegetation_realism" in c for c in ran))
+
 
 if __name__ == "__main__":
     unittest.main()

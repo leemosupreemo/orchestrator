@@ -56,6 +56,7 @@ def splinter_job(job_path: Path) -> list[str]:
     print(f"\n--- Splintering Parent Job: {parent_id} ({len(tasks)} tasks) ---")
     
     subtask_ids = []
+    created_subtasks: list[tuple[str, dict[str, Any]]] = []
     
     for i, task in enumerate(tasks, start=1):
         sub_title = f"[Sub-task {i}] {job['title']}: {task['title']}"
@@ -117,11 +118,18 @@ def splinter_job(job_path: Path) -> list[str]:
         write_text(paths.brief_file, build_bug_issue_body(sub_plan))
         
         subtask_ids.append(sub_job_id)
+        created_subtasks.append((sub_job_id, sub_job))
         print(f"        ✅ Created job: {sub_job_id}" + (f" (#{sub_issue_number})" if sub_issue_number else ""))
 
     # Mark parent as decomposed
     job["status"] = "decomposed"
     job["subtask_job_ids"] = subtask_ids
+    from orchestrator import parallel_mece
+    coverage = parallel_mece.evaluate_parent_coverage(parent_id, job, created_subtasks)
+    if coverage:
+        job["mece_coverage"] = coverage
+        if coverage.get("summary"):
+            print(f"      - MECE check (advisory): {coverage['summary']}")
     job["updated_at"] = now_iso()
     write_json(job_path, job)
     

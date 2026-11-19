@@ -69,6 +69,30 @@ def load_branch_diff(branch: str, base: str) -> tuple[str, str]:
     return f"Branch {branch} against {base}\n\nCommits:\n{commits}\nFiles:\n{stat}", diff_text
 
 
+def verification_warnings(job: dict, root: Path) -> list[str]:
+    """Automated red flags on the builder's verification and scoping for the reviewer to check."""
+    if not job:
+        return []
+    from orchestrator import builder_check
+
+    warnings: list[str] = []
+    override = (job.get("test_command_override") or "").strip()
+    if override:
+        grep_tests = builder_check.source_only_test_files(override, root)
+        if grep_tests:
+            warnings.append(
+                f"Builder's `test_command_override` ({override}) targets source-text-only tests "
+                f"({', '.join(grep_tests)}) that inspect source strings without executing behavior."
+            )
+    plan = job.get("plan") if isinstance(job.get("plan"), dict) else {}
+    if job.get("type") == "quick-fix" and not (plan.get("likely_files") or []):
+        warnings.append(
+            "This was an unplanned `quick-fix` brief with no explicit acceptance criteria or target files: "
+            "check closely for token tweaks, dead/uncalled helpers, or superficial fixes that do not meaningfully deliver the prompt."
+        )
+    return warnings
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("pr_number", type=int, nargs="?", help="The pull request to review (GitHub)")
@@ -89,19 +113,6 @@ def main() -> None:
         pr_json, diff_text = load_branch_diff(args.branch, args.base)
     reviewer_prompt = (PROMPTS_DIR / "reviewer.md").read_text(encoding="utf-8")
 
-    from orchestrator import prd
-    prompt = f"""{reviewer_prompt}
-{prd.context_block(ROOT, "reviewer")}
-Brief:
-{brief}
-
-PR metadata:
-{pr_json}
-
-Diff:
-{diff_text}
-"""
-
     allowed_models = None
     job: dict = {}  # without --job-file there is no job to update, but the session bookkeeping below still runs
     if args.job_file:
@@ -110,6 +121,24 @@ Diff:
         if job_path.exists():
             job = read_json(job_path)
             allowed_models = job.get("allowed_models")
+
+    warnings = verification_warnings(job, ROOT)
+    warnings_block = (
+        "\nAutomated verification warnings (must inspect closely):\n" + "\n".join(f"- {w}" for w in warnings) + "\n"
+        if warnings else ""
+    )
+    from orchestrator import prd
+    prompt = f"""{reviewer_prompt}
+{prd.context_block(ROOT, "reviewer")}
+Brief:
+{brief}
+{warnings_block}
+PR metadata:
+{pr_json}
+
+Diff:
+{diff_text}
+"""
             
     try:
         review, actual_reviewer, session_id = run_llm(args.reviewer, prompt, cwd=ROOT, timeout=300, role=ModelRole.REVIEWER, allowed_models=allowed_models)

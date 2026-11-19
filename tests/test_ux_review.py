@@ -365,6 +365,66 @@ class NativeCaptureWiringTests(unittest.TestCase):
                 self.assertEqual((resolved2["url"], resolved2["start_command"], source2),
                                  ("http://localhost:5173", "npm run dev", "preview settings"))
 
+    def test_preview_web_target_does_not_reuse_wrong_branch_preview(self):
+        import os
+        import ux_review_run as runner
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            out = root / ".orchestrator" / "output"
+            dev_dir = out / "dev-previews"
+            dev_dir.mkdir(parents=True)
+            (dev_dir / "main.json").write_text(json.dumps({
+                "branch": "main", "url": "http://127.0.0.1:4100", "direct": "http://127.0.0.1:4101", "pid": os.getpid()
+            }))
+            with patch.object(runner, "ROOT", root), patch.object(runner, "OUTPUT_DIR", out):
+                resolved_wrong, source_wrong = runner.preview_web_target(ux.settings({}), branch="feature-ui")
+                self.assertEqual((resolved_wrong["url"], source_wrong), ("", ""))
+
+                resolved_any, source_any = runner.preview_web_target(ux.settings({}), branch="")
+                self.assertEqual((resolved_any["url"], source_any), ("http://127.0.0.1:4101", "live preview"))
+
+    def test_capture_auto_starts_and_cleans_up_temporary_branch_preview(self):
+        import subprocess
+        import urllib.request
+        import ux_review_run as runner
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            git = lambda *args: subprocess.run(["git", *args], cwd=root, check=True, capture_output=True, text=True)
+            git("init", "-q", "-b", "main")
+            git("config", "user.email", "test@example.invalid")
+            git("config", "user.name", "Test")
+            (root / "index.html").write_text("<h1>Main Version</h1>", encoding="utf-8")
+            git("add", ".")
+            git("commit", "-q", "-m", "main")
+            git("checkout", "-q", "-b", "feature-ui")
+            (root / "index.html").write_text("<h1>Feature UI Branch</h1>", encoding="utf-8")
+            git("add", ".")
+            git("commit", "-q", "-m", "feature")
+
+            out = root / ".orchestrator" / "output"
+            dev_dir = out / "dev-previews"
+            dev_dir.mkdir(parents=True)
+            fetched_body: list[str] = []
+
+            def fake_capture_web(_root, web_cfg, _screens_dir, dark=None):
+                with urllib.request.urlopen(web_cfg["url"], timeout=5) as resp:
+                    fetched_body.append(resp.read().decode("utf-8"))
+                return [{"file": "home.png", "route": "/", "width": 390, "dark": False}], ""
+
+            with patch.object(runner, "ROOT", root), \
+                 patch.object(runner, "OUTPUT_DIR", out), \
+                 patch.object(runner.ux, "find_browser", return_value="/usr/bin/chromium"), \
+                 patch.object(runner.ux, "capture_web", side_effect=fake_capture_web):
+                shots, limits = runner.capture(ux.settings({}), root / "screens", dark=False, branch="feature-ui")
+
+            self.assertEqual([s["file"] for s in shots], ["home.png"])
+            self.assertEqual(len(fetched_body), 1)
+            self.assertIn("Feature UI Branch", fetched_body[0])
+            self.assertTrue(any("temporary live preview of feature-ui" in line for line in limits))
+            self.assertFalse((dev_dir / "feature-ui.json").exists())
+
     def test_inferred_targets_prefers_preview_settings(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

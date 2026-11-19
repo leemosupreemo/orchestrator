@@ -6,11 +6,14 @@ reused that same summary forever. These helpers are pure so they can be tested w
 
     writes_blocked(text)            the builder says its writes were refused / nothing was changed
     tree_fingerprint(root)          a cheap fingerprint of the working tree's changes, to see whether a run changed anything
+    is_ignored_tool_path(path)      whether a path belongs to local agent/orchestrator state (.claude/, .orchestrator/, .worktrees/)
     missing_test_targets(cmd, root) test files a test command names that don't exist
+    source_only_test_files(cmd, root) Python test files in `cmd` that only assert substrings on source text
     no_tests_ran(output)            a test run that found no tests at all
 """
 from __future__ import annotations
 
+import ast
 import hashlib
 import os
 import re
@@ -35,6 +38,14 @@ def writes_blocked(text: str) -> bool:
 
 
 _IGNORED = (".orchestrator/", ".claude/", ".worktrees/")
+
+
+def is_ignored_tool_path(path: str) -> bool:
+    """Whether `path` lives inside orchestrator or AI tool scratch directories that must not count as project changes."""
+    norm = (path or "").strip().replace("\\", "/")
+    while norm.startswith("./"):
+        norm = norm[2:]
+    return any(norm.startswith(prefix) or norm == prefix.rstrip("/") for prefix in _IGNORED)
 
 
 def tree_fingerprint(root: Path) -> str | None:
@@ -80,23 +91,18 @@ def _found(base: Path, pattern: str) -> bool:
     return False
 
 
-def missing_test_targets(command: str, root: Path) -> list[str]:
-    """Test files `command` names that aren't in `root`: `unittest discover -s DIR -p PATTERN` matching nothing, or a `*.py` file argument
-    that doesn't exist. Commands that change directory first, or use shell variables, can't be checked and report nothing."""
+def _command_target_spec(command: str) -> tuple[tuple[str, str | None] | None, list[str]]:
+    """Parse `(discover_dir, discover_pattern)` or explicit `*.py` file args from a Python test command."""
     try:
         parts = shlex.split(command or "")
     except ValueError:
-        return []
+        return None, []
     if not parts or "cd" in parts or any("$" in p for p in parts):
-        return []
-    root = Path(root)
-    missing: list[str] = []
+        return None, []
     if "discover" in parts:
         value = lambda flag: parts[parts.index(flag) + 1] if flag in parts and parts.index(flag) + 1 < len(parts) else None
-        start, pattern = value("-s") or value("--start-directory") or ".", value("-p") or value("--pattern")
-        if pattern and not _found(root / start, pattern):
-            missing.append(f"{pattern} (in {start})")
-        return missing
+        return (value("-s") or value("--start-directory") or ".", value("-p") or value("--pattern")), []
+    targets: list[str] = []
     skip = False
     for part in parts[1:]:
         if skip:
@@ -106,9 +112,22 @@ def missing_test_targets(command: str, root: Path) -> list[str]:
             skip = True
             continue
         target = part.split("::")[0]
-        if target.endswith(".py") and not part.startswith("-") and not _GLOB.search(target) and not (root / target).exists():
-            missing.append(target)
-    return missing
+        if target.endswith(".py") and not part.startswith("-") and not _GLOB.search(target):
+            targets.append(target)
+    return None, targets
+
+
+def missing_test_targets(command: str, root: Path) -> list[str]:
+    """Test files `command` names that aren't in `root`: `unittest discover -s DIR -p PATTERN` matching nothing, or a `*.py` file argument
+    that doesn't exist. Commands that change directory first, or use shell variables, can't be checked and report nothing."""
+    discover, targets = _command_target_spec(command)
+    root = Path(root)
+    if discover is not None:
+        start, pattern = discover
+        if pattern and not _found(root / start, pattern):
+            return [f"{pattern} (in {start})"]
+        return []
+    return [target for target in targets if not (root / target).exists()]
 
 
 _RAN_SOME = re.compile(r"\bRan\s+[1-9]\d*\s+tests?\b|\b[1-9]\d*\s+(?:passed|failed)\b|\bCollected\s+[1-9]\d*\s+items?\b", re.I)
@@ -119,3 +138,77 @@ def no_tests_ran(output: str) -> bool:
     """A test run that found nothing to run (unittest, pytest and Jest all say so in their own words), with no test run beside it."""
     text = output or ""
     return bool(_RAN_NONE.search(text)) and not _RAN_SOME.search(text)
+
+
+_TEXT_TEST_STDLIB = frozenset({"__future__", "glob", "json", "os", "pathlib", "pytest", "re", "sys", "typing", "unittest"})
+_FILE_READ_CALLS = frozenset({"open", "read_text", "read_bytes"})
+_STRING_ASSERT_CALLS = frozenset({"assertIn", "assertNotIn", "assertRegex", "assertNotRegex", "assertTrue", "assertFalse"})
+_EXEC_CALLS = frozenset({"subprocess", "system", "popen", "exec", "eval", "compile"})
+
+
+def _targeted_python_files(command: str, root: Path) -> list[Path]:
+    """Existing `.py` test files referenced by `command` (via `unittest discover` or direct arguments)."""
+    discover, targets = _command_target_spec(command)
+    base = Path(root)
+    if discover is not None:
+        start_rel, pattern = discover
+        start = base / start_rel
+        pat = pattern or "test*.py"
+        if not start.is_dir():
+            return []
+        found: list[Path] = []
+        for folder, dirs, files in os.walk(start):
+            dirs[:] = [d for d in dirs if d not in _SKIP_DIRS and not d.startswith(".")]
+            for fname in sorted(files):
+                if Path(fname).match(pat):
+                    found.append(Path(folder) / fname)
+        return found
+    return [base / target for target in targets if (base / target).is_file()]
+
+
+def _is_source_text_only_file(path: Path) -> bool:
+    """True when a Python test file imports only stdlib/test modules and asserts on text read from disk without running code."""
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"))
+    except (OSError, SyntaxError):
+        return False
+
+    imports: set[str] = set()
+    calls: set[str] = set()
+    test_defs = 0
+    has_assert = False
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imports.update(alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imports.add(node.module.split(".")[0])
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name.startswith("test"):
+            test_defs += 1
+        elif isinstance(node, ast.Assert):
+            has_assert = True
+        elif isinstance(node, ast.Call):
+            if isinstance(node.func, ast.Name):
+                calls.add(node.func.id)
+            elif isinstance(node.func, ast.Attribute):
+                calls.add(node.func.attr)
+                if isinstance(node.func.value, ast.Name):
+                    calls.add(node.func.value.id)
+
+    if not test_defs or not imports or not imports.issubset(_TEXT_TEST_STDLIB):
+        return False
+    if calls & _EXEC_CALLS:
+        return False
+    return bool(calls & _FILE_READ_CALLS) and (has_assert or bool(calls & _STRING_ASSERT_CALLS))
+
+
+def source_only_test_files(command: str, root: Path) -> list[str]:
+    """Targeted Python test files in `command` that only read files and assert substrings/regexes rather than running code."""
+    base = Path(root)
+    flagged: list[str] = []
+    for path in _targeted_python_files(command, base):
+        if _is_source_text_only_file(path):
+            try:
+                flagged.append(path.relative_to(base).as_posix())
+            except ValueError:
+                flagged.append(str(path))
+    return flagged

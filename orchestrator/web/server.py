@@ -70,9 +70,12 @@ from orchestrator import releases
 from orchestrator import features as feature_store
 from orchestrator import bug_split, feature_map, kpi_suggest, mcp_status, package_lookup, packages as package_store, run_result, source_control
 from orchestrator import epics as epic_store
+from orchestrator import experience_loop
+from orchestrator import living_spec
 from orchestrator import project_chat
 from orchestrator import folder_lock
 from orchestrator import job_overlap
+from orchestrator import parallel_mece
 from orchestrator import wip_backup
 from orchestrator import sync_health
 from orchestrator import self_update
@@ -958,7 +961,15 @@ def job_state(job: dict[str, Any], root: Path | None = None) -> dict[str, Any]:
             return {**blocked, "steps": fix["steps"], "sign_in": fix["sign_in"], "blocker": question}
         if question:
             asker = "builder" if str(job.get("last_error") or "").startswith("Builder clarification needed") else "planner"
-            return state("needs_you", "attention", "Question for you", f"The {asker} needs an answer to continue.", "answer", "Answer")
+            risk = job.get("risk_assessment") if isinstance(job.get("risk_assessment"), dict) else {}
+            plan_obj = job.get("plan") if isinstance(job.get("plan"), dict) else {}
+            if risk.get("behavior") == "stop_conflict":
+                reason = f"The {asker} found conflicting requirements and needs an answer to continue."
+            elif plan_obj.get("replan_violations"):
+                reason = f"The {asker} needs confirmation before changing approved requirements."
+            else:
+                reason = f"The {asker} needs an answer to continue."
+            return state("needs_you", "attention", "Question for you", reason, "answer", "Answer")
         error = str(job.get("last_error") or "").strip()
         if job.get("build_no_changes"):  # the builder changed no files (worker_run.no_change_stop): the build isn't done
             return state("needs_you", "failed", "Nothing was built", error or "The build finished without changing any files.", "resume", "Run the build again")
@@ -1017,6 +1028,10 @@ def job_state(job: dict[str, Any], root: Path | None = None) -> dict[str, Any]:
             return state("needs_you", "failed", label, "Run a fix attempt, optionally with fresh device logs.", "debug", "Run fix")
         return state("needs_you", "attention", "Needs a fix", "Run a fix attempt, optionally with fresh device logs.", "debug", "Run fix")
     if status == "backlog":
+        if job.get("deferred_from"):
+            return state("backlog", "idle", "Deferred slice · no plan yet",
+                         "Deferred from an earlier slice, and waiting. Make a plan when you're ready; nothing runs until then.",
+                         "plan_epic", "Make a plan")
         return state("backlog", "idle", "Epic · no plan yet", "Approved, and waiting. Make a plan when you're ready; nothing runs until then.", "plan_epic", "Make a plan")
     if status == "scheduled":
         return state("working", "working", "Queued", "Dispatched and waiting for a worker.", "execute", "Run now")
@@ -1113,6 +1128,8 @@ def job_summary(path: Path, job: dict[str, Any], feature_names: dict[str, str] |
         "moved_to": job.get("moved_to"),
         "yolo": bool(job.get("yolo") or job.get("is_yolo")),
         "auto_passed_gates": bool(job.get("auto_passed_gates")),
+        "iteration_version": experience_loop.current_version_label(job),
+        "experience_iteration": int(job.get("experience_iteration") or (len(job.get("experience_versions") or []) or 1)),
     }
 
 
@@ -1323,7 +1340,7 @@ def web_preview_gaps(root: Path, config: dict[str, Any]) -> list[str]:
 
 
 # Runs that end a stretch of work on a job: when one finishes and the job is ready for review, its preview can publish itself.
-AUTO_PREVIEW_AFTER = frozenset({"execute", "resume", "debug"})
+AUTO_PREVIEW_AFTER = frozenset({"execute", "resume", "debug", "refine"})
 
 
 def auto_preview_branch(root: Path, job_id: str) -> str:
@@ -1602,6 +1619,14 @@ def performance_metrics(root: Path) -> dict[str, Any]:
     latencies.sort()
     p50 = latencies[len(latencies) // 2] if latencies else None
     p95 = latencies[min(len(latencies) - 1, int(len(latencies) * 0.95))] if latencies else None
+    raw_jobs: list[dict[str, Any]] = []
+    for folder in (jobs_dir(root), jobs_dir(root) / "archive"):
+        if folder.is_dir():
+            for p in folder.glob("*.json"):
+                doc = read_json_file(p)
+                if doc:
+                    raw_jobs.append(doc)
+    convergence = experience_loop.compute_convergence_metrics(raw_jobs)
     return {
         "jobs_total": len(jobs),
         "jobs_completed": completed,
@@ -1612,6 +1637,7 @@ def performance_metrics(root: Path) -> dict[str, Any]:
         "api_p50_ms": p50,
         "api_p95_ms": p95,
         "api_samples": len(latencies),
+        **convergence,
     }
 
 
@@ -1688,12 +1714,14 @@ def features_overview(root: Path) -> dict[str, Any]:
     archived = archived_feature_jobs(root)
     jobs = list_jobs(root)
     features = feature_store.load(runtime_dir(root))
-    files = {j["id"]: job_touched_files(read_json_file(jobs_dir(root) / f"{j['id']}.json"))
-             for j in jobs if j.get("feature")}
+    raw_jobs = [(p.stem, read_json_file(p)) for p in sorted(jobs_dir(root).glob("*.json"))] if jobs_dir(root).is_dir() else []
+    raw_by_id = dict(raw_jobs)
+    files = {j["id"]: job_touched_files(raw_by_id.get(j["id"]) or {}) for j in jobs if j.get("feature")}
     rolled = feature_store.rollup(features, jobs + archived)
     base = read_json_file(runtime_dir(root) / "project.json").get("base_branch") or "main"
     for f in rolled:
         f["combine"] = combine_view(root, jobs, {f["id"]}, f["id"], base)
+        f["mece"] = parallel_mece.evaluate_feature_coverage(f, raw_jobs)
     return {"features": rolled, "archived_jobs": archived, "overlaps": feature_store.overlaps(features, jobs, files),
             "unassigned": [j["id"] for j in jobs if not j.get("feature") and j["state"]["group"] != "done"]}
 
@@ -2121,7 +2149,8 @@ def test_case_view(root: Path, cases: list[dict[str, Any]], due_ids: set[str] | 
     return {"cases": rows, "summary": {**test_case_lib.summarize(cases, cov), "by_type": by_type}}
 
 
-def job_scope(root: Path, job: dict[str, Any]) -> dict[str, Any] | None:
+def job_scope(root: Path, job: dict[str, Any], job_id: str | None = None,
+              all_jobs: list[tuple[str, dict[str, Any]]] | None = None) -> dict[str, Any] | None:
     """Did the job's change stay inside its plan? None when there's no branch to compare."""
     branch, base = job.get("branch"), job.get("base_branch") or "main"
     if not branch or not git(root, "rev-parse", "--verify", "--quiet", branch):
@@ -2137,7 +2166,10 @@ def job_scope(root: Path, job: dict[str, Any]) -> dict[str, Any] | None:
     owned: list[str] = []
     if job.get("feature"):
         owned = next((f.get("paths", []) for f in feature_store.load(runtime_dir(root)) if f["id"] == job["feature"]), [])
-    result = scope_check.evaluate([str(p) for p in planned_files], len(tasks), changed, owned, job.get("scope_accepted") or [])
+    if all_jobs is None:
+        all_jobs = [(p.stem, read_json_file(p)) for p in sorted(jobs_dir(root).glob("*.json"))] if jobs_dir(root).is_dir() else []
+    peer_files = parallel_mece.peer_file_map(str(job_id or job.get("job_id") or ""), job, all_jobs)
+    result = scope_check.evaluate([str(p) for p in planned_files], len(tasks), changed, owned, job.get("scope_accepted") or [], peer_files=peer_files)
     result["accepted"] = len(job.get("scope_accepted") or [])
     result["trim"] = {"summary": f"Trim “{job.get('title') or 'this job'}” back to its plan",
                       "spec": scope_check.trim_request([f for f in result["findings"] if f["files"]], job.get("title") or "this job")}
@@ -2665,6 +2697,7 @@ def job_detail(root: Path, job_id: str) -> dict[str, Any]:
         next_t = tasks[len(completed)]
         next_task = (next_t.get("name") or next_t.get("title") or next_t.get("description")) if isinstance(next_t, dict) else str(next_t)
 
+    all_jobs = [(p.stem, read_json_file(p)) for p in sorted(jobs_dir(root).glob("*.json"))] if jobs_dir(root).is_dir() else []
     return {
         "summary": job_summary(path, job, _feature_names(root)),
         "job": job,
@@ -2674,11 +2707,12 @@ def job_detail(root: Path, job_id: str) -> dict[str, Any]:
         "changes": job_changes(root, job),
         "links": github_links(root, job),
         "test_summary": test_summary,
-        "scope": job_scope(root, job),
+        "scope": job_scope(root, job, job_id=path.stem, all_jobs=all_jobs),
         "cruft": job_cruft(root, job),
         "plan_size": plan_size.measure(job.get("plan")),
         "spec": job.get("spec"),
         "risk_assessment": job.get("risk_assessment"),
+        "experience": experience_loop.experience_summary(job),
         "deferred_jobs": [s for s in (job_stub(root, jid) for jid in (job.get("deferred_job_ids") or [])) if s],
         "ux_review": job_ux_review(root, job_id, job),
         "context": job_context(root, job),
@@ -2689,7 +2723,8 @@ def job_detail(root: Path, job_id: str) -> dict[str, Any]:
         "parent": job_stub(root, job.get("parent_job_id")),
         "pipeline": pipeline,
         "blockers": job_blockers(root, job),
-        "overlaps": job_overlap.file_overlaps(path.stem, job, [(p.stem, read_json_file(p)) for p in sorted(jobs_dir(root).glob("*.json"))]),
+        "overlaps": job_overlap.file_overlaps(path.stem, job, all_jobs),
+        "mece": parallel_mece.job_mece_summary(path.stem, job, all_jobs, feature_store.load(runtime_dir(root))),
         "tasks": tasks,
         "undoable_task": task_revert.latest_revertable(job),
         "completed_tasks": completed,
@@ -2754,23 +2789,8 @@ def job_documents(out_dir: Path, root: Path | None = None, job: dict[str, Any] |
     return docs
 
 
-INTERNAL_TOOL_PREFIXES = (
-    ".orchestrator/",
-    ".claude/",
-    ".codex/",
-    ".gemini/",
-    ".poolside/",
-    ".cursor/",
-    ".agents/",
-    ".superpowers/",
-)
-
-
-def _is_internal_tool_path(path: str) -> bool:
-    norm = str(path or "").strip()
-    while norm.startswith("./"):
-        norm = norm[2:]
-    return norm.startswith(INTERNAL_TOOL_PREFIXES) or norm in {p.rstrip("/") for p in INTERNAL_TOOL_PREFIXES}
+INTERNAL_TOOL_PREFIXES = scope_check.INTERNAL_TOOL_PREFIXES
+_is_internal_tool_path = scope_check.is_internal_tool_path
 
 
 def job_changes(root: Path, job: dict[str, Any]) -> dict[str, Any]:
@@ -4636,7 +4656,7 @@ def build_new_job(params: dict[str, Any], root: Path) -> list[str]:
             raise UIError("That feature no longer exists")
         params["_feature"] = feature
         provider = analytics.PROVIDERS.get(read_settings(root).get("analytics_provider", ""), {}).get("name")
-        spec += feature_context(chosen, features) + analytics.instrumentation_context(chosen, provider)
+        spec += feature_context(chosen, features) + analytics.instrumentation_context(chosen, provider, runtime_root=runtime_dir(root), consume=False)
     if job_type in new_job_form.LATITUDE_TYPES:
         spec += new_job_form.LATITUDE_NOTE
 
@@ -5139,6 +5159,12 @@ def build_splinter(params: dict[str, Any], root: Path) -> list[str]:
     return orchestrator_argv("script", "splinter_job.py", _job_path(params, root))
 
 
+def build_refine(params: dict[str, Any], root: Path) -> list[str]:
+    job_file = _job_path(params, root)
+    feedback = _text(params, "feedback", required=True, limit=10_000)
+    return orchestrator_argv("script", "job_actions.py", "refine", job_file, "--feedback", feedback)
+
+
 def build_delete_job(params: dict[str, Any], root: Path) -> list[str]:
     job_file = _job_path(params, root)
     argv = orchestrator_argv("script", "job_actions.py", "delete", job_file)
@@ -5479,7 +5505,8 @@ def archived_jobs(root: Path) -> list[dict[str, Any]]:
 def analytics_state(settings: dict[str, Any]) -> dict[str, Any]:
     provider = settings.get("analytics_provider", "")
     return {"providers": analytics.public_providers(), "provider": provider if provider in analytics.PROVIDERS else "",
-            "key_set": bool(settings.get("analytics_key")), "region": settings.get("analytics_region", "us")}
+            "key_set": bool(settings.get("analytics_key")), "region": settings.get("analytics_region", "us"),
+            "kpi_setup_recommended_once": bool(settings.get("kpi_setup_recommended_once"))}
 
 
 def config_state(root: Path) -> dict[str, Any]:
@@ -6454,6 +6481,7 @@ ACTIONS: dict[str, Action] = {
     "answer": Action("Answer", build_answer, fields=["job", "answer"]),
     "approve": Action("Approve", lambda p, r: orchestrator_argv("script", "job_actions.py", "approve", _job_path(p, r)), fields=["job"]),
     "revise": Action("Revise plan", build_revise, fields=["job", "change", "where", "done_when"]),
+    "refine": Action("Refine preview", build_refine, fields=["job", "feedback"]),
     "test_suite": Action("Run test suite", lambda p, r: orchestrator_argv("script", "job_actions.py", "run-suite", _name(p, "name")), fields=["name"]),
     "test_command": Action("Run test command", lambda p, r: orchestrator_argv("run-tests", "--", _name(p, "name")), fields=["name"]),
     "test_probe": Action("Check tests", lambda p, r: orchestrator_argv("script", "job_actions.py", "probe",
@@ -8459,7 +8487,7 @@ class UIHandler(BaseHTTPRequestHandler):
             else:
                 job.pop("scope_accepted", None)
             write_json_file(job_path, job)
-            self._json({"ok": True, "scope": job_scope(root, job)})
+            self._json({"ok": True, "scope": job_scope(root, job, job_id=job_path.stem)})
         elif method == "POST" and len(parts) == 3 and parts[0] == "jobs" and parts[2] == "cruft":
             job_path = resolve_job_path(root, parts[1])
             job = read_json_file(job_path)
@@ -8582,6 +8610,36 @@ class UIHandler(BaseHTTPRequestHandler):
             job["updated_at"] = datetime.now().isoformat()
             write_json_file(job_path, job)
             self._json({"ok": True, "commit": commit, "completed": job.get("completed_task_indices", [])})
+        elif method == "POST" and len(parts) == 3 and parts[0] == "jobs" and parts[2] == "experience":
+            job_path = resolve_job_path(root, parts[1])
+            if parts[1] in self.server.sessions.running_job_ids():
+                raise UIError("A worker is running this job. Pause it first.", HTTPStatus.CONFLICT)
+            job = read_json_file(job_path)
+            body = self._body()
+            feedback = _text(body, "feedback", required=True, limit=10_000)
+            outcome = experience_loop.apply_experience_feedback(
+                job,
+                feedback,
+                root=root,
+                runtime_dir=runtime_dir(root),
+            )
+            job["updated_at"] = datetime.now().isoformat()
+            write_json_file(job_path, job)
+            try:
+                out_dir = runtime_dir(root) / "output" / str(job.get("job_id") or job_path.stem)
+                out_dir.mkdir(parents=True, exist_ok=True)
+                write_json_file(out_dir / "spec.json", job.get("spec") or {})
+                (out_dir / "spec.md").write_text(
+                    living_spec.to_markdown(job.get("spec") or {}, job.get("risk_assessment") or {}),
+                    encoding="utf-8",
+                )
+            except Exception:
+                pass
+            self._json({
+                "ok": True,
+                "outcome": {k: v for k, v in outcome.items() if k != "entry"},
+                "experience": experience_loop.experience_summary(job),
+            })
         elif method == "GET" and parts == ["jobs", "archived"]:
             self._json({"archived": archived_jobs(root)})
         elif method == "POST" and parts == ["git", "setup-help"]:

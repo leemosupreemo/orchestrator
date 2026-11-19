@@ -10,8 +10,9 @@ When the brief names KPI events, implement them through the project's existing a
 
 ### MANDATORY TEST-DRIVEN DEVELOPMENT (TDD)
 1. **Red:** Use your tools to implement a failing unit or integration test FIRST. Use the repository's existing test framework and conventions.
-2. **Green:** Implement the minimal production code to pass that test.
+2. **Green:** Implement the minimal production code to pass that test, ensuring every new helper, method, or property is wired to live runtime callers.
 3. **Refactor:** Clean up code, maintaining passing tests.
+4. **No test theater:** Tests must compile/execute real behavior. NEVER write tests that simply open source/shader files and assert substrings (`assertIn` / regex), and never use `test_command` to bypass the repository's real suite; if no automated test harness exists for that layer, report `"n/a"` or run the configured test suite.
 
 Once you have successfully implemented and verified the changes, your final response must be a single JSON object with the following fields:
 {

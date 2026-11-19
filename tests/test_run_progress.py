@@ -215,6 +215,72 @@ class RunProgressTests(unittest.TestCase):
         progress.feed(b"[1/3] Planning feature (Stitch AI Mode: Off) using opencode/nemotron-3-ultra-free...\n")
         self.assertEqual(progress.snapshot()["models"], ["opencode/nemotron-3-ultra-free"])
 
+    def test_adaptive_planning_phases_and_gates_tracked_in_run_progress(self):
+        progress = RunProgress()
+        progress.feed(b"=== PLANNING ===\n[1/3] Planning feature (Stitch AI Mode: Off) using opencode/nemotron-3-ultra-free...\n")
+        progress.feed(b'[spec] {"stage": "Pass A \xc2\xb7 Spec synthesis", "label": "Synthesizing feature spec"}\n')
+        snap = progress.snapshot()
+        self.assertEqual((snap["step"], snap["total"]), (1, 3))
+        self.assertEqual(snap["label"], "Synthesizing feature spec")
+        self.assertEqual(snap["spec_stage"], "Pass A · Spec synthesis")
+
+        progress.feed(b'[spec] {"stage": "Pass A \xc2\xb7 Risk & ambiguity assessment", "depth": "sparse", "label": "Assessing ambiguity & risk"}\n')
+        snap = progress.snapshot()
+        self.assertEqual(snap["label"], "Assessing ambiguity & risk")
+        self.assertEqual(snap["spec_stage"], "Pass A · Risk & ambiguity assessment")
+        self.assertEqual(snap["planning_depth"], "sparse")
+
+        progress.feed(b'[gate] {"state": "Intent gate \xc2\xb7 passed (assume_default)", "label": "Evaluating intent gate"}\n')
+        snap = progress.snapshot()
+        self.assertEqual(snap["label"], "Evaluating intent gate")
+        self.assertEqual(snap["gate_state"], "Intent gate · passed (assume_default)")
+
+        progress.feed(b'[spec] {"stage": "Pass B \xc2\xb7 Execution planning", "depth": "sparse", "label": "Planning execution tasks"}\n')
+        snap = progress.snapshot()
+        self.assertEqual(snap["label"], "Planning execution tasks")
+        self.assertEqual(snap["spec_stage"], "Pass B · Execution planning")
+
+        progress.feed(b'[gate] {"state": "Plan gate \xc2\xb7 auto-passed"}\n')
+        snap = progress.snapshot()
+        self.assertEqual(snap["gate_state"], "Plan gate · auto-passed")
+
+        # Also verify direct print_phase headers update label, spec_stage, and gate_state without clearing (step, total)
+        progress.feed(b"=== SPEC SYNTHESIS ===\n")
+        self.assertEqual((progress.snapshot()["label"], progress.snapshot()["spec_stage"], progress.snapshot()["step"]),
+                         ("Synthesizing feature spec", "Pass A · Spec synthesis", 1))
+        progress.feed(b"=== RISK ASSESSMENT ===\n")
+        self.assertEqual((progress.snapshot()["label"], progress.snapshot()["spec_stage"]),
+                         ("Assessing ambiguity & risk", "Pass A · Risk & ambiguity assessment"))
+        progress.feed(b"=== INTENT GATE: PASSED ===\n")
+        self.assertEqual((progress.snapshot()["label"], progress.snapshot()["gate_state"]),
+                         ("Evaluating intent gate", "Passed"))
+        progress.feed(b"=== EXECUTION PLANNING ===\n")
+        self.assertEqual((progress.snapshot()["label"], progress.snapshot()["spec_stage"]),
+                         ("Planning execution tasks", "Pass B · Execution planning"))
+        progress.feed(b"=== PLAN GATE: AUTO-PASSED ===\n")
+        self.assertEqual((progress.snapshot()["label"], progress.snapshot()["gate_state"]),
+                         ("Validating plan gate", "Auto-passed"))
+        progress.feed(b"=== REPLANNING ===\n")
+        self.assertEqual((progress.snapshot()["label"], progress.snapshot()["spec_stage"]),
+                         ("Replanning remaining tasks", "Mid-run replanning"))
+        progress.feed(b"=== PREVIEWING ===\n")
+        self.assertEqual(progress.snapshot()["label"], "Generating interactive preview")
+        progress.feed(b"=== ANALYZING FEEDBACK: BEHAVIOR CHANGE ===\n")
+        self.assertEqual((progress.snapshot()["label"], progress.snapshot()["feedback_impact"]),
+                         ("Analyzing feedback impact", "Behavior change"))
+        progress.feed(b'[experience] {"version": "0.2", "feedback_type": "behavior_change", "impact": "behavior_change \xc2\xb7 update_acceptance_criteria_and_code", "stage": "Experience v0.2 \xc2\xb7 behavior change", "label": "Refining from user feedback"}\n')
+        snap = progress.snapshot()
+        self.assertEqual(snap["label"], "Refining from user feedback")
+        self.assertEqual(snap["experience_version"], "v0.2")
+        self.assertEqual(snap["feedback_impact"], "behavior_change · update_acceptance_criteria_and_code")
+        self.assertEqual(snap["spec_stage"], "Experience v0.2 · behavior change")
+        progress.feed(b"=== REFACTORING ===\n")
+        self.assertEqual((progress.snapshot()["label"], progress.snapshot()["spec_stage"]),
+                         ("Consolidating & refactoring", "Experience loop · Refactoring"))
+        progress.feed(b"=== REVERTING ===\n")
+        self.assertEqual((progress.snapshot()["label"], progress.snapshot()["spec_stage"]),
+                         ("Reverting last iteration", "Experience loop · Reverting"))
+
 
 class RunStatusRenderingTests(unittest.TestCase):
     def test_home_job_row_has_no_status_container_and_running_now_shows_step_and_elapsed(self):
@@ -439,6 +505,73 @@ assert.equal(replacements, 2);
 assert.match(panel.html, /Waiting for you/);
 updateRunStatus({...run, running: false, exit_code: 1});
 assert.match(panel.html, /banner failed/);
+
+// Adaptive specification & planning statuses in status container
+for (const phaseLabel of [
+  'Synthesizing feature spec',
+  'Assessing ambiguity & risk',
+  'Evaluating intent gate',
+  'Planning execution tasks',
+  'Validating plan gate',
+  'Replanning remaining tasks',
+  'Generating interactive preview',
+  'Analyzing feedback impact',
+  'Refining from user feedback',
+  'Consolidating & refactoring',
+  'Reverting last iteration',
+]) {
+  const adaptiveRunning = runStatus({
+    ...run,
+    action: 'new_job',
+    result_job: '20261118-feature-1',
+    job: null,
+    running: true,
+    progress: {
+      step: 1,
+      total: 3,
+      label: phaseLabel,
+      spec_stage: 'Pass A · Spec synthesis',
+      planning_depth: 'sparse',
+      gate_state: 'Intent gate · passed (assume_default)',
+      experience_version: 'v0.2',
+      feedback_impact: 'behavior_change · update_acceptance_criteria_and_code',
+      models: ['provider/model-a'],
+      active_models: ['provider/model-a'],
+      agents: 1,
+    },
+  });
+  assert(adaptiveRunning.includes(esc(phaseLabel)), `Status container should display live phase: ${phaseLabel}`);
+  assert(adaptiveRunning.includes('Pass A · Spec synthesis (sparse input)'), 'Status container should display Pipeline stage');
+  assert(adaptiveRunning.includes('Intent gate · passed (assume_default)'), 'Status container should display Gate status');
+  assert(adaptiveRunning.includes('v0.2'), 'Status container should display Experience version');
+  assert(adaptiveRunning.includes('behavior_change · update_acceptance_criteria_and_code'), 'Status container should display Feedback impact');
+  assert.match(adaptiveRunning, /data-run-spec-stage/);
+  assert.match(adaptiveRunning, /data-run-gate-state/);
+  assert.match(adaptiveRunning, /data-run-experience-version/);
+  assert.match(adaptiveRunning, /data-run-feedback-impact/);
+
+  const adaptiveFinished = runStatus({
+    ...run,
+    action: 'new_job',
+    result_job: '20261118-feature-1',
+    job: null,
+    running: false,
+    exit_code: 0,
+    progress: {
+      step: 3,
+      total: 3,
+      label: phaseLabel,
+      spec_stage: 'Pass B · Execution planning',
+      planning_depth: 'sparse',
+      gate_state: 'Plan gate · auto-passed',
+      models: ['provider/model-a'],
+      active_models: [],
+      agents: 0,
+    },
+  });
+  assert.match(adaptiveFinished, /Job created/, `Transient phase ${phaseLabel} must yield to completion label once done`);
+  assert(adaptiveFinished.includes('Plan gate · auto-passed'));
+}
 """
         result = subprocess.run(["node", "-e", script, str(source)], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)

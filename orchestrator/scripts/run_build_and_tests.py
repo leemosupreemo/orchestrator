@@ -100,7 +100,41 @@ def timeout_report(kind: str, command: str, seconds: int, output: str) -> str:
             f"## Last output\n\n```\n{chr(10).join(output.splitlines()[-60:])}\n```\n")
 
 
-def analyze_failure(kind: str, output: str) -> str:
+FAILURE_LINE_RE = re.compile(
+    r"(?:\berror:\s|\bfatal error:\s|\bFAIL:\s|\bERROR:\s|\bFAILED\b|AssertionError|Traceback \(most recent call last\)|Test case .* failed|Test suite .* failed)",
+    re.I,
+)
+
+
+def extract_deterministic_failure_summary(kind: str, output: str) -> str:
+    """Fast deterministic extraction of compiler or test failure lines without burning an extra LLM call."""
+    lines = (output or "").splitlines()
+    matched: list[str] = []
+    for idx, line in enumerate(lines):
+        if FAILURE_LINE_RE.search(line):
+            snippet = "\n".join(lines[idx : min(len(lines), idx + 4)]).strip()
+            if snippet and snippet not in matched:
+                matched.append(snippet)
+            if len(matched) >= 12:
+                break
+    tail = "\n".join(lines[-35:]).strip()
+    header = f"## Deterministic {kind.capitalize()} Failure Summary"
+    body: list[str] = [header, ""]
+    if matched:
+        body.append("### Key Error / Failure Signals")
+        for m in matched:
+            body.append(f"- `{m.splitlines()[0][:240]}`")
+        body.append("")
+    if tail:
+        body.extend(["### Tail Output", "```", tail, "```"])
+    return "\n".join(body) + "\n"
+
+
+def analyze_failure(kind: str, output: str, *, use_llm: bool = False) -> str:
+    """Summarize build/test failures deterministically by default so the autonomous debug loop doesn't burn
+    an extra LLM call before `debug_job.py` inspects the raw logs."""
+    if not use_llm:
+        return extract_deterministic_failure_summary(kind, output)
     prompt = (PROMPTS_DIR / "build_checker.md").read_text(encoding="utf-8")
     analysis, _, session_id = run_llm("gemini", f"{prompt}\n\nFailure type: {kind}\n\nOutput:\n{output}\n", cwd=ROOT, role=ModelRole.REVIEWER)
     return analysis
@@ -217,11 +251,16 @@ def run_main_build_and_tests(job: dict, summary_file: Path) -> tuple[bool, bool]
         
         from orchestrator import builder_check
         missing_targets = [] if is_na else builder_check.missing_test_targets(override, ROOT)
+        source_only_targets = [] if (is_na or missing_targets) else builder_check.source_only_test_files(override, ROOT)
         if is_na:
             test_cmd = None
         elif missing_targets:
             # The builder named a test it never wrote (or wrote elsewhere). Running it finds nothing, so run the project's own tests instead.
             print(f"      - Warning: ignoring the builder's test command, {', '.join(missing_targets)} doesn't exist. Running the project's tests instead.")
+            test_cmd = raw_test_cmd
+        elif source_only_targets and raw_test_cmd and override.strip() != raw_test_cmd.strip():
+            # Don't let source-text substring assertions silently replace the repository's configured test suite.
+            print(f"      - Warning: ignoring source-text-only test override ({', '.join(source_only_targets)}). Running the project's tests instead.")
             test_cmd = raw_test_cmd
         elif "python3" in override or "pytest" in override or "sh " in override or "./" in override:
             test_cmd = override
@@ -254,18 +293,23 @@ def run_main_build_and_tests(job: dict, summary_file: Path) -> tuple[bool, bool]
         for attempt in range(max_retries + 1):
             print(f"      - Running build: {build_cmd} (Attempt {attempt + 1})")
             build_limit = command_timeout("build")
-            build_result = run_shell(build_cmd, cwd=ROOT, check=False, capture=False, timeout=build_limit)
+            build_result = run_shell(build_cmd, cwd=ROOT, check=False, capture=True, timeout=build_limit)
 
             if getattr(build_result, "timed_out", False):  # don't run a hung build a second time to capture its output
-                report = timeout_report("build", build_cmd, build_limit, "")
+                report = timeout_report("build", build_cmd, build_limit, getattr(build_result, "stdout", "") or "")
                 write_text(out_dir / "build.log", report)
                 write_text(out_dir / f"build_analysis_{ts}.md", report)
                 print(f"      - Build STOPPED: {timeout_note(build_limit)}")
                 return False, False
 
             if build_result.returncode != 0:
-                cap_result = run_shell(build_cmd, cwd=ROOT, check=False, capture=True, timeout=build_limit)
-                full_output = cap_result.stdout + "\n" + cap_result.stderr
+                stdout_str = getattr(build_result, "stdout", None) or ""
+                stderr_str = getattr(build_result, "stderr", None) or ""
+                if not stdout_str and not stderr_str:
+                    cap_result = run_shell(build_cmd, cwd=ROOT, check=False, capture=True, timeout=build_limit)
+                    stdout_str = getattr(cap_result, "stdout", "") or ""
+                    stderr_str = getattr(cap_result, "stderr", "") or ""
+                full_output = stdout_str + "\n" + stderr_str
 
                 # If destination mismatch, attempt automated fallback retry
                 if "xcodebuild" in build_cmd and "Unable to find a device matching the provided destination specifier" in full_output:

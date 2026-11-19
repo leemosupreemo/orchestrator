@@ -2863,6 +2863,17 @@ def print_subtitle(text: str, hint: bool = False) -> None:
 def print_phase(phase: str, subtext: str | None = None):
     p_map = {
         "planning": ("🧠", "PLANNING"),
+        "spec_synthesis": ("📋", "SPEC SYNTHESIS"),
+        "risk_assessment": ("⚖️", "RISK ASSESSMENT"),
+        "intent_gate": ("🚦", "INTENT GATE"),
+        "execution_planning": ("🗺️", "EXECUTION PLANNING"),
+        "plan_gate": ("🛡️", "PLAN GATE"),
+        "replanning": ("🔄", "REPLANNING"),
+        "previewing": ("🎮", "PREVIEWING"),
+        "analyzing_feedback": ("🔍", "ANALYZING FEEDBACK"),
+        "refining": ("✨", "REFINING"),
+        "refactoring": ("🧹", "REFACTORING"),
+        "reverting": ("⏪", "REVERTING"),
         "scheduling": ("📡", "SCHEDULING"),
         "execution": ("🏗️", "EXECUTION"),
         "verification": ("🧪", "VERIFICATION"),

@@ -10,10 +10,14 @@ result.json and screens/, and a job records a summary under `ux_review`.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
+import os
 import shutil
+import signal
 import subprocess
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -43,11 +47,20 @@ def project_settings() -> dict:
     return ux.settings(read_json(project_file) if project_file.exists() else {})
 
 
-import os
+PREVIEW_START_TIMEOUT = 45.0
+
+
+def _project_json_data() -> dict:
+    for candidate in (OUTPUT_DIR.parent / "project.json", ROOT / ".orchestrator" / "project.json"):
+        if candidate.is_file():
+            data = read_json(candidate)
+            if isinstance(data, dict):
+                return data
+    return {}
 
 
 def preview_web_target(cfg: dict, *, branch: str = "") -> tuple[dict, str]:
-    """When ui_review.url isn't set, reuse a running Live preview or preview_url/preview_dev_command from project.json."""
+    """When ui_review.url isn't set, reuse a branch-matched running Live preview or preview settings from project.json."""
     if cfg.get("url"):
         return cfg, ""
     dev_dir = OUTPUT_DIR / "dev-previews"
@@ -66,12 +79,11 @@ def preview_web_target(cfg: dict, *, branch: str = "") -> tuple[dict, str]:
             target_url = str(data.get("direct") or data.get("url") or "").strip()
             if target_url:
                 previews.append({"branch": str(data.get("branch") or ""), "url": target_url})
-    picked = next((p for p in previews if branch and p["branch"] == branch), None) or (previews[0] if previews else None)
+    picked = next((p for p in previews if p["branch"] == branch), None) if branch else (previews[0] if previews else None)
     if picked:
         return {**cfg, "url": picked["url"]}, "live preview"
-    project_file = ROOT / ".orchestrator" / "project.json"
-    proj = read_json(project_file) if project_file.exists() else {}
-    if isinstance(proj, dict):
+    proj = _project_json_data()
+    if proj:
         p_url = str(proj.get("preview_url") or "").strip()
         p_cmd = str(proj.get("preview_dev_command") or "").strip()
         if p_url:
@@ -82,6 +94,91 @@ def preview_web_target(cfg: dict, *, branch: str = "") -> tuple[dict, str]:
             if inferred.get("url"):
                 return {**cfg, "url": str(inferred["url"]), "start_command": p_cmd}, "preview command"
     return cfg, ""
+
+
+def _resolve_preview_branch(branch: str = "") -> str:
+    target = (branch or git_out("branch", "--show-current")).strip()
+    if not target:
+        return ""
+    branches = {b.strip() for b in git_out("branch", "--format=%(refname:short)").splitlines() if b.strip()}
+    return target if target in branches else ""
+
+
+def can_auto_preview(cfg: dict, *, branch: str = "") -> bool:
+    """True when we can spin up a temporary branch-matched Live preview for screenshot capture."""
+    if cfg.get("url") or not _resolve_preview_branch(branch) or not ux.find_browser():
+        return False
+    from orchestrator.scripts import dev_preview
+    try:
+        dev_preview.dev_commands(ROOT, _project_json_data())
+        return True
+    except ValueError:
+        return False
+
+
+@contextlib.contextmanager
+def temporary_preview(branch: str, *, timeout: float = PREVIEW_START_TIMEOUT):
+    """Spin up a temporary dev_preview for `branch`, yield `(url, problem)`, and always tear it down cleanly."""
+    from orchestrator.scripts import dev_preview
+
+    slug = dev_preview.channel_name(branch)
+    state_file = OUTPUT_DIR / "dev-previews" / f"{slug}.json"
+    env = {**os.environ, "ORCHESTRATOR_RUNTIME_DIR": str(OUTPUT_DIR.parent)}
+    proc = subprocess.Popen(
+        [sys.executable, str(SCRIPTS_DIR / "dev_preview.py"), "--branch", branch, "--root", str(ROOT)],
+        cwd=ROOT,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        start_new_session=True,
+        env=env,
+    )
+    url = ""
+    problem = ""
+    try:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if state_file.is_file():
+                try:
+                    data = json.loads(state_file.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    data = {}
+                if isinstance(data, dict) and data.get("pid") == proc.pid:
+                    candidate = str(data.get("direct") or data.get("url") or "").strip()
+                    if candidate:
+                        url = candidate
+                        break
+            if proc.poll() is not None:
+                break
+            time.sleep(0.25)
+        if not url:
+            if proc.poll() is not None:
+                out = (proc.stdout.read() if proc.stdout else "").strip()
+                last = next((ln.strip() for ln in reversed(out.splitlines()) if ln.strip()), "")
+                problem = f"Temporary live preview for {branch} stopped before it was ready" + (f": {last}" if last else ".")
+            else:
+                problem = f"Temporary live preview for {branch} didn't become ready within {int(timeout)}s."
+        yield url, problem
+    finally:
+        if proc.poll() is None:
+            try:
+                os.killpg(proc.pid, signal.SIGTERM)
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except OSError:
+                    pass
+                proc.wait(timeout=5)
+            except OSError:
+                pass
+        if proc.stdout:
+            proc.stdout.close()
+        try:
+            if state_file.is_file() and json.loads(state_file.read_text(encoding="utf-8")).get("pid") == proc.pid:
+                state_file.unlink(missing_ok=True)
+        except (OSError, ValueError):
+            pass
 
 
 def with_detected_devices(cfg: dict, raw: dict) -> tuple[dict, str]:
@@ -109,6 +206,7 @@ def capture(cfg: dict, screens_dir: Path, *, dark: bool | None, job_id: str = ""
     limits = []
     shots: list[dict] = []
     web_cfg, preview_source = preview_web_target(cfg, branch=branch)
+    auto_preview_attempted = False
     if web_cfg["url"]:
         shots, problem = ux.capture_web(ROOT, web_cfg, screens_dir, dark=dark)
         if problem:
@@ -118,6 +216,18 @@ def capture(cfg: dict, screens_dir: Path, *, dark: bool | None, job_id: str = ""
         else:
             limits.append("Screens show the app currently served at the configured URL. Baseline routes show first load; "
                           "declared screen states include their capture interactions. Other states may be missing.")
+    elif can_auto_preview(cfg, branch=branch):
+        auto_preview_attempted = True
+        target_branch = _resolve_preview_branch(branch)
+        with temporary_preview(target_branch) as (temp_url, preview_problem):
+            if temp_url:
+                shots, problem = ux.capture_web(ROOT, {**cfg, "url": temp_url}, screens_dir, dark=dark)
+                if problem:
+                    limits.append(problem)
+                else:
+                    limits.append(f"Screens were captured from a temporary live preview of {target_branch} ({temp_url}).")
+            elif preview_problem:
+                limits.append(preview_problem)
     if cfg["simulator"]:
         links = [arg for link in cfg["simulator_screens"] for arg in ("--screen", link)]
         result = subprocess.run([sys.executable, str(SCRIPTS_DIR / "simulator_visual_check.py"), "--job", job_id or "ux-pass", *links],
@@ -143,7 +253,7 @@ def capture(cfg: dict, screens_dir: Path, *, dark: bool | None, job_id: str = ""
         shots += mac_shots
         if problem:
             limits.append(problem)
-    if not web_cfg["url"] and not ux.has_screens(cfg):
+    if not web_cfg["url"] and not auto_preview_attempted and not ux.has_screens(cfg):
         limits.append("No screens configured (ui_review in project.json), so layout, spacing and contrast weren't judged.")
     return shots, limits
 
@@ -176,7 +286,7 @@ def product_pass(no_screens: bool, model: str) -> int:
     screens_dir = out_dir / "screens"
     current_branch = git_out("branch", "--show-current").strip()
     preview_cfg, _ = preview_web_target(cfg, branch=current_branch)
-    stage = "Capture screens" if not no_screens and (ux.has_screens(cfg) or preview_cfg["url"]) else "Prepare interface code"
+    stage = "Capture screens" if not no_screens and (ux.has_screens(cfg) or preview_cfg["url"] or can_auto_preview(cfg, branch=current_branch)) else "Prepare interface code"
     print(f"[1/4] {stage}", flush=True)
     shots, limits = ([], ["Screens were skipped for this run."]) if no_screens else capture(cfg, screens_dir, dark=None, branch=current_branch)
     save_screens(out_dir, shots, limits, title="Whole-product review")

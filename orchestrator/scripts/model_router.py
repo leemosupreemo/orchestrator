@@ -167,6 +167,9 @@ _TARGET_TIER = {
 _COMPLEX_SIGNALS = re.compile(
     r"race condition|deadlock|memory leak|concurren|thread|intermittent|flaky|data loss|corrupt|"
     r"security|vulnerab|architect|refactor|rewrite|migrat|redesign|across the (app|codebase)", re.IGNORECASE)
+_BROAD_QUALITY_SIGNALS = re.compile(
+    r"\b(realistic|realism|lifelike|visuals?|shader|shaders|render(?:ing)?|lighting|foliage|vegetation|"
+    r"terrain|animation|physics|optimi[sz]e|performance|overhaul|polish|enhance|revamp|more\s+natural)\b", re.IGNORECASE)
 _SIMPLE_SIGNALS = re.compile(r"\b(typo|rename|copy change|wording|label|tweak|bump|colou?r|spacing|padding)\b", re.IGNORECASE)
 _LONG_BRIEF_CHARS = 4000
 _SHORT_BRIEF_CHARS = 200
@@ -191,6 +194,9 @@ def profile_job(job_type: str, text: str = "", stitch: bool = False) -> JobProfi
     if match:
         profile.complexity = COMPLEX
         profile.reasons.append(f'the brief mentions "{match.group(0).lower()}"')
+    elif job_type == "quick" and _BROAD_QUALITY_SIGNALS.search(text) and not _SIMPLE_SIGNALS.search(text):
+        profile.complexity = STANDARD
+        profile.reasons.append("the quick request asks for broad or qualitative changes")
     elif job_type == "quick":
         profile.complexity = SIMPLE
         profile.reasons.append("it is a quick job")

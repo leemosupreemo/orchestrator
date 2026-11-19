@@ -12,6 +12,7 @@ there are no times to tell.
 """
 from __future__ import annotations
 
+import json
 import re
 import time
 from collections import deque
@@ -26,13 +27,13 @@ MAX_LINE_CHARS = 400
 ANSI = RunProgress.ANSI
 # What kind of work a step is, for its icon: the first that matches its title wins.
 KINDS = [
-    ("plan", r"\bplan|architect|design|investigat|research"),
-    ("review", r"\breview|pull request"),
-    ("git", r"\bgit\b|branch|commit|merge|push|pull\b"),
-    ("test", r"\btest|coverage|verif|check"),
+    ("plan", r"\bplan(?! gate)|architect|design|investigat|research|spec|synthesiz|ambiguity|risk|intent gate|replan|feedback impact"),
+    ("review", r"\breview|pull request|preview"),
+    ("git", r"\bgit\b|branch|commit|merge|push|pull\b|revert"),
+    ("test", r"\btest|coverage|verif|check|plan gate"),
     ("build", r"\bbuild|compil|archiv|install|deliver|distribut"),
     ("model", r"\bwaiting for|working with ai|thinking|agent"),
-    ("code", r"\bimplement|writ|chang|fix|task|step"),
+    ("code", r"\bimplement|writ|chang|fix|task|step|refin|refactor|consolidat"),
 ]
 FAILURE = re.compile(r"^(?:❌|✗|✘|Error:|ERROR\b|FAILED\b|Traceback \(most recent call last\))|\bfatal:", re.I)
 
@@ -102,6 +103,40 @@ class RunTimeline:
         header = re.fullmatch(r"=+\s*(.*?)\s*=+", line)
         if header:
             self._header(re.sub(r"^[^\w]+", "", header[1]).strip(), timed)
+            return
+        spec_line = re.fullmatch(r"\[spec\]\s*(\{.*\})", line)
+        if spec_line:
+            try:
+                spec_meta = json.loads(spec_line[1])
+                if isinstance(spec_meta, dict) and spec_meta.get("stage"):
+                    stage = str(spec_meta["stage"]).strip()
+                    depth = str(spec_meta.get("depth") or "").strip()
+                    self.current["last"] = f"{stage} ({depth} input)" if depth else stage
+            except ValueError:
+                pass
+            return
+        gate_line = re.fullmatch(r"\[gate\]\s*(\{.*\})", line)
+        if gate_line:
+            try:
+                gate_meta = json.loads(gate_line[1])
+                if isinstance(gate_meta, dict) and gate_meta.get("state"):
+                    self.current["last"] = str(gate_meta["state"]).strip()
+            except ValueError:
+                pass
+            return
+        exp_line = re.fullmatch(r"\[experience\]\s*(\{.*\})", line)
+        if exp_line:
+            try:
+                exp_meta = json.loads(exp_line[1])
+                if isinstance(exp_meta, dict):
+                    ver = str(exp_meta.get("version") or "").strip()
+                    ver = (ver if ver.startswith("v") else f"v{ver}") if ver else ""
+                    imp = str(exp_meta.get("impact") or exp_meta.get("feedback_type") or "").strip()
+                    parts = [p for p in (ver, imp) if p]
+                    if parts:
+                        self.current["last"] = " · ".join(parts)
+            except ValueError:
+                pass
             return
         numbered = re.fullmatch(r"\[(\d+)/(\d+)\]\s*(.+)", line)
         n, total = (int(numbered[1]), int(numbered[2])) if numbered else (0, 0)

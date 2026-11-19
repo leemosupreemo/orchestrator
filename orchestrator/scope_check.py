@@ -19,7 +19,31 @@ MANIFESTS = {"package.json", "Package.swift", "Podfile", "Gemfile", "go.mod", "C
              "setup.cfg", "build.gradle", "build.gradle.kts", "pom.xml", "project.pbxproj"}
 IGNORED = ("*.lock", "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "Package.resolved", "Podfile.lock", "go.sum",
            ".orchestrator/*", "docs/test-cases/*", "*.xcuserstate", ".gitignore")
+INTERNAL_TOOL_PREFIXES = (
+    ".orchestrator/",
+    ".claude/",
+    ".codex/",
+    ".gemini/",
+    ".poolside/",
+    ".cursor/",
+    ".agents/",
+    ".superpowers/",
+)
 TEST_NAME = re.compile(r"(^test_|_test$|Tests?$|Spec$|\.test$|\.spec$)")
+
+
+def normalize_relpath(path: str) -> str:
+    """Strip whitespace and leading `./` segments without stripping leading dots from dotfiles."""
+    norm = str(path or "").strip()
+    while norm.startswith("./"):
+        norm = norm[2:]
+    return norm
+
+
+def is_internal_tool_path(path: str) -> bool:
+    """True for Orchestrator or AI-tool dotfiles/folders that shouldn't pollute review diffs or scope checks."""
+    norm = normalize_relpath(path)
+    return norm.startswith(INTERNAL_TOOL_PREFIXES) or norm in {p.rstrip("/") for p in INTERNAL_TOOL_PREFIXES}
 
 
 def parse_numstat(numstat: str, name_status: str) -> list[dict[str, Any]]:
@@ -56,7 +80,7 @@ def _matches(path: str, pattern: str) -> bool:
 
 
 def _ignored(path: str) -> bool:
-    return any(fnmatch.fnmatch(path, pat) or fnmatch.fnmatch(PurePosixPath(path).name, pat) for pat in IGNORED)
+    return is_internal_tool_path(path) or any(fnmatch.fnmatch(path, pat) or fnmatch.fnmatch(PurePosixPath(path).name, pat) for pat in IGNORED)
 
 
 def _is_test(path: str) -> bool:
@@ -74,7 +98,7 @@ def planned(path: str, plan_files: list[str]) -> bool:
 
 
 def evaluate(plan_files: list[str], tasks: int, changed: list[dict[str, Any]], owned_paths: list[str] | None = None,
-             accepted: list[str] | None = None) -> dict[str, Any]:
+             accepted: list[str] | None = None, peer_files: dict[str, list[str]] | None = None) -> dict[str, Any]:
     accepted_set = set(accepted or [])
     plan_files = [p for p in plan_files if p]
     files = [c for c in changed if not _ignored(c["path"])]
@@ -102,6 +126,18 @@ def evaluate(plan_files: list[str], tasks: int, changed: list[dict[str, Any]], o
         outside = [c["path"] for c in files if not _is_test(c["path"]) and not any(_matches(c["path"], p) for p in owned_paths)
                    and not planned(c["path"], plan_files)]
         add("outside_feature", "medium", "Code outside this feature's own area", "These paths belong to the rest of the product, not this feature.", outside)
+
+    if peer_files:
+        norm_peers = {normalize_relpath(k): v for k, v in peer_files.items() if k and v}
+        unaccepted_drifted = [c["path"] for c in files if normalize_relpath(c["path"]) in norm_peers and c["path"] not in accepted_set]
+        if unaccepted_drifted:
+            peer_names = list(dict.fromkeys(
+                name for path in unaccepted_drifted for name in norm_peers.get(normalize_relpath(path), [])
+            ))
+            peer_label = ", ".join(f"“{n}”" for n in peer_names[:3]) + (f" +{len(peer_names) - 3} more" if len(peer_names) > 3 else "")
+            add("peer_overlap", "medium", "Changes overlap another active job",
+                f"Also claimed by {peer_label}. Merge one job first and rebase the other so changes don't collide.",
+                unaccepted_drifted)
 
     total = sum(c["added"] for c in files)
     budget = LINES_PER_TASK * max(tasks, 1)

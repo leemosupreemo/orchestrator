@@ -11,10 +11,10 @@ Check:
 - regressions: behavior that existing callers or tests rely on
 - state ownership, concurrency, and lifecycle hazards relevant to this stack
 - security: untrusted input, secrets, permissions, injection
-- tests: new behavior is covered, the tests would fail without the change, and none were deleted or weakened to make them pass
+- tests: new behavior is covered, the tests would fail without the change, and none were deleted or weakened to make them pass. Flag as a Blocker any test that only reads source/shader text and asserts substrings/regexes without executing behavior, or any `test_command` override that hides the configured test suite
 - documentation: when user-facing behavior, APIs, CLI commands, configuration, or workflows changed, verify that relevant repository documentation (`README.md`, `docs/`) was updated to match
 - architecture drift: it follows existing patterns and reuses existing helpers instead of duplicating them
-- unneeded code: search the repository for each new helper, class or dependency before accepting it. Flag any that duplicates something already there (name the existing one), any that nothing calls, abstractions with a single user, options nobody asked for, and debug or commented-out code. Say what to delete or reuse instead
+- unneeded code: search the repository for each new helper, class or dependency before accepting it. Flag as a Blocker any new helper/method with zero live callers, shared state overwritten per loop iteration, token stubs on broad/qualitative prompts, duplicate helpers (name the existing one), abstractions with a single user, options nobody asked for, and debug or commented-out code. Say what to delete, wire up, or reuse instead
 - scope: nothing unrelated slipped into the diff
 
 How to report:

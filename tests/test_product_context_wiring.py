@@ -129,6 +129,44 @@ class ReviewerWiringTests(unittest.TestCase):
         self.assertIn("Flag work that serves none of the features", prompts[0])
         self.assertIn("No chat", prompts[0])
 
+    def test_the_reviewer_sees_verification_warnings_for_source_only_tests_and_quick_jobs(self):
+        import review_ready as rr
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            tests_dir = root / "tests" / "build_integrity"
+            tests_dir.mkdir(parents=True)
+            (tests_dir / "test_vegetation_realism.py").write_text(
+                "import unittest\n"
+                "class T(unittest.TestCase):\n"
+                "    def test_s(self):\n"
+                "        with open('TreeWind.shader') as f:\n"
+                "            self.assertIn('_GustFrequency', f.read())\n"
+            )
+            brief = root / "brief.md"
+            brief.write_text("make realistic")
+            job_file = root / "job.json"
+            job_file.write_text(json.dumps({
+                "type": "quick-fix",
+                "plan": {"likely_files": []},
+                "test_command_override": "python3 -m unittest discover -s tests/build_integrity -p test_vegetation_realism.py",
+            }))
+            prompts = []
+
+            def fake(model, prompt, **kwargs):
+                prompts.append(prompt)
+                return ("Request changes.", "m", "sid")
+
+            argv = ["review_ready.py", "7", "--brief-file", str(brief), "--job-file", str(job_file), "--reviewer", "x"]
+            with patch.object(sys, "argv", argv), patch.object(rr, "ROOT", root), patch.object(rr, "OUTPUT_DIR", root / "out"), \
+                 patch.object(rr, "gh_text", return_value="{}"), patch.object(rr, "load_pr_diff", return_value="diff"), \
+                 patch.object(rr, "run_llm", side_effect=fake):
+                with open(os.devnull, "w") as sink, contextlib.redirect_stdout(sink):
+                    rr.main()
+        self.assertTrue(prompts)
+        self.assertIn("Automated verification warnings", prompts[0])
+        self.assertIn("source-text-only tests", prompts[0])
+        self.assertIn("unplanned `quick-fix`", prompts[0])
+
 
 if __name__ == "__main__":
     unittest.main()

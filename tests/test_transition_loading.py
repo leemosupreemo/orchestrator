@@ -44,9 +44,27 @@ if(start>=0)vm.runInContext(source.slice(start,source.indexOf('// Shown from the
     def test_signing_in_immediately_renders_a_skeleton_with_its_status(self):
         out = self.run_js('''
 context.showSigningIn('Opening Google…');
-console.log(JSON.stringify({skeleton:view.innerHTML.includes('skeleton-page'),label:view.innerHTML.includes('Opening Google…')}));
+const withoutCancel = view.innerHTML;
+let cancelled = false;
+view.querySelector = (sel) => sel === '[data-cancel-connect]' ? { addEventListener: (_ev, fn) => fn({ preventDefault(){} }) } : null;
+context.showSigningIn('Opening MacBook…', { onCancel: () => { cancelled = true; } });
+console.log(JSON.stringify({
+  skeleton: withoutCancel.includes('skeleton-page'),
+  label: withoutCancel.includes('Opening Google…'),
+  noCloseWithoutCancel: !withoutCancel.includes('signing-in-close'),
+  hasTopRightClose: view.innerHTML.includes('class="dialog-close-btn signing-in-close"') && view.innerHTML.includes('aria-label="Cancel"'),
+  noBottomCancelText: !view.innerHTML.includes('>Cancel</button>'),
+  cancelled,
+}));
 ''')
-        self.assertEqual(out, {"skeleton": True, "label": True})
+        self.assertEqual(out, {
+            "skeleton": True,
+            "label": True,
+            "noCloseWithoutCancel": True,
+            "hasTopRightClose": True,
+            "noBottomCancelText": True,
+            "cancelled": True,
+        })
 
     def test_project_switch_renders_before_activation_and_only_latest_choice_finishes(self):
         out = self.run_js('''

@@ -46,10 +46,11 @@ the checks that can be automated live in `tests/test_web_ui.py`.
   hero as "The plan to approve": summary, assumptions and risks, and each task with what "done" means and the files it
   touches, editable in place, with **Revise…** beside it. Once approved it folds back to Tasks.
 
-- A More menu groups its items under headings (on a job: This job, Share, Open, Settings), one line each with the
+- A More menu groups its items under headings (on a job: **Work on this job**, **Share & export**, **Settings**, **Finish or remove**), one line each with the
   description in the tooltip (`moreMenu(items, { compact: true })`), only what fits the current stage, and ending
   actions (close, archive, delete) last below a divider. It fits without scrolling; on phones it opens as a sheet over
   a dimmed page.
+- **Icon-only & dismissal controls:** Compact add controls use the `+` SVG (`#i-plus`) and overflow menus use the `⋯` SVG (`#i-more`) inside `.btn.icon-only.small` (square hit target, `padding: 0`, `.icon` `16px`, `.icon-sm` `15px`, with `aria-label` and `title`). Dismissing a modal, dialog, or cancellable loading card uses a top-right `✕` (`.dialog-close-btn`) rather than an extra bottom `Cancel` text button.
 
 - Nothing the app starts waits at a terminal. Runs from the app carry `ORCHESTRATOR_NONINTERACTIVE=1`
   (`child_env()`); in them, menus take their defaults, "press Enter" pauses don't wait, and a question that needs
@@ -158,9 +159,9 @@ Callout and hero containers (`.job-hero`, `.banner`, `.notice`) frame actionable
   - Border radius uses `--radius` (`--r-lg`, 12px).
   - Padding uses `--space-4` `--space-5` on desktop for heroes, `--space-4` on phones, and `--space-3` `--space-4` for banners/notices.
 - **Job lifecycle stepper & next step clarity**:
-  - Every job detail page presents a 4-phase lifecycle stepper (`.job-stepper`): `1. Plan` → `2. Build` → `3. Verify` → `4. Review`.
-  - Active steps use `var(--accent)` (or `var(--warn)`/`var(--bad)` when attention/fix is needed), completed steps use `var(--ok)` with `✓`, upcoming steps are muted.
-  - The hero card leads with its title (what's needed, e.g. "Approve plan"), says why and what to look at, and previews what happens after the primary action (`.job-hero-next-preview`). No badge row above the title: the stepper shows the stage, and the title and button already say whose move it is.
+  - Every job detail page presents a 5-phase agile lifecycle stepper (`.job-stepper`): `1. Plan` → `2. Build` → `3. Verify` → `4. Document` → `5. Finalize`.
+  - Active steps use `var(--accent)` (or `var(--warn)`/`var(--bad)` when attention/fix is needed), completed steps use `var(--ok)` with `✓`, upcoming steps are muted. Subsequent fix/re-plan cycles display a `↻ Iter N` badge and partially reset downstream steps (`Pending re-verify` / `Pending re-check`). `Document` is auto-skipped on `quick-fix`, `bug-fix`, `bug-investigate`, `coverage`, `test-audit`, and `tests-only` jobs unless docs changed.
+  - The hero card leads with its title (what's needed, e.g. "Approve plan"), says why and what to look at, and previews what happens after the primary action (`.job-hero-next-preview`). On review-ready jobs, `.job-review-summary` sits as a full-width band inside `.job-hero`. No badge row above the title: the stepper shows the stage, and the title and button already say whose move it is.
   - The **Progress** card clearly separates task completion count, active/next builder task, remaining tasks, and verification status.
 - **Job Brief**:
   - Positioned near the top of the Job Detail page immediately following Progress (before Test Cases and technical changes).
@@ -174,7 +175,7 @@ Callout and hero containers (`.job-hero`, `.banner`, `.notice`) frame actionable
 - The sidebar leads with what people open most (Home, Activity, Product), then Build & ship (Tests, Delivery, Git, Device logs) and Review (Check-up, UX review, Analytics, Docs). Settings is one entry: Configuration, whose "Set up" group holds Readiness, Connections and Projects. "Finish setup" sits at the top of the sidebar only until the required setup is done. The phone tab bar is Home, Product, New job, Activity, Tests.
 - One home per setting. Check-up is about the product; Readiness is about whether jobs can run here (setup checklist, build tools, tool and health checks); Slack alerts are on Connections; Orchestrator's guides are in Docs; archived jobs are a filter on Home; the test case library is under Tests (`#/tests/cases`). The terminal console's Configuration menu uses the same groups and names (checked by `MenuParityTests`).
 - A route that moves keeps its old address working: add it to `routes.js`, which sends old links to the new place with their query.
-- Things that are not jobs go where they belong: the Product card (what the product is, and a notice when the AI updated it), other projects' waiting jobs as one line under the list.
+- Things that are not jobs go where they belong: the Product card (what the product is, and a notice when the AI updated it). Home stays focused on the active project without cross-project waiting lines.
 
 ## Sign-in
 

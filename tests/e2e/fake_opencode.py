@@ -51,13 +51,58 @@ def role_of(prompt: str) -> str:
         return "prd"
     if "### GENERATED PLAN ###" in prompt:
         return "verifier"
-    if "Vertical slices, not layers" in prompt or "Required JSON schema" in prompt and "tasks" in prompt:
+    if "### PASS A: LIVING FEATURE SPEC" in prompt or "Vertical slices, not layers" in prompt or "Required JSON schema" in prompt and "tasks" in prompt:
         return "planner"
     if "MANDATORY TEST-DRIVEN DEVELOPMENT" in prompt or "implementation agent" in prompt:
         return "builder"
     if "reviewer agent" in prompt:
         return "reviewer"
     return "other"
+
+
+def spec_reply() -> dict:
+    base = {
+        "pass": "spec" if "two_pass" in BEHAVIOUR else "combined",
+        "title": "[Scoring] Long-word bonus",
+        "summary": "Serves the use case 'score a word': words of 7+ letters get 10 extra points.",
+        "inferred_job_type": "feature",
+        "intent": "Serves the use case 'score a word': words of 7+ letters get 10 extra points.",
+        "expected_outcome": "Words with 7 or more letters score 10 extra points.",
+        "functional_requirements": [
+            {"text": "Words with 7 or more letters score 10 extra points", "provenance": "explicit", "source": "user_prompt"},
+            {"text": "score() in wordgame/scoring.py sums letter points", "provenance": "code_derived", "source": "wordgame/scoring.py"},
+        ],
+        "acceptance_criteria": [
+            {"text": "score('abcdefg') includes 10 extra points", "provenance": "explicit", "source": "user_prompt"},
+            {"text": "score('abcdef') is unchanged", "provenance": "inferred", "source": "agent_inference"},
+        ],
+        "constraints": [{"text": "Standard library only", "provenance": "code_derived", "source": "repository"}],
+        "non_goals": [],
+        "assumptions": [
+            {"text": "Only letters a-z count towards the seven", "provenance": "inferred", "source": "agent_inference", "reason": "Matches LETTER_POINTS in scoring.py"},
+            {"text": "The bonus is a flat 10 points", "provenance": "explicit", "source": "user_prompt", "reason": "Stated in request"},
+        ],
+        "conflicts": [],
+        "decisions": [],
+        "evidence": [{"path": "wordgame/scoring.py", "kind": "code", "note": "Holds score()"}],
+        "stories": [
+            {
+                "id": "story-1",
+                "title": "A seven-letter word scores the bonus, end to end",
+                "summary": "Add the 10-point bonus for words with 7+ letters in score()",
+                "slice": "MVP",
+                "acceptance_criteria": ["score('abcdefg') includes 10 extra points", "score('abcdef') is unchanged"],
+                "depends_on": [],
+            }
+        ],
+        "ready_story_id": "story-1",
+        "deferred": [],
+    }
+    if "two_pass" not in BEHAVIOUR:
+        p = plan()
+        base["tasks"] = p["tasks"]
+        base["test_cases"] = p["test_cases"]
+    return base
 
 
 def plan() -> dict:
@@ -137,17 +182,19 @@ def main() -> int:
         target = Path("docs/product/prd.md")
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text("# written by an agentic model\n")
+    is_pass_a = "### PASS A: LIVING FEATURE SPEC" in prompt
+    base_payload = spec_reply() if is_pass_a else plan()
     if role == "planner" and "asks_twice" in BEHAVIOUR and "## Freestyle request" in prompt and prompt.count("**Answer / Decision**") < 2:
         answered = prompt.count("**Answer / Decision**")
         question = ["1. Which words should get the bonus? 2. How many points?", "Should punctuation count towards the length?"][answered]
-        print("```json\n" + json.dumps({**plan(), "clarification_needed": question}) + "\n```")
+        print("```json\n" + json.dumps({**base_payload, "clarification_needed": question}) + "\n```")
     elif role == "planner":
         if "prose_first" in BEHAVIOUR and planner_calls == 1:
             print("I looked through the code and wrote my plan to plan.json. It adds the bonus in score().")
         elif "planner_asks" in BEHAVIOUR and planner_calls == 1:
-            print("```json\n" + json.dumps({**plan(), "clarification_needed": "Should punctuation count towards the seven letters?"}) + "\n```")
+            print("```json\n" + json.dumps({**base_payload, "clarification_needed": "Should punctuation count towards the seven letters?"}) + "\n```")
         else:
-            print("```json\n" + json.dumps(plan()) + "\n```")
+            print("```json\n" + json.dumps(base_payload) + "\n```")
     elif role == "verifier":
         if "concerns_once" in BEHAVIOUR and verifier_calls == 1:
             print(json.dumps({"status": "concerns", "comments": "Say whether punctuation counts.", "suggested_additions": ["Add a test with punctuation"], "risks_identified": []}))

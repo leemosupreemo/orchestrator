@@ -97,6 +97,62 @@ class PlanTests(unittest.TestCase):
         self.assertIn("at most", A.instrumentation_context({"kpis": [{"name": "E", "event": "e_ev", "direction": "down", "target": 2.0, "unit": ""}]}, None))
         self.assertIn("No KPI is defined for this feature yet", A.instrumentation_context(self.FEATURES[1], "Mixpanel"))
 
+    def test_kpi_guardrail_counter_metrics_and_recommend_once_then_ignore_policy(self):
+        import tempfile
+        f = {"id": "lobby", "name": "Lobby"}
+        k = A.add_kpi(f, {
+            "name": "Seat claim rate",
+            "event": "lobby_seat_claimed",
+            "direction": "up",
+            "target": 60,
+            "unit": "%",
+            "guardrail": {
+                "name": "Seat claim error rate",
+                "event": "lobby_seat_claim_error",
+                "direction": "down",
+                "target": 2,
+                "unit": "%",
+            },
+        })
+        self.assertEqual(k["guardrail"]["event"], "lobby_seat_claim_error")
+        self.assertEqual(k["guardrail"]["direction"], "down")
+        plan_md = A.tracking_plan([f])
+        self.assertIn("Seat claim error rate (guardrail for Seat claim rate)", plan_md)
+        self.assertIn("`lobby_seat_claim_error`", plan_md)
+        ctx = A.instrumentation_context(f, "Mixpanel")
+        self.assertIn("`lobby_seat_claim_error` [guardrail / counter-KPI for \"Seat claim rate\"]", ctx)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime = Path(tmpdir)
+            empty_feature = {"id": "photo", "name": "Photo Mode", "kpis": []}
+
+            # 1st check with no connected analytics app -> recommends setup once
+            first = A.resolve_kpi_setup_policy(runtime, consume=True)
+            self.assertEqual(first["mode"], "recommend_once")
+            self.assertTrue(first["should_recommend_setup_once"])
+            self.assertIn("No analytics app is connected yet", first["recommendation"])
+
+            # 2nd check while still disconnected -> ignores KPIs completely
+            second = A.resolve_kpi_setup_policy(runtime, consume=True)
+            self.assertEqual(second["mode"], "ignore_until_connected")
+            self.assertFalse(second["should_recommend_setup_once"])
+            self.assertEqual(second["recommendation"], "")
+            self.assertEqual(A.instrumentation_context(empty_feature, None, runtime_root=runtime), "")
+
+            # Once analytics is connected in setup -> activates KPI + guardrail tracking
+            (runtime / "config" / "settings.json").write_text(json.dumps({
+                "analytics_provider": "mixpanel",
+                "analytics_key": "MP_TOKEN",
+                "analytics_region": "us",
+                "kpi_setup_recommended_once": True,
+            }))
+            third = A.resolve_kpi_setup_policy(runtime, consume=True)
+            self.assertEqual(third["mode"], "active")
+            self.assertTrue(third["analytics_connected"])
+            self.assertIn("Mixpanel", third["connected_apps"])
+            active_ctx = A.instrumentation_context(empty_feature, "Mixpanel", runtime_root=runtime)
+            self.assertIn("guardrail / counter-KPI", active_ctx)
+
 
 class Resp:
     def __init__(self, body="", status=200):

@@ -40,7 +40,7 @@ from manual_run import capture_logs
 import test_cases as tc
 from orchestrator.project_config import PROJECT_CONFIG
 from orchestrator import architecture, prd, project_docs
-from orchestrator import new_job_form
+from orchestrator import living_spec, new_job_form, plan_edit, risk_engine
 from orchestrator import plan_size, slice_check
 
 SCRIPTS_DIR = Path(__file__).resolve().parent
@@ -866,8 +866,44 @@ def main(args_override: list[str] | None = None) -> None:
         "allowed_machines": allowed_machines or [],
         "actual_planner_used": planner
     }
+    try:
+        prd_doc = prd.Prd(ROOT, ROOT / ".orchestrator")
+        current_prd_text = prd_doc.read() if prd_doc.exists() else ""
+    except Exception:
+        current_prd_text = ""
+    try:
+        current_arch_record = architecture.read_record(ROOT)
+    except Exception:
+        current_arch_record = None
+    linked_feature_record = None
+    active_feature_id = args.feature or (existing_job or {}).get("feature")
+    if active_feature_id:
+        try:
+            from orchestrator import features as feature_store
+            linked_feature_record = feature_store.get(feature_store.load(ROOT / ".orchestrator"), active_feature_id)
+        except Exception:
+            linked_feature_record = None
+    try:
+        from orchestrator import analytics
+        kpi_policy = analytics.resolve_kpi_setup_policy(ROOT / ".orchestrator", consume=not bool(existing_job))
+    except Exception:
+        kpi_policy = None
+
+    spec: dict = {}
+    risk_result: dict = {}
     with StatusBar(planning_context, is_processing=True):
-        if args.job_type != "quick":  # a quick job is its own plan (see above)
+        if args.job_type == "quick":
+            spec = living_spec.normalize(
+                plan,
+                raw_input=raw_input_text,
+                prd_text=current_prd_text,
+                arch_record=current_arch_record,
+                root=ROOT,
+                feature_record=linked_feature_record,
+                kpi_policy=kpi_policy,
+            )
+            risk_result = risk_engine.evaluate(spec, root=ROOT)
+        else:  # a quick job is its own plan (see above)
             print_phase("planning")
         
             prompt_file = "planner_bug.md"
@@ -891,7 +927,7 @@ def main(args_override: list[str] | None = None) -> None:
             needs_test_cases = args.job_type in ("feature", "bug", "coverage") and not args.stitch
             test_case_context = ""
             if needs_test_cases:
-                test_case_context = tc.PLANNER_INSTRUCTIONS + "\n" + tc.library_index(ROOT)
+                test_case_context = tc.PLANNER_INSTRUCTIONS + "\n" + tc.library_index(ROOT, query=raw_input_text)
                 prompt_template = f"{prompt_template}\n{test_case_context}"
             # The product's own documents (brief, use cases and non-goals, journey, screens, decisions, plan) come first,
             # so each plan is judged against what the product is for. It is part of the template, so retries keep it.
@@ -905,17 +941,61 @@ def main(args_override: list[str] | None = None) -> None:
             docs_context = project_docs.context_block(ROOT)
             if docs_context:
                 prompt_template = f"{prompt_template}\n{docs_context}"
+            try:
+                from orchestrator import parallel_mece
+                peer_lanes = parallel_mece.lane_context(
+                    parallel_mece.load_active_peers(
+                        PROJECT_CONFIG.runtime_dir / "jobs",
+                        current_job_id=(existing_job or {}).get("job_id"),
+                        current_job=existing_job,
+                    ),
+                    role="planner",
+                )
+            except Exception:
+                peer_lanes = ""
+            if peer_lanes:
+                prompt_template = f"{prompt_template}\n{peer_lanes}"
             # Every question asked and answered so far, so a re-plan (and a follow-up question) builds on all of them.
             asked_so_far = (existing_job or {}).get("clarification_history") or []
             if asked_so_far:
                 revision_context += f"\n\n{format_clarification_history(asked_so_far)}\n"
             if freestyle:
                 revision_context += new_job_form.freestyle_note(len(asked_so_far))
-            llm_input = f"{prompt_template}\n\nRaw input:\n{raw_input_text}{extra_input}{revision_context}\n"
+
+            use_two_pass = args.job_type == "feature" and not args.stitch
+            spec_prompt_template = ""
+            pass_b_prompt_template = prompt_template
+            if use_two_pass:
+                spec_prompt_template = (PROMPTS_DIR / "planner_spec.md").read_text(encoding="utf-8")
+                for ctx_block in (test_case_context, product_context, arch_context, docs_context, peer_lanes):
+                    if ctx_block:
+                        spec_prompt_template = f"{spec_prompt_template}\n{ctx_block}"
+                # Pass B already receives the distilled LivingFeatureSpec in pass_b_block; avoid re-sending full project_docs.
+                pass_b_base = (PROMPTS_DIR / prompt_file).read_text(encoding="utf-8")
+                for ctx_block in (test_case_context, product_context, arch_context, peer_lanes):
+                    if ctx_block:
+                        pass_b_base = f"{pass_b_base}\n{ctx_block}"
+                pass_b_prompt_template = pass_b_base
+
+            # If re-planning purely to incorporate Senior Architect verification suggestions on Pass B tasks, reuse Pass A spec.
+            reuse_existing_spec = bool(use_two_pass and existing_job and args.skip_verify and isinstance(existing_job.get("spec"), dict))
+            if reuse_existing_spec:
+                spec = dict(existing_job["spec"])
+                risk_result = risk_engine.evaluate(spec, root=ROOT)
+                pass_b_block = living_spec.pass_b_context(spec, risk_result)
+                llm_input = f"{pass_b_prompt_template}\n{pass_b_block}\nRaw input:\n{raw_input_text}{extra_input}{revision_context}\n"
+            elif use_two_pass:
+                llm_input = living_spec.pass_a_prompt(spec_prompt_template, raw_input_text, extra_input=extra_input, revision_context=revision_context)
+            else:
+                llm_input = f"{prompt_template}\n\nRaw input:\n{raw_input_text}{extra_input}{revision_context}\n"
         
             llm_sessions = []
         
             print(f"\n[1/3] Planning {args.job_type} (Stitch AI Mode: {'Enabled' if args.stitch else 'Off'}) using {planner}...", flush=True)
+            if reuse_existing_spec:
+                print("[spec] " + json.dumps({"stage": "Pass B · Execution planning", "depth": spec.get("planning_depth", ""), "label": "Planning execution tasks"}), flush=True)
+            elif use_two_pass:
+                print("[spec] " + json.dumps({"stage": "Pass A · Spec synthesis", "label": "Synthesizing feature spec"}), flush=True)
             llm_raw_output, actual_planner, sid = run_llm(planner, llm_input, cwd=ROOT, allowed_models=allowed_models, role=ModelRole.PLANNER)
             llm_sessions.append({"id": sid, "model": actual_planner})
 
@@ -932,8 +1012,9 @@ def main(args_override: list[str] | None = None) -> None:
                 print("-" * 30 + "\n")
 
             try:
+                raw_parsed = json.loads(llm_output, strict=False)
                 plan = normalize_plan_dict(
-                    json.loads(llm_output, strict=False),
+                    raw_parsed,
                     default_title=title_input,
                     default_summary=raw_input_text.splitlines()[0] if raw_input_text else "",
                     job_type=args.job_type,
@@ -945,7 +1026,31 @@ def main(args_override: list[str] | None = None) -> None:
                 print("-" * 40)
                 raise
 
-            # Check for clarification needed from planner
+            has_tasks = isinstance(raw_parsed, dict) and isinstance(raw_parsed.get("tasks"), list) and len(raw_parsed.get("tasks")) > 0
+            is_pass_a_only = bool(
+                use_two_pass
+                and not reuse_existing_spec
+                and isinstance(raw_parsed, dict)
+                and not has_tasks
+                and (raw_parsed.get("pass") == "spec" or "tasks" not in raw_parsed)
+            )
+            if not reuse_existing_spec:
+                spec = living_spec.normalize(
+                    raw_parsed if isinstance(raw_parsed, dict) else plan,
+                    raw_input=raw_input_text,
+                    prd_text=current_prd_text,
+                    arch_record=current_arch_record,
+                    root=ROOT,
+                    feature_record=linked_feature_record,
+                    kpi_policy=kpi_policy,
+                )
+                km = spec.get("kpi_metrics") if isinstance(spec.get("kpi_metrics"), dict) else {}
+                if km.get("status") == "recommend_setup_once" and km.get("recommendation"):
+                    print(f"      - KPI setup tip (shown once): {km['recommendation']}", flush=True)
+                print("[spec] " + json.dumps({"stage": "Pass A · Risk & ambiguity assessment", "depth": spec.get("planning_depth", ""), "label": "Assessing ambiguity & risk"}), flush=True)
+                risk_result = risk_engine.evaluate(spec, root=ROOT)
+
+            # Check for clarification needed from planner or Risk Engine (Intent Gate)
             from common import classify_clarification
             clar_kind, clarification = classify_clarification(plan.get("clarification_needed"))
             if clar_kind == "blocking":
@@ -954,6 +1059,18 @@ def main(args_override: list[str] | None = None) -> None:
                 if clarification:
                     print(f"      - Ignoring non-question planner note: {clarification}")
                 clarification = ""
+            if not clarification and not risk_result.get("intent_gate_passed") and risk_result.get("clarification_question"):
+                # In freestyle mode, respect FREESTYLE_MAX_ROUNDS cap unless there is an explicit conflict
+                at_round_cap = freestyle and len(asked_so_far) >= new_job_form.FREESTYLE_MAX_ROUNDS and not risk_result.get("conflicts")
+                if not at_round_cap:
+                    clarification = risk_result["clarification_question"]
+
+            if clarification:
+                intent_state = "Intent gate · conflicting requirements" if risk_result.get("conflicts") else "Intent gate · waiting for clarification"
+            else:
+                intent_state = f"Intent gate · passed ({risk_result.get('behavior', 'proceed')})"
+            print("[gate] " + json.dumps({"state": intent_state, "label": "Evaluating intent gate"}), flush=True)
+
             clarification_history = existing_job.get("clarification_history", []) if existing_job else []
             if clarification:
                 print("\n" + "!"*60)
@@ -985,17 +1102,36 @@ def main(args_override: list[str] | None = None) -> None:
                         })
                         print(f"\n      - Re-planning with your answer...", flush=True)
                         clarification_feedback = f"### USER CLARIFICATION ###\nQuestion: {clarification}\nAnswer: {user_ans}\n"
-                        recursive_input = f"{prompt_template}\n\n### ORIGINAL REQUEST ###\n{raw_input_text}\n\n### PREVIOUS PLAN WITH QUESTION ###\n{llm_output}\n\n{clarification_feedback}\nPlease update the plan JSON to address the user's clarification and proceed."
+                        active_template = spec_prompt_template if is_pass_a_only else prompt_template
+                        recursive_input = f"{active_template}\n\n### ORIGINAL REQUEST ###\n{raw_input_text}\n\n### PREVIOUS PLAN WITH QUESTION ###\n{llm_output}\n\n{clarification_feedback}\nPlease update the plan JSON to address the user's clarification and proceed."
                         try:
                             new_llm_raw_output, actual_planner, sid = run_llm(planner, recursive_input, cwd=ROOT, allowed_models=allowed_models, role=ModelRole.PLANNER)
                             llm_sessions.append({"id": sid, "model": actual_planner})
                             llm_output = extract_json_block(new_llm_raw_output)
+                            raw_parsed = json.loads(llm_output, strict=False)
                             plan = normalize_plan_dict(
-                                json.loads(llm_output, strict=False),
+                                raw_parsed,
                                 default_title=title_input,
                                 default_summary=raw_input_text.splitlines()[0] if raw_input_text else "",
                                 job_type=args.job_type,
                             )
+                            has_tasks = isinstance(raw_parsed, dict) and isinstance(raw_parsed.get("tasks"), list) and len(raw_parsed.get("tasks")) > 0
+                            is_pass_a_only = bool(
+                                use_two_pass
+                                and isinstance(raw_parsed, dict)
+                                and not has_tasks
+                                and (raw_parsed.get("pass") == "spec" or "tasks" not in raw_parsed)
+                            )
+                            spec = living_spec.normalize(
+                                raw_parsed if isinstance(raw_parsed, dict) else plan,
+                                raw_input=raw_input_text,
+                                prd_text=current_prd_text,
+                                arch_record=current_arch_record,
+                                root=ROOT,
+                                feature_record=linked_feature_record,
+                                kpi_policy=kpi_policy,
+                            )
+                            risk_result = risk_engine.evaluate(spec, root=ROOT)
                             clar_kind, clarification = classify_clarification(plan.get("clarification_needed"))
                             if clar_kind == "blocking":
                                 raise RuntimeError(f"Planner blocked: {clarification}")
@@ -1006,110 +1142,126 @@ def main(args_override: list[str] | None = None) -> None:
                         except Exception as e:
                             print(f"\033[1;91m      - Re-planning attempt failed: {e}\033[0m")
 
-            def enforce_test_cases(plan: dict, llm_output: str, actual_planner: str) -> tuple[dict, str, str]:
-                """Sends the plan back (up to twice) until its test cases cover every
-                acceptance criterion and each automated case names its tests."""
-                for attempt in range(2):
-                    problems = tc.plan_problems(plan)
-                    if not problems:
-                        return plan, llm_output, actual_planner
-                    print(f"      - Test cases incomplete; asking the planner to fix them ({attempt + 1}/2)...", flush=True)
-                    for problem in problems:
-                        print(f"        · {problem.splitlines()[0]}")
-                    retry_input = (f"{prompt_template}\n\n### ORIGINAL REQUEST ###\n{raw_input_text}{extra_input}\n\n"
-                                   f"### YOUR PREVIOUS PLAN ###\n{llm_output}\n\n{tc.replan_request(problems)}")
-                    try:
-                        retry_raw, actual_planner, retry_sid = run_llm(planner, retry_input, cwd=ROOT, allowed_models=allowed_models, role=ModelRole.PLANNER)
-                        llm_sessions.append({"id": retry_sid, "model": actual_planner})
-                        llm_output = extract_json_block(retry_raw)
-                        plan = normalize_plan_dict(
-                            json.loads(llm_output, strict=False),
-                            default_title=title_input,
-                            default_summary=raw_input_text.splitlines()[0] if raw_input_text else "",
-                            job_type=args.job_type,
-                        )
-                    except Exception as e:
-                        print(f"\033[1;91m      - Test-case re-plan failed: {e}\033[0m")
-                        break
-                remaining = tc.plan_problems(plan)
-                if remaining:
-                    print("\033[1;93m      - Plan still lacks adequate test cases; flagging it for your review.\033[0m")
-                    plan["test_case_problems"] = remaining
-                else:
-                    plan.pop("test_case_problems", None)
-                return plan, llm_output, actual_planner
-
-            def enforce_slices(plan: dict, llm_output: str, actual_planner: str) -> tuple[dict, str, str]:
-                """A feature plan should be a series of working slices, not a stack of layers. Sends a layered plan back
-                once; if it still looks layered, keeps it with the warning visible instead of blocking."""
-                found = slice_check.problems(plan)
-                if found:
-                    print("      - The plan looks layered; asking the planner to cut it into working slices...", flush=True)
-                    for problem in found:
-                        print(f"        · {problem}")
-                    retry_input = (f"{prompt_template}\n\n### ORIGINAL REQUEST ###\n{raw_input_text}{extra_input}\n\n"
-                                   f"### YOUR PREVIOUS PLAN ###\n{llm_output}\n\n{slice_check.replan_request(found)}")
-                    try:
-                        retry_raw, actual_planner, retry_sid = run_llm(planner, retry_input, cwd=ROOT, allowed_models=allowed_models, role=ModelRole.PLANNER)
-                        llm_sessions.append({"id": retry_sid, "model": actual_planner})
-                        llm_output = extract_json_block(retry_raw)
-                        plan = normalize_plan_dict(
-                            json.loads(llm_output, strict=False),
-                            default_title=title_input,
-                            default_summary=raw_input_text.splitlines()[0] if raw_input_text else "",
-                            job_type=args.job_type,
-                        )
-                    except Exception as e:
-                        print(f"\033[1;91m      - Slice re-plan failed: {e}\033[0m")
-                remaining = slice_check.problems(plan)
-                if remaining:
-                    print("\033[1;93m      - Plan still looks layered; flagging it for your review.\033[0m")
-                    plan["slice_warnings"] = remaining
-                else:
-                    plan.pop("slice_warnings", None)
-                return plan, llm_output, actual_planner
-
-            def enforce_size(plan: dict, llm_output: str, actual_planner: str) -> tuple[dict, str, str]:
-                """One job has to stay small. A plan over the budget is sent back once to be cut down; if it is still
-                too big it is kept as it is, and the page offers to split it into jobs instead of approving it."""
-                found = plan_size.measure(plan)["reasons"]
-                if not found:
-                    return plan, llm_output, actual_planner
-                print("      - The plan is too big for one job; asking the planner to cut it down...", flush=True)
-                for reason in found:
-                    print(f"        · {reason}")
-                retry_input = (f"{prompt_template}\n\n### ORIGINAL REQUEST ###\n{raw_input_text}{extra_input}\n\n"
-                               f"### YOUR PREVIOUS PLAN ###\n{llm_output}\n\n{plan_size.replan_request(found)}")
+            # --- PASS B: REPOSITORY-AWARE EXECUTION PLANNING ---
+            # Runs when Pass A produced a Living Feature Spec without tasks and the Intent Gate passed (no blocking clarification).
+            if use_two_pass and not reuse_existing_spec and not is_pass_a_only and not clarification:
+                print(f"      - Single-pass fast-track: Pass A synthesized both Living Feature Spec and execution tasks (skipping Pass B).", flush=True)
+            if is_pass_a_only and not clarification:
+                print("[spec] " + json.dumps({"stage": "Pass B · Execution planning", "depth": spec.get("planning_depth", ""), "label": "Planning execution tasks"}), flush=True)
+                print(f"      - Pass A Intent Gate passed ({risk_result.get('behavior', 'proceed')}). Running Pass B execution planner with {planner}...", flush=True)
+                pass_b_block = living_spec.pass_b_context(spec, risk_result)
+                pass_b_revision = revision_context
+                if clarification_history and not asked_so_far:
+                    pass_b_revision += f"\n\n{format_clarification_history(clarification_history)}\n"
+                pass_b_input = f"{pass_b_prompt_template}\n{pass_b_block}\nRaw input:\n{raw_input_text}{extra_input}{pass_b_revision}\n"
+                llm_raw_output, actual_planner, sid = run_llm(planner, pass_b_input, cwd=ROOT, allowed_models=allowed_models, role=ModelRole.PLANNER)
+                llm_sessions.append({"id": sid, "model": actual_planner})
+                llm_output = extract_json_block(llm_raw_output)
                 try:
-                    retry_raw, actual_planner, retry_sid = run_llm(planner, retry_input, cwd=ROOT, allowed_models=allowed_models, role=ModelRole.PLANNER)
-                    llm_sessions.append({"id": retry_sid, "model": actual_planner})
-                    llm_output = extract_json_block(retry_raw)
                     plan = normalize_plan_dict(
                         json.loads(llm_output, strict=False),
-                        default_title=title_input,
-                        default_summary=raw_input_text.splitlines()[0] if raw_input_text else "",
+                        default_title=spec.get("title") or title_input,
+                        default_summary=spec.get("intent") or (raw_input_text.splitlines()[0] if raw_input_text else ""),
                         job_type=args.job_type,
                     )
-                except Exception as e:
-                    print(f"\033[1;91m      - Size re-plan failed: {e}\033[0m")
-                if plan_size.measure(plan)["too_large"]:
-                    print("\033[1;93m      - Plan is still too big for one job; it will be offered as a split.\033[0m")
-                return plan, llm_output, actual_planner
+                except json.JSONDecodeError:
+                    print("\n\033[1;91mFAILED TO PARSE PASS B PLANNER OUTPUT AS JSON\033[0m")
+                    print("-" * 40)
+                    print(llm_output)
+                    print("-" * 40)
+                    raise
+                clar_kind, pass_b_clar = classify_clarification(plan.get("clarification_needed"))
+                if clar_kind == "blocking":
+                    raise RuntimeError(f"Planner blocked: {pass_b_clar}")
+                if clar_kind == "question" and pass_b_clar:
+                    clarification = pass_b_clar
+
+            plan = living_spec.merge_spec_into_plan(plan, spec, risk_result)
 
             slices_matter = args.job_type == "feature" and not args.stitch
 
-            if needs_test_cases and not clarification:
-                plan, llm_output, actual_planner = enforce_test_cases(plan, llm_output, actual_planner)
-            if slices_matter and not clarification:
-                plan, llm_output, actual_planner = enforce_size(plan, llm_output, actual_planner)
-                plan, llm_output, actual_planner = enforce_slices(plan, llm_output, actual_planner)
+            def enforce_plan_quality(
+                plan: dict,
+                llm_output: str,
+                actual_planner: str,
+                *,
+                check_size: bool = True,
+            ) -> tuple[dict, str, str]:
+                """Consolidates test-case coverage, job size budget, and vertical-slice checks into a single combined
+                re-plan round-trip (at most 1 LLM call instead of up to 4 sequential retries)."""
+                tc_problems = tc.plan_problems(plan) if needs_test_cases else []
+                size_reasons = plan_size.measure(plan)["reasons"] if (slices_matter and check_size) else []
+                slice_problems = slice_check.problems(plan) if slices_matter else []
+
+                replan_blocks: list[str] = []
+                if tc_problems:
+                    print("      - Test cases incomplete; asking the planner to fix them...", flush=True)
+                    for problem in tc_problems:
+                        print(f"        · {problem.splitlines()[0]}")
+                    replan_blocks.append(tc.replan_request(tc_problems))
+                if size_reasons:
+                    print("      - The plan is too big for one job; asking the planner to cut it down...", flush=True)
+                    for reason in size_reasons:
+                        print(f"        · {reason}")
+                    replan_blocks.append(plan_size.replan_request(size_reasons))
+                if slice_problems:
+                    print("      - The plan looks layered; asking the planner to cut it into working slices...", flush=True)
+                    for problem in slice_problems:
+                        print(f"        · {problem}")
+                    replan_blocks.append(slice_check.replan_request(slice_problems))
+
+                if replan_blocks:
+                    combined_feedback = "\n\n".join(replan_blocks)
+                    retry_input = (
+                        f"{prompt_template}\n\n### ORIGINAL REQUEST ###\n{raw_input_text}{extra_input}\n\n"
+                        f"### YOUR PREVIOUS PLAN ###\n{llm_output}\n\n{combined_feedback}"
+                    )
+                    try:
+                        retry_raw, actual_planner, retry_sid = run_llm(
+                            planner, retry_input, cwd=ROOT, allowed_models=allowed_models, role=ModelRole.PLANNER
+                        )
+                        llm_sessions.append({"id": retry_sid, "model": actual_planner})
+                        llm_output = extract_json_block(retry_raw)
+                        plan = normalize_plan_dict(
+                            json.loads(llm_output, strict=False),
+                            default_title=title_input,
+                            default_summary=raw_input_text.splitlines()[0] if raw_input_text else "",
+                            job_type=args.job_type,
+                        )
+                        plan = living_spec.merge_spec_into_plan(plan, spec, risk_result)
+                    except Exception as e:
+                        print(f"\033[1;91m      - Plan quality re-plan failed: {e}\033[0m")
+
+                if needs_test_cases:
+                    remaining_tc = tc.plan_problems(plan)
+                    if remaining_tc:
+                        print("\033[1;93m      - Plan still lacks adequate test cases; flagging it for your review.\033[0m")
+                        plan["test_case_problems"] = remaining_tc
+                    else:
+                        plan.pop("test_case_problems", None)
+                if slices_matter:
+                    if check_size and plan_size.measure(plan)["too_large"]:
+                        print("\033[1;93m      - Plan is still too big for one job; it will be offered as a split.\033[0m")
+                    remaining_slices = slice_check.problems(plan)
+                    if remaining_slices:
+                        print("\033[1;93m      - Plan still looks layered; flagging it for your review.\033[0m")
+                        plan["slice_warnings"] = remaining_slices
+                    else:
+                        plan.pop("slice_warnings", None)
+                return plan, llm_output, actual_planner
+
+            if (needs_test_cases or slices_matter) and not clarification:
+                plan, llm_output, actual_planner = enforce_plan_quality(plan, llm_output, actual_planner, check_size=True)
 
             # --- VERIFICATION STEP ---
             verification = None
             planner_meta = get_model(actual_planner)
-        
-            # Only verify if the planner used was NOT an Extreme model
-            if planner_meta and planner_meta.tier > ModelTier.EXTREME and not args.skip_verify:
+            should_verify = not args.skip_verify and risk_engine.should_run_architect_verifier(spec, risk_result, plan, planner_meta)
+            if planner_meta and planner_meta.tier > ModelTier.EXTREME and not args.skip_verify and not should_verify:
+                print("      - Deterministic Plan Gate auto-passed for grounded single-slice plan; skipping redundant Senior Architect LLM call.", flush=True)
+
+            # Only verify when should_run_architect_verifier determines Senior Architect verification adds value
+            if should_verify:
                 # Find available verifier models in allowed_models
                 extreme_options = get_prioritized_models(role=ModelRole.VERIFIER, allowed_models=allowed_models)
                 if extreme_options:
@@ -1167,10 +1319,8 @@ def main(args_override: list[str] | None = None) -> None:
                                         job_type=args.job_type,
                                     )
                                     print(f"      - Plan revised successfully. Proceeding...")
-                                    if needs_test_cases:
-                                        plan, llm_output, actual_planner = enforce_test_cases(plan, llm_output, actual_planner)
-                                    if slices_matter:
-                                        plan, llm_output, actual_planner = enforce_slices(plan, llm_output, actual_planner)
+                                    if needs_test_cases or slices_matter:
+                                        plan, llm_output, actual_planner = enforce_plan_quality(plan, llm_output, actual_planner, check_size=False)
                                     # Clear clarification so status stays 'planned'
                                     clarification = None
                                 except:
@@ -1194,6 +1344,30 @@ def main(args_override: list[str] | None = None) -> None:
                     )
 
             last_manual_logs = [] # Initialized but handled inside bug block above if needed
+
+            # Mid-execution adaptive replanning: protect completed tasks and explicitly approved requirements
+            if existing_job:
+                done_indices = sorted(plan_edit._done(existing_job))
+                if done_indices:
+                    print("[spec] " + json.dumps({"stage": "Mid-run replanning", "depth": spec.get("planning_depth", ""), "label": "Replanning remaining tasks"}), flush=True)
+                prev_tasks = (existing_job.get("plan") or {}).get("tasks") or []
+                if done_indices and isinstance(plan.get("tasks"), list):
+                    kept_done = [prev_tasks[i] for i in done_indices if 0 <= i < len(prev_tasks)]
+                    done_titles = {(t.get("title", "") if isinstance(t, dict) else str(t)).strip().lower() for t in kept_done}
+                    remaining_new = [
+                        t for t in plan["tasks"]
+                        if (t.get("title", "") if isinstance(t, dict) else str(t)).strip().lower() not in done_titles
+                    ]
+                    plan["tasks"] = kept_done + remaining_new
+                if existing_job.get("spec") and (done_indices or existing_job.get("approved")):
+                    violations = living_spec.validate_replan_invariants(existing_job.get("spec"), plan)
+                    if violations and not clarification:
+                        plan["replan_violations"] = violations
+                        clarification = (
+                            "Mid-execution replan cannot silently alter approved product requirements:\n- "
+                            + "\n- ".join(violations)
+                            + "\nConfirm whether to change these requirements or keep the original acceptance criteria."
+                        )
 
             title, body, labels, job_id_kind, job_type = issue_payload_for_job(
                 args.job_type,
@@ -1223,6 +1397,41 @@ def main(args_override: list[str] | None = None) -> None:
         if clarification:
             status = "human-needed"
 
+        if needs_test_cases and isinstance(plan.get("test_cases"), list):
+            previous = (existing_job or {}).get("plan", {}).get("test_cases") or []
+            try:
+                plan["test_cases"] = tc.normalize_cases(plan["test_cases"], issue_number or job_ref, job_id, existing=previous)
+            except tc.TestCaseError as e:
+                plan.setdefault("test_case_problems", []).append(f"`test_cases` is malformed: {e}.")
+                plan["test_cases"] = []
+            section = tc.issue_section(plan["test_cases"])
+            if plan.get("test_case_problems"):
+                section += ["", "> ⚠️ **Test cases need attention:** " + " ".join(p.splitlines()[0] for p in plan["test_case_problems"])]
+            if section:
+                body = body + "\n" + "\n".join(section)
+            if section and issue_number:
+                try:
+                    gh_text("issue", "edit", str(issue_number), "--body", body)
+                except Exception as e:
+                    print(f"      - Note: could not add test cases to issue #{issue_number}: {e}")
+
+        gate_result = risk_engine.evaluate_plan_gate(spec, risk_result, plan, verification)
+        plan["gate_policy"] = gate_result.get("gate_policy", "human_approval")
+        if clarification:
+            if plan.get("replan_violations"):
+                final_gate_state = "Plan gate · replan invariant violation"
+            elif risk_result.get("conflicts"):
+                final_gate_state = "Intent gate · conflicting requirements"
+            else:
+                final_gate_state = "Intent gate · waiting for clarification"
+        elif gate_result.get("auto_pass"):
+            final_gate_state = "Plan gate · auto-passed"
+        elif gate_result.get("plan_gate_passed"):
+            final_gate_state = "Plan gate · ready for review"
+        else:
+            final_gate_state = "Plan gate · needs attention"
+        print("[gate] " + json.dumps({"state": final_gate_state}), flush=True)
+
         job = existing_job or {}
         job.update({
             "job_id": job_id,
@@ -1250,6 +1459,9 @@ def main(args_override: list[str] | None = None) -> None:
             "created_at": job.get("created_at", now_iso()),
             "updated_at": now_iso(),
             "raw_input": raw_input_text,
+            "spec": spec,
+            "risk_assessment": gate_result,
+            "auto_passed_gates": bool(gate_result.get("auto_pass") and not clarification),
             "plan": plan,
             "llm_sessions": llm_sessions,
             "clarification_history": clarification_history if clarification_history else job.get("clarification_history", []),
@@ -1279,27 +1491,20 @@ def main(args_override: list[str] | None = None) -> None:
             job["human_clarification_question"] = clarification
         else:
             job["human_clarification_question"] = None
-
-        if needs_test_cases and isinstance(plan.get("test_cases"), list):
-            previous = (existing_job or {}).get("plan", {}).get("test_cases") or []
-            try:
-                plan["test_cases"] = tc.normalize_cases(plan["test_cases"], issue_number or job_ref, job_id, existing=previous)
-            except tc.TestCaseError as e:
-                plan.setdefault("test_case_problems", []).append(f"`test_cases` is malformed: {e}.")
-                plan["test_cases"] = []
-            section = tc.issue_section(plan["test_cases"])
-            if plan.get("test_case_problems"):
-                section += ["", "> ⚠️ **Test cases need attention:** " + " ".join(p.splitlines()[0] for p in plan["test_case_problems"])]
-            if section:
-                body = body + "\n" + "\n".join(section)
-            if section and issue_number:
+            if job.get("auto_passed_gates") and not args.no_dispatch:
+                job["approved"] = True
                 try:
-                    gh_text("issue", "edit", str(issue_number), "--body", body)
-                except Exception as e:
-                    print(f"      - Note: could not add test cases to issue #{issue_number}: {e}")
+                    living_spec.create_deferred_backlog_jobs(PROJECT_CONFIG.runtime_dir, job)
+                except Exception:
+                    pass
 
         write_json(paths.job_file, job)
         write_text(paths.brief_file, body)
+        try:
+            write_json(paths.output_dir / "spec.json", spec)
+            write_text(paths.output_dir / "spec.md", living_spec.to_markdown(spec, gate_result))
+        except Exception:
+            pass
         if args.epic and not existing_job:
             try:
                 from orchestrator import epics as epic_store

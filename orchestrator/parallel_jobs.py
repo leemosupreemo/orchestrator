@@ -20,7 +20,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from orchestrator import job_overlap, worktrees
+from orchestrator import job_overlap, parallel_mece, worktrees
 
 DEFAULT_AT_ONCE = 2
 MAX_AT_ONCE = 4
@@ -108,11 +108,9 @@ def decide(main_root: Path, job_id: str, job: dict[str, Any], jobs: list[tuple[s
     running = [(holder.get("job"), by_id.get(holder.get("job"), {}))] + [(i, j) for i, j in running_in_worktrees(jobs) if i != job_id]
     if len(running) >= at_once:
         return False, f"{at_once} jobs are already running in this project (Jobs at once)."
-    mine = job_overlap.planned_files(job)
-    for other_id, other in running:
-        shared = sorted(mine & job_overlap.planned_files(other))
-        if shared:
-            return False, f"It changes the same files as “{other.get('title') or other_id}” ({', '.join(shared[:2])}), so it waits for that job."
+    overlap = parallel_mece.classify_launch_overlap(job_id, job, running)
+    if overlap["tier"] == "hard":
+        return False, overlap["wait_reason"]
     return True, ""
 
 

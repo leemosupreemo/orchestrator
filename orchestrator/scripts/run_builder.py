@@ -122,6 +122,19 @@ def inspect_progress(job: dict) -> bool:
     return False
 
 
+def _quick_scope_guardrail(job: dict, likely_files: list) -> str:
+    """Extra scoping guidance for unplanned quick jobs so broad/visual requests don't degrade into token stubs."""
+    if job.get("type") != "quick-fix" or likely_files:
+        return ""
+    return """
+### QUICK TASK SCOPING GUARDRAIL
+This quick task has no detailed plan or target file list. Before editing:
+- Inspect the relevant subsystem end-to-end so broad or qualitative requests (e.g., visual quality, realism, rendering, performance, polish) produce cohesive, noticeable improvements across shaders, materials, spawning/callers, or runtime logic rather than minimal token tweaks.
+- Every new helper, method, or field MUST be wired into real runtime callers (never leave dead helpers).
+- Tests MUST execute real behavior or compilation — NEVER write tests that merely open source/shader files and assert substrings (`assertIn` / regex), and never use `test_command` to hide the repository's configured test suite.
+"""
+
+
 def run_builder(job_path: Path, resume: bool = False) -> tuple[bool, bool, Path]:
     job = read_json(job_path)
     from orchestrator.job_scope import NONPRODUCTION_TYPES
@@ -241,6 +254,38 @@ If you are unsure between two valid approaches, pick the safest, most convention
             reuse_context = reuse_brief.prompt_block(reuse_found, ROOT, likely_files)
         job["reuse_suggested"] = reuse_found  # the job page reports how many of these the finished change used
 
+        try:
+            from orchestrator import parallel_mece
+            peer_lanes = parallel_mece.lane_context(
+                parallel_mece.load_active_peers(
+                    job_path.parent,
+                    current_job_id=job.get("job_id") or job_path.stem,
+                    current_job=job,
+                ),
+                role="builder",
+            )
+        except Exception:
+            peer_lanes = ""
+
+        ui_screenshot_block = ""
+        try:
+            from orchestrator import ux_review
+            ux_cfg = ux_review.from_project(ROOT)
+            touches_ui = bool(ux_review.frontend_files(likely_files, ux_cfg.get("paths"))) if likely_files else False
+            if touches_ui or ux_review.has_screens(ux_cfg):
+                ui_screenshot_block = f"""### UI screenshot evidence
+For every new screen or visible UI alteration, update `{OUTPUT_DIR / job['job_id'] / 'ux-screens.json'}` before finishing.
+List every changed page and interactive state, preserving entries from earlier tasks in this job. Use this JSON shape:
+{{"routes": ["/changed-page"], "screens": [{{"name": "Dialog open", "route": "/changed-page", "actions": [{{"click": "button.open-dialog"}}]}}], "notes": []}}
+Routes must be relative to the configured app. Actions support {{"click": "CSS selector"}} and {{"fill": "CSS selector", "value": "non-sensitive test value"}}.
+Use stable selectors and test data. Do not put credentials in the capture plan. For a state that cannot be reached automatically, add a clear explanation under notes.
+Ensure the app at ui_review.url serves this job's changes; use ui_review.start_command for a local app if needed.
+The runner captures configured pages plus this inventory at the configured phone/desktop widths and colour modes, and saves them in UX review.
+Screenshot capture is evidence, separate from whether the optional AI review is enabled. If no UI changes, no capture plan is needed.
+"""
+        except Exception:
+            ui_screenshot_block = ""
+
         full_prompt = f"""{prompt_template}
 
 Grounding docs to inspect first:
@@ -253,18 +298,9 @@ Available Tests (use for selecting test_command):
 {test_index}
 {test_case_block}{debug_context}
 {yolo_context}
-
+{_quick_scope_guardrail(job, likely_files)}
 {product_context}
-{reuse_context}### UI screenshot evidence
-For every new screen or visible UI alteration, update `{OUTPUT_DIR / job['job_id'] / 'ux-screens.json'}` before finishing.
-List every changed page and interactive state, preserving entries from earlier tasks in this job. Use this JSON shape:
-{{"routes": ["/changed-page"], "screens": [{{"name": "Dialog open", "route": "/changed-page", "actions": [{{"click": "button.open-dialog"}}]}}], "notes": []}}
-Routes must be relative to the configured app. Actions support {{"click": "CSS selector"}} and {{"fill": "CSS selector", "value": "non-sensitive test value"}}.
-Use stable selectors and test data. Do not put credentials in the capture plan. For a state that cannot be reached automatically, add a clear explanation under notes.
-Ensure the app at ui_review.url serves this job's changes; use ui_review.start_command for a local app if needed.
-The runner captures configured pages plus this inventory at the configured phone/desktop widths and colour modes, and saves them in UX review.
-Screenshot capture is evidence, separate from whether the optional AI review is enabled. If no UI changes, no capture plan is needed.
-Brief:
+{peer_lanes}{reuse_context}{ui_screenshot_block}Brief:
 {brief}
 """
 

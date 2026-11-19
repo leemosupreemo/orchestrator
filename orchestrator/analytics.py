@@ -25,6 +25,8 @@ from urllib.parse import urlparse
 EVENT_RE = re.compile(r"^[a-z][a-z0-9_]{1,59}$")
 DIRECTIONS = ("up", "down")
 DECISIONS = ("", "keep", "iterate", "drop")
+KPI_ROLES = ("primary", "guardrail", "counter")
+MONITORING_APPS: dict[str, str] = {"sentry": "Sentry", "datadog": "Datadog", "new_relic": "New Relic"}
 MAX_MEASUREMENTS = 200
 TEST_EVENT = "orchestrator_test"
 
@@ -170,6 +172,35 @@ def event_name(raw: str) -> str:
     return name
 
 
+def _clean_guardrail(raw_g: Any, existing_g: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    if not isinstance(raw_g, dict):
+        return None
+    name = str(raw_g.get("name", (existing_g or {}).get("name", ""))).strip()
+    ev = str(raw_g.get("event", (existing_g or {}).get("event", ""))).strip()
+    if not name and not ev:
+        return None
+    if not name or len(name) > 80:
+        raise AnalyticsError("A guardrail KPI needs a name under 80 characters")
+    direction = raw_g.get("direction", (existing_g or {}).get("direction") or "down")
+    if direction not in DIRECTIONS:
+        raise AnalyticsError("Direction must be up or down")
+    target = raw_g.get("target", (existing_g or {}).get("target"))
+    if target in ("", None):
+        target = None
+    else:
+        try:
+            target = float(target)
+        except (TypeError, ValueError):
+            raise AnalyticsError("The guardrail target must be a number")
+    return {
+        "name": name,
+        "event": event_name(ev),
+        "unit": str(raw_g.get("unit", (existing_g or {}).get("unit", ""))).strip()[:20],
+        "direction": direction,
+        "target": target,
+    }
+
+
 def clean_kpi(raw: dict[str, Any], existing: dict[str, Any] | None = None) -> dict[str, Any]:
     name = str(raw.get("name", (existing or {}).get("name", ""))).strip()
     if not name or len(name) > 80:
@@ -185,10 +216,35 @@ def clean_kpi(raw: dict[str, Any], existing: dict[str, Any] | None = None) -> di
             target = float(target)
         except (TypeError, ValueError):
             raise AnalyticsError("The target must be a number")
-    return {"id": (existing or {}).get("id") or re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:40] or "kpi",
-            "name": name, "event": event_name(str(raw.get("event", (existing or {}).get("event", "")))),
-            "unit": str(raw.get("unit", (existing or {}).get("unit", ""))).strip()[:20],
-            "direction": direction, "target": target, "measurements": (existing or {}).get("measurements", [])}
+    out: dict[str, Any] = {
+        "id": (existing or {}).get("id") or re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:40] or "kpi",
+        "name": name,
+        "event": event_name(str(raw.get("event", (existing or {}).get("event", "")))),
+        "unit": str(raw.get("unit", (existing or {}).get("unit", ""))).strip()[:20],
+        "direction": direction,
+        "target": target,
+        "measurements": (existing or {}).get("measurements", []),
+    }
+    raw_role = raw.get("role", (existing or {}).get("role"))
+    if raw_role is not None and str(raw_role).strip():
+        role_norm = str(raw_role).strip().lower().replace("-", "_").replace("_kpi", "")
+        if role_norm not in KPI_ROLES:
+            raise AnalyticsError("KPI role must be primary, guardrail or counter")
+        out["role"] = role_norm
+    raw_guardrail = raw.get("guardrail") or raw.get("counter_kpi")
+    if raw_guardrail is None and (raw.get("guardrail_name") or raw.get("guardrail_event")):
+        raw_guardrail = {
+            "name": raw.get("guardrail_name", ""),
+            "event": raw.get("guardrail_event", ""),
+            "direction": raw.get("guardrail_direction", "down"),
+            "target": raw.get("guardrail_target"),
+            "unit": raw.get("guardrail_unit", ""),
+        }
+    if raw_guardrail is not None or (existing or {}).get("guardrail"):
+        cleaned_g = _clean_guardrail(raw_guardrail or (existing or {}).get("guardrail"), (existing or {}).get("guardrail"))
+        if cleaned_g:
+            out["guardrail"] = cleaned_g
+    return out
 
 
 def add_kpi(feature: dict[str, Any], raw: dict[str, Any]) -> dict[str, Any]:
@@ -241,6 +297,88 @@ def status(kpi: dict[str, Any]) -> dict[str, Any]:
     return {"state": state, "latest": latest, "trend": trend}
 
 
+def connected_analytics_state(runtime_root: Path | None) -> dict[str, Any]:
+    """Inspect `.orchestrator/config/settings.json` for connected analytics and monitoring apps."""
+    settings: dict[str, Any] = {}
+    if runtime_root is not None:
+        settings_file = Path(runtime_root) / "config" / "settings.json"
+        if settings_file.is_file():
+            try:
+                loaded = json.loads(settings_file.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    settings = loaded
+            except (OSError, json.JSONDecodeError):
+                settings = {}
+    provider = str(settings.get("analytics_provider") or "").strip().lower()
+    if provider not in PROVIDERS:
+        provider = ""
+    key_set = bool(str(settings.get("analytics_key") or "").strip())
+    product_connected = bool(provider and key_set)
+    provider_name = PROVIDERS[provider]["name"] if product_connected else ""
+    saved_integrations = settings.get("integrations") if isinstance(settings.get("integrations"), dict) else {}
+    monitoring_connected = [name for pid, name in MONITORING_APPS.items() if saved_integrations.get(pid)]
+    connected_apps = ([provider_name] if provider_name else []) + monitoring_connected
+    return {
+        "analytics_connected": bool(connected_apps),
+        "product_analytics_connected": product_connected,
+        "provider": provider if product_connected else "",
+        "provider_name": provider_name,
+        "monitoring_connected": monitoring_connected,
+        "connected_apps": connected_apps,
+        "kpi_setup_recommended_once": bool(settings.get("kpi_setup_recommended_once")),
+    }
+
+
+def resolve_kpi_setup_policy(runtime_root: Path | None, *, consume: bool = True) -> dict[str, Any]:
+    """Determine whether KPI & guardrail metrics are active, should recommend setup once, or should stay ignored until analytics is connected."""
+    st = connected_analytics_state(runtime_root)
+    if st["analytics_connected"]:
+        return {
+            "mode": "active",
+            "analytics_connected": True,
+            "provider": st["provider"],
+            "provider_name": st["provider_name"] or (st["connected_apps"][0] if st["connected_apps"] else ""),
+            "connected_apps": st["connected_apps"],
+            "should_recommend_setup_once": False,
+            "recommendation": "",
+        }
+    if not st["kpi_setup_recommended_once"]:
+        if consume and runtime_root is not None:
+            settings_file = Path(runtime_root) / "config" / "settings.json"
+            try:
+                settings_file.parent.mkdir(parents=True, exist_ok=True)
+                current = json.loads(settings_file.read_text(encoding="utf-8")) if settings_file.is_file() else {}
+                if not isinstance(current, dict):
+                    current = {}
+                current["kpi_setup_recommended_once"] = True
+                tmp = settings_file.with_suffix(".tmp")
+                tmp.write_text(json.dumps(current, indent=2), encoding="utf-8")
+                os.replace(tmp, settings_file)
+            except OSError:
+                pass
+        return {
+            "mode": "recommend_once",
+            "analytics_connected": False,
+            "provider": "",
+            "provider_name": "",
+            "connected_apps": [],
+            "should_recommend_setup_once": True,
+            "recommendation": (
+                "No analytics app is connected yet. Recommend setting up Mixpanel, Amplitude, or PostHog once in Setup / Analytics "
+                "to track feature KPIs and guardrail counter-metrics; KPI tracking will be ignored until analytics is connected in setup."
+            ),
+        }
+    return {
+        "mode": "ignore_until_connected",
+        "analytics_connected": False,
+        "provider": "",
+        "provider_name": "",
+        "connected_apps": [],
+        "should_recommend_setup_once": False,
+        "recommendation": "",
+    }
+
+
 def tracking_plan(features: list[dict[str, Any]]) -> str:
     """Markdown listing every event the KPIs rely on, grouped by feature."""
     lines = ["# Tracking plan", "", "Events the product must emit so each feature's KPIs can be measured. Generated by Orchestrator (Measure).", ""]
@@ -254,24 +392,61 @@ def tracking_plan(features: list[dict[str, Any]]) -> str:
         lines += ["| KPI | Event | Target |", "| --- | --- | --- |"]
         for k in kpis:
             goal = "—" if k.get("target") is None else f"{'at least' if k['direction'] == 'up' else 'at most'} {k['target']:g}{(' ' + k['unit']) if k.get('unit') else ''}"
-            lines.append(f"| {k['name']} | `{k['event']}` | {goal} |")
+            label = f"{k['name']} (guardrail)" if k.get("role") in ("guardrail", "counter") else k["name"]
+            lines.append(f"| {label} | `{k['event']}` | {goal} |")
+            g = k.get("guardrail") if isinstance(k.get("guardrail"), dict) else None
+            if g and g.get("name") and g.get("event"):
+                g_dir = g.get("direction") or "down"
+                g_goal = "—" if g.get("target") is None else f"{'at least' if g_dir == 'up' else 'at most'} {g['target']:g}{(' ' + g['unit']) if g.get('unit') else ''}"
+                lines.append(f"| {g['name']} (guardrail for {k['name']}) | `{g['event']}` | {g_goal} |")
         lines.append("")
     if not any_kpi:
         lines.append("No KPIs defined yet.")
     return "\n".join(lines).rstrip() + "\n"
 
 
-def instrumentation_context(feature: dict[str, Any], provider_name: str | None) -> str:
-    """Planner text: what this feature must track."""
+def instrumentation_context(
+    feature: dict[str, Any],
+    provider_name: str | None,
+    *,
+    runtime_root: Path | None = None,
+    consume: bool = False,
+) -> str:
+    """Planner text: what this feature must track (primary KPI + guardrail/counter-KPI when connected, or one-time setup recommendation)."""
     kpis = feature.get("kpis") or []
     if not kpis:
+        if runtime_root is not None:
+            policy = resolve_kpi_setup_policy(runtime_root, consume=consume)
+            if policy["mode"] == "active":
+                app_label = policy["provider_name"] or ", ".join(policy["connected_apps"])
+                return (
+                    f"\n\n## Measurement\nConnected analytics app: {app_label}. "
+                    "Derive explicit or implied success criteria for this feature, tie them to a primary KPI event "
+                    "and at least one guardrail / counter-KPI metric (e.g., error, latency, or drop-off counter-metric), "
+                    f"emit them through the project's {app_label} integration, and add an automated test for each event."
+                )
+            if policy["mode"] == "ignore_until_connected":
+                return ""
+            return f"\n\n## Measurement\n{policy['recommendation']}"
         return ("\n\n## Measurement\nNo KPI is defined for this feature yet. Do not invent a numeric target or event. "
                 "Keep the job runnable; note in the plan that measurement is not defined and suggest adding a feature KPI if a measurable outcome is important.")
     where = f" through the project's {provider_name} integration" if provider_name else " through the project's existing analytics layer"
-    lines = ["", "", "## Measurement", f"This feature is judged by these KPIs. Emit each event{where} (reuse the existing wrapper; don't add a second SDK). Include an automated test for each event that verifies the exact event name is sent from the intended user action. Add those tests to the plan's acceptance criteria. In the job's completion summary, list each required event, its verifying test, and whether that test passed. A passing test verifies instrumentation in its tested code path; do not claim it proves users adopted the feature or met the KPI target:"]
+    lines = ["", "", "## Measurement", f"This feature is judged by these KPIs and guardrail / counter-KPI metrics. Emit each event{where} (reuse the existing wrapper; don't add a second SDK). Include an automated test for each event that verifies the exact event name is sent from the intended user action. Add those tests to the plan's acceptance criteria. In the job's completion summary, list each required event, its verifying test, and whether that test passed. A passing test verifies instrumentation in its tested code path; do not claim it proves users adopted the feature or met the KPI target:"]
+    has_guardrail = False
     for k in kpis:
         goal = "" if k.get("target") is None else f" (target: {'at least' if k['direction'] == 'up' else 'at most'} {k['target']:g}{(' ' + k['unit']) if k.get('unit') else ''})"
-        lines.append(f"- `{k['event']}` for \"{k['name']}\"{goal}")
+        role_tag = " [guardrail / counter-KPI]" if k.get("role") in ("guardrail", "counter") else ""
+        if role_tag:
+            has_guardrail = True
+        lines.append(f"- `{k['event']}`{role_tag} for \"{k['name']}\"{goal}")
+        g = k.get("guardrail") if isinstance(k.get("guardrail"), dict) else None
+        if g and g.get("name") and g.get("event"):
+            has_guardrail = True
+            g_dir = g.get("direction") or "down"
+            g_goal = "" if g.get("target") is None else f" (target: {'at least' if g_dir == 'up' else 'at most'} {g['target']:g}{(' ' + g['unit']) if g.get('unit') else ''})"
+            lines.append(f"- `{g['event']}` [guardrail / counter-KPI for \"{k['name']}\"] for \"{g['name']}\"{g_goal}")
+    if not has_guardrail:
+        lines.append("- Pair the primary KPI with a guardrail / counter-KPI check (e.g., error rate, latency, or abandonment does not regress).")
     return "\n".join(lines)
 
 

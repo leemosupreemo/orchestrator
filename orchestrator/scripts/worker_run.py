@@ -58,7 +58,7 @@ from open_or_update_pr import open_or_update_pr, push_branch_for_review
 from run_builder import BuilderClarificationNeeded, run_builder
 from llm import extract_json_block
 from orchestrator.project_config import PROJECT_CONFIG
-from orchestrator import blockers, reuse_brief, scope_check, task_growth
+from orchestrator import blockers, builder_check, reuse_brief, scope_check, task_growth
 from model_router import builder_for_task
 
 
@@ -730,6 +730,26 @@ def trigger_followup_iteration(job_path: Path, job: dict, feedback: str) -> None
     if recent_log and recent_log not in log_paths:
         log_paths.append(recent_log)
         print(f"\n  ✅ Attached latest log file: \033[97m{recent_log}\033[0m")
+
+    try:
+        from orchestrator import experience_loop
+        print_phase("analyzing_feedback")
+        exp_outcome = experience_loop.apply_experience_feedback(job, feedback, root=ROOT, now_iso=now_iso())
+        cls = exp_outcome.get("classification") or {}
+        print("[experience] " + json.dumps({
+            "version": exp_outcome.get("version", "0.2"),
+            "feedback_type": cls.get("feedback_type", "behavior_change"),
+            "impact": f"{cls.get('feedback_type', 'behavior_change')} · {cls.get('default_action', '')}",
+            "stage": "Experience loop · Refining",
+            "label": "Consolidating & refactoring" if exp_outcome.get("refactor_recommended") else "Refining from user feedback",
+        }), flush=True)
+        if exp_outcome.get("refactor_recommended"):
+            print_phase("refactoring")
+        else:
+            print_phase("refining")
+        job["refinement_context"] = experience_loop.format_refinement_prompt(job, feedback, exp_outcome)
+    except Exception:
+        pass
         
     job["status"] = "debugging"
     job["debug_phase"] = "propose"
@@ -975,18 +995,30 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
             tasks = job.get("plan", {}).get("tasks", [])
             completed = job.get("completed_task_indices", [])
             all_ok = True
+            batch_indices = can_batch_cohesive_tasks(tasks, completed)
             for i, task in enumerate(tasks):
                 if i in completed:
                     print(f"      - Task {i+1} already completed. Skipping.")
                     continue
 
-                print_phase(f"sub-task {i+1}/{len(tasks)}", subtext=task['title'])
+                is_batched = bool(batch_indices and i == batch_indices[0])
+                active_indices = batch_indices if is_batched else [i]
+                active_task = merge_batched_tasks(tasks, batch_indices) if is_batched else task
+                if is_batched:
+                    print(
+                        f"      - Cohesive task batching: executing tasks {', '.join(str(idx + 1) for idx in batch_indices)} "
+                        f"in a single builder pass (overlapping files: {', '.join(active_task['likely_files'])}).",
+                        flush=True,
+                    )
+                    print_phase(f"sub-task {batch_indices[0]+1}-{batch_indices[-1]+1}/{len(tasks)}", subtext=active_task["title"])
+                else:
+                    print_phase(f"sub-task {i+1}/{len(tasks)}", subtext=task['title'])
                 
                 # Create a temporary, task-specific job object for the builder
                 task_job = copy.deepcopy(job)
                 task_job['job_id'] = f"{job['job_id']}_task_{i+1}" # Unique ID per task
-                task_job['title'] = f"{job['title']} (Task {i+1}: {task['title']})"
-                task_builder = builder_for_task(task, job)
+                task_job['title'] = f"{job['title']} (Task {i+1}: {active_task['title']})"
+                task_builder = builder_for_task(active_task, job)
                 if task_builder:
                     task_job['builder'] = task_builder
                 if task_builder and task_builder != job.get("builder"):
@@ -999,13 +1031,14 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
                 task_job['ai_untracked_files'] = []
                 task_job['iteration'] = 0
                 
-                task_job['plan']['summary'] = task['description'] # Use task description as summary
-                task_job['plan']['acceptance_criteria'] = task['acceptance_criteria']
-                task_job['plan']['likely_files'] = task['likely_files']
-                # Only this task's test cases (plus untasked ones); `task` is 1-based.
+                task_job['plan']['summary'] = active_task['description'] # Use task description as summary
+                task_job['plan']['acceptance_criteria'] = active_task['acceptance_criteria']
+                task_job['plan']['likely_files'] = active_task['likely_files']
+                # Only this task's (or batch's) test cases (plus untasked ones); `task` is 1-based.
+                due_task_nums = {idx + 1 for idx in active_indices} | {None}
                 task_job['plan']['test_cases'] = [
                     c for c in job.get('plan', {}).get('test_cases') or []
-                    if isinstance(c, dict) and c.get('task') in (i + 1, None)
+                    if isinstance(c, dict) and c.get('task') in due_task_nums
                 ]
                 
                 # Write this temp view to a temporary path to pass to run_builder
@@ -1067,8 +1100,8 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
                 # This prevents "phantom completion" where the AI runs old passing tests 
                 # but doesn't implement the current task.
                 task_post_state = get_repo_state()
-                task_modified = [f for f in task_post_state["modified"] if f not in pre_state["modified"]]
-                task_untracked = [f for f in task_post_state["untracked"] if f not in pre_state["untracked"]]
+                task_modified = [f for f in task_post_state["modified"] if f not in pre_state["modified"] and not builder_check.is_ignored_tool_path(f)]
+                task_untracked = [f for f in task_post_state["untracked"] if f not in pre_state["untracked"] and not builder_check.is_ignored_tool_path(f)]
                 files_touched = task_modified + task_untracked
                 touched_this_run.update(files_touched)
 
@@ -1089,13 +1122,13 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
                 action = task_output.get("action")
                 was_implemented = action in ("patch", "add_logging") or (not action and bool(files_touched))
                 
-                likely_files = task.get("likely_files", [])
+                likely_files = active_task.get("likely_files", [])
                 actual_likely_touched = any(any(f.endswith(lf) for lf in likely_files) for f in files_touched)
                 
                 # VERIFY: Did the AI run the right tests?
                 # If the builder overrode the test command to something unrelated to the task, flag it.
                 test_command_used = task_output.get("test_command", "")
-                expected_tests = task.get("tests", [])
+                expected_tests = active_task.get("tests", [])
                 # Running the project's whole configured suite (or saying nothing, so the default runs) covers every planned test.
                 # Only a command that names something narrower, and not the planned tests, is a downgrade.
                 configured = " ".join((PROJECT_CONFIG.test_command or "").split())
@@ -1124,9 +1157,14 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
                          all_ok = False
                          break
 
-                    job["completed_task_indices"].append(i)
-                    checkpoint_task(job, i, len(tasks), task['title'], files_touched)
+                    for idx in active_indices:
+                        if idx not in job["completed_task_indices"]:
+                            job["completed_task_indices"].append(idx)
+                    checkpoint_task(job, i, len(tasks), active_task['title'], files_touched, batch_indices=active_indices if is_batched else None)
                     write_json(job_path, job)
+
+                    if is_batched:
+                        break
 
                     # A task that has outgrown its plan is where a small job starts to grow: stop and ask before building
                     # more on top. (After the last task there is nothing left to stop; the review's scope check covers it.)
@@ -1200,13 +1238,13 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
         # Capture state after builder
         post_state = get_repo_state()
 
-        # Identify files changed/added by AI
-        ai_modified = [f for f in post_state["modified"] if f not in pre_state["modified"]]
-        ai_untracked = [f for f in post_state["untracked"] if f not in pre_state["untracked"]]
+        # Identify files changed/added by AI (never sweep .claude/, .orchestrator/, .worktrees/ tool state into commits)
+        ai_modified = [f for f in post_state["modified"] if f not in pre_state["modified"] and not builder_check.is_ignored_tool_path(f)]
+        ai_untracked = [f for f in post_state["untracked"] if f not in pre_state["untracked"] and not builder_check.is_ignored_tool_path(f)]
         if committing_only:  # the files the passing run changed, if still uncommitted
             saved = set(job["passed_uncommitted"].get("files") or [])
-            ai_modified = [f for f in post_state["modified"] if f in saved]
-            ai_untracked = [f for f in post_state["untracked"] if f in saved]
+            ai_modified = [f for f in post_state["modified"] if f in saved and not builder_check.is_ignored_tool_path(f)]
+            ai_untracked = [f for f in post_state["untracked"] if f in saved and not builder_check.is_ignored_tool_path(f)]
 
         # Re-read job to get updates from run_builder (like test_command_override)
         job = read_json(job_path)
@@ -1224,7 +1262,10 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
 
         # A build that changed nothing hasn't built anything, whatever its tests say: stop here rather than verify untouched code
         # or start a fix loop that can't help (the usual cause is the AI's tool refusing file edits, which a fix attempt hits too).
-        changed_now = sorted(set(ai_modified) | set(ai_untracked) | touched_this_run | set(files_changed_between(pre_hashes, dirty_file_hashes(ROOT))))
+        changed_now = sorted(
+            f for f in (set(ai_modified) | set(ai_untracked) | touched_this_run | set(files_changed_between(pre_hashes, dirty_file_hashes(ROOT))))
+            if not builder_check.is_ignored_tool_path(f)
+        )
         # The task loop may already have stopped the job with a more specific reason (phantom completion, unrelated tests).
         already_stopped = job.get("type") == "feature-plan" and job.get("status") == "human-needed"
         stop = "" if already_stopped else no_change_stop(job, changed_now, debug_attempt=os.environ.get("AI_DEBUG_CHILD") == "1")
@@ -1411,6 +1452,23 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
         job["pr_url"] = pr_url
         if not is_debug:
             job["status"] = "review-needed"
+        try:
+            from orchestrator import experience_loop
+            head_sha = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=str(ROOT), text=True).strip()
+        except Exception:
+            head_sha = ""
+        try:
+            from orchestrator import experience_loop
+            experience_loop.record_first_experience(job, commit_sha=head_sha, now_iso=now_iso())
+            if head_sha and isinstance(job.get("experience_versions"), list) and job["experience_versions"]:
+                if not job["experience_versions"][-1].get("commit"):
+                    job["experience_versions"][-1]["commit"] = head_sha
+            print("[experience] " + json.dumps({
+                "version": job.get("iteration_version", "0.1"),
+                "stage": f"Preview ready (v{job.get('iteration_version', '0.1')})",
+            }), flush=True)
+        except Exception:
+            pass
 
         job["updated_at"] = now_iso()
         write_json(job_path, job)
@@ -1696,21 +1754,99 @@ def commit_pending_branch(job: dict) -> Tuple[str, str]:
     return current or expected, base_branch
 
 
-def checkpoint_task(job: dict, index: int, total: int, title: str, files: list[str]) -> None:
-    """Commits one finished task by itself and records the commit, so the task can be undone later."""
+def can_batch_cohesive_tasks(tasks: list[dict], completed: list[int]) -> list[int]:
+    """Return contiguous uncompleted task indices (2-3 tasks) that can be executed in one combined builder call.
+
+    Tasks are batched only when:
+    - There are 2 to 3 remaining contiguous tasks,
+    - Every task in the batch has small/low complexity and non-empty `likely_files`,
+    - Every adjacent task shares at least one overlapping `likely_files` target (so disjoint tasks like code + docs
+      still get separate per-task commits for independent revert), and
+    - Total unique `likely_files` across the batch is at most 4.
+    """
+    if not isinstance(tasks, list) or len(tasks) < 2:
+        return []
+    done = set(completed or [])
+    remaining = [i for i in range(len(tasks)) if i not in done]
+    if not (2 <= len(remaining) <= 3):
+        return []
+    if remaining != list(range(remaining[0], remaining[0] + len(remaining))):
+        return []
+    all_files: set[str] = set()
+    prev_files: set[str] = set()
+    for pos, idx in enumerate(remaining):
+        t = tasks[idx]
+        if not isinstance(t, dict):
+            return []
+        comp = str(t.get("complexity") or "").strip().lower()
+        if comp not in ("small", "low", "trivial"):
+            return []
+        t_files = {str(f).strip() for f in (t.get("likely_files") or []) if str(f).strip()}
+        if not t_files:
+            return []
+        if pos > 0 and not (prev_files & t_files):
+            return []
+        prev_files = t_files
+        all_files.update(t_files)
+    if len(all_files) > 4:
+        return []
+    return remaining
+
+
+def merge_batched_tasks(tasks: list[dict], indices: list[int]) -> dict:
+    """Combine a cohesive batch of small tasks into a single builder task brief while preserving all deliverables."""
+    titles: list[str] = []
+    desc_lines: list[str] = []
+    ac: list[str] = []
+    likely_files: list[str] = []
+    tests: list[str] = []
+    for idx in indices:
+        t = tasks[idx]
+        title = str(t.get("title") or f"Task {idx + 1}").strip()
+        titles.append(title)
+        desc = str(t.get("description") or title).strip()
+        desc_lines.append(f"{idx + 1}. **{title}**: {desc}")
+        for item in t.get("acceptance_criteria") or []:
+            s = str(item).strip()
+            if s and s not in ac:
+                ac.append(s)
+        for lf in t.get("likely_files") or []:
+            s = str(lf).strip()
+            if s and s not in likely_files:
+                likely_files.append(s)
+        for tst in t.get("tests") or []:
+            s = str(tst).strip()
+            if s and s not in tests:
+                tests.append(s)
+    return {
+        "title": " + ".join(titles),
+        "description": "Implement these cohesive tasks together in a single pass:\n" + "\n".join(desc_lines),
+        "acceptance_criteria": ac,
+        "likely_files": likely_files,
+        "tests": tests,
+        "complexity": "small",
+    }
+
+
+def checkpoint_task(job: dict, index: int, total: int, title: str, files: list[str], *, batch_indices: list[int] | None = None) -> None:
+    """Commits one finished task (or cohesive batch) by itself and records the commit, so the task can be undone later."""
     if not files:
         return
+    indices = batch_indices or [index]
+    label = f"{indices[0] + 1}-{indices[-1] + 1}/{total}" if len(indices) > 1 else f"{index + 1}/{total}"
     try:
         for f in files:
             subprocess.run(["git", "add", "--", f], cwd=str(ROOT), check=True, capture_output=True)
-        subprocess.run(["git", "commit", "-m", f"feat: task {index + 1}/{total}: {title} (AI generated)"], cwd=str(ROOT), check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-m", f"feat: task {label}: {title} (AI generated)"], cwd=str(ROOT), check=True, capture_output=True)
         sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=str(ROOT), check=True, capture_output=True, text=True).stdout.strip()
     except (subprocess.CalledProcessError, OSError) as exc:
-        print(f"      - Could not checkpoint task {index + 1} ({exc}); it will be committed with the rest.")
+        print(f"      - Could not checkpoint task {label} ({exc}); it will be committed with the rest.")
         return
-    job.setdefault("task_commits", {})[str(index)] = sha
+    commits = job.setdefault("task_commits", {})
+    for idx in indices:
+        commits[str(idx)] = sha
     job["ai_modified_files"] = sorted(set(job.get("ai_modified_files") or []) | set(files))
-    print(f"      - Task {index + 1} committed ({sha[:7]}).")
+    print(f"      - Task {label} committed ({sha[:7]}).")
     backup_push(job)
 
 

@@ -87,6 +87,57 @@ class StepsTests(unittest.TestCase):
         self.assertEqual(plain_title("WRITE THE GAME RULES"), "Write the game rules")
         self.assertEqual(plain_title("Preparing git branch: ai/x..."), "Preparing git branch: ai/x")
 
+    def test_adaptive_planning_headers_and_spec_gate_signals_tracked_in_timeline(self):
+        adaptive_log = "\n".join([
+            H("🧭 SPEC SYNTHESIS"),
+            '[spec] {"stage": "Pass A · Spec synthesis", "depth": "sparse"}',
+            "      - Running LLM (claude-sonnet-4-6, timeout=600s)...",
+            "        [output] Received 1200 chars in 12.1s",
+            H("⚖️ RISK ASSESSMENT"),
+            '[spec] {"stage": "Pass A · Risk & ambiguity assessment", "depth": "sparse"}',
+            H("🚦 INTENT GATE: PASSED"),
+            '[gate] {"state": "Intent gate · passed (assume_default)"}',
+            H("📐 EXECUTION PLANNING"),
+            '[spec] {"stage": "Pass B · Execution planning", "depth": "sparse"}',
+            "      - Running LLM (claude-sonnet-4-6, timeout=600s)...",
+            "        [output] Received 2400 chars in 18.4s",
+            H("🛡️ PLAN GATE: AUTO-PASSED"),
+            '[gate] {"state": "Plan gate · auto-passed"}',
+            H("🔄 REPLANNING"),
+            '[spec] {"stage": "Mid-run replanning", "depth": "detailed"}',
+            H("🔍 ANALYZING FEEDBACK"),
+            '[experience] {"version": "0.2", "impact": "behavior_change · update_acceptance_criteria_and_code"}',
+            H("✨ REFINING"),
+            H("🧹 REFACTORING"),
+            H("⏪ REVERTING"),
+            H("🎮 PREVIEWING"),
+        ])
+        timeline = from_log(adaptive_log + "\n[exited]")
+        steps = timeline.view(running=False)["steps"]
+        self.assertEqual([s["title"] for s in steps], [
+            "Synthesizing feature spec",
+            "Assessing ambiguity & risk",
+            "Evaluating intent gate: Passed",
+            "Planning execution tasks",
+            "Validating plan gate: Auto-passed",
+            "Replanning remaining tasks",
+            "Analyzing feedback impact",
+            "Refining from user feedback",
+            "Consolidating & refactoring",
+            "Reverting last iteration",
+            "Generating interactive preview",
+        ])
+        self.assertEqual([s["kind"] for s in steps], ["plan", "plan", "plan", "plan", "test", "plan", "plan", "code", "code", "git", "review"])
+        self.assertEqual(steps[0]["last"], "Pass A · Spec synthesis (sparse input)")
+        self.assertEqual(steps[2]["last"], "Intent gate · passed (assume_default)")
+        self.assertEqual(steps[4]["last"], "Plan gate · auto-passed")
+        self.assertEqual(steps[5]["last"], "Mid-run replanning (detailed input)")
+        self.assertEqual(steps[6]["last"], "v0.2 · behavior_change · update_acceptance_criteria_and_code")
+        # Raw [spec], [gate], and [experience] JSON lines must not pollute step lines
+        for step in steps:
+            for line in timeline.lines(step["id"]):
+                self.assertFalse(line.startswith(("[spec]", "[gate]", "[experience]")))
+
 
 class LiveTests(unittest.TestCase):
     def test_times_and_what_the_running_step_is_doing(self):

@@ -25,10 +25,14 @@ def _format_test_entry(s: dict, project_config) -> str:
         return f"- {project_config.test_command or 'run the test command'} ({rel_path})"
 
 
+MAX_INDEX_ENTRIES = 35
+
+
 def generate_test_index(
     tests_dir: Path,
     likely_files: Optional[List[str]] = None,
     project_config: Optional[Any] = None,
+    max_entries: int = MAX_INDEX_ENTRIES,
 ) -> str:
     cfg = project_config or PROJECT_CONFIG
     index = []
@@ -68,7 +72,11 @@ def generate_test_index(
             entry = _format_test_entry(s, cfg)
             index.append(f"{entry} [RECENT]")
 
-    return "\n".join(sorted(set(index)))
+    deduped = sorted(set(index))
+    if max_entries and len(deduped) > max_entries:
+        omitted = len(deduped) - max_entries
+        deduped = deduped[:max_entries] + [f"- ... ({omitted} more test suites omitted; use the project's Test Command to run all)"]
+    return "\n".join(deduped)
 
 
 if __name__ == "__main__":

@@ -84,7 +84,10 @@ Guards, so jobs never step on each other's work:
 |---|---|---|
 | The same request twice, typos and all | `job_overlap.similarity` (near matches for long words) | New job asks: open that one, or create anyway |
 | Two open jobs changing the same files | `job_overlap.file_overlaps`, on the job page (`overlapAdviceHtml`) | One next step: the same request twice → Keep this one (archives the other); the other building → Merge waits; one ready → merge it first. Files behind "Which files?" |
-| A running job changes the same files | `parallel_jobs.decide` | The job waits instead of building alongside |
+| A running job changes the same files, or an unplanned job collides with a blind/related peer | `parallel_jobs.decide` + `parallel_mece.classify_launch_overlap` | Hard overlap auto-waits; soft overlap (same directory, sibling job, or related topic on disjoint files) runs in parallel with lane awareness |
+| Active parallel peer lanes (loose ME) | `parallel_mece.load_active_peers` / `lane_context` in `new_job.py` and `run_builder.py` | Planners and builders automatically see active peers' claimed files so they stay out of each other's lane and keep shared integration edits strictly additive |
+| Mid-run drift into another active job's files | `scope_check.evaluate(..., peer_files=...)` via `server.job_scope` | Surfaces a soft `peer_overlap` scope finding advising which job to merge first rather than failing the build |
+| Sibling requirement gaps or duplicate claims (loose CE) | `parallel_mece.evaluate_sibling_coverage` in `splinter_job.py`, `server.job_detail`, `server.features_overview`, and `meceCoverageHtml` | For splintered parent jobs and Features with requirements, checks that sibling jobs (plus `deferred`) cover every parent requirement without silent gaps or duplicate ownership; surfaces a quiet notice only when a gap or overlap exists |
 | A job on the current branch, or with branch switching off | `parallel_jobs.decide` | Waits for the project folder (git can't check out one branch twice) |
 | Another open job's uncommitted work is in the folder | `blockers.other_jobs_work`, checked before the worker touches git | Pauses as blocked, "“…” has uncommitted work here"; starts by itself once that work is committed |
 

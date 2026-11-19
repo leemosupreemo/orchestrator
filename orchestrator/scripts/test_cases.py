@@ -606,14 +606,32 @@ def issue_section(cases: list[dict[str, Any]]) -> list[str]:
     return lines
 
 
-def library_index(root: Path, limit: int = 150) -> str:
+def library_index(root: Path, limit: int = 40, query: str = "") -> str:
     """Compact list of existing cases for the planner, so it extends rather than duplicates."""
     cases = load_library(root)
     if not cases:
         return ""
+    selected = cases
+    if len(cases) > limit:
+        keywords = {
+            w.lower()
+            for w in re.findall(r"[A-Za-z0-9_]{4,}", query or "")
+            if w.lower() not in {"vision", "summary", "feature", "should", "with", "that", "from", "this"}
+        }
+        if keywords:
+            matched = [
+                c for c in cases
+                if any(k in f"{c.get('area', '')} {c.get('title', '')} {' '.join(c.get('tests') or [])}".lower() for k in keywords)
+            ]
+            unmatched = [c for c in cases if c not in matched]
+            selected = (matched + unmatched[-max(0, limit - len(matched)):])[-limit:]
+        else:
+            selected = cases[-limit:]
     lines = ["Existing test case library (reuse or extend; don't duplicate):"]
-    for c in cases[-limit:]:
+    for c in selected:
         lines.append(f"- {c['id']} [{c.get('area')}/{c.get('type')}] {c.get('title')}")
+    if len(cases) > len(selected):
+        lines.append(f"- ... ({len(cases) - len(selected)} more library cases omitted for brevity)")
     return "\n".join(lines) + "\n"
 
 

@@ -1796,9 +1796,9 @@ function showSigningIn(label = "Signing you in…", { onCancel = null } = {}) {
   if (mobileTitle) mobileTitle.textContent = "Orchestrator";
   document.querySelector(".app")?.classList.add("session-locked");
   view.innerHTML = `<div class="signin-wrap"><div class="signin-card signing-in" role="status" aria-live="polite">
+      ${onCancel ? `<button type="button" class="dialog-close-btn signing-in-close" data-cancel-connect="1" aria-label="Cancel" title="Cancel">✕</button>` : ""}
       <h2>${esc(label)}</h2>
       ${loadingSkeleton("home")}
-      ${onCancel ? `<div class="row mt-12"><button type="button" class="btn small ghost" data-cancel-connect="1">Cancel</button></div>` : ""}
     </div></div>`;
   if (onCancel) {
     view.querySelector("[data-cancel-connect]")?.addEventListener("click", (e) => {
@@ -3484,6 +3484,10 @@ function liveRunCard(r) {
   const numbered = Number.isInteger(p.step) && Number.isInteger(p.total) && p.step > 0 && p.step <= p.total;
   const facts = [
     numbered ? `Step ${p.step} of ${p.total}` : "",
+    p.experience_version ? `Version ${p.experience_version}` : "",
+    p.spec_stage ? `${p.spec_stage}${p.planning_depth ? ` (${p.planning_depth})` : ""}` : "",
+    p.feedback_impact || "",
+    p.gate_state || "",
     `${elapsed(r.started)} elapsed`,
     r.waiting ? "Waiting for you" : r.idle > 30 ? `Quiet for ${elapsed(Date.now() / 1000 - r.idle)}` : "",
   ].filter(Boolean);
@@ -5702,6 +5706,21 @@ function overlapAdviceHtml(overlaps, { readyHere = false, idle = true } = {}) {
     <details class="fold"><summary class="linklike muted">Which files?</summary><ul class="muted">${files}</ul></details></div>`;
 }
 
+function meceCoverageHtml(mece) {
+  const cov = mece?.coverage;
+  if (!cov || cov.mece_ok || !cov.summary) return "";
+  const items = [];
+  for (const gap of cov.gaps || []) {
+    items.push(`<li><strong>Uncovered:</strong> ${esc(gap)}</li>`);
+  }
+  for (const ov of cov.overlapping || []) {
+    const names = (ov.jobs || []).map((j) => `<a href="#/jobs/${encodeURIComponent(j.id)}">${esc(j.title)}</a>`).join(", ");
+    items.push(`<li><strong>Multiple sibling jobs:</strong> ${esc(ov.requirement)}${names ? ` (${names})` : ""}</li>`);
+  }
+  return `<div class="job-hero-reason job-mece"><p>Sibling coverage check: ${esc(cov.summary)}</p>
+    ${items.length ? `<details class="fold"><summary class="linklike muted">Coverage details</summary><ul class="muted">${items.join("")}</ul></details>` : ""}</div>`;
+}
+
 function jobChangeSummary(otherDocs, changes, max = 220) {
   const raw = String(changes?.hypothesis || "").trim();
   if (raw) return raw.length > max ? `${raw.slice(0, max - 3).trimEnd()}…` : raw;
@@ -6224,6 +6243,29 @@ pages.job = async ([id]) => {
     s.submitted_for_inclusion || job.submitted_for_inclusion ? `<span class="accent">✓ Submitted for inclusion</span>` : "",
   ].filter(Boolean);
 
+  const exp = data.experience || null;
+  const experienceWorkspaceHtml = exp && (exp.preview_ready || (exp.versions && exp.versions.length))
+    ? `<section class="card mb-16" id="experience-workspace">
+        <div class="card-h">
+          <h2>Experience &amp; Refine · Version ${esc(exp.version || "0.1")}</h2>
+          <div class="row gap-8 align-center">
+            <span class="pill ${exp.preview_ready ? "done" : "working"}">${exp.preview_ready ? "Preview ready" : `Iteration ${exp.iteration || 1}`}</span>
+            ${(exp.versions || []).length >= 2 && !activeRun ? `<button type="button" class="btn small ghost" data-experience-undo="${esc(s.id)}">Undo last iteration</button>` : ""}
+          </div>
+        </div>
+        <div class="card-b stack">
+          ${exp.churn_guardrail?.refactor_recommended ? `<div class="notice warn"><strong>Architectural refactor guardrail active</strong><div class="muted">${esc(exp.churn_guardrail.directive || "Repeated changes detected; the next iteration will consolidate and refactor cleanly.")}</div></div>` : ""}
+          ${(exp.product_hypotheses || []).length ? `<div class="stack">
+            <div class="label">Assumed defaults in v${esc(exp.version || "0.1")} (click to change)</div>
+            <div class="row wrap gap-8">${exp.product_hypotheses.slice(0, 6).map((h) => `<button type="button" class="btn small ghost" data-experience-chip="${esc(`Change "${h.chosen_default || h.question}": `)}" title="${esc(h.question || "")}">${esc(h.chosen_default || h.question)}</button>`).join("")}</div>
+          </div>` : ""}
+          ${(exp.versions || []).length ? `<details class="fold"><summary class="linklike muted">Version history (${exp.versions.length} iteration${exp.versions.length === 1 ? "" : "s"})</summary>
+            <ul class="assumptions mt-8">${exp.versions.slice().reverse().map((v) => `<li><strong>v${esc(v.version)}</strong>${v.feedback_type ? ` <span class="pill idle">${esc(v.feedback_type.replace(/_/g, " "))}</span>` : ""}: ${esc(v.feedback || v.summary || "Initial prototype")}${v.commit ? ` <span class="mono muted">(${esc(String(v.commit).slice(0, 7))})</span>` : ""}</li>`).join("")}</ul>
+          </details>` : ""}
+        </div>
+      </section>`
+    : "";
+
   return {
     title: s.title,
     sub: subParts.length ? `<span class="status-line">${subParts.join('<span class="sep">·</span>')}</span>` : "",
@@ -6281,6 +6323,7 @@ pages.job = async ([id]) => {
           ${backupNote(job)}
           ${s.state.steps?.length ? `<ol class="job-hero-reason blocker-steps">${s.state.steps.map((step) => `<li>${esc(step)}</li>`).join("")}</ol>` : ""}
           ${overlapAdviceHtml(data.overlaps, { readyHere: ["merge", "complete"].includes(nextAction), idle: !activeRun })}
+          ${typeof meceCoverageHtml === "function" ? meceCoverageHtml(data.mece) : ""}
           ${s.state.blocker ? `<details class="fold"><summary class="linklike muted">What the AI said</summary><p class="muted">${esc(s.state.blocker)}</p></details>` : ""}
           ${runRel?.unreported ? `<div class="notice warn hero-unreported-notice"><span>Last run (<strong>${esc(runRel.unreported.label)}</strong>) ${runRel.unreported.status === "failed" ? "failed" : "ended without reporting back"} before it could update this job.</span><a class="btn small ghost" href="#/runs/${encodeURIComponent(runRel.unreported.id)}">Details</a></div>` : ""}
           ${nextExecutionPreview ? `<div class="job-hero-next-preview">${nextExecutionPreview}</div>` : ""}
@@ -6292,6 +6335,7 @@ pages.job = async ([id]) => {
         ${steerHtml}
       </section>`}
 
+      ${experienceWorkspaceHtml}
       ${unvalidatedTestsHtml}
       ${defectsHtml}
 
@@ -6424,7 +6468,7 @@ pages.job = async ([id]) => {
         } else if (!text) {
           steerForm.text.focus();
         } else if (mode === "iterate") { // passed and waits to merge: a change request, not a failure (debug_agent.md rule 0)
-          runAction("debug", { job: s.id, logs: "", feedback: `CHANGE REQUEST: ${text}` });
+          runAction("refine", { job: s.id, feedback: text });
         } else if (mode === "revise") {
           runAction("revise", { job: s.id, change: text });
         } else if (mode === "fix") {
@@ -6548,6 +6592,17 @@ pages.job = async ([id]) => {
             route();
           }
         } catch (e) { btn.disabled = false; toast(e.message, true); }
+      }));
+      view.querySelectorAll("[data-experience-chip]").forEach((btn) => btn.addEventListener("click", () => {
+        const input = view.querySelector("#job-steer-text");
+        if (input) {
+          input.value = btn.dataset.experienceChip || "";
+          input.focus();
+        }
+      }));
+      view.querySelectorAll("[data-experience-undo]").forEach((btn) => btn.addEventListener("click", async () => {
+        const ok = await formDialog("Undo last iteration?", `<p>Reverts the most recent experience iteration commit and restores the previous specification snapshot.</p>`, "Undo iteration");
+        if (ok) runAction("refine", { job: s.id, feedback: "Undo the last iteration" });
       }));
       view.querySelectorAll("[data-undo-task]").forEach((btn) => btn.addEventListener("click", async () => {
         const i = Number(btn.dataset.undoTask);
@@ -8246,6 +8301,7 @@ pages.measure = async (_, query) => {
   const measuredKpis = allKpis.filter((k) => k.measurements?.length);
   const perf = data.performance || {};
   const perfLatency = perf.api_p50_ms != null ? `${perf.api_p50_ms} ms / ${perf.api_p95_ms} ms` : "—";
+  const fmtSecs = (s) => (s == null ? "—" : s < 60 ? `${Math.round(s)}s` : `${(s / 60).toFixed(1)}m`);
   const monitoring = Array.isArray(data.monitoring) && data.monitoring.length
     ? data.monitoring
     : [{ id: "sentry", name: "Sentry", connected: false }, { id: "datadog", name: "Datadog", connected: false }, { id: "new_relic", name: "New Relic", connected: false }];
@@ -8283,6 +8339,11 @@ pages.measure = async (_, query) => {
           <div class="stat"><div class="k">Finished jobs</div><div class="v">${perf.jobs_completed ?? 0} / ${perf.jobs_finished ?? 0}</div></div>
           <div class="stat"><div class="k">API latency (p50 / p95)</div><div class="v">${esc(perfLatency)}</div></div>
           <div class="stat"><div class="k">Avg fix attempts</div><div class="v">${perf.avg_debug_attempts ?? 0}</div></div>
+          <div class="stat"><div class="k">Time to first experience (TTFE)</div><div class="v">${esc(fmtSecs(perf.avg_ttfe_seconds))}</div></div>
+          <div class="stat"><div class="k">Time per feedback iteration</div><div class="v">${esc(fmtSecs(perf.avg_iteration_seconds))}</div></div>
+          <div class="stat"><div class="k">Iterations to acceptance</div><div class="v">${perf.avg_iterations_to_accept ?? "—"}</div></div>
+          <div class="stat"><div class="k">Rework &amp; regression rate</div><div class="v">${perf.rework_regression_rate != null ? `${perf.rework_regression_rate}%` : "0%"}</div></div>
+          <div class="stat"><div class="k">User interaction burden</div><div class="v">${perf.avg_interaction_burden ?? 0}</div></div>
         </div>
         <div class="card-caption muted">Computed from local job history (${perf.jobs_total ?? 0} total jobs) and ${perf.api_samples ?? 0} recent UI API requests.</div>
         <div class="card-b row wrap gap-8 align-center">
@@ -14917,7 +14978,7 @@ function runStatus(r, vc = null) {
     : r.action === "build" ? "Build"
     : r.action === "test" ? "Run all tests"
     : r.title || (r.action ? r.action.replace(/_/g, " ") : "Run");
-  const transientLabel = /^(Scheduling worker|Waiting for |Reading the model|Starting execution|Updating job status|Preparing git branch|(?:\[\d+\/\d+\]\s*)?Updating (?:GitHub )?issue)/i.test(p.label || ""); // where it was, not what it did
+  const transientLabel = /^(Scheduling worker|Waiting for |Reading the model|Starting execution|Updating job status|Preparing git branch|Synthesizing feature spec|Assessing ambiguity & risk|Evaluating intent gate|Planning execution tasks|Validating plan gate|Replanning remaining tasks|Generating interactive preview|Analyzing feedback impact|Refining from user feedback|Consolidating & refactoring|Reverting last iteration|(?:\[\d+\/\d+\]\s*)?Updating (?:GitHub )?issue)/i.test(p.label || ""); // where it was, not what it did
   const headlineLabel = done ? (r.action === "coverage" ? "Coverage measurement complete" : r.action === "plan_epic" ? completionLabel : partial ? "Paused: the work is saved, but the job isn't finished" : doneNext ? "Not finished: the job needs another fix attempt" : flagged ? "Finished, needs your attention" : (p.label && !transientLabel ? p.label : completionLabel))
     : failed ? (p.label ? p.label.replace(/\s+failed$/i, "") : actionName)
     : (p.label || r.title || "Starting run");
@@ -15016,6 +15077,11 @@ function runStatus(r, vc = null) {
     : "";
   const stateText = r.waiting ? "Waiting for input" : stopping ? "Stopping…" : "";
   const stateItem = stateText ? `<div><dt>State</dt><dd>${esc(stateText)}</dd></div>` : "";
+  const specStageText = p.spec_stage ? `${p.spec_stage}${p.planning_depth ? ` (${p.planning_depth} input)` : ""}` : "";
+  const specStageItem = specStageText ? `<div><dt>Pipeline stage</dt><dd data-run-spec-stage>${esc(specStageText)}</dd></div>` : "";
+  const gateStateItem = p.gate_state ? `<div><dt>Gate status</dt><dd data-run-gate-state>${esc(p.gate_state)}</dd></div>` : "";
+  const expVerItem = p.experience_version ? `<div><dt>Experience version</dt><dd data-run-experience-version>${esc(p.experience_version)}</dd></div>` : "";
+  const fbImpactItem = p.feedback_impact ? `<div><dt>Feedback impact</dt><dd data-run-feedback-impact>${esc(p.feedback_impact)}</dd></div>` : "";
 
   return `<section class="banner ${tone} run-status" aria-label="Run status">
     <div class="run-status-heading" role="status" aria-live="polite"><span class="pill ${tone}">${esc(status)}</span>
@@ -15024,6 +15090,10 @@ function runStatus(r, vc = null) {
     <dl class="run-status-details">
       ${jobItem}
       ${summaryItem}
+      ${expVerItem}
+      ${specStageItem}
+      ${fbImpactItem}
+      ${gateStateItem}
       ${suiteItem}
       ${machineItem}
       <div><dt>Models</dt><dd>${modelsText}</dd></div>
