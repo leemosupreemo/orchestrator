@@ -909,9 +909,9 @@ def job_state(job: dict[str, Any], root: Path | None = None) -> dict[str, Any]:
                 "next": {"action": action, "label": action_label} if action else None}
 
     if job.get("moved_to"):  # continued on another computer: owned and worked on there now
-        return state("done", "neutral", f"Moved to {job['moved_to']}",
-                     f"This job was continued on {job['moved_to']}, which works on it now. Open it from that computer's jobs on Home; "
-                     "Continue here on it brings it back.")
+        return state("done", "neutral", f"Last worked on {job['moved_to']}",
+                     f"Its latest state is on {job['moved_to']}. Open it from Home, signed in to your account, to pick it up here: "
+                     "its branch, history and unfinished work come along.")
     waiting = job.get("waiting_for")
     if isinstance(waiting, dict) and worker_alive(job) is not False:  # see folder_lock: one job works in a project folder at a time
         return state("working", "working", "Waiting",
@@ -8687,6 +8687,21 @@ class UIHandler(BaseHTTPRequestHandler):
         elif method == "POST" and parts == ["jobs", "import-remote"]:
             self._require_owner("continue a job from another computer")
             result = import_remote_job(root, self._body())
+            # Seamless: the unfinished work the other computer left comes along too, when it can without overwriting
+            # anything here (else the job page offers it, saying why). The ownership number already went up on import.
+            job_path = resolve_job_path(root, result["id"])
+            job = read_json_file(job_path)
+            backup = job.get("wip_backup") if isinstance(job.get("wip_backup"), dict) else {}
+            if backup.get("commit") and (job.get("wip_restored") or {}).get("commit") != backup["commit"] \
+                    and result["id"] not in self.server.sessions.running_job_ids():
+                repo = Path(job["worktree"]) if job.get("worktree") and Path(job["worktree"]).is_dir() else root
+                try:
+                    result["restored_files"] = wip_backup.restore(repo, result["id"], job)
+                    job = read_json_file(job_path)
+                    job["wip_restored"] = {"commit": backup["commit"], "at": time.time()}
+                    write_json_file(job_path, job)
+                except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
+                    result["restore_note"] = str(exc)
             _sync_snapshot_async(root)
             self._json(result)
         elif method == "POST" and len(parts) == 3 and parts[0] == "jobs" and parts[2] == "feature":

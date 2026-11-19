@@ -867,21 +867,26 @@ From the top:
 
 The sidebar's **Primary machine** dropdown switches between your computers. The one marked **Primary** starts this project's jobs. Another computer can look at the project, but it can't start work until it's made primary.
 
-**Jobs on your other computers.** Home also lists the jobs your other computers run in this project, with the same state their own job page shows ("Blocked: Git is locked", "Tests passed, not committed", the run working now and its step), usually within 10 seconds of a change. The computer running a job is its one source of truth; your account only holds a read-only copy for the others. While a job runs, each finished task is pushed to the job's own branch (never the base branch), so if that computer fails, at most the task in progress is lost. **Continue here** moves a job to the computer you're on, using what reached the branch: the computer it left marks it **Moved to <computer>** and won't run it again until you continue it back. It can't be moved while a run is working on it there.
+**Jobs on your other computers.** Home also lists the jobs your other computers run in this project, with the same state their own job page shows ("Blocked: Git is locked", "Tests passed, not committed", the run working now and its step), usually within 10 seconds of a change. The computer running a job is its one source of truth; your account only holds a read-only copy for the others. While a job runs, each finished task is pushed to the job's own branch (never the base branch), so if that computer fails, at most the task in progress is lost. Open one and press its next step to carry on here: the job comes to the computer you're on with what reached the branch and its unfinished work, and the computer it left steps aside until the job goes back to it the same way. It can't be picked up while a run is working on it there.
 
 ### When a computer is offline
 
 Your other computers never need the one that has a job to be online: what a job needs is on your account or on GitHub
 before that computer goes away.
 
-- **One owner per job.** Each job has an ownership number; **Continue here** raises it. The computer holding the
-  highest number owns the job, and any other copy reads **Moved to <computer>**, even if its computer was offline during
+- **One owner per job.** Each job has an ownership number; picking a job up on another computer raises it. The computer holding the
+  highest number owns the job, and any other copy steps aside (**Last worked on <computer>**), even if its computer was offline during
   the move and syncs late. Copies brought over by an old project download never win.
+- **Carry on from any computer.** A job from another computer opens with its latest state and its own next step. Press
+  it (**Merge & complete**, **Resume**, **Approve**…) and the job is picked up here and the step runs: its record, branch
+  and unfinished work come along, and the other computer hands it over. **Work on it here** picks it up without running
+  anything. Only while a run is working on it there do you wait for that run to finish.
 - **Every job is reachable.** Each computer sends your account a record of every job that changed, not only the newest
   ones, so you can continue any unfinished job from another computer.
 - **Unfinished work.** About once a minute, a paused or failed job's uncommitted files are backed up to GitHub, on a
-  hidden ref of the job's own (your files, what's staged and the branch are never touched). After **Continue here**, the
-  job page offers **Bring the unfinished work here**, which never overwrites files you've changed here.
+  hidden ref of the job's own (your files, what's staged and the branch are never touched). Picking the job up elsewhere
+  brings them back too, unless that would overwrite files changed there; then the job page offers **Bring the unfinished
+  work here** once those are dealt with.
 - **Freshness.** A job on another computer says how fresh it is ("on MacBook Pro (offline, synced 3h ago)"), and its
   page warns that an offline computer may have newer work it hasn't uploaded, and whether its unfinished files came
   along.

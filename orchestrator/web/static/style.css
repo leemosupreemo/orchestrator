@@ -2490,7 +2490,6 @@ dialog h2 {
 .job-steer textarea { width: 100%; min-height: 56px; background: var(--panel); }
 .job-steer-foot { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
 .job-steer-foot small { flex: 1 1 220px; }
-.job-steer-foot > .btn { margin-left: auto; }
 
 /* Tasks Progress Bar */
 .tasks-progress-wrap {

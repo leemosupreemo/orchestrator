@@ -661,7 +661,7 @@ class CrossMachineJobsTests(unittest.TestCase):
         # "Open on <computer>": repairs a moved connection, signs in properly, only then navigates, and on failure puts the
         # browser back on the computer it came from (signing in drops the token and switches the backend)
         opener = app[app.index("// Signing in moves the browser to that computer and drops the token"):]
-        opener = opener[:opener.index('btn.textContent = "Open remote"')]
+        opener = opener[:opener.index('btn.textContent = `Open on')]
         order = [opener.index(bit) for bit in ("res = await signInToMachine(machine)", "res = await repairMachineConnection(machine, error)",
                                                "await unlockWith(res.token", "location.hash", "before.forEach(")]
         self.assertEqual(order, sorted(order))
@@ -680,16 +680,20 @@ class CrossMachineJobsTests(unittest.TestCase):
 const fs = require('fs');
 const assert = require('assert');
 const code = fs.readFileSync(process.argv[1], 'utf8');
-const start = code.indexOf('pages["remote-job"] = async');
+const start = code.indexOf('// The computer that has the latest copy of a job');
 const end = code.indexOf('pages.job = async');
 const pages = {};
 const remoteFreshnessHtml = () => '';
 const listeners = {};
 const buttons = {};
 const makeBtn = (id) => ({
-  id, disabled: false, textContent: '',
+  id, disabled: false, textContent: '', dataset: { takeOver: 'open' },
   addEventListener: (ev, fn) => { listeners[id + ':' + ev] = fn; }
 });
+const view = { querySelectorAll: (sel) => sel === '[data-take-over]' ? [buttons['take-over'] || (buttons['take-over'] = makeBtn('take-over'))] : [] };
+const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
+let routed = 0;
+const route = () => { routed += 1; };
 const $ = (sel) => {
   if (!sel.startsWith('#')) return null;
   const id = sel.slice(1);
@@ -750,25 +754,25 @@ eval(code.slice(promptStart, promptEnd));
 eval(code.slice(start, end));
 
 (async () => {
-  // 1. Offline remote machine: concise wording, no Back button, update modal on 404
+  // 1. Offline: the job, its state, one way to carry on here; no "remote job" framing, no Back button; update modal on 404
   const off = await pages['remote-job'](['m1', 'job-7']);
-  assert(off.sub.includes('remote machine (Pro, offline)'), off.sub);
-  assert(off.html.includes('Remote job on Pro'), off.html);
-  assert(off.html.includes('Continue here'), off.html);
-  assert(!off.html.includes('Open remote'), off.html);
+  assert(off.sub.includes('last worked on Pro, offline'), off.sub);
+  assert(off.html.includes('Work on it here'), off.html);
+  assert(off.html.includes('never two copies'), off.html);
+  assert(!off.html.includes('Remote job on'), off.html);
+  assert(!off.html.includes('Open on Pro'), off.html);
   assert(!off.html.includes('href="#/">Back</a>'), off.html);
-  assert(!off.html.includes('Lives on'), off.html);
   off.after();
-  await listeners['continue-remote-job-here:click']({ currentTarget: buttons['continue-remote-job-here'] });
+  await listeners['take-over:click']();
   assert.equal(dialogs.length, 1);
   assert.equal(dialogs[0].title, 'Update Orchestrator');
   assert(dialogs[0].body.includes('from <code>0.4.2</code> to the latest version'), dialogs[0].body);
   assert.deepEqual(updateCalls, [{ machine_id: 'local-m' }]);
-  assert.equal(buttons['continue-remote-job-here'].textContent, 'Continue here');
+  assert.equal(routed, 1);  // nothing picked up: the page redraws as it was
 
   // 1c. CLI-installed machine falls back to runAction("update_local") and saves pending resume, then tryResumeAfterUpdate imports job
   cpUpdateError = "Mac wasn't set up with the Orchestrator app; update it there with `orchestrator update`.";
-  await listeners['continue-remote-job-here:click']({ currentTarget: buttons['continue-remote-job-here'] });
+  await listeners['take-over:click']();
   assert.deepEqual(localActions, [{ name: 'update_local', params: {} }]);
   assert(readPendingUpdateResume()?.type === 'import-remote', 'pending resume saved');
   importShouldSucceed = true;
@@ -802,7 +806,7 @@ eval(code.slice(start, end));
   // 2. Reachable remote machine: Open remote auto-switches to matching project on remote machine
   currentMachine = { id: 'm1', name: 'Pro', reachable: true };
   const on = await pages['remote-job'](['m1', 'job-7']);
-  assert(on.html.includes('Open remote'), on.html);
+  assert(on.html.includes('Open on Pro'), on.html);
   on.after();
   await listeners['open-remote-machine-job:click']({ currentTarget: buttons['open-remote-machine-job'] });
   assert.deepEqual(switched, [{ root: '/Users/me/DAoC-Mobile', then: '#/jobs/job-7' }]);

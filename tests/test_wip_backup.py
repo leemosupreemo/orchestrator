@@ -99,6 +99,22 @@ class WipBackupTests(unittest.TestCase):
 
 
 
+    def test_picking_a_job_up_brings_its_unfinished_work_in_one_step(self):
+        import json
+        from orchestrator.web import server as ui
+        (self.pro / "keep.txt").write_text("two\n")
+        backup = wip_backup.backup_job(self.pro, "job-1", self.job, machine="Pro", now=1000.0)
+        raw = {"job_id": "job-1", "status": "human-needed", "branch": "ai/job-1", "owner_epoch": 1,
+               "record": {"wip_backup": backup, "ai_modified_files": ["keep.txt"]}}
+        # the endpoint's own steps, run directly: import, then restore
+        result = ui.import_remote_job(self.air, {"job": raw, "source_machine_name": "Pro"})
+        job = json.loads((self.air / ".orchestrator" / "jobs" / "job-1.json").read_text())
+        self.assertEqual(job["owner_epoch"], 2)
+        self.assertEqual(job["wip_backup"]["commit"], backup["commit"])
+        self.assertEqual(wip_backup.restore(self.air, result["id"], job), ["keep.txt"])
+        self.assertEqual((self.air / "keep.txt").read_text(), "two\n")
+
+
 @unittest.skipUnless(__import__("shutil").which("node"), "node is required")
 class NoticeTests(unittest.TestCase):
     def test_the_job_and_remote_pages_say_what_waits_where(self):

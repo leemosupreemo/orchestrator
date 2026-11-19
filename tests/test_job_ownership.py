@@ -1,7 +1,7 @@
 """Durability and one owner per job.
 
 Each finished task's commit is pushed to the job's own branch, so a computer that dies mid-job loses at most the task in
-progress. Continue here moves a job: the computer it left stops working on it ("Moved to …") until it's brought back.
+progress. Continue here moves a job: the computer it left stops working on it ("Last worked on …") until it's brought back.
 Git runs only in throwaway repositories here, never in this checkout."""
 from __future__ import annotations
 
@@ -85,7 +85,7 @@ class OwnershipTests(unittest.TestCase):
         self.assertFalse(ui.mark_job_moved(self.root, "j1", "MacBook Air"))  # already
         job = json.loads(self.path.read_text())
         state = ui.job_state(job)
-        self.assertEqual((state["group"], state["label"], state["next"]), ("done", "Moved to MacBook Air", None))
+        self.assertEqual((state["group"], state["label"], state["next"]), ("done", "Last worked on MacBook Air", None))
         with mock.patch.object(worker, "read_json", return_value=job), mock.patch.object(worker, "remove_task_views"), \
              mock.patch.object(worker, "prepare_git_branch") as prepare:
             worker.execute_job(self.path, resume=True)
@@ -166,7 +166,9 @@ class OwnershipTests(unittest.TestCase):
         app = (ROOT / "orchestrator" / "web" / "static" / "app.js").read_text(encoding="utf-8")
         self.assertIn("Number(rj.imported_at || 0) > Number(localImportedAt.get(jid) || 0)", app)
         self.assertIn("api(`jobs/${encodeURIComponent(j.id)}/moved`", app)
-        self.assertIn("if (rj.active_run) { // one owner per job", app)
+        # a run going there is the one thing to wait for: two computers building one branch would clash
+        self.assertIn("const busy = rj.active_run ? `Running on ${machineLabel} now", app)
+        self.assertIn('data-take-over="run"${busy ? ` disabled', app)
         server = (ROOT / "orchestrator" / "web" / "server.py").read_text(encoding="utf-8")
         self.assertIn("This job moved to {moved} and is worked on there now.", server)
 

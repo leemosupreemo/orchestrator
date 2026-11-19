@@ -4566,7 +4566,7 @@ pages.home = async (_, query) => {
   jobs.forEach((j) => {
     if (!continuedOn.has(j.id) || j.moved_to) return;
     j.continued_on = continuedOn.get(j.id);
-    // one owner per job: this copy stops (the server refuses to run it) and reads "Moved to …" from the next refresh
+    // one owner per job: this copy stops (the server refuses to run it) and reads "Last worked on …" from the next refresh
     api(`jobs/${encodeURIComponent(j.id)}/moved`, { method: "POST", body: { machine: j.continued_on } }).catch(() => {});
   });
   const ownedElsewhere = new Set(remoteJobs.map((j) => j.id));
@@ -5494,6 +5494,45 @@ function strandedNote(job) {
   return `<p class="job-hero-reason">This computer had work it hadn't uploaded when the job moved on: ${bits}, saved on GitHub so nothing is lost. Bring it into the job there if it's still needed.</p>`;
 }
 
+// The computer that has the latest copy of a job, from your account: the one named `hint` first, then any other.
+async function findJobElsewhere(jobId, hint = "") {
+  if (typeof Account === "undefined" || !Account.active?.() || typeof cpApi !== "function") return null;
+  let mine = "";
+  try { mine = localStorage.getItem(Account.MACHINE_KEY) || ""; } catch { /* unavailable */ }
+  const { machines = [] } = await cpApi("machines", { signal: AbortSignal.timeout(4000) }).catch(() => ({ machines: [] }));
+  const others = machines.filter((m) => m.id !== mine && m.has_snapshot).sort((a, b) => (b.name === hint) - (a.name === hint));
+  for (const m of others) {
+    const snap = await cpApi("machine/snapshot", { method: "POST", body: { machine_id: m.id }, signal: AbortSignal.timeout(4000) }).catch(() => null);
+    const rj = (snap?.snapshot?.recent_jobs || []).find((j) => (j.job_id || j.id) === jobId && !j.moved_to);
+    if (rj) return { machineId: m.id, machine: m, job: rj };
+  }
+  return null;
+}
+
+// Next steps that run straight after taking a job over; the rest (a fix, a revision) open the job page to say what.
+const TAKE_OVER_THEN_RUN = new Set(["merge", "complete", "resume", "execute", "schedule", "approve"]);
+
+// Bring a job here from the computer that last worked on it (import-remote: latest record, its branch, and its unfinished
+// work when nothing here would be overwritten). Returns the job id here, or "" after saying why not.
+async function takeOverJob(rj, machineLabel) {
+  try {
+    const res = await api("jobs/import-remote", { method: "POST", body: { job: rj, source_machine_name: machineLabel } });
+    if (res.restored_files?.length) toast(`Picked up here, with ${plural(res.restored_files.length, "unfinished file")} from ${machineLabel}`);
+    else if (res.restore_note) toast(`Picked up here. Its unfinished files stay on the job page to bring in: ${res.restore_note}`, true);
+    else toast("Picked up here");
+    return res.id || rj.job_id || rj.id;
+  } catch (err) {
+    if (/^not found$/i.test(err.message || "")) {
+      savePendingUpdateResume({ type: "import-remote", job: rj, source_machine_name: machineLabel, returnHash: location.hash });
+      const started = await promptOrchestratorUpdate("This computer's Orchestrator needs an update to pick up jobs from your other computers.");
+      if (!started) clearPendingUpdateResume();
+    } else {
+      toast(err.message, true);
+    }
+    return "";
+  }
+}
+
 pages["remote-job"] = async ([machineId, jobId]) => {
   if (typeof Account === "undefined" || !Account.active?.()) return { title: "Remote job", sub: "", html: `<section class="card"><div class="empty">Sign in to view jobs on a remote machine.</div></section>` };
   const [{ machines = [] }, snapRes] = await Promise.all([
@@ -5511,23 +5550,29 @@ pages["remote-job"] = async ([machineId, jobId]) => {
     : machine?.online
       ? `, ${machine.connection?.detail || (machine.connection?.state === "repairing" ? "repairing connection" : machine.connection?.state === "checking" ? "connecting" : "not reachable yet")}`
       : ", offline";
+  // One job, whichever computer it's on: its state and next step as its own page shows them, and doing that step here
+  // takes it over (latest record, branch and unfinished work; the ownership number goes up so there's never a second
+  // copy). Only a run working on it there right now has to finish first: two computers building one branch would clash.
+  const next = rj.state?.next;
+  const direct = next && TAKE_OVER_THEN_RUN.has(next.action);
+  const busy = rj.active_run ? `Running on ${machineLabel} now (${rj.active_run.label}${rj.active_run.step ? ` · ${rj.active_run.step}` : ""}). You can pick it up here once that run finishes.` : "";
   return {
     title: rj.title || jobId,
-    sub: `${jobId} · remote machine (${machineLabel}${reachTag})${rj.branch ? ` · ${rj.branch}` : ""}`,
+    sub: `${jobId}${rj.branch ? ` · ${rj.branch}` : ""} · last worked on ${machineLabel}${reachTag}`,
     back: { href: "#/", label: "Jobs" },
-    html: `<section class="card mb-16">
-      <div class="card-h"><h2>Remote job on ${esc(machineLabel)}</h2></div>
+    html: `<section class="card mb-16 job-hero" id="job-hero">
       <div class="card-b stack gap-12">
-        ${rj.state?.label ? `<div><strong>${esc(rj.state.label)}</strong>${rj.state.reason ? `<p class="muted">${esc(rj.state.reason)}</p>` : ""}</div>` : ""}
-        ${rj.active_run ? `<p><span class="pill working">Running</span> ${esc(rj.active_run.label)}${rj.active_run.step ? ` · ${esc(rj.active_run.step)}` : ""}</p>` : ""}
-        ${rj.state?.next?.label ? `<p class="muted">Next on ${esc(machineLabel)}: ${esc(rj.state.next.label)}. Open remote to do it there.</p>` : ""}
-        ${rj.last_error && !rj.state?.reason ? `<div class="notice warn"><strong>Last error:</strong> ${esc(rj.last_error)}</div>` : ""}
+        <h2 class="job-hero-title">${esc(rj.state?.label || rj.status || "")}</h2>
+        ${rj.state?.reason ? `<p class="job-hero-reason">${esc(rj.state.reason)}</p>` : ""}
+        ${rj.last_error && !rj.state?.reason ? `<p class="job-hero-reason muted">${esc(rj.last_error)}</p>` : ""}
+        ${busy ? `<p class="job-hero-reason"><span class="pill working">Running</span> ${esc(busy)}</p>` : ""}
         ${remoteFreshnessHtml(machine, machineLabel, snapRes?.snapshot?.synced_at, rj.record?.wip_backup)}
         <div class="row gap-8 wrap">
-          ${machine?.reachable ? `<button type="button" class="btn primary" id="open-remote-machine-job">Open remote</button>` : ""}
-          <button type="button" class="btn ${machine?.reachable ? "" : "primary"}" id="continue-remote-job-here">Continue here</button>
+          ${direct ? `<button type="button" class="btn primary" data-take-over="run"${busy ? ` disabled data-why="${esc(machineLabel)} is running it now"` : ""}>${esc(next.label)}</button>` : ""}
+          <button type="button" class="btn ${direct ? "" : "primary"}" data-take-over="open"${busy ? ` disabled data-why="${esc(machineLabel)} is running it now"` : ""}>${direct ? "Open it here" : "Work on it here"}</button>
+          ${machine?.reachable ? `<button type="button" class="btn ghost" id="open-remote-machine-job">Open on ${esc(machineLabel)}</button>` : ""}
         </div>
-        <p class="muted">Continue here moves the job to this computer: ${esc(machineLabel)} stops working on it and shows it as moved.</p>
+        <p class="muted">Its branch, history and unfinished work come with it, and ${esc(machineLabel)} hands it over: one job, never two copies.</p>
       </div>
     </section>`,
     after: () => {
@@ -5560,33 +5605,17 @@ pages["remote-job"] = async ([machineId, jobId]) => {
           try { before.forEach(([k, v]) => (v === null ? localStorage.removeItem(k) : localStorage.setItem(k, v))); } catch { /* storage blocked */ }
           toast(err.message, true);
           btn.disabled = false;
-          btn.textContent = "Open remote";
+          btn.textContent = `Open on ${machineLabel}`;
         }
       });
-      $("#continue-remote-job-here")?.addEventListener("click", async (e) => {
-        const btn = e.currentTarget;
-        if (rj.active_run) { // one owner per job: two computers building the same branch would overwrite each other
-          toast(`${machineLabel} is working on this job right now (${rj.active_run.label}). Stop that run there first, then continue here.`, true);
-          return;
-        }
-        btn.disabled = true;
-        btn.textContent = "Importing…";
-        try {
-          const res = await api("jobs/import-remote", { method: "POST", body: { job: rj, source_machine_name: machineLabel } });
-          toast(res.fetched_branch ? `Imported job and fetched ${rj.branch}` : "Imported job onto this machine");
-          location.hash = `#/jobs/${encodeURIComponent(res.id || jobId)}`;
-        } catch (err) {
-          if (/^not found$/i.test(err.message || "")) {
-            savePendingUpdateResume({ type: "import-remote", job: rj, source_machine_name: machineLabel, returnHash: location.hash });
-            const started = await promptOrchestratorUpdate("This machine's Orchestrator server doesn't support importing remote jobs yet.");
-            if (!started) clearPendingUpdateResume();
-          } else {
-            toast(err.message, true);
-          }
-          btn.disabled = false;
-          btn.textContent = "Continue here";
-        }
-      });
+      view.querySelectorAll("[data-take-over]").forEach((btn) => btn.addEventListener("click", async () => {
+        view.querySelectorAll("[data-take-over]").forEach((b) => { b.disabled = true; });
+        btn.textContent = "Bringing it here…";
+        const id = await takeOverJob(rj, machineLabel);
+        if (!id) { route(); return; }
+        location.hash = `#/jobs/${encodeURIComponent(id)}`;
+        if (btn.dataset.takeOver === "run" && next) runAction(next.action, { job: id, ...(next.params || {}) });
+      }));
       if (machine?.online && !machine?.reachable) {
         let checks = 0;
         let stopped = false;
@@ -5777,6 +5806,10 @@ pages.job = async ([id]) => {
   if (!aiAbilities.loaded) aiAbilities = { ...(await api("ai/abilities").catch(() => ({}))), loaded: true };
   const data = await api(`jobs/${encodeURIComponent(id)}`);
   const { summary: s, job, outputs, runs, docs, changes, links, test_summary: testSummary, pipeline: pipe, tasks: jobTasks, completed_tasks: jobCompleted, next_task: jobNextTask } = data;
+  if (job.moved_to) { // an older copy: the job lives on where it was last worked on, so show that one (and pick it up from there)
+    const owner = await findJobElsewhere(id, job.moved_to);
+    if (owner) { location.replace(`#/remote-job/${encodeURIComponent(owner.machineId)}/${encodeURIComponent(id)}`); return { stale: true }; }
+  }
 
   const activeRun = runs.find((r) => r.running && !SIDE_RUNS.has(r.action)); // an export or preview isn't work on the job
   const jobRuns = data.job_runs || null, runRel = data.run_relationship || null;
@@ -6028,7 +6061,7 @@ pages.job = async ([id]) => {
     : isJobComplete ? { mode: "fix", button: "Reopen and change", hint: "Reopens this job with your note and builds it.", required: true }
     : ["merge", "complete"].includes(nextAction) ? { mode: "iterate", button: "Request changes", required: true, hint: "" }
     : hasBuildWork || ["debugging", "failed"].includes(status) ? { mode: "debug", button: "Run fix", required: false,
-      hint: "Say what you saw, or leave it blank for another automatic attempt. The tests run again after." }
+      hint: "" }
     : ["planned", "designing", "human-needed", "scheduled"].includes(status) ? { mode: "revise", button: "Re-plan", required: true,
       hint: "Re-plans the job with this; you approve the new plan before anything is built." }
     : null;
@@ -6105,7 +6138,7 @@ pages.job = async ([id]) => {
   const problemHtml = problem?.lines?.length
     ? `<details class="hero-error-details"><summary class="linklike muted">Details (${problem.lines.length})</summary><ul class="hero-problem">${problem.lines.map((l) => `<li>${esc(l)}</li>`).join("")}</ul></details>`
     : "";
-  const heroReasonDetails = problem ? problemHtml : hasMoreReason
+  const heroReasonDetails = job.moved_to ? "" : problem ? problemHtml : hasMoreReason // a copy elsewhere has no error to show
     ? `<details class="hero-error-details"><summary class="linklike muted">Error details</summary><pre class="hero-error-pre">${esc(rawHeroReason)}</pre></details>`
     : "";
 

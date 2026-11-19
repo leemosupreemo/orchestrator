@@ -21,6 +21,13 @@ REF_PREFIX = "refs/orchestrator/wip/"
 RETRY_SECONDS = 600  # a failed push (offline, no rights) is tried again after this, not on every heartbeat
 DONE = {"completed", "archived", "discarded", "done"}
 _ENV = {"GIT_TERMINAL_PROMPT": "0", "GCM_INTERACTIVE": "never"}
+TOOL_DIRS = (".orchestrator/", ".claude/", ".claude-flow/", ".worktrees/")  # tools' own state, never the project's work
+
+
+def _project_changes(repo: Path) -> list[str]:
+    """Uncommitted changes that are the project's (not Orchestrator's or an AI tool's own folders)."""
+    lines = _git(repo, "status", "--porcelain").stdout.splitlines()
+    return [l for l in lines if not l[3:].strip().strip('"').startswith(TOOL_DIRS)]
 
 
 def _git(repo: Path, *args: str, env: dict[str, str] | None = None, timeout: int = 60) -> subprocess.CompletedProcess:
@@ -123,7 +130,7 @@ def restore(repo: Path, job_id: str, job: dict[str, Any]) -> list[str]:
         raise RuntimeError("The backed-up work was replaced by a newer backup. Reload the job and try again.")
     current = _git(repo, "branch", "--show-current").stdout.strip()
     if current != branch:
-        if _git(repo, "status", "--porcelain").stdout.strip():
+        if _project_changes(repo):
             raise RuntimeError(f"This project has uncommitted changes on '{current}'. Commit or stash them, then try again.")
         _git(repo, "fetch", "origin", "--", branch, timeout=120)
         switched = _git(repo, "checkout", branch)

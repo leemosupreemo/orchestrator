@@ -26,7 +26,7 @@ When the build or tests fail, or the worker raises, the job ends up in one of th
 | The AI's "question" is really a blocker ("rerun with write access") | `human_clarification_question`, classified by `classify_clarification` | The AI couldn't continue (`orchestrator/blocker_fix.py`) | The one fix that applies, e.g. **Plan again** telling the planner it plans only |
 | The work passed its tests but the commit failed | `passed_uncommitted: {files}` | Tests passed, not committed | **Commit the work**: Resume commits those files without building again, and without checking anything out (a forced checkout would throw the uncommitted work away) |
 | Another job is using the project folder | `waiting_for` (`folder_lock`) | Waiting | Starts by itself |
-| Continued on another computer | `moved_to` | Moved to <computer> | None here; Continue here on its copy brings it back |
+| Continued on another computer | `moved_to` | Last worked on <computer> | Opening it shows the latest copy; its next step picks it up here |
 
 ### Blockers
 
@@ -133,7 +133,7 @@ history. What belongs to one computer (its process, its blockers, uncommitted fi
    - **From Home.** Home there sees the newer copy in the other computer's snapshot and posts `/api/jobs/<id>/moved`.
 
    Either way, `mark_job_moved` records `moved_to`.
-3. A moved job reads **Moved to <computer>** (group `done`, no action). Home doesn't file it under Completed: it isn't finished, it lives elsewhere. The owner's row (from its snapshot, with the job's real state) stands in for it among the jobs; when there's no such row, the moved copy itself stays there. `_launch_run` refuses every run on it except
+3. A moved copy reads **Last worked on <computer>** (group `done`, no action, no error details), and opening it goes straight to the latest copy's page (`findJobElsewhere`), where the job's own next step (Merge & complete, Resume, Approve…) takes it over and runs (`takeOverJob`, `TAKE_OVER_THEN_RUN`): the import brings its latest record, fetches its branch and restores its unfinished work when nothing here would be overwritten. **Work on it here** does the same without running a step. Only a run going on it there must finish first. Home doesn't file it under Completed: it isn't finished, it lives elsewhere. The owner's row (from its snapshot, with the job's real state) stands in for it among the jobs; when there's no such row, the moved copy itself stays there. `_launch_run` refuses every run on it except
    delete and discard, and `execute_job` returns before touching git or a model.
 4. Continuing it back imports the other copy over the moved one, since that copy is newer. Comparing `imported_at` stops the
    two computers marking each other as moved.
