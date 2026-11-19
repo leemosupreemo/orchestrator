@@ -1215,6 +1215,7 @@ function placeMenu(d) {
     top: `${down ? r.bottom + gap : Math.max(margin, r.top - gap - Math.min(height, room))}px` });
 }
 document.addEventListener("toggle", (e) => { if (e.target.matches?.("details.more") && e.target.open) placeMenu(e.target); }, true);
+document.addEventListener("toggle", (e) => { if (e.target.matches?.("details.fold") && e.target.open) wireExpandables(e.target); }, true); // content in a closed fold wasn't laid out yet
 const placeOpenMenus = () => document.querySelectorAll("details.more[open]").forEach(placeMenu);
 window.addEventListener("resize", placeOpenMenus);
 document.addEventListener("scroll", placeOpenMenus, true);
@@ -1494,7 +1495,7 @@ async function refreshState({ opening = false, isCurrent = () => true, switching
     }
     return;
   }
-  const running = state.runs.filter((r) => r.running && !isPreviewRun(r));
+  const running = state.runs.filter((r) => r.running && !isBackgroundRun(r));
   const waiting = running.filter((r) => r.waiting).length;
   const badge = $("#running-badge");
   if (badge) {
@@ -4486,7 +4487,7 @@ pages.home = async (_, query) => {
   }
   if (!sameProject()) return {stale: true};
   // 1) Default ordered by most recent
-  const runningRuns = state.runs.filter((r) => r.running && !isPreviewRun(r)); // a live preview shows in the Preview card
+  const runningRuns = state.runs.filter((r) => r.running && !isBackgroundRun(r)); // a live preview shows in the Preview card
   const isRunningNow = (j) => runningRuns.some((r) => r.job === j.id || r.result_job === j.id); // shown in Running now, not again in the list
   const continuedOn = new Map(); // local job id -> the computer that continued it (its copy says it came from here)
   const localImportedAt = new Map(jobs.map((j) => [j.id, j.imported_at])); // a job brought back here is newer than the copy it left
@@ -4865,6 +4866,8 @@ function waitingEpicPage({ id, s, job, runs, docs, links }) {
 const SIDE_RUNS = new Set(["export_job", "web_preview", "dev_preview"]);
 // The live preview is a dev server kept running for the Preview card, not work: it isn't counted as running or listed in Activity.
 const isPreviewRun = (r) => r.action === "dev_preview";
+// Connecting an AI tool runs in its own dialog (tool-connect.js), not as work: it isn't counted as running or listed as a run.
+const isBackgroundRun = (r) => r.action === "dev_preview" || r.action === "ai_connect";
 
 // Home shows a web project's current build (the branch checked out in the project folder) in a frame: live from a dev
 // server on this computer while it runs, else the published preview link. "Point out a problem" puts a pin on the frame
@@ -6315,7 +6318,7 @@ pages.job = async ([id]) => {
     actions: jobHeaderActions(summary, links, { canSplinter, planShown: reviewingPlan, steerShown: Boolean(steer), hasChanges: allFiles.length > 0,
       abilities: aiAbilities.highlights }),
     html: `<div class="job-layout"><div class="job-top">
-      ${runs.filter((r) => r.running && !isPreviewRun(r)).map((r) => activeRunCard(r, (jobRuns || []).find((x) => x.id === r.id), r.id === activeRun?.id ? activeTimeline : null)).join("")}
+      ${runs.filter((r) => r.running && !isBackgroundRun(r)).map((r) => activeRunCard(r, (jobRuns || []).find((x) => x.id === r.id), r.id === activeRun?.id ? activeTimeline : null)).join("")}
 
       ${isAutoImprove ? `
         <div class="banner info improve-banner mb-16 row align-center justify-between">
@@ -9655,6 +9658,9 @@ function prdWhen(ts, now = new Date()) {
   return d.toLocaleDateString(undefined, d.getFullYear() === now.getFullYear() ? { month: "short", day: "numeric" } : { month: "short", day: "numeric", year: "numeric" });
 }
 
+// The pitch on Home shows three lines (15px type at 1.5 line height); "Show more" slides the card open to the rest.
+const PRD_PITCH_LINES_PX = 68;
+
 function prdUpdatedLine(updated, jobs = []) {
   if (!updated?.at) return "";
   const title = updated.job ? (jobs.find((j) => j.id === updated.job)?.title || "") : "";
@@ -9680,15 +9686,15 @@ function productStripHtml(p, jobs = [], { collapsed = false } = {}) {
   const still = missing.length
     ? `${filled.length} of ${sections.length} sections filled in. Still to fill in: ${missing.slice(0, 3).map((x) => x.title).join(", ")}${missing.length > 3 ? ` and ${missing.length - 3} more` : ""}.` : "";
   if (collapsed) {
-    return `<section class="card" id="product-strip"><details class="fold"><summary class="card-h"><h2>Product</h2>${prdStatusPill(sections)}</summary>
+    return `<section class="card" id="product-strip"><details class="fold"><summary class="card-h"><h2>Product</h2>${prdStatusPill(sections)}<a class="btn small ghost icon-only product-open" href="#/product" aria-label="Open product" title="Open product"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-external"/></svg></a></summary>
       <div class="card-b stack gap-8">
-        <a class="product-pitch" href="#/product" title="Open the product requirements">${esc(prdSnippet(lead.body))}</a>
-        <div class="row gap-12 align-center wrap">${prdUpdatedLine(p.updated, jobs)}<span class="spacer"></span><a class="btn small" href="#/product">Open product</a></div>
+        <a class="product-pitch" href="#/product" data-expandable="${PRD_PITCH_LINES_PX}" data-expandable-slack="0" title="Open the product requirements">${esc(prdSnippet(lead.body, Infinity))}</a>
+        <div class="row gap-12 align-center wrap">${prdUpdatedLine(p.updated, jobs)}</div>
       </div></details></section>`;
   }
   return `<section class="card mb-16" id="product-strip"><div class="card-h"><h2><a class="card-title-link" href="#/product">Product</a></h2>${prdStatusPill(sections)}</div>
     <div class="card-b stack gap-8">
-      <a class="product-pitch" href="#/product" title="Open the product requirements">${esc(prdSnippet(lead.body))}</a>
+      <a class="product-pitch" href="#/product" data-expandable="${PRD_PITCH_LINES_PX}" data-expandable-slack="0" title="Open the product requirements">${esc(prdSnippet(lead.body, Infinity))}</a>
       ${still ? `<p class="muted t-secondary m-0">${esc(still)}</p>` : ""}
       <div class="row gap-12 align-center wrap">${prdUpdatedLine(p.updated, jobs)}${missing.length ? `<span class="spacer"></span><a class="btn small" href="#/product">Finish it</a>` : ""}</div>
     </div></section>`;
@@ -13999,10 +14005,10 @@ function answersSlug(draft) {
 }
 
 pages.activity = async () => {
-  const running = state.runs.filter((r) => r.running && !isPreviewRun(r));
-  const finished = state.runs.filter((r) => !r.running && !isPreviewRun(r));
+  const running = state.runs.filter((r) => r.running && !isBackgroundRun(r));
+  const finished = state.runs.filter((r) => !r.running && !isBackgroundRun(r));
   // Runs from before Orchestrator last started are read back from their saved logs (owners only: logs are private).
-  const earlier = state.you?.role === "member" ? [] : ((await api("runs/history").catch(() => null))?.runs || []).filter((r) => !isPreviewRun(r));
+  const earlier = state.you?.role === "member" ? [] : ((await api("runs/history").catch(() => null))?.runs || []).filter((r) => !isBackgroundRun(r));
   const earlierRow = (r) => `<a class="item" href="#/runs/${encodeURIComponent(r.id)}">
     <div class="main-col"><div class="title">${esc(r.title)}</div><div class="meta">${esc(ago(r.started))}</div></div><div class="side"><span class="muted">Log</span></div></a>`;
   return {
@@ -16473,7 +16479,8 @@ function wireExpandables(root = document) {
     if (!box.offsetParent) return; // not laid out yet (inside a closed fold): try again next time
     box.dataset.expandableReady = "1";
     const limit = Number(box.dataset.expandable) || 320;
-    if (box.scrollHeight <= limit + 120) return; // a little longer is fine; folding it would hide almost nothing
+    const slack = box.dataset.expandableSlack === undefined ? 120 : Number(box.dataset.expandableSlack) || 0; // short blocks opt out of the tolerance
+    if (box.scrollHeight <= limit + slack) return; // a little longer is fine; folding it would hide almost nothing
     box.id ||= `expandable-${Date.now()}-${n}`;
     box.style.setProperty("--clamp", `${limit}px`);
     box.classList.add("expandable", "is-clamped");

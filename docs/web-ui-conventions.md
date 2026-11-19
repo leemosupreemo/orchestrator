@@ -32,6 +32,7 @@ the checks that can be automated live in `tests/test_web_ui.py`.
 - Facts about the content (where a file lives, when it changed) go in a `.card-caption` strip under the header, never
   loose in the header.
 - In a folding card the header is the toggle, so its actions go at the bottom inside the fold.
+  The exception is a plain icon link that only navigates (Home's Product card: `#i-external` at the header's right edge, `margin-left: auto`); it is its own click target and never toggles the fold.
 - Long content shows up to a height and then **Show more**, centred under it, grows the card to fit
   (`data-expandable="<px>"`, wired by `wireExpandables`). No inner scroll boxes; diffs, logs and terminals are the
   exception.

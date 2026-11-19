@@ -384,9 +384,9 @@ class PreviewWiringTests(unittest.TestCase):
         app = (ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
         self.assertIn('const isPreviewRun = (r) => r.action === "dev_preview";', app)
         badge = app[app.index('const badge = $("#running-badge");') - 300:app.index('const badge = $("#running-badge");')]
-        self.assertIn("!isPreviewRun(r)", badge)  # the sidebar's running count
+        self.assertIn("!isBackgroundRun(r)", badge)  # the sidebar's running count (a live preview and a tool sign-in aren't work)
         activity = app[app.index("pages.activity = async"):app.index("pages.file = async")]
-        self.assertEqual(activity.count("!isPreviewRun(r)"), 3)  # running, finished and earlier runs
+        self.assertEqual(activity.count("!isBackgroundRun(r)"), 3)  # running, finished and earlier runs
 
     def test_what_you_point_at_is_attached_to_the_message_as_chips(self):
         app = (ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()

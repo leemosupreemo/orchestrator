@@ -59,7 +59,7 @@
     const ran = jobs.filter((j) => !NOT_RUN.has(String(j.status || ""))).sort((a, b) => stamp(b) - stamp(a));
     const lastRun = ran[0];
     const lastGood = ran.find((j) => SUCCEEDED.has(String(j.status || "")));
-    const active = runs.filter((r) => r.running && r.action !== "dev_preview").length;
+    const active = runs.filter((r) => r.running && r.action !== "dev_preview" && r.action !== "ai_connect").length;
     const needsYou = jobs.filter((j) => j.state?.group === "needs_you" && !j.active_run).length;
     const pill = active ? `<span class="pill working">${active} run${active === 1 ? "" : "s"} in progress</span>`
       : needsYou ? `<a class="pill attention" href="#/?filter=needs_you&amp;jump=jobs" title="Show them">${needsYou} job${needsYou === 1 ? " needs" : "s need"} you</a>` : "";

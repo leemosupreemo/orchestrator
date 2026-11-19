@@ -8453,6 +8453,7 @@ const state = { project: { dirty_files: 0, languages: [] }, you: { role: 'owner'
 const SIDE_RUNS = new Set(['export_job', 'web_preview']);
 const stoppingRuns = new Set();
 const isPreviewRun = () => false;
+const isBackgroundRun = () => false;
 const aiAbilities = { highlights: [], loaded: true };
 const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
 const ago = () => '1m ago';

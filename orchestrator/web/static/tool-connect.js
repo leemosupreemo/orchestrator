@@ -78,7 +78,9 @@
       <div id="connect-code-row" class="stack" hidden><label class="field"><span>2. Paste the code it shows</span><input id="connect-code" autocomplete="off" spellcheck="false" placeholder="Paste code or key"></label><div><button type="button" class="btn primary" id="connect-code-send">Submit</button></div></div>
       <div class="row gap-8 wrap"><button type="button" class="btn primary" id="connect-agree" hidden>Agree and continue</button><button type="button" class="btn" id="connect-continue" hidden>Continue</button></div>
       `, "Done", {cancelLabel: "Close"});
-    promise.then(() => {closed = true; onClose();});
+    // Closing the dialog before it finishes must end the sign-in too, or `claude auth login` waits for a code that never comes.
+    const stopRun = () => { if (runId && !finished) api(`runs/${encodeURIComponent(runId)}/stop`, {method:"POST", body:{}}).catch(() => {}); };
+    promise.then(() => {closed = true; stopRun(); onClose();});
     const el = id => doc.getElementById(id);
     const ok = el("dialog-ok"); if (ok) ok.hidden = true;
     const hideControls = () => {for (const id of ["connect-agree", "connect-continue", "connect-code-row", "connect-question"]) if (el(id)) el(id).hidden = true;};
@@ -97,6 +99,7 @@
     try {
       const response = await api("runs", {method:"POST",body:{action:"ai_connect",params:{provider,title:`Connect ${name}`}}});
       runId=response.run.id;
+      if (closed) { stopRun(); return; } // closed while the run was starting
       const decoder = new TextDecoder();
       while (!closed && !finished) {
         const out=await api(`runs/${encodeURIComponent(runId)}/output?offset=${offset}&wait=1`);
