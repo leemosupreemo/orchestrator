@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from common import OUTPUT_DIR, PROMPTS_DIR, ROOT, read_json, write_text, print_phase, StatusBar, format_clarification_history, format_investigation_history
 from llm import run_llm, extract_json_block
@@ -47,84 +48,57 @@ def make_brief(job: dict) -> str:
             verification_text += "\n**Risks Identified**:\n" + "\n".join(f"- {x}" for x in verification["risks_identified"])
         verification_text += "\n"
 
+    # Every brief has the same shape: a heading per part, and a plain note when a part is empty (people read briefs on the
+    # job page; the builder reads the same text), so "Likely files:" with nothing under it never looks like a gap.
+    def items(values: Any, empty: str) -> str:
+        values = [str(v).strip() for v in (values or []) if str(v).strip()] if isinstance(values, list) else []
+        return "\n".join(f"- {v}" for v in values) if values else f"_{empty}_"
+
+    def text(value: Any, empty: str) -> str:
+        value = str(value or "").strip()
+        return value if value else f"_{empty}_"
+
+    def part(title: str, body: str) -> str:
+        return f"## {title}\n\n{body.strip()}\n"
+
+    issue = f"#{job['issue_number']}" if job.get("issue_number") else "_No issue linked._"
+    head = f"**Issue:** {issue}  \n**Title:** {job.get('title') or '_Untitled_'}\n"
+    extras = "\n".join(x.strip() for x in (clarification_text, investigation_text) if x and x.strip())
+    files = part("Likely files", items(plan.get("likely_files"), "None listed yet: the builder works out which files to change."))
+    criteria = part("Acceptance criteria", items(plan.get("acceptance_criteria"), "None listed: done when the summary above is met and the tests pass."))
+
     if job["type"] in {"bug-fix", "bug-investigate"}:
-        return f'''# Bug brief
-
-Issue: #{job["issue_number"]}
-Title: {job["title"]}
-
-Summary:
-{plan.get("summary", "No summary provided.")}
-{clarification_text}
-{investigation_text}
-{verification_text}
-Repro steps:
-''' + "\n".join(f'- {x}' for x in plan.get("repro_steps", [])) + f'''
-
-Expected behavior:
-{plan.get("expected_behavior", "No expected behavior provided.")}
-
-Acceptance criteria:
-''' + "\n".join(f'- {x}' for x in plan.get("acceptance_criteria", [])) + f'''
-
-Constraints:
-''' + "\n".join(f'- {x}' for x in plan.get("constraints", [])) + f'''
-
-Likely files:
-''' + "\n".join(f'- {x}' for x in plan.get("likely_files", [])) + (f'''
-
-Test recommendations (TDD):
-''' + "\n".join(f'- {x}' for x in plan.get("test_recommendations", [])) if plan.get("test_recommendations") else "") + f"\n{references}\n"
-    elif job["type"] == "feature-plan":
-        return f'''# Feature task brief
-
-Issue: #{job["issue_number"]}
-Title: {job["title"]}
-
-Summary:
-{plan.get("summary", "No summary provided.")}
-{clarification_text}
-{investigation_text}
-
-Acceptance criteria:
-''' + "\n".join(f'- {x}' for x in plan.get("acceptance_criteria", [])) + f'''
-
-Likely files:
-''' + "\n".join(f'- {x}' for x in plan.get("likely_files", [])) + f"\n{references}\n"
-    elif job["type"] == "quick-fix":
-        return f'''# Quick task brief
-
-Issue: #{job["issue_number"]}
-Title: {job["title"]}
-
-Instructions:
-{plan.get("instructions", "No instructions provided.")}
-''' + ("\nFast-tracked plan (build all of it in this one pass):\n" + "\n".join(
-        f"{i}. {t.get('title', '')}" + (f": {t['description']}" if t.get("description") else "")
-        for i, t in enumerate(plan.get("tasks") or [], start=1)) + "\n" if plan.get("tasks") else "") + f'''
-Summary:
-{plan.get("summary", "No summary provided.")}
-{clarification_text}
-{investigation_text}
-
-Acceptance criteria:
-''' + "\n".join(f'- {x}' for x in plan.get("acceptance_criteria", [])) + f'''
-Likely files:
-''' + "\n".join(f'- {x}' for x in plan.get("likely_files", [])) + f"\n{references}\n"
+        sections = [
+            part("Summary", text(plan.get("summary"), "No summary given.")),
+            extras,
+            verification_text.strip(),
+            part("Steps to reproduce", items(plan.get("repro_steps"), "None given.")),
+            part("Expected behavior", text(plan.get("expected_behavior"), "Not described.")),
+            criteria,
+            part("Constraints", items(plan.get("constraints"), "None.")),
+            files,
+            part("Test recommendations (TDD)", items(plan.get("test_recommendations"), "")) if plan.get("test_recommendations") else "",
+        ]
+        title = "Bug brief"
+    elif job["type"] in ("feature-plan", "quick-fix"):
+        tasks = plan.get("tasks") or []
+        plan_lines = "\n".join(f"{i}. {t.get('title', '')}" + (f": {t['description']}" if t.get("description") else "")
+                               for i, t in enumerate(tasks, start=1) if isinstance(t, dict))
+        quick = job["type"] == "quick-fix"
+        sections = [
+            part("Instructions", text(plan.get("instructions"), "None beyond the summary: the summary is the whole request.")) if quick else "",
+            part("Fast-tracked plan", "Build all of it in this one pass.\n\n" + plan_lines) if quick and plan_lines else "",
+            part("Summary", text(plan.get("summary"), "No summary given.")),
+            extras,
+            criteria,
+            files,
+        ]
+        title = "Quick task brief" if quick else "Feature task brief"
     else:
-        return f'''# Feature task brief
-
-Issue: #{job["issue_number"]}
-Title: {job["title"]}
-
-Summary:
-{plan.get("summary", "No summary provided.")}
-{clarification_text}
-{investigation_text}
-{verification_text}
-{references}
-'''
-
+        sections = [part("Summary", text(plan.get("summary"), "No summary given.")), extras, verification_text.strip()]
+        title = "Feature task brief"
+    body = "\n".join(x for x in sections if x)
+    return f"# {title}\n\n{head}\n{body}\n{references}\n"
 
 def inspect_progress(job: dict) -> bool:
     """Returns True if work appears already done based on git/logs."""

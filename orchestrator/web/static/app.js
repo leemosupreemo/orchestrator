@@ -6285,12 +6285,12 @@ pages.job = async ([id]) => {
           </details>`)}
       <section class="card mb-16" id="changes-section">
         <div class="card-h"><h2>Changes</h2>${changes?.base ? `<span class="count">vs ${esc(changes.base)}</span>` : ""}
-          ${(allFiles.length || changes?.diffstat) ? `<div class="card-actions"><button type="button" class="btn small" id="download-job-diff" title="Download the full unified git diff as a .patch file">Download full diff (.patch)</button></div>` : ""}</div>
+          ${(allFiles.length || changes?.diffstat) ? `<div class="card-actions"><button type="button" class="btn small ghost icon-only" id="download-job-diff" aria-label="Download full diff (.patch)" title="Download full diff (.patch)"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-download"/></svg></button></div>` : ""}</div>
         ${changeSummaryFull ? `<div class="card-b card-b-split t-secondary"><strong>What changed:</strong> ${esc(changeSummaryFull)}</div>` : ""}
         <div class="card-b delta-summary-line">
           ${deltaUnsaved ? `<div class="delta-line unsaved">${esc(deltaUnsaved)}</div>` : ""}
           <div class="row wrap gap-8 muted t-secondary"><span>${state.project?.dirty_files ? `${plural(state.project.dirty_files, "uncommitted file")} in workspace.` : "Working tree clean."}</span><a href="#/git?show=changes">Open Git setup</a></div>
-          <div class="diff-files">${allFiles.slice(0, 12).map((f) => `<details class="diff-file" data-diff-path="${esc(f)}"><summary class="mono">${esc(f)}</summary><pre class="diff" aria-live="polite">Loading…</pre></details>`).join("") || `<span class="muted">No modified files</span>`}${allFiles.length > 12 ? `<div class="muted">+${allFiles.length - 12} more — use Download full diff (.patch) for every file</div>` : ""}</div>
+          <div class="diff-files">${allFiles.slice(0, 12).map((f) => `<details class="diff-file" data-diff-path="${esc(f)}"><summary class="mono">${esc(f)}</summary><pre class="diff" aria-live="polite">Loading…</pre></details>`).join("") || `<span class="muted">No modified files</span>`}${allFiles.length > 12 ? `<div class="muted">+${allFiles.length - 12} more: download the full diff (the download button above) for every file</div>` : ""}</div>
         </div>
         ${builderSummaryDoc ? `<details class="raw diffstat-details"><summary>View builder summary</summary><div class="card-b md">${Markdown.render(builderSummaryDoc.text)}</div></details>` : ""}
         ${changes?.diffstat ? `<details class="raw diffstat-details"><summary>View diff summary (${allFiles.length} files)</summary><pre class="file">${esc(changes.diffstat)}</pre></details>` : ""}
