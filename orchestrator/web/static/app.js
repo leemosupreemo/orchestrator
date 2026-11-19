@@ -1563,11 +1563,8 @@ function fillComputerSelect(select) {
   const machines = accountMachines || [];
   if (!machines.length) { wrap.hidden = true; return; }
   wrap.hidden = false;
-  // Status indicator (🟢 reachable / 🔴 offline) renders as a compact CSS dot on #computer-select.
-  const activeMachine = machines.find((m) => m.id === current) || machines[0];
-  if (activeMachine) select.dataset.status = activeMachine.reachable ? "online" : "offline";
-  else delete select.dataset.status;
-  const html = machines.map((m) => `<option value="${esc(m.id)}"${m.id === current ? " selected" : ""}>${esc(m.name)}${m.reachable ? "" : " (offline)"}</option>`).join("")
+  // Native options use text indicators so status appears in the open menu too.
+  const html = machines.map((m) => `<option value="${esc(m.id)}"${m.id === current ? " selected" : ""}>${m.reachable ? "🟢" : "🔴"} ${esc(m.name)}${m.reachable ? "" : " (offline)"}</option>`).join("")
     + `<option value="__manage__" class="manage-projects-option">💻 Manage computers...</option>`;
   if (select.dataset.html !== html) { select.innerHTML = html; select.dataset.html = html; }
   if (current) select.value = current;
@@ -8165,10 +8162,12 @@ function analyticsConnectionCards(data, manageOnly = false) {
 
 // ---------------------------------------------------------------- packages and plugins
 
-const PKG_STATUS_ORDER = ["suggested", "planned", "dismissed"];
-
-// A job that changes a manifest goes through the usual job flow (planned, reviewed, tested), so these only fill in its instruction.
+// Package changes use the usual job flow, with the same instructions for direct adds and prefilled forms.
 function packageJobHref(kind, p, data) {
+  return `#/new?type=quick&summary=${encodeURIComponent(packageJobSummary(kind, p, data))}`;
+}
+
+function packageJobSummary(kind, p, data) {
   const label = data.ecosystems[p.ecosystem] || p.ecosystem;
   const manifest = p.manifest || (data.installed.find((i) => i.ecosystem === p.ecosystem) || {}).manifest;
   const where = manifest ? ` (the manifest is ${manifest})` : "";
@@ -8182,7 +8181,7 @@ function packageJobHref(kind, p, data) {
     remove: [`Remove the package ${p.name} (${label}) from this project.`, "",
       `Take it out of the manifest${where}, remove or replace the code that uses it, make sure nothing else depends on it, and run the tests. Don't touch other dependencies.`],
   }[kind].filter((line, i, all) => line !== "" || (all[i - 1] !== "" && i > 0)).join("\n");
-  return `#/new?type=quick&summary=${encodeURIComponent(text)}`;
+  return text;
 }
 
 // The runner checks the selected manifest before offering a native update.
@@ -8247,11 +8246,12 @@ function packageFormBody(p = {}, data) {
 
 pages.packages = async () => {
   const data = await api("packages");
-  const { installed, packages, review, features, auto, running } = data;
+  const { installed, packages, review, features, running } = data;
   const owner = state.you?.role !== "member";
   const featureName = (id) => features.find((f) => f.id === id)?.name || "";
-  const mine = (status) => packages.filter((p) => p.status === status && !p.installed);
-  const suggested = mine("suggested"), planned = mine("planned"), dismissed = packages.filter((p) => p.status === "dismissed");
+  // Older accepted entries still need installing; keep them available in Suggested.
+  const suggested = packages.filter((p) => ["suggested", "planned"].includes(p.status) && !p.installed);
+  const dismissed = packages.filter((p) => p.status === "dismissed");
   const SHOWN = 15;
   const eco = (p) => `<span class="pill">${esc(data.ecosystems[p.ecosystem]?.split(" (")[0] || p.ecosystem)}</span>`;
   const row = (p, actions) => {
@@ -8264,28 +8264,15 @@ pages.packages = async () => {
       ${detail.length ? `<details class="task-detail"><summary class="linklike muted">${extraWhy ? "Why" : "Notes"}</summary><div class="meta">${detail.map(esc).join(" · ")}</div></details>` : ""}</div>
       <div class="side">${owner ? actions : ""}</div></div>`;
   };
-  const addBtn = (p) => `<a class="btn small primary" href="${packageJobHref("add", p, data)}">Add to project</a>`;
   const menu = (p, extra = []) => moreMenu([["Edit", `data-pkg="edit" data-id="${esc(p.id)}"`], ...extra,
     ["Remove from the list", `data-pkg="remove" data-id="${esc(p.id)}"`, "This only removes it from this list; nothing in your code changes", "danger"]], { compact: true });
-  const suggestedRow = (p) => row(p, `<button type="button" class="btn small primary" data-pkg="plan" data-id="${esc(p.id)}">Accept</button><button type="button" class="btn small" data-pkg="dismiss" data-id="${esc(p.id)}">Reject</button>`);
-  const plannedRow = (p) => row(p, `${addBtn(p)}${menu(p, [["Reject", `data-pkg="dismiss" data-id="${esc(p.id)}"`]])}`);
+  const suggestedRow = (p) => row(p, `<button type="button" class="btn small primary" data-pkg="accept" data-id="${esc(p.id)}">Accept</button><button type="button" class="btn small" data-pkg="dismiss" data-id="${esc(p.id)}">Reject</button>`);
   const dismissedRow = (p) => row(p, `<button type="button" class="btn small" data-pkg="restore" data-id="${esc(p.id)}">Restore</button>${menu(p)}`);
   const installedRow = (i, n) => `<div class="item package-row package-installed-row" ${n >= SHOWN ? "hidden" : ""} data-find="${esc(`${i.name} ${i.ecosystem} ${i.manifest}`.toLowerCase())}"><div class="main-col">
       <div class="title">${esc(i.name)} ${eco(i)}${i.version ? ` <span class="muted mono">${esc(i.version)}</span>` : ""}${i.kind === "dev" ? ` <span class="pill idle">dev</span>` : ""}</div>
       <div class="meta mono">${esc(i.manifest)}</div></div>
       <div class="side">${owner ? moreMenu([packageUpdateAction(i, data),
         ["Remove…", `data-href="${packageJobHref("remove", i, data)}"`, "Starts a job that removes it and the code that uses it", "danger"]], { compact: true, icon: true, ariaLabel: `Package actions: ${i.name}` }) : ""}</div></div>`;
-  const reviewMeta = [
-    review?.at ? `Last reviewed ${ago(Date.parse(review.at) / 1000)}` : "",
-    review?.searched === false ? "couldn't search the web, so versions may be out of date" : "",
-    review?.suggested !== undefined ? plural(review.suggested || 0, "suggestion") : "",
-  ].filter(Boolean);
-  const reviewDetailsLabel = review?.notes && review?.sources?.length
-    ? `Review notes &amp; ${plural(review.sources.length, "source")}`
-    : review?.notes ? "Review notes"
-    : review?.sources?.length ? `Pages it used (${review.sources.length})` : "";
-  const reviewNote = review?.at && review.suggested !== undefined ? `<p class="muted">${esc(reviewMeta.join(" · "))}</p>
-      ${reviewDetailsLabel ? `<details class="fold"><summary class="np-section-legend">${reviewDetailsLabel}</summary><div class="stack gap-8">${review.notes ? `<p class="muted m-0">${esc(review.notes)}</p>` : ""}${review.sources?.length ? `<ul class="package-sources">${review.sources.map((u) => `<li><a href="${esc(u)}" target="_blank" rel="noopener">${esc(u.replace(/^https:\/\//, ""))}</a></li>`).join("")}</ul>` : ""}</div></details>` : ""}` : "";
   return {
     title: "Packages",
     sub: "",
@@ -8297,19 +8284,15 @@ pages.packages = async () => {
       </div>
     </details>` : "",
     html: `
-      <section class="card mb-16" id="pkg-review-card"><div class="card-b stack">
-        <p>Suggested packages match your PRD. Nothing is installed unless you add it.</p>
         ${running ? `<p class="muted" id="pkg-running" role="status"><span class="spinner inline-spinner" aria-hidden="true"></span>Reviewing your requirements for packages…</p>` : ""}
         ${review?.error ? `<div class="notice bad">${esc(review.error)}</div>` : ""}
         <div class="pkg-progress" id="pkg-progress" role="status" aria-live="polite" hidden>
           <div class="row gap-12 wrap"><strong id="pkg-stage"></strong><button type="button" class="btn small danger" id="pkg-cancel">Cancel</button></div>
           <p class="muted" id="pkg-detail"></p>
           <p class="muted" id="pkg-slow" hidden>This is taking longer than usual. The model may be slow or searching widely. You can keep waiting, or cancel and try again. It stops on its own after ${Math.round(PACKAGE_REVIEW_BUDGET_SECONDS / 60)} minutes.</p>
-        </div>${reviewNote}
-        ${owner ? `<label class="check"><input type="checkbox" id="pkg-auto" ${auto ? "checked" : ""}><span>Recommend automatically when PRD changes</span></label>` : ""}</div></section>
+        </div>
       ${suggested.length ? `<section class="card mb-16" id="pkg-suggested"><div class="card-h"><h2>Suggested</h2><span class="count">${suggested.length}</span></div><div class="list">${suggested.map(suggestedRow).join("")}</div></section>` : ""}
-      ${planned.length ? `<section class="card mb-16" id="pkg-planned"><div class="card-h"><h2>Accepted</h2><span class="count">${planned.length}</span></div><div class="list">${planned.map(plannedRow).join("")}</div></section>` : ""}
-      <section class="card mb-16" id="pkg-installed"><div class="card-h"><h2>In this project</h2><span class="count">${installed.length}</span>
+      <section class="card mb-16" id="pkg-installed"><div class="card-h"><h2>Installed</h2><span class="count">${installed.length}</span>
         ${installed.length > SHOWN ? `<input type="search" id="pkg-find" class="package-find" placeholder="Filter" aria-label="Filter installed packages">` : ""}</div>
         <div class="list" id="pkg-installed-list">${installed.length ? installed.map(installedRow).join("") : `<div class="empty">No packages found. Orchestrator reads package.json, requirements.txt, pyproject.toml, Package.swift, Cargo.toml, go.mod, Gemfile, Podfile, build.gradle, Unity's Packages/manifest.json and pubspec.yaml.</div>`}</div>
         ${installed.length > SHOWN ? `<div class="card-b"><button type="button" class="btn small" id="pkg-more">Show all ${installed.length}</button></div>` : ""}</section>
@@ -8322,7 +8305,6 @@ pages.packages = async () => {
         const ok = await formDialog(`Update ${item.name}?`, `<p>Use this project's package manager to update <strong>${esc(item.name)}</strong> within its declared version constraints, then run the configured checks.</p><p class="muted">No AI is called for the update. If the update or checks fail, you can ask AI to repair it.</p>`, "Update package");
         if (ok) runAction("package_update", {ecosystem: item.ecosystem, name: item.name, manifest: item.manifest, title: `Update ${item.name}`}, {skipConfirm: true});
       }));
-      $("#pkg-auto")?.addEventListener("change", (e) => call({ op: "auto", enabled: e.target.checked }, e.target.checked ? "Packages will be recommended when your PRD changes." : "Automatic recommendations are off."));
       if (running) { // an automatic review is going: check back until it's done
         const timer = setInterval(() => { if (current.page === "packages") route(); else clearInterval(timer); }, 8000);
         cleanup.push(() => clearInterval(timer));
@@ -8337,9 +8319,13 @@ pages.packages = async () => {
       view.querySelectorAll("[data-pkg]").forEach((btn) => btn.addEventListener("click", async () => {
         const id = btn.dataset.id, p = packages.find((x) => x.id === id), op = btn.dataset.pkg;
         btn.closest("details.more")?.removeAttribute("open");
-        if (op === "edit") { const v = await formDialog(`Edit ${p.name}`, packageFormBody(p, data), "Save"); if (v) call({ op: "update", id, ...v }, "Saved"); }
+        if (op === "accept") {
+          if (btn.disabled) return;
+          await runAction("new_job", { type: "quick", summary: packageJobSummary("add", p, data), branch_mode: "current", no_dispatch: false }, { skipConfirm: true, button: btn });
+        }
+        else if (op === "edit") { const v = await formDialog(`Edit ${p.name}`, packageFormBody(p, data), "Save"); if (v) call({ op: "update", id, ...v }, "Saved"); }
         else if (op === "remove") call({ op: "remove", id }, "Removed from the list");
-        else call({ op: "status", id, status: { plan: "planned", dismiss: "dismissed", restore: "suggested" }[op] }, op === "dismiss" ? "Rejected. It won't be suggested again." : op === "plan" ? "Accepted. Add it to the project when you're ready." : "");
+        else call({ op: "status", id, status: { dismiss: "dismissed", restore: "suggested" }[op] }, op === "dismiss" ? "Rejected. It won't be suggested again." : "");
       }));
       $("#pkg-more")?.addEventListener("click", (e) => { view.querySelectorAll("#pkg-installed-list .item[hidden]").forEach((r) => { r.hidden = false; }); e.currentTarget.hidden = true; });
       $("#pkg-find")?.addEventListener("input", (e) => {

@@ -5373,7 +5373,7 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertIn('"Bring in designs and tickets from Figma, Jira or Trello."', page)  # nothing connected: no "None connected", just the button
         self.assertNotIn("None connected", page[page.index('id="prd-apps-section"'):][:1200])
         pkgs = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
-        self.assertIn("Suggested packages match your PRD. Nothing is installed unless you add it.", pkgs)
+        self.assertNotIn('id="pkg-review-card"', pkgs)
         self.assertIn('providerIcon(a.id)', page)
         self.assertIn('href="#/connections"', page)
         self.assertIn('Connect more', page)
@@ -6190,7 +6190,7 @@ class PackagesApiTests(ServerTestCase):
         self.wait_review_done()
         self.assertEqual(len(calls), 1)
 
-    def test_it_waits_for_edits_to_settle_and_respects_the_switch(self):
+    def test_it_waits_for_edits_to_settle_and_always_recommends(self):
         self.start_server_review(self.ANSWER, settle=3600)
         rt = ui.runtime_dir(self.root)
         self.server.packages_tick()  # baseline
@@ -6198,9 +6198,7 @@ class PackagesApiTests(ServerTestCase):
         self.assertFalse(self.server.packages_tick())  # just edited: still being written
         self.server.PACKAGE_REVIEW_SETTLE_SECONDS = 0
         self.post("/api/packages", {"op": "auto", "enabled": False})
-        self.assertFalse(self.server.packages_tick())  # switched off
-        self.assertFalse(package_store.load(rt)["auto"])
-        self.post("/api/packages", {"op": "auto", "enabled": True})
+        self.assertTrue(package_store.load(rt)["auto"])  # older clients cannot disable reviews
         self.assertTrue(self.server.packages_tick())
         self.wait_review_done()
 
@@ -6243,12 +6241,66 @@ class PackagesApiTests(ServerTestCase):
         prd_doc.Prd(self.root, ui.runtime_dir(self.root)).write(prd_doc.template("Word Duel"))
         self.assertFalse(self.server.packages_tick())  # nothing written any more: nothing to review
 
+    def test_accept_package_starts_add_job_without_another_form(self):
+        script = r'''
+const fs = require('fs'), vm = require('vm'), assert = require('assert');
+const app = fs.readFileSync(process.argv[1], 'utf8');
+const packages = ['suggested', 'planned'].map((status, i) => ({
+  id: String(i), name: `com.unity.package${i}`, ecosystem: 'unity', version: '2.4.3', status
+}));
+const data = {packages, installed: [], features: [], ecosystems: {unity: 'Unity packages'}};
+const requests = [], buttons = packages.map(p => ({
+  dataset: {id: p.id, pkg: 'accept'}, innerHTML: 'Accept', isConnected: true,
+  closest: () => null, setAttribute() {}, removeAttribute() {},
+  addEventListener(event, handler) { this.click = handler; }
+}));
+const context = {
+  pages: {}, state: {you: {role: 'owner'}, actions: {}, runs: []}, location: {},
+  api: async (path, options) => {
+    if (path === 'packages' && !options) return data;
+    requests.push({path, ...options});
+    return {run: {id: 'add-package'}};
+  },
+  $: () => null, view: {querySelectorAll: selector => selector === '[data-pkg]' ? buttons : []},
+  esc: String, moreMenu: () => '', PACKAGE_REVIEW_BUDGET_SECONDS: 240,
+  terminalSize: () => ({}), trackWebEvent() {}, refreshState() {},
+  toast(message) { throw Error(message); },
+  formDialog() { throw Error('Accept must not open another form'); }
+};
+vm.createContext(context);
+vm.runInContext(app.slice(app.indexOf('async function runAction('), app.indexOf('\nfunction formDialog(')), context);
+vm.runInContext(app.slice(app.indexOf('function packageJobHref('), app.indexOf('// The runner checks')), context);
+vm.runInContext(app.slice(app.indexOf('pages.packages = async'), app.indexOf('pages.measure = async')), context);
+(async () => {
+  const page = await context.pages.packages();
+  assert(!page.html.includes('id="pkg-planned"'));
+  assert(!page.html.includes('id="pkg-review-card"'));
+  assert(!page.html.includes('id="pkg-auto"'));
+  for (const p of packages) assert(page.html.includes(`data-id="${p.id}">Accept</button>`));
+  page.after();
+  for (const button of buttons) await button.click();
+  assert.equal(requests.length, 2);
+  requests.forEach((request, i) => {
+    assert.equal(request.path, 'runs');
+    assert.equal(request.body.action, 'new_job');
+    assert.equal(request.body.params.type, 'quick');
+    assert.equal(request.body.params.no_dispatch, false);
+    assert(request.body.params.summary.includes(`Add the package com.unity.package${i} (Unity packages), version 2.4.3`));
+  });
+  assert.equal(context.location.hash, '#/runs/add-package');
+})().catch(error => { console.error(error); process.exitCode = 1; });
+'''
+        result = subprocess.run(["node", "-e", script, str(PACKAGE_ROOT / "orchestrator/web/static/app.js")],
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_the_page_lists_suggests_and_starts_jobs_instead_of_editing_manifests(self):
         app = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
         page = app[app.index("pages.packages = async"):app.index("pages.measure = async")]
-        for needle in ('api("packages")', 'api("packages/review"', "Recommend packages", "Researching…", "Add to project", ">Suggested<", ">Accepted<",
-                       ">In this project<", ">Rejected<", "couldn't search the web", 'data-pkg="dismiss"', ">Accept</button>", ">Reject</button>", "Show all ${installed.length}"):
+        for needle in ('api("packages")', 'api("packages/review"', "Recommend packages", "Researching…", ">Suggested<",
+                       ">Installed<", ">Rejected<", 'data-pkg="dismiss"', ">Accept</button>", ">Reject</button>", "Show all ${installed.length}"):
             self.assertTrue(needle in page, needle)
+        self.assertNotIn('id="pkg-planned"', page)
         form = app[app.index("function packageFormBody("):app.index("pages.packages = async")]
         for needle in ("Package link", "Paste a registry page or any Git repository", "Work it out from the link", "optional with a link"):
             self.assertTrue(needle in form, needle)  # a new package can be added from its link alone
@@ -6259,7 +6311,7 @@ class PackagesApiTests(ServerTestCase):
             self.assertTrue(kind in jobs, kind)
         self.assertTrue('href="#/packages" data-route="packages"' in (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "index.html").read_text())
         self.assertTrue('["Packages", "#/packages"' in app)  # the command palette
-        for needle in ("Recommend automatically when PRD changes", 'id="pkg-auto"', "Reviewing your requirements for packages…", "p.link ?"):
+        for needle in ("Reviewing your requirements for packages…", "p.link ?"):
             self.assertTrue(needle in page, needle)  # it runs on its own, says so while it works, and every line has a link
         self.assertTrue('id="packages-badge"' in (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "index.html").read_text())  # the sidebar count
         self.assertTrue("renderPackagesBadge();" in app and "state.packages_suggested" in app)

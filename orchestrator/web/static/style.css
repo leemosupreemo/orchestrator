@@ -5614,13 +5614,6 @@ dialog.ask-ai { width: min(34rem, 100vw); max-width: min(34rem, 100vw); height: 
 .arch-seg-2 { background: var(--warn); }
 .arch-seg-3 { background: var(--muted); }
 .arch-profile-legend { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: var(--type-secondary); color: var(--muted); }
-.machine-switch #computer-select[data-status] {
-  padding-left: var(--space-6);
-  background-image: radial-gradient(circle, var(--machine-dot, var(--ok)) 3.5px, transparent 4px);
-  background-repeat: no-repeat;
-  background-position: var(--space-3) 50%;
-}
-.machine-switch #computer-select[data-status="offline"] { --machine-dot: var(--bad); }
 .arch-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: 4px; vertical-align: middle; }
 .arch-change { border-top: 1px solid var(--border); padding-top: 12px; }
 @media (max-width: 560px) { .arch-proscons { grid-template-columns: 1fr; } }

@@ -263,7 +263,7 @@ def load(runtime: Path) -> dict[str, Any]:
     if not isinstance(data, dict):
         data = {}
     return {"packages": [p for p in data.get("packages", []) if isinstance(p, dict) and p.get("id")], "review": data.get("review") if isinstance(data.get("review"), dict) else None,
-            "auto": data.get("auto", True) is not False,  # review again when the product requirements change
+            "auto": True,  # always review when requirements change, including previously disabled projects
             "prd_hash": data.get("prd_hash") if isinstance(data.get("prd_hash"), str) else None,  # the requirements the last review (or the first look) read
             "prd_snapshot": data.get("prd_snapshot") if isinstance(data.get("prd_snapshot"), str) else "",  # their text, to measure how much has changed since
             "running": data.get("running") if isinstance(data.get("running"), str) else ""}  # when an automatic review started, while one is going
@@ -317,8 +317,9 @@ def is_substantial(old: str, new: str) -> bool:
 
 
 def set_auto(runtime: Path, enabled: bool) -> None:
+    """Keep older clients compatible; automatic recommendations are always enabled."""
     data = load(runtime)
-    data["auto"] = bool(enabled)
+    data["auto"] = True
     save(runtime, data)
 
 

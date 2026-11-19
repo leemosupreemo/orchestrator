@@ -15,7 +15,7 @@ const fs=require('fs'),vm=require('vm'),dir=process.argv[1];require(dir+'/html.j
 const source=fs.readFileSync(dir+'/app.js','utf8');
 const c={esc:Html.escape,attrJSON:x=>Html.escape(JSON.stringify(x))};vm.createContext(c);
 function load(name){const a=source.indexOf('function '+name+'(');if(a<0)throw Error('Missing '+name);const b=source.indexOf('\n}\n',a)+3;vm.runInContext(source.slice(a,b),c);}
-load('packageJobHref');load('packageUpdateAction');load('moreMenu');
+load('packageJobSummary');load('packageJobHref');load('packageUpdateAction');load('moreMenu');
 const item={name:'react',ecosystem:'npm',manifest:'packages/chosen/package.json',version:'^18'};
 const data={ecosystems:{npm:'JavaScript'},features:[],installed:[{ecosystem:'npm',manifest:'other/package.json'}]};
 '''+body
@@ -37,5 +37,5 @@ const data={ecosystems:{npm:'JavaScript'},features:[],installed:[{ecosystem:'npm
         self.assertNotIn('other%2Fpackage.json',out['a'][1])
         self.assertIn('Workspace &lt;scope&gt; unavailable',out['html'])
         app=(STATIC/'app.js').read_text(encoding='utf-8')
-        installed=app[app.index('const installedRow ='):app.index('const reviewMeta =')]
+        installed=app[app.index('const installedRow ='):app.index('  return {', app.index('const installedRow ='))]
         self.assertNotIn('i.update.reason',installed)

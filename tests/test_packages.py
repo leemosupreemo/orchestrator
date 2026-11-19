@@ -221,17 +221,22 @@ class AutomaticReviewStateTests(unittest.TestCase):
         self.assertEqual(pk.prd_fingerprint("A word  game\n\nfor friends"), pk.prd_fingerprint(" A word game for friends "))
         self.assertNotEqual(pk.prd_fingerprint("A word game"), pk.prd_fingerprint("A word game with sound"))
 
-    def test_the_switch_the_baseline_and_the_running_marker_are_kept(self):
+    def test_automatic_review_stays_enabled_and_preserves_review_state(self):
         data = pk.load(self.runtime)
         self.assertEqual((data["auto"], data["prd_hash"], data["running"]), (True, None, ""))  # on by default; nothing looked at yet
         pk.set_auto(self.runtime, False)
         pk.note_prd(self.runtime, "abc123")
         pk.note_prd(self.runtime, "abc123", running="2026-10-19T22:00:00-07:00")
         data = pk.load(self.runtime)
-        self.assertEqual((data["auto"], data["prd_hash"], data["running"]), (False, "abc123", "2026-10-19T22:00:00-07:00"))
+        self.assertEqual((data["auto"], data["prd_hash"], data["running"]), (True, "abc123", "2026-10-19T22:00:00-07:00"))
         pk.note_prd(self.runtime, "def456", error="The model took too long.", snapshot="the text it read")
         data = pk.load(self.runtime)
         self.assertEqual((data["prd_hash"], data["running"], data["review"]["error"], data["prd_snapshot"]), ("def456", "", "The model took too long.", "the text it read"))
+
+    def test_legacy_disabled_setting_does_not_disable_reviews(self):
+        pk.save(self.runtime, {"auto": False, "prd_hash": "existing", "packages": []})
+        self.assertTrue(pk.load(self.runtime)["auto"])
+        self.assertEqual(pk.load(self.runtime)["prd_hash"], "existing")
 
     def test_a_finished_review_records_what_it_read_and_clears_the_marker(self):
         pk.note_prd(self.runtime, "old", running="2026-10-19T22:00:00-07:00")
