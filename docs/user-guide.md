@@ -462,6 +462,39 @@ A **job** is a whole piece of work and its five stages: Plan, Build, Verify, Doc
 - **On a run's page**, the line under the title says which job it belongs to and where it sits ("Run 3 of 5 of the job …", or "The only run of the job …"), with links to the runs before and after it. Back returns to the job.
 - Runs are remembered after they end and after Orchestrator restarts, so a job keeps its full list.
 
+### The job page
+
+The status box at the top says where the job is and holds its one next step (Approve, Merge & complete, Run fix…). The
+stage pills above it scroll to the card for that stage; Finalize scrolls to the status box itself.
+
+- **Tell the AI what to change.** Below the status, one box for asking the AI for more, whatever the stage. Its button
+  says what will happen:
+
+  | When the job is | Button | What it does |
+  |---|---|---|
+  | Planned, not built yet | **Re-plan** | Re-plans with your note; you approve the new plan before anything is built |
+  | Ready to merge | **Request changes** | Builds the change on the job's branch, runs the tests and updates the pull request; you review again before merging |
+  | Failed or needing a fix | **Run fix** | A fix attempt; say what you saw, or leave it blank for another automatic attempt |
+  | Merged | **Reopen and change** | Reopens the job with your note and builds it |
+
+  Enter sends, Shift+Enter starts a new line, and a half-written note survives the page refreshing itself. The box is
+  hidden while a run works, while the AI waits for an answer (the question card takes it), and while you review a plan
+  (the plan card has Revise).
+- **Changes.** The card starts with **What changed**, the builder's own summary in full, then the changed files and their
+  diffs. The status box keeps only the file count and the pull request link.
+- **Documentation.** Lists the project's docs that concern this job: the ones it changed, then those that mention the
+  files it changed, each with why. All project docs are a click away.
+- **Screenshots.** When the job changed visual files and screens can be captured (see
+  [UX And Design Review](#ux-and-design-review)), the UX and design check's screenshots are shown under Changes.
+
+### Quick changes
+
+A **Quick** job skips the full planning stage, but still gets a short **fast-tracked plan**: one model call writes one to
+three tasks, the acceptance criteria, what it assumed, the files it will likely touch, and test cases, from your
+description plus the project's PRD, architecture and docs. It never stops to ask questions. The Plan card marks it
+**Fast-tracked**, and the build pass gets the plan. If that call fails, the job carries on as before, with your
+description as the brief.
+
 ### When the build changes nothing
 
 The Build step only counts as done when the builder changed files. If it finishes without changing any, the job stops as **Nothing was built**: it doesn't go on to test unchanged code or start fix attempts. The timeline marks Build with "No files changed", and **Run the build again** retries it. The usual cause is an AI tool that refused to edit files; the message says so when the builder reported it. Claude, when building or fixing, is allowed to edit files in the project (its other roles stay read-only). A fix attempt that changes nothing stops the same way, and an investigation may change nothing.
@@ -470,7 +503,7 @@ The Build step only counts as done when the builder changed files. If it finishe
 
 **Blocked jobs.** When a job stops on something outside the code (a leftover git lock, an expired AI sign-in, a tool that isn't installed, a full disk, Xcode or the simulator), it doesn't start fix attempts: no code change can help. The job says what blocks it and how to clear it, and Home's **Blocked** card lists each blocker once with the jobs it holds up (**Clear the lock**, **Sign in**). Once a blocker is cleared, its jobs resume by themselves while Home is open, at most once an hour each, so a blocker that comes straight back pauses them again instead of looping.
 
-If the build or tests fail, the job goes into **Needs a fix** (its status is *debugging*). Each fix attempt is its own run, and **nothing retries by itself**. When a run ends this way its page says **Needs your next step** and gives the reason (the failing tests, or "No tests ran" when the test command found nothing to run, which is a test-selection problem rather than a code failure), with one button: **Run another fix**. It opens the same dialog as **Run a fix…** on the job page. The job page and that dialog both say **what needs fixing** before you press anything: the most important problem first (for example *your Claude sign-in expired*, *the AI's file edits were blocked*, *No tests ran*, which tests fail, or that the project doesn't build), then a few lines of context such as the last attempt's diagnosis. When the cause is an expired sign-in, the job page has a **Sign in** button for that tool. Add what you saw, or leave it blank for another automatic attempt. The job stays open on its branch, so nothing is lost. After several attempts without progress, automatic fixing pauses and the page says why.
+If the build or tests fail, the job goes into **Needs a fix** (its status is *debugging*). Each fix attempt is its own run, and **nothing retries by itself**. When a run ends this way its page says **Needs your next step** and gives the reason (the failing tests, or "No tests ran" when the test command found nothing to run, which is a test-selection problem rather than a code failure), with one button: **Run another fix**. On the job page, the same thing is the **Run fix** button of the **Tell the AI what to change** box. The job page says **what needs fixing** before you press anything: the most important problem first (for example *your Claude sign-in expired*, *the AI's file edits were blocked*, *No tests ran*, which tests fail, or that the project doesn't build), then a few lines of context such as the last attempt's diagnosis. When the cause is an expired sign-in, the job page has a **Sign in** button for that tool. Add what you saw, or leave it blank for another automatic attempt. The job stays open on its branch, so nothing is lost. After several attempts without progress, automatic fixing pauses and the page says why.
 
 If a builder reports that its file writes were blocked (the AI tool's permission mode refused them), the job stops with that reason instead of building and testing code that didn't change. A test command that names files that don't exist, or runs no tests, is ignored and the project's own tests run instead.
 
@@ -500,7 +533,15 @@ Some jobs still wait their turn:
 - **Jobs that change the same files as a running job**: building them side by side would end in conflicting branches.
 - **A job whose project folder holds another job's uncommitted work.** It pauses as **Blocked** ("“…” has uncommitted work here") rather than take that work as its own, then starts by itself once that work is committed.
 
-The job page also says when an open job **overlaps** another by files, so you can finish one first or merge them. A new job that looks like one still open asks before it's created, even with a typo in it.
+The job page also says when an open job **overlaps** another by files, with one plain next step for the closest one:
+
+- **The same request twice** (the titles match, typos and all): "This looks like the same request as …". **Keep this one**
+  archives the other (its branch and files stay; restore it from Home), and **Open the other** compares them first.
+- **The other job is building now**: **Merge** waits, greyed out, until it finishes.
+- **This job is ready to merge**: merge it first, then finish the other; its pull request may need updating.
+- **The other job is ready to merge**: merge that one first, then come back.
+
+Which files overlap is behind **Which files?**. A new job that looks like one still open asks before it's created, even with a typo in it.
 
 ### Jobs that look like the same work
 
@@ -676,6 +717,11 @@ Native apps need no URL. Set up any of these (together with, or instead of, `url
 
 Anything that fails is listed in the review's capture limits, and the review carries on from the code.
 
+**Devices found for you.** For a job's change check, when `ui_review` names no native target, the iOS simulator is used
+if the project is an Xcode app and Xcode's tools are installed, and Android if the project has an app id and `adb` is
+found. The capture limits say a device was picked this way. Setting `"simulator": false` (or `"android": false`) in
+`ui_review` turns that off.
+
 Models see the screenshots as attachments (Codex, opencode) or through their file tools (Claude, Gemini, agy); a model
 that can't open images says so in the report's limits.
 
@@ -815,13 +861,41 @@ From the top:
   - **Last job run:** the job that ran most recently, what state it's in now, and how long ago.
   - **Last success:** the most recent job that built successfully (ready to review or merge, or finished). It's only shown when it isn't the same job as the last run.
 
-  When jobs are waiting on you, the card says how many, for example **2 jobs need you**. Tap that to see them. While runs are going, it says how many are in progress.
+  When jobs are waiting on you, the card says how many, for example **2 jobs need you**. Tap that to filter the list to them and scroll down to it, without reloading the page. While runs are going, it says how many are in progress.
 - **Preview** (web projects). The app as it is on the current branch. See [Live preview](#live-preview).
-- **Jobs.** Everything not finished, filtered by **All**, **Needs you**, **In progress** and **Backlog**. Each row shows the one thing that moves it forward. Finished jobs are listed below, and archived ones under that.
+- **Jobs.** Everything not finished, filtered by **All**, **Needs you**, **In progress** and **Backlog**. Each row shows the one thing that moves it forward. Finished jobs are listed below, and archived ones under that. **Archive** (swipe a row, or the job's menu) puts a job away with its branch and files kept; a job with a run going can't be archived, and Home says so. Archiving or restoring a job does the same on all your computers.
 
 The sidebar's **Primary machine** dropdown switches between your computers. The one marked **Primary** starts this project's jobs. Another computer can look at the project, but it can't start work until it's made primary.
 
 **Jobs on your other computers.** Home also lists the jobs your other computers run in this project, with the same state their own job page shows ("Blocked: Git is locked", "Tests passed, not committed", the run working now and its step), usually within 10 seconds of a change. The computer running a job is its one source of truth; your account only holds a read-only copy for the others. While a job runs, each finished task is pushed to the job's own branch (never the base branch), so if that computer fails, at most the task in progress is lost. **Continue here** moves a job to the computer you're on, using what reached the branch: the computer it left marks it **Moved to <computer>** and won't run it again until you continue it back. It can't be moved while a run is working on it there.
+
+### When a computer is offline
+
+Your other computers never need the one that has a job to be online: what a job needs is on your account or on GitHub
+before that computer goes away.
+
+- **One owner per job.** Each job has an ownership number; **Continue here** raises it. The computer holding the
+  highest number owns the job, and any other copy reads **Moved to <computer>**, even if its computer was offline during
+  the move and syncs late. Copies brought over by an old project download never win.
+- **Every job is reachable.** Each computer sends your account a record of every job that changed, not only the newest
+  ones, so you can continue any unfinished job from another computer.
+- **Unfinished work.** About once a minute, a paused or failed job's uncommitted files are backed up to GitHub, on a
+  hidden ref of the job's own (your files, what's staged and the branch are never touched). After **Continue here**, the
+  job page offers **Bring the unfinished work here**, which never overwrites files you've changed here.
+- **Freshness.** A job on another computer says how fresh it is ("on MacBook Pro (offline, synced 3h ago)"), and its
+  page warns that an offline computer may have newer work it hasn't uploaded, and whether its unfinished files came
+  along.
+- **Nothing is lost on reconnect.** A computer that comes back with commits or files it never uploaded, for a job that
+  moved on without it, saves them to a side branch, `<branch>-from-<computer>`, and the job's page there says where.
+- **Archive and Restore** apply on every computer.
+
+**When syncing fails.** If this computer can't check in with your account, send its job updates, or back up a job's
+branch or unfinished work for more than 10 minutes, Home shows a warning: since when, what your other computers see
+instead, and what to do (back online, sign in again, or fix the GitHub sign-in). **Sync details** lists each kind of
+sync and when it last worked. A job whose latest commits or unfinished files couldn't be backed up says so on its page.
+Brief blips (a laptop waking, a Wi-Fi hop) aren't shown, and everything retries by itself.
+
+The one thing no design can fix: work done while a computer was cut off reaches the others only once it reconnects.
 
 ### Ask AI
 

@@ -161,6 +161,15 @@ away. The rules, from local-first sync practice:
 The remote job page says when the other computer last synced and, offline, that it may have newer work not uploaded yet
 (`remoteFreshnessHtml`). Home's row says "offline, synced 3h ago".
 
+**When sync fails** (`orchestrator/sync_health.py`). Each channel records its last success and failure in
+`~/.orchestrator/sync_health.json`: `account` (the heartbeat), `jobs` (snapshot and job record sends,
+`send_snapshot_if_changed`), `branches` (any open job's `backup_error` from `backup_push`) and `unfinished`
+(`wip_backup.backup_job`). A channel failing for longer than `GRACE_SECONDS` (10 minutes) is a problem:
+`/api/sync-health` returns it with `advice` for the usual causes (offline, signed out of the account, GitHub refusing the
+push, a rejected push), and Home shows it (`syncHealthBanner`) with each channel's state under **Sync details**. A
+success clears it. The job page says when that job's commits or unfinished files aren't backed up (`backupNote`). Errors
+are stored without credentials from remote URLs.
+
 **The one limit:** work a computer did after its last upload, while it was cut off, can't reach another computer until it
 reconnects. That's why everything uploads early and often; and when it reconnects, that work is kept on a side branch.
 

@@ -4428,6 +4428,23 @@ function homeProjectTitle(p) {
 
 let homeRemoteSnaps = { key: null, at: 0, snaps: [] }; // other computers' snapshots as Home last fetched them
 pages.home = async (_, query) => {
+  // This computer can't keep the others up to date (sync_health.py: failing past a grace period). Only it can fix that, and
+  // the others just see older information, so it says so here: since when, what failed, and what to do.
+  function syncHealthBanner(health) {
+    const problems = health?.problems || [];
+    if (!problems.length) return "";
+    const first = problems[0];
+    const when = (t) => new Date(t * 1000).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+    const rows = (health.channels || []).map((c) => `<li><strong>${esc(c.label)}</strong>: ${c.failing_since
+      ? `failing since ${esc(when(c.failing_since))}${c.error ? ` <span class="muted">(${esc(c.error)})</span>` : ""}`
+      : c.last_ok ? `working, last ${esc(ago(c.last_ok))}` : "not used yet"}</li>`).join("");
+    return `<section class="notice warn mb-16" id="sync-health" role="status">
+      <p><strong>${problems.length === 1 ? esc(first.label) : "Syncing with your other computers"} hasn't worked since ${esc(when(first.since))}.</strong>
+        Your other computers see this one's jobs as of ${first.last_ok ? esc(when(first.last_ok)) : "before then"}.</p>
+      <p>${esc(first.advice)}</p>
+      <details class="fold"><summary class="linklike muted">Sync details</summary><ul class="muted">${rows}</ul></details>
+    </section>`;
+  }
   // What holds paused jobs up that no code change can fix (orchestrator/blockers.py): one row per blocker, with the jobs
   // it holds and the one thing that clears it. Cleared blockers resume their jobs by themselves (the POST to blockers below).
   const blockersCard = (groups) => {
@@ -4457,11 +4474,12 @@ pages.home = async (_, query) => {
     if (download && !finishProjectDownload(download)) return {stale:true};
     return setupPage(setupState);
   }
-  const [{ jobs }, waiting, product, archivedList, homeGit, homePreview, homeBlockers] = await Promise.all([
+  const [{ jobs }, waiting, product, archivedList, homeGit, homePreview, homeBlockers, syncHealth] = await Promise.all([
     api("jobs"), api("inbox"), api("product").catch(() => null), api("jobs/archived").catch(() => null),
     api("git").catch(() => ({})), api("preview").catch(() => null),
     // POST also resumes the jobs whose blocker has cleared since; someone who can't start runs just reads the list
     api("blockers", { method: "POST", body: {} }).catch(() => api("blockers").catch(() => null)),
+    api("sync-health").catch(() => null),
   ]);
   if (homeBlockers?.resumed?.length) toast(`${plural(homeBlockers.resumed.length, "blocked job")} resumed: what stopped ${homeBlockers.resumed.length === 1 ? "it" : "them"} is cleared.`);
   if (!sameProject()) return {stale: true};
@@ -4584,6 +4602,7 @@ pages.home = async (_, query) => {
     actions: `<div class="home-topbar-tools">${homeHealthIndicator(setupState)}<a class="btn primary home-new-job-btn" href="#/new"><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg>New job</a></div>`,
     status: homeHealthIndicator(setupState),
     html: `
+      ${syncHealthBanner(syncHealth)}
       ${HomeStatus.render({git: homeGit, jobs, runs: state.runs})}
       ${product ? productStripHtml(product, jobs) : ""}
 
@@ -5453,6 +5472,17 @@ function remoteFreshnessHtml(machine, label, syncedAt, wip) {
     <p class="muted">Wait for it to come back online, or Continue here from this copy. If it had newer work, it keeps it on a side branch when it reconnects; nothing is lost.</p></div>`;
 }
 
+// This job's latest work isn't on GitHub (the worker's branch push, or the unfinished-work backup failed): another computer
+// can't continue from it yet. Said on the job, not only in the sync banner, since it's this job that's at risk.
+function backupNote(job) {
+  if (job.moved_to || ["completed", "archived", "discarded"].includes(job.status)) return "";
+  const branch = job.backup_error ? `its latest commits` : "";
+  const wip = job.wip_backup?.error ? `its unfinished files` : "";
+  if (!branch && !wip) return "";
+  const err = job.backup_error || job.wip_backup.error;
+  return `<p class="job-hero-reason text-bad">Not backed up to GitHub: ${[branch, wip].filter(Boolean).join(" and ")}. Another computer can't continue from them yet. <span class="muted">(${esc(String(err).split("\n").pop())})</span> It tries again by itself.</p>`;
+}
+
 function strandedNote(job) {
   const k = job.stranded;
   if (!k || !(k.branch || k.wip_commit)) return "";
@@ -6136,6 +6166,7 @@ pages.job = async ([id]) => {
           ${autoresponseNote(job)}
           ${wipRestoreNote(job, !activeRun)}
           ${strandedNote(job)}
+          ${backupNote(job)}
           ${s.state.steps?.length ? `<ol class="job-hero-reason blocker-steps">${s.state.steps.map((step) => `<li>${esc(step)}</li>`).join("")}</ol>` : ""}
           ${job.worktree ? `<p class="job-hero-reason muted">Builds alongside other jobs in its own checkout (<span class="mono">${esc(job.worktree)}</span>).</p>` : ""}
           ${overlapAdviceHtml(data.overlaps, { readyHere: ["merge", "complete"].includes(nextAction), idle: !activeRun })}

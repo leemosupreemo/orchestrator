@@ -74,6 +74,7 @@ from orchestrator import project_chat
 from orchestrator import folder_lock
 from orchestrator import job_overlap
 from orchestrator import wip_backup
+from orchestrator import sync_health
 from orchestrator import plan_run
 from orchestrator import ux_review
 from orchestrator import inbox as inbox_view
@@ -6758,11 +6759,19 @@ class UIServer(ThreadingHTTPServer):
         name = (account.load_machine() or {}).get("name") or socket.gethostname()
 
         def work() -> None:
+            branch_errors: list[str] = []
+            branches_ok = False
             try:
                 for path in sorted(jobs_dir(self.root).glob("*.json")):
+                    job = read_json_file(path)
+                    if not job.get("moved_to") and job.get("status") not in wip_backup.DONE:
+                        # the worker's push of the job's branch (backup_push): failing on any open job is a problem
+                        if job.get("backup_error"):
+                            branch_errors.append(str(job["backup_error"]))
+                        elif job.get("backed_up_at"):
+                            branches_ok = True
                     if path.stem in running:
                         continue
-                    job = read_json_file(path)
                     repo = Path(job["worktree"]) if job.get("worktree") and Path(job["worktree"]).is_dir() else self.root
                     try:
                         record = wip_backup.backup_job(repo, path.stem, job, machine=str(name))
@@ -6770,10 +6779,15 @@ class UIServer(ThreadingHTTPServer):
                         continue
                     if record is None:
                         continue
+                    sync_health.record("unfinished", not record.get("error"), str(record.get("error") or ""))
                     fresh = read_json_file(path)  # the job may have moved on while git pushed
                     if fresh.get("updated_at") == job.get("updated_at"):
                         fresh["wip_backup"] = record
                         write_json_file(path, fresh)
+                if branch_errors:
+                    sync_health.record("branches", False, branch_errors[-1])
+                elif branches_ok:
+                    sync_health.record("branches", True)
             finally:
                 self._wip_busy = False
 
@@ -6788,8 +6802,13 @@ class UIServer(ThreadingHTTPServer):
             if digest == sent:
                 return sent
             account.sync_snapshot(machine, snapshot=snapshot)
+            sync_health.record("jobs", True)
             return digest
-        except Exception:
+        except account.AccountError as exc:
+            sync_health.record("jobs", False, f"{exc.status or ''} {exc}")
+            return sent
+        except Exception as exc:
+            sync_health.record("jobs", False, str(exc))
             return sent  # offline or a bad job file: the next check tries again
 
     def start_heartbeat(self, endpoint: Callable[[], str], interval: float = account.HEARTBEAT_SECONDS) -> threading.Thread | None:
@@ -6808,6 +6827,7 @@ class UIServer(ThreadingHTTPServer):
                 manager = self.connection_manager
                 connection = {"connection": manager.status(), "connection_ack": manager.ack_id} if manager else {}
                 reply = account.heartbeat(machine, endpoint(), running=sum(1 for run in self.sessions.list() if run.get("running")), **connection)
+                sync_health.record("account", True)
                 command = reply.get("connection_command") if isinstance(reply, dict) else None
                 if manager and account.valid_connection_command(command):
                     manager.request(command["id"], command["action"], expires=command["expires"])
@@ -6840,10 +6860,13 @@ class UIServer(ThreadingHTTPServer):
                         except Exception:
                             pass
             except account.AccountError as exc:
+                sync_health.record("account", False, f"{exc.status or ''} {exc}")
                 if exc.status == 410:
                     print("  This computer was removed from its account. Run `orchestrator connect` to add it again.", flush=True)
                     return False
                 print(f"  Account heartbeat: {exc}", flush=True)
+            except Exception as exc:  # offline and the like: said on Home after a while (sync_health), tried again next beat
+                sync_health.record("account", False, str(exc))
             return True
 
         def snapshot_sync() -> None:
@@ -8651,6 +8674,9 @@ class UIHandler(BaseHTTPRequestHandler):
             if not isinstance(on, bool):
                 raise UIError("on must be true or false.")
             self._json(self._yolo_all(root) if on else self._yolo_all_off(root))
+        elif method == "GET" and parts == ["sync-health"]:
+            # Is this computer keeping the others up to date? Failures past the grace period, with what to do (Home banner)
+            self._json(sync_health.overview() if account.load_machine() else {"problems": [], "channels": []})
         elif method == "POST" and parts == ["jobs", "archive"]:
             ids = self._body().get("ids")
             if not isinstance(ids, list) or not ids or not all(isinstance(i, str) for i in ids) or len(ids) > 500:

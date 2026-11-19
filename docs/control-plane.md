@@ -45,6 +45,19 @@ While `orchestrator ui` runs on a paired computer, it reports every 60 seconds w
 
 With the heartbeat, each computer sends a snapshot of its recent jobs (`machine/sync`), carrying each job's state as its own job page shows it and the run working on it now. It is rebuilt every 10 seconds and sent when it changes, so other computers see a job pause, finish or move on within seconds. The snapshot is a read-only copy: the computer running a job is its only source of truth, and **Continue here** moves a job rather than copying it. See [Job recovery and ownership](job-recovery.md). When a snapshot shows a job imported from another of the owner's computers, the control plane records the move on that computer (`moved_jobs`) and returns it in its heartbeat reply, so it stops working on its copy.
 
+What the account keeps so a computer can continue a job while the one that has it is offline (details in
+[Job recovery and ownership](job-recovery.md#when-the-computer-that-has-the-job-is-offline)):
+
+| Collection | Document | Written by | Read by |
+|---|---|---|---|
+| `job_owners` | one per account: `{job id: {machine_id, name, epoch, at}}` | `machine/sync` (`_record_owners`): the highest `owner_epoch` wins; a lower or equal copy elsewhere gets a `moved_jobs` entry with `epoch` | the owner registry itself |
+| `account_jobs` | one per job (`<uid>__<sha256(job id)[:32]>`) | `machine/sync`'s `job_updates` (`_record_jobs`), only from the same computer or a higher `owner_epoch` (the fencing token) | `machine/snapshot` adds the computer's unfinished jobs its snapshot doesn't list |
+| `job_archives` | one per account: `{job id: {archived, at, by}}` | `machine/sync`'s `job_archives` (`_record_archives`), newest per job | every heartbeat reply (`job_archives`) |
+
+Heartbeat replies can carry `moved_jobs` (jobs another computer owns now, with `epoch`) and `job_archives`. A computer
+applies them to its own copies (`apply_moved_jobs`, `apply_job_archives`). Uncommitted work never goes through the account:
+it is pushed to `refs/orchestrator/wip/<job id>` on the project's own origin (`orchestrator/wip_backup.py`).
+
 ## Notifications
 
 Alerts reach a person's phones and browsers even with Orchestrator closed. They turn them on with **Notify me when done** in the hosted app (on iPhone and iPad, after adding it to the Home Screen: iOS only allows web push for home-screen apps).
