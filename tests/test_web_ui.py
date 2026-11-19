@@ -8470,7 +8470,7 @@ eval(source.slice(start, pageEnd));
   assert(r2.html.includes('>Document<'), 'keeps Document when feature/docs changed');
   assert(r2.html.includes('Pending re-verify'), 'resets Verify during Build iteration');
   assert(r2.html.includes('Pending re-check'), 'resets Document during Build iteration');
-  assert(r2.html.includes('job-loop-arc'), 'renders Agile loop arc on Iter 2+');
+  assert(!r2.html.includes('job-loop-arc'), 'does not render Build -> Verify -> Finalize loop line');
 })().catch((e) => { console.error(e); process.exit(1); });
 """
         res = subprocess.run(
@@ -9168,7 +9168,15 @@ const assert = require('assert');
 const code = fs.readFileSync(process.argv[1], 'utf8');
 globalThis.act = (action, obj) => `data-action="${action}" data-params='${JSON.stringify(obj || {})}'`;
 globalThis.esc = (s) => s;
+globalThis.current = { page: 'run' };
+globalThis.stoppingRuns = new Set();
+eval(code.slice(code.indexOf('function runHeader'), code.indexOf('function openImageModal')));
 eval(code.slice(code.indexOf('function runFailureGuidance'), code.indexOf('function runStatus')));
+
+const hdr1 = runHeader({ id: 'r1', running: false, job: 'job-123', action: 'execute', title: 'Build' });
+assert(hdr1.actions.includes('job-123'), 'Header rerun icon preserves job');
+assert(hdr1.actions.includes('aria-label="Rerun job"'), 'Header rerun icon has Rerun job label');
+assert(hdr1.actions.includes('#i-refresh'), 'Header rerun icon uses loop refresh icon');
 
 const res1 = runFailureGuidance({
   exit_code: 1,
@@ -9178,8 +9186,7 @@ const res1 = runFailureGuidance({
 });
 assert.equal(res1.isKeychain, true);
 assert.equal(res1.title, "macOS Keychain is locked");
-assert(res1.action.includes("job-123"), "Rerun action preserves job");
-assert(res1.action.includes("Rerun job"), "Rerun label specifies job");
+assert(!res1.action.includes("Rerun job"), "Rerun job moved to header icon");
 assert(res1.secondary.includes("#/jobs/job-123"), "Back link preserves job");
 assert(res1.secondary.includes("Back to job"), "Back label specifies job");
 
@@ -9190,8 +9197,7 @@ const res2 = runFailureGuidance({
   action: "execute"
 });
 assert.equal(res2.title, "Execution error");
-assert(res2.action.includes("job-456"), "Execution error rerun preserves job");
-assert(res2.action.includes("Rerun job"), "Execution error rerun label specifies job");
+assert(!res2.action.includes("Rerun job"), "Execution error omits full Rerun job button");
 assert(!res2.secondary.includes("#/jobs/job-456"), "Execution error omits back to job link");
 """
         result = subprocess.run(

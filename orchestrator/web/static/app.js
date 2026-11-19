@@ -4464,25 +4464,6 @@ pages.home = async (_, query) => {
       <details class="fold"><summary class="linklike muted">Sync details</summary><ul class="muted">${rows}</ul></details>
     </section>`;
   }
-  // What holds paused jobs up that no code change can fix (orchestrator/blockers.py): one row per blocker, with the jobs
-  // it holds and the one thing that clears it. Cleared blockers resume their jobs by themselves (the POST to blockers below).
-  const blockersCard = (groups) => {
-    if (!groups.length) return "";
-    const row = (g) => {
-      const jobs = g.jobs.map((j) => `<a href="#/jobs/${encodeURIComponent(j.id)}">${esc(j.title)}</a>`).join(", ");
-      const fix = g.cleared ? `<span class="pill ok">Cleared · resuming</span>`
-        : g.kind === "git_lock" ? `<button type="button" class="btn small primary" data-clear-git-lock>Clear the lock</button>`
-        : g.kind === "sign_in" && g.provider && g.provider !== "ai" ? `<button type="button" class="btn small primary" ${act("ai_connect", { provider: g.provider, name: g.name })}>Sign in to ${esc(g.name)}</button>`
-        : "";
-      return `<div class="item blocker-row"><div class="main-col"><div class="title">${esc(g.title)}</div>
-        <div class="meta">${esc(g.detail || "")} ${g.cleared ? "" : esc((g.steps || []).join(" "))}</div>
-        <div class="meta">Waiting: ${jobs}</div></div><div class="side">${fix}</div></div>`;
-    };
-    const waiting = groups.reduce((n, g) => n + g.jobs.length, 0);
-    return `<section class="card mb-16" id="home-blockers"><div class="card-h"><h2>Blocked</h2><span class="count">${waiting}</span></div>
-      <div class="card-b muted">These jobs stopped on something outside the code. Once it's cleared they resume by themselves.</div>
-      <div class="list">${groups.map(row).join("")}</div></section>`;
-  };
   const download = projectDownloads.pending();
   if (download && (download.phase !== "loading" || state.project?.root !== download.project?.root)) return projectDownloadPage(download);
   const p = state.project, homeBackend = getBackendUrl();
@@ -4615,6 +4596,9 @@ pages.home = async (_, query) => {
         <div class="list">${runningRuns.map(liveRunCard).join("")}</div></section>`
     : "";
 
+  const productComplete = Boolean(product?.sections?.length && product.sections.every((x) => x.filled));
+  const productCardHtml = product ? productStripHtml(product, jobs, { collapsed: productComplete }) : "";
+
   if (download && !finishProjectDownload(download)) return {stale:true};
   return {
     title: p.name,
@@ -4625,10 +4609,9 @@ pages.home = async (_, query) => {
     status: homeHealthIndicator(setupState),
     html: `
       ${syncHealthBanner(syncHealth)}
-      ${HomeStatus.render({git: homeGit, jobs, runs: state.runs})}
-      ${product ? productStripHtml(product, jobs) : ""}
+      ${HomeStatus.render({git: homeGit, jobs, runs: state.runs, blockers: homeBlockers?.blockers || []})}
+      ${!productComplete ? productCardHtml : ""}
 
-      ${blockersCard(homeBlockers?.blockers || [])}
       ${runningBanner}
 
       <section class="card" id="home-jobs">
@@ -4672,7 +4655,8 @@ pages.home = async (_, query) => {
           <div class="list">${archivedJobs.map((j) => `<div class="item"><div class="main-col"><div class="title">${esc(j.title)}</div>
             <div class="meta"><span class="mono">${esc(j.job_id)}</span> · ${esc(j.status)}${j.corrupt ? " · this archive can't be read" : ""}</div></div>
             <div class="side">${j.corrupt ? "" : `<button type="button" class="btn small" data-restore-job="${esc(j.id)}">Restore</button>`}</div></div>`).join("")}</div></details>
-      </section>` : ""}`,
+      </section>` : ""}
+      ${productComplete ? productCardHtml : ""}`,
     after: () => {
       renderProjectSelect($(".home-project-select")); // the title's project list, now that it's on the page
       if (jumpToFinished) ((requested === "archived" && $("#home-archived-section")) || $("#home-finished") || $("#home-archived-section"))?.scrollIntoView({ block: "start" });
@@ -4742,7 +4726,7 @@ function jobHeaderActions(s, links = [], ctx = {}) {
       ["Export to…", act("export_job_bundle", j), "iCloud Drive, Google Drive or a folder on this computer"],
       Boolean(s.is_orchestrator_improvement || s.tag === "improve_orchestrator") && !s.submitted_for_inclusion
         && ["Submit for Prize 🏆", `data-submit-inclusion="${esc(s.id)}" data-job-title="${esc(s.title || '')}"`, "Submit this improvement to the core team for permanent inclusion"],
-      ["Documentation", `data-href="#/docs/job/${encodeURIComponent(s.id)}"`, "This job's page, written from the live project"],
+      ["Share snapshot (.md)", `data-href="#/docs/job/${encodeURIComponent(s.id)}"`, "A shareable markdown summary of this job"],
       ...links.map((link) => [`${link.where ? `Open a ${link.label}` : link.label} ↗`, `data-open="${esc(link.url)}"`, link.where || "On GitHub"]),
     ]],
     ["Settings", [
@@ -5977,11 +5961,12 @@ pages.job = async ([id]) => {
   const nextBtnClass = signInAction ? "btn small" : "btn small primary";
   // Another job building the same files right now: merging this one would race it, so Merge waits (overlapAdviceHtml says why).
   const overlapHold = next?.action === "merge" ? (data.overlaps || []).find((o) => o.running) : null;
+  const showNextAction = next && !(signInAction && next.action === "debug");
   const heroAction = activeRun
     ? (isStoppingActive
       ? `<button class="btn small" data-stop="${esc(activeRun.id)}" data-why="Already stopping." disabled aria-busy="true"><span class="spinner inline-spinner" aria-hidden="true"></span>Stopping…</button>`
       : `<button class="btn small" data-stop="${esc(activeRun.id)}" title="Stops the worker. Resume continues from the next task.">Pause</button>`)
-    : `${signInAction}${next ? `<button class="${nextBtnClass}" ${act(next.action, { job: s.id, ...(next.params || {}) })}${overlapHold ? ` disabled data-why="Wait for ${esc(overlapHold.title)} to finish building first."` : ""}>${esc(next.label)}</button>` : ""}${next && job.task_growth && data.undoable_task === job.task_growth.task
+    : `${signInAction}${showNextAction ? `<button class="${nextBtnClass}" ${act(next.action, { job: s.id, ...(next.params || {}) })}${overlapHold ? ` disabled data-why="Wait for ${esc(overlapHold.title)} to finish building first."` : ""}>${esc(next.label)}</button>` : ""}${showNextAction && job.task_growth && data.undoable_task === job.task_growth.task
       ? `<button class="btn small" data-undo-task="${job.task_growth.task}" title="Reverts what that task changed. Then revise the plan to make it smaller.">Undo task ${job.task_growth.task + 1}</button>` : ""}`;
 
   // 5-Phase Agile Lifecycle determination (Plan -> [Build -> Verify -> Document -> Finalize] loop)
@@ -6174,7 +6159,7 @@ pages.job = async ([id]) => {
   // The one place to tell the AI what to change, in the status box. What it runs follows the stage: re-plan before the
   // build, request changes when it waits to merge, run a fix when it failed, reopen it once merged. Hidden while a run
   // works or the AI waits on an answer (the question card takes the reply), and on plan review (its card has Revise).
-  const steer = activeRun || s.question || reviewingPlan ? null
+  const steer = activeRun || s.question || reviewingPlan || signIn ? null
     : isJobComplete ? { mode: "fix", button: "Reopen and change", hint: "Reopens this job with your note and builds it.", required: true }
     : ["merge", "complete"].includes(nextAction) ? { mode: "iterate", button: "Request changes", required: true, hint: "" }
     : hasBuildWork || ["debugging", "failed"].includes(status) ? { mode: "debug", button: "Run fix", required: false,
@@ -6290,11 +6275,9 @@ pages.job = async ([id]) => {
     || runRel?.unreported
   );
   const copyFailureBtnHtml = hasJobFailure
-    ? `<button type="button" class="btn small ghost icon-only hero-copy-log-btn" id="copy-job-failure-log" aria-label="Copy failure details and logs" title="Copy failure details and logs"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-copy"/></svg></button>`
+    ? `<button type="button" class="btn small ghost icon-only hero-copy-log-btn" id="copy-job-failure-log" aria-label="Copy failure details and logs" title="Copy failure details and logs"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-log"/></svg></button>`
     : "";
-  const heroErrorBlockHtml = (heroReasonDetails || copyFailureBtnHtml)
-    ? `<div class="hero-error-row">${heroReasonDetails}${copyFailureBtnHtml}</div>`
-    : "";
+  const heroTitleHtml = `<h2 class="job-hero-title">${(activeRun && !activeRun.waiting) || s.state.label === "Building" ? runningMark : ""}${esc(s.state.label || s.status)}</h2>`;
 
   const isAutoImprove = Boolean(s.is_orchestrator_improvement || s.tag === "improve_orchestrator" || job.is_orchestrator_improvement || job.tag === "improve_orchestrator");
 
@@ -6372,15 +6355,15 @@ pages.job = async ([id]) => {
             ${pos < stepperItems.length - 1 ? `<div class="job-step-arrow ${p.state}" aria-hidden="true"></div>` : ""}
           `).join("")}
         </div>
-        ${iterationNum > 1 ? `<div class="job-loop-arc" aria-hidden="true"><span class="job-loop-line"></span><span class="job-loop-label">↻ Build → Verify → Finalize loop</span></div>` : ""}
         ${experienceStepperHtml}
       </nav>
 
       ${reviewingPlan ? "" : `<section id="job-hero" tabindex="-1" class="job-hero tone-${esc(heroTone)}${(activeRun && !activeRun.waiting) || s.state.label === "Building" ? " is-running" : ""}">
+        ${copyFailureBtnHtml ? `<div class="job-hero-head">${heroTitleHtml}${copyFailureBtnHtml}</div>` : ""}
         <div class="job-hero-main">
-          <h2 class="job-hero-title">${(activeRun && !activeRun.waiting) || s.state.label === "Building" ? runningMark : ""}${esc(s.state.label || s.status)}</h2>
+          ${copyFailureBtnHtml ? "" : heroTitleHtml}
           <p class="job-hero-reason">${heroReason}</p>
-          ${heroErrorBlockHtml}
+          ${heroReasonDetails}
           ${autoresponseNote(job)}
           ${wipRestoreNote(job, !activeRun)}
           ${strandedNote(job)}
@@ -9263,12 +9246,18 @@ pages.docs = async (args, query) => {
       return { title: "Document", html: `<div class="notice">${esc(e.message)} <a href="#/">Back to Home</a></div>` };
     }
     const open = kind === "job" ? `<a class="btn" href="#/jobs/${encodeURIComponent(id)}">Open the job</a>` : "";
+    const sub = kind === "file" ? `<span class="mono">${esc(doc.path)}</span>` : kind === "job" ? "Job snapshot" : "Feature snapshot";
     return {
       title: doc.title,
-      sub: kind === "file" ? `<span class="mono">${esc(doc.path)}</span>` : "",
-      actions: `${open}<button type="button" class="btn icon-only" id="doc-download" aria-label="Download .md" title="Download .md"><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg></button>`,
+      sub,
+      actions: `${open}<button type="button" class="btn icon-only" id="doc-copy" aria-label="Copy .md" title="Copy .md"><svg class="icon" aria-hidden="true"><use href="#i-copy"/></svg></button><button type="button" class="btn icon-only" id="doc-download" aria-label="Download .md" title="Download .md"><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg></button>`,
       html: `<section class="card"><div class="card-b"><div class="md">${Markdown.render(doc.markdown)}</div></div></section>`,
-      after: () => $("#doc-download").addEventListener("click", () => downloadText(`${(doc.title || "document").replace(/[^A-Za-z0-9._-]+/g, "-")}.md`, doc.markdown)),
+      after: () => {
+        $("#doc-copy")?.addEventListener("click", () => {
+          navigator.clipboard?.writeText(doc.markdown || "").then(() => toast("Snapshot copied")).catch(() => toast("Couldn't copy here. Use download instead.", true));
+        });
+        $("#doc-download").addEventListener("click", () => downloadText(`${(doc.title || "document").replace(/[^A-Za-z0-9._-]+/g, "-")}.md`, doc.markdown));
+      },
     };
   }
 
@@ -9285,12 +9274,11 @@ pages["project-docs"] = async () => {
   const jobs = Array.isArray(data.jobs) ? data.jobs : [];
   const formatBytes = (n) => n >= 1024 ? `${(n / 1024).toFixed(1)} KB` : `${n || 0} B`;
 
-  // What's missing, each with its own fix (the server decides: docs_gaps). An older server sends none: say nothing rather than guess.
+  // What's missing, each with a uniform right-aligned "Fix" button that opens a chooser (AI, write manually, or import).
   const gaps = Array.isArray(data.gaps) ? data.gaps : [];
   const gapsHtml = gaps.length ? `<section class="card docs-gaps"><div class="card-h"><h2>Gaps <span class="count">${gaps.length}</span></h2></div>
-      <div class="list">${gaps.map((g, i) => `<div class="item"><div class="item-main"><div class="item-title">${esc(g.text)}</div></div>
-        <div class="item-actions">${g.fix?.route ? `<a class="btn small" href="${esc(g.fix.route)}">${esc(g.fix.label)}</a>`
-          : `<button type="button" class="btn small" data-doc-gap="${i}">${esc(g.fix?.label || "Fix with AI")}</button>`}</div></div>`).join("")}</div></section>` : "";
+      <div class="list">${gaps.map((g, i) => `<div class="item"><div class="main-col"><div class="title">${esc(g.text)}</div></div>
+        <div class="side"><button type="button" class="btn small primary" data-doc-gap="${i}">Fix</button></div></div>`).join("")}</div></section>` : "";
 
   // One fold per kind of document, the core ones open: 160 files in one list hides the five that matter.
   const fileRow = (f) => `
@@ -9310,56 +9298,20 @@ pages["project-docs"] = async () => {
     ? categories.filter((c) => filesIn(c.id).length).map((c) => `<details class="fold docs-group"${c.id === "core" ? " open" : ""}>
         <summary class="card-h"><h2>${esc(c.label)} <span class="count">${filesIn(c.id).length}</span></h2></summary>
         <div class="list">${filesIn(c.id).map(fileRow).join("")}</div></details>`).join("")
-    : `<div class="card-b"><div class="empty">No repository markdown files found yet. Use <strong>Fill gaps with AI</strong> to generate project documentation.</div></div>`;
-
-  const featuresHtml = features.length
-    ? `<div class="list">${features.map((f) => `
-        <div class="item">
-          <div class="item-main">
-            <div class="item-title"><a href="#/docs/feature/${encodeURIComponent(f.id)}">${esc(f.name || f.id)}</a></div>
-            <div class="item-meta">${esc(f.status || "planned")} · ${f.jobs_done || 0}/${f.jobs || 0} jobs done${f.summary ? ` · ${esc(f.summary)}` : ""}</div>
-          </div>
-          <div class="item-actions">
-            <button type="button" class="btn small" data-doc-preview="feature" data-doc-id="${esc(f.id)}">Preview</button>
-          </div>
-        </div>`).join("")}</div>`
-    : `<div class="empty">No features defined yet.</div>`;
-
-  const recentJobs = jobs.slice(0, 25);
-  const jobsHtml = recentJobs.length
-    ? `<div class="list">${recentJobs.map((j) => `
-        <div class="item">
-          <div class="item-main">
-            <div class="item-title"><a href="#/docs/job/${encodeURIComponent(j.id)}">${esc(j.title || j.id)}</a></div>
-            <div class="item-meta">${esc(j.label || j.status || "")}${j.feature_name ? ` · ${esc(j.feature_name)}` : ""}${j.blurb ? ` · ${esc(j.blurb)}` : ""}</div>
-          </div>
-          <div class="item-actions">
-            <button type="button" class="btn small" data-doc-preview="job" data-doc-id="${esc(j.id)}">Preview</button>
-          </div>
-        </div>`).join("")}</div>`
-    : `<div class="empty">No job records yet.</div>`;
+    : `<div class="card-b"><div class="empty">No repository markdown files found yet.</div></div>`;
 
   return {
     title: "Documentation",
-    sub: "All current documentation for this project, with AI gap-filling.",
-    actions: `<button type="button" class="btn primary" id="proj-docs-fill"><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg> Fill gaps with AI</button><button type="button" class="btn" id="proj-docs-export">Export all .md</button>`,
+    actions: "",
     html: `
       ${gapsHtml}
-      <section class="card">
+      <section class="card docs-files">
         <div class="card-h">
-          <h2>Product requirements</h2>
+          <h2>Repository docs <span class="count">${files.length}</span></h2>
           <div class="card-actions">
-            <a class="btn small" href="#/product">Edit product doc</a>
-            <a class="btn small" href="#/docs/product">View markdown</a>
+            <button type="button" class="btn small ghost icon-only" id="proj-docs-export" aria-label="Export all .md" title="Export all .md"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-download"/></svg></button>
           </div>
         </div>
-        <div class="card-b">
-          <p class="item-meta">${product.exists ? `${product.written} of ${product.total} sections written` : "Not created yet"} · <span class="mono">${esc(product.path || "docs/product/prd.md")}</span></p>
-          ${product.pitch ? `<p>${esc(product.pitch)}</p>` : ""}
-        </div>
-      </section>
-      <section class="card docs-files">
-        <div class="card-h"><h2>Repository docs <span class="count">${files.length}</span></h2></div>
         ${filesHtml}
       </section>
       <section class="card" id="proj-docs-preview-card" hidden>
@@ -9371,14 +9323,6 @@ pages["project-docs"] = async () => {
           </div>
         </div>
         <div class="card-b"><div class="md" id="proj-docs-preview-body"></div></div>
-      </section>
-      <section class="card">
-        <div class="card-h"><h2>Feature docs (${features.length})</h2></div>
-        <div class="card-b">${featuresHtml}</div>
-      </section>
-      <section class="card">
-        <div class="card-h"><h2>Job docs (${jobs.length}${jobs.length > recentJobs.length ? `, showing ${recentJobs.length}` : ""})</h2></div>
-        <div class="card-b">${jobsHtml}</div>
       </section>`,
     after: () => {
       let currentPreview = null;
@@ -9392,16 +9336,109 @@ pages["project-docs"] = async () => {
         const core = files.filter((f) => f.category === "core").map((f) => f.path).join(", ") || "none";
         const spec = `${focus}\n\nCurrent snapshot:\n- Core docs: ${core}\n- ${files.length} repository docs in all\n- Features tracked: ${features.length}\n\nInstructions:\n1. Inspect the codebase, entry points, configuration, build and test commands, and the existing docs (README.md, docs/**/*.md).\n2. Create what is missing and update what is out of date so it matches the current implementation. Keep existing documents' structure; link new documents from README.md.\n3. Don't edit the product requirements or docs/architecture.md: they are kept on Orchestrator's Product page.\n4. Do not commit secrets or generated runtime logs, and run relevant tests/checks before finishing.`;
         btn.disabled = true;
-        try { await runAction("new_job", { type: "infra", summary, spec }); }
+        try { await runAction("new_job", { type: "freestyle", summary, spec }); }
         catch (err) { toast(err.message, true); }
         finally { btn.disabled = false; }
       };
-      const jobGaps = gaps.filter((g) => !g.fix?.route);
-      $("#proj-docs-fill")?.addEventListener("click", (e) => docsJob(e.currentTarget, "Fill documentation gaps and update stale project docs",
-        `Audit all documentation for this project and fill any gaps or update stale sections.${jobGaps.length ? `\n\nGaps found:\n${jobGaps.map((g) => `- ${g.text}`).join("\n")}` : ""}`));
+      const defaultGapPath = (g) => {
+        if (g.id === "readme" || g.id === "readme_stale") return "README.md";
+        if (g.id === "commands") return "docs/build-test-commands.md";
+        if (g.id === "architecture") return "docs/architecture.md";
+        return "docs/overview.md";
+      };
+      const openDocGapModal = async (btn, g) => {
+        const defaultPath = defaultGapPath(g);
+        const isPrd = g.id === "prd";
+        const bodyHtml = `
+          <p class="muted">${esc(g.text)}</p>
+          <fieldset class="field"><span>How would you like to fix this?</span>
+            <div class="segmented" role="radiogroup" aria-label="How to fix documentation gap">
+              <label><input type="radio" name="mode" value="ai" checked>Use AI</label>
+              <label><input type="radio" name="mode" value="write">Write manually</label>
+              <label><input type="radio" name="mode" value="import">Import file</label>
+            </div>
+          </fieldset>
+          <div id="doc-gap-ai-note" class="muted t-secondary">${esc(
+            isPrd ? "Opens Product requirements to draft with AI from your project docs."
+              : g.id === "architecture" ? "Opens the Architecture page to generate a proposal with AI."
+              : "Starts an AI job to inspect your codebase and write or update this documentation."
+          )}</div>
+          <div id="doc-gap-manual" class="stack" hidden>
+            ${isPrd ? `<p class="muted t-secondary">Opens the Product requirements editor so you can fill in each section manually.</p>` : `
+              <label class="field"><span>File path</span><input type="text" name="path" value="${esc(defaultPath)}" spellcheck="false" autocapitalize="off" placeholder="docs/guide.md"></label>
+              <label class="field"><span>Markdown</span><textarea name="markdown" rows="10" spellcheck="false" placeholder="# Title&#10;&#10;Write documentation here…"></textarea></label>
+            `}
+          </div>
+          <div id="doc-gap-import" class="stack" hidden>
+            ${isPrd ? `<p class="muted t-secondary">Opens the Product requirements importer to load an existing PRD file.</p>` : `
+              <label class="field"><span>Save as</span><input type="text" name="import_path" value="${esc(defaultPath)}" spellcheck="false" autocapitalize="off" placeholder="docs/guide.md"></label>
+              <label class="field"><span>Choose markdown or text file</span><input type="file" id="doc-gap-file" accept=".md,.markdown,.txt,text/markdown,text/plain"></label>
+            `}
+          </div>`;
+        const dlgPromise = formDialog("Fix documentation gap", bodyHtml, "Fix with AI");
+        const dlgBody = $("#dialog-body");
+        const submitBtn = $("#dialog-ok");
+        const aiNote = $("#doc-gap-ai-note");
+        const manualBox = $("#doc-gap-manual");
+        const importBox = $("#doc-gap-import");
+        let importedText = "";
+        let existingLoaded = false;
+        const sync = async () => {
+          const mode = dlgBody.querySelector('input[name="mode"]:checked')?.value || "ai";
+          if (aiNote) aiNote.hidden = mode !== "ai";
+          if (manualBox) manualBox.hidden = mode !== "write";
+          if (importBox) importBox.hidden = mode !== "import";
+          if (submitBtn) submitBtn.textContent = mode === "ai" ? "Fix with AI" : mode === "write" ? (isPrd ? "Open editor" : "Save document") : (isPrd ? "Open importer" : "Import document");
+          if (mode === "write" && !isPrd && !existingLoaded && files.some((f) => f.path === defaultPath)) {
+            existingLoaded = true;
+            try {
+              const doc = await api(`docs/file?path=${encodeURIComponent(defaultPath)}`);
+              const ta = dlgBody.querySelector('textarea[name="markdown"]');
+              if (ta && !ta.value) ta.value = doc?.markdown || "";
+            } catch {}
+          }
+        };
+        dlgBody.querySelectorAll('input[name="mode"]').forEach((r) => r.addEventListener("change", sync));
+        $("#doc-gap-file")?.addEventListener("change", async (ev) => {
+          const f = ev.target.files?.[0];
+          if (!f) { importedText = ""; return; }
+          try { importedText = await f.text(); } catch { importedText = ""; }
+        });
+        sync();
+        const res = await dlgPromise;
+        if (!res) return;
+        const mode = res.mode || "ai";
+        if (mode === "ai") {
+          if (g.fix?.route) { location.hash = g.fix.route; return; }
+          await docsJob(btn, `Docs: ${g.text}`, `Fix this documentation gap: ${g.text}.`);
+          return;
+        }
+        if (mode === "write") {
+          if (isPrd) { location.hash = "#/product"; return; }
+          const path = String(res.path || defaultPath).trim();
+          const markdown = String(res.markdown || "").trim();
+          if (!markdown) { toast("Write some markdown content before saving.", "warning"); return; }
+          try {
+            await api("docs/file", { method: "POST", body: { path, markdown } });
+            toast(`Saved ${path}`);
+            route();
+          } catch (err) { toast(err.message, true); }
+          return;
+        }
+        if (mode === "import") {
+          if (isPrd) { location.hash = "#/product?import=1"; return; }
+          const path = String(res.import_path || defaultPath).trim();
+          if (!importedText.trim()) { toast("Choose a non-empty markdown or text file to import.", "warning"); return; }
+          try {
+            await api("docs/file", { method: "POST", body: { path, markdown: importedText } });
+            toast(`Imported ${path}`);
+            route();
+          } catch (err) { toast(err.message, true); }
+        }
+      };
       view.querySelectorAll("[data-doc-gap]").forEach((btn) => btn.addEventListener("click", () => {
         const g = gaps[Number(btn.dataset.docGap)];
-        if (g) docsJob(btn, `Docs: ${g.text}`, `Fix this documentation gap: ${g.text}.`);
+        if (g) openDocGapModal(btn, g);
       }));
 
       $("#proj-docs-export")?.addEventListener("click", async (e) => {
@@ -9642,7 +9679,7 @@ function prdUpdatedLine(updated, jobs = []) {
 
 // Home's Product card, in every state: nothing written yet (the prompt and ways to start), partly written (what's still missing and a
 // way to finish), and complete (the pitch). The last change, and whether the AI made it, is always shown once there is something.
-function productStripHtml(p, jobs = []) {
+function productStripHtml(p, jobs = [], { collapsed = false } = {}) {
   const sections = p.sections || [];
   const filled = sections.filter((x) => x.filled);
   const missing = sections.filter((x) => !x.filled);
@@ -9657,6 +9694,13 @@ function productStripHtml(p, jobs = []) {
   }
   const still = missing.length
     ? `${filled.length} of ${sections.length} sections filled in. Still to fill in: ${missing.slice(0, 3).map((x) => x.title).join(", ")}${missing.length > 3 ? ` and ${missing.length - 3} more` : ""}.` : "";
+  if (collapsed) {
+    return `<section class="card mt-16" id="product-strip"><details class="fold"><summary class="card-h"><h2>Product</h2>${prdStatusPill(sections)}</summary>
+      <div class="card-b stack gap-8">
+        <a class="product-pitch" href="#/product" title="Open the product requirements">${esc(prdSnippet(lead.body))}</a>
+        <div class="row gap-12 align-center wrap">${prdUpdatedLine(p.updated, jobs)}<span class="spacer"></span><a class="btn small" href="#/product">Open product</a></div>
+      </div></details></section>`;
+  }
   return `<section class="card mb-16" id="product-strip"><div class="card-h"><h2><a class="card-title-link" href="#/product">Product</a></h2>${prdStatusPill(sections)}</div>
     <div class="card-b stack gap-8">
       <a class="product-pitch" href="#/product" title="Open the product requirements">${esc(prdSnippet(lead.body))}</a>
@@ -12685,28 +12729,22 @@ const TOOL_NAMES = { claude: "Claude Code", codex: "Codex", gemini: "Gemini CLI"
 async function loadAbilities(owner) {
   const card = $("#ai-abilities");
   if (!card) return;
-  const draw = (data, note = "") => {
-    const tools = Object.entries(data.tools || {}).filter(([, items]) => items.length);
-    const onJobs = new Map((data.highlights || []).map((h) => [h.tool, (data.highlights || []).filter((x) => x.tool === h.tool)]));
-    const tool = ([cli, items]) => `<details class="fold ability-tool"><summary><strong>${esc(TOOL_NAMES[cli] || cli)}</strong>
-        <span class="muted">${plural(items.length, "ability", "abilities")}${onJobs.get(cli) ? ` · ${plural(onJobs.get(cli).length, "on jobs", "on jobs")}` : ""}</span></summary>
-      ${(onJobs.get(cli) || []).map((h) => `<p><span class="pill done">On jobs</span> <strong>${esc(h.label)}</strong>: <span class="muted">${esc(h.what)}</span></p>`).join("")}
-      ${ABILITY_KINDS.map(([kind, title]) => { const list = items.filter((i) => i.kind === kind);
-        return list.length ? `<p class="muted">${title}</p><p class="ability-list">${list.map((i) => `<code title="${esc(i.what || "")}">${kind === "subcommand" ? "" : "/"}${esc(i.name)}</code>`).join(" ")}</p>` : ""; }).join("")}</details>`;
+  const draw = (data) => {
     // Tools that used up their allowance: every job skips them until they reset, then they're back (project_chat.record_out_of_usage)
     const holds = (data.out_of_usage || []).map((h) => `<div class="notice warn"><strong>${esc(TOOL_NAMES[h.family] || h.family)} is out of
       ${h.kind === "rate" ? "requests for now" : "usage"}</strong> until about ${esc(h.back_at)}. Jobs use your other tools until then
       (a job it was working on carries on with the next one, from where it stopped) and go back to it after, by themselves.</div>`).join("");
-    card.innerHTML = `<div class="card-h"><h2>What your AI tools can do</h2>${owner ? `<button type="button" class="btn small" id="ai-abilities-scan">Rescan</button>` : ""}</div>
-      <div class="card-b stack">${holds}
-        <p class="muted">Each tool's own slash commands, skills, plugins and commands, as it reports them on this computer. The reviews marked <strong>On jobs</strong> are in a job's More menu. ${note || (data.at ? `Scanned ${esc(new Date(data.at * 1000).toLocaleString())}.` : "")}</p>
-        ${tools.map(tool).join("") || `<p class="muted">Nothing found yet.</p>`}</div>`;
-    $("#ai-abilities-scan")?.addEventListener("click", () => scan());
+    if (!holds) {
+      card.hidden = true;
+      card.innerHTML = "";
+      return;
+    }
+    card.hidden = false;
+    card.innerHTML = `<div class="card-b stack">${holds}</div>`;
   };
   const scan = async () => {
-    draw(await api("ai/abilities").catch(() => ({})), "Scanning…");
     try { draw(await api("ai/abilities/scan", { method: "POST", body: {} })); }
-    catch (e) { toast(e.message, true); }
+    catch { /* background library refresh is best-effort */ }
   };
   let data;
   try { data = await api("ai/abilities"); } catch { card.hidden = true; return; }
@@ -13346,12 +13384,11 @@ function jobContextRail(s, ctx) {
   ctx = ctx || { designs: [], problem: [] };
   const empty = !(ctx.designs || []).length && !(ctx.problem || []).length;
   if (empty) return "";
-  const group = (title, items) => items.length ? `<section class="card rail-card"><div class="card-h"><h2>${title} <span class="count">${items.length}</span></h2></div>
+  const group = (title, items, role) => items.length ? `<section class="card rail-card"><div class="card-h"><h2>${title} <span class="count">${items.length}</span></h2><div class="card-actions"><button type="button" class="btn small" data-attach-context="${esc(s.id)}" data-attach-role="${role}">Attach…</button></div></div>
     <div class="list">${items.map(contextItemHtml).join("")}</div></section>` : "";
-  const groups = [group("Designs", ctx.designs || []), group("What went wrong", ctx.problem || [])];
+  const groups = [group("Designs", ctx.designs || [], "design"), group("What went wrong", ctx.problem || [], "problem")];
   if (ctx.problem_first) groups.reverse();
   return `<aside class="job-rail" aria-label="Context">
-    <div class="rail-h"><span class="label">Context</span><button type="button" class="btn small" data-attach-context="${esc(s.id)}" data-attach-role="${ctx.problem_first ? "problem" : "design"}">Attach…</button></div>
     ${groups.join("")}
   </aside>`;
 }
@@ -14307,14 +14344,21 @@ function runHeader(r, family = null) {
   const me = (family?.job_runs || []).find((x) => x.id === r.id);
   const isStopping = stoppingRuns.has(r.id) || Boolean(r.stopping);
   const log = `logs/ui/${r.id}-${r.action}.log`; // every run is saved here, so the full log is there even after a restart
+  const rerunAction = jobId
+    ? (r.action && r.action !== "console" && r.action !== "new_job" ? r.action : "execute")
+    : (r.action && r.action !== "console" && r.action !== "new_job" ? r.action : "");
+  const rerunBtn = !r.running && rerunAction
+    ? `<button type="button" class="btn icon-only" ${act(rerunAction, jobId ? { job: jobId } : undefined)} aria-label="${jobId ? "Rerun job" : "Rerun"}" title="${jobId ? "Rerun job" : "Rerun"}"><svg class="icon" aria-hidden="true"><use href="#i-refresh"/></svg></button>`
+    : "";
   return {
     title: me ? `${me.label} run` : r.title,
     sub: family ? runFamilyHtml(r, family) : "",
-    actions: ((typeof state !== "undefined" && state.you?.role === "member") ? "" // logs are private to owners
-      : `<details class="more"><summary class="btn icon-only" aria-label="Export log" title="Export log"><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg></summary><div class="more-menu">`
-        + `<button class="btn small" data-run-log="copy" data-path="${esc(log)}">Copy log</button>`
-        + `<button class="btn small" data-run-log="export" data-path="${esc(log)}" data-name="${esc(r.title)}">Export log</button>`
-        + `</div></details>`)
+    actions: rerunBtn
+      + ((typeof state !== "undefined" && state.you?.role === "member") ? "" // logs are private to owners
+        : `<details class="more"><summary class="btn icon-only" aria-label="Export log" title="Export log"><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg></summary><div class="more-menu">`
+          + `<button class="btn small" data-run-log="copy" data-path="${esc(log)}">Copy log</button>`
+          + `<button class="btn small" data-run-log="export" data-path="${esc(log)}" data-name="${esc(r.title)}">Export log</button>`
+          + `</div></details>`)
       + (r.running
         ? `<button class="btn icon-only danger" data-stop="${esc(r.id)}" aria-label="${isStopping ? "Stopping" : "Stop"}" title="${isStopping ? "Stopping…" : "Stop"}" ${isStopping ? 'disabled aria-busy="true"' : ""}>${isStopping ? '<span class="spinner inline-spinner" aria-hidden="true"></span>' : '<svg class="icon" aria-hidden="true"><use href="#i-stop"/></svg>'}</button>`
         : ""),
@@ -14418,9 +14462,6 @@ function runFailureGuidance(r) {
     || ((fullText.includes("codesign") || fullText.includes("code signing")) && (fullText.includes("keychain") || fullText.includes("interaction not allowed") || fullText.includes("locked") || fullText.includes("denied")));
 
   if (isKeychain) {
-    const rerunBtn = targetJob
-      ? `<button type="button" class="btn small primary" ${act(r.action || "execute", { job: targetJob })}><svg class="icon icon-sm" aria-hidden="true"><use href="#i-play"/></svg> Rerun job</button>`
-      : r.action ? `<button type="button" class="btn small primary" ${act(r.action)}><svg class="icon icon-sm" aria-hidden="true"><use href="#i-play"/></svg> Rerun</button>` : "";
     const backBtn = targetJob
       ? `<a class="btn small" href="#/jobs/${encodeURIComponent(targetJob)}">Back to job</a>`
       : "";
@@ -14428,7 +14469,7 @@ function runFailureGuidance(r) {
       isKeychain: true,
       title: "macOS Keychain is locked",
       detail: "The build could not access developer signing certificates because the macOS login keychain is locked on this Mac.",
-      action: rerunBtn,
+      action: "",
       secondary: backBtn,
     };
   }
@@ -14468,9 +14509,6 @@ function runFailureGuidance(r) {
     const oauthTool = ToolConnect.providerFromText(fullText);
     const oauthProvider = oauthTool?.id || "";
     const oauthLabel = oauthTool?.label || "";
-    const rerunBtn = targetJob
-      ? `<button type="button" class="btn small" ${act(r.action || "execute", { job: targetJob })}><svg class="icon icon-sm" aria-hidden="true"><use href="#i-play"/></svg> Rerun job</button>`
-      : "";
     const signInBtn = oauthProvider
       ? `<button type="button" class="btn small primary" ${act("ai_connect", {
           provider: oauthProvider,
@@ -14483,7 +14521,7 @@ function runFailureGuidance(r) {
       title: "AI sign-in expired",
       detail: targetJob ? "Your login session expired. Sign in again to automatically retry this job." : "Your login session expired. Sign in again, then rerun.",
       action: signInBtn,
-      secondary: `${aiToolsBtn}${rerunBtn}`,
+      secondary: aiToolsBtn,
     };
   }
 
@@ -14496,16 +14534,13 @@ function runFailureGuidance(r) {
     const opAction = r.action || (targetJob ? "execute" : "");
     const opAttr = opAction ? `data-rerun-action="${esc(opAction)}"${targetJob ? ` data-rerun-params='${attrJSON({ job: targetJob })}'` : ""}` : "";
     const bodyAttr = branchMatch ? `data-recover-body='${attrJSON({ branch: branchMatch[1] })}'` : "";
-    const rerunBtn = targetJob
-      ? `<button type="button" class="btn small" ${act(r.action || "execute", { job: targetJob })}><svg class="icon icon-sm" aria-hidden="true"><use href="#i-play"/></svg> Rerun job</button>`
-      : "";
     const backBtn = targetJob ? `<a class="btn small" href="#/jobs/${encodeURIComponent(targetJob)}">Back to job</a>` : "";
     return {
       recoveryAction: "git-sync-branch",
       title: "Branch out of sync with remote",
       detail: `${branchName} diverged from origin/${branchName}.`,
       action: `<button type="button" class="btn small primary" data-recover="git-sync-branch" data-recover-confirm="Sync ${esc(branchName)} to origin?" data-recover-detail="Resets local ${esc(branchName)} to match origin/${esc(branchName)}. Risk: discards unpushed local commits on ${esc(branchName)}." ${bodyAttr} ${opAttr}><svg class="icon icon-sm" aria-hidden="true"><use href="#i-refresh"/></svg> Sync with remote &amp; Rerun</button>`,
-      secondary: `${rerunBtn}${backBtn}`,
+      secondary: backBtn,
     };
   }
 
@@ -14925,16 +14960,13 @@ function runFailureGuidance(r) {
   }
 
   if (err) {
-    const rerunBtn = targetJob
-      ? `<button type="button" class="btn small primary" ${act(r.action || "execute", { job: targetJob })}><svg class="icon icon-sm" aria-hidden="true"><use href="#i-play"/></svg> Rerun job</button>`
-      : r.action ? `<button type="button" class="btn small primary" ${act(r.action)}><svg class="icon icon-sm" aria-hidden="true"><use href="#i-play"/></svg> Rerun</button>` : "";
     const recommendBtn = targetJob
       ? `<button type="button" class="btn small" data-attempt-fix="${esc(err)}" data-attempt-job="${esc(targetJob)}">Attempt fix</button>`
       : `<button type="button" class="btn small" data-recommend-fix="${esc(err)}">Explain error</button>`;
     return {
       title: "Execution error",
       detail: err,
-      action: rerunBtn || `<a class="btn small primary" href="#/new">Create new job</a>`,
+      action: targetJob || r.action ? "" : `<a class="btn small primary" href="#/new">Create new job</a>`,
       secondary: recommendBtn,
     };
   }

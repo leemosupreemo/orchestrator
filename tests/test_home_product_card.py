@@ -127,7 +127,7 @@ console.log(JSON.stringify({today: prdWhen(at(2026, 10, 13), now), yesterday: pr
     def test_home_draws_the_card_whenever_the_server_sent_the_product_not_only_when_it_is_empty(self):
         code = APP.read_text()
         home = code[code.index("pages.home = async"):code.index("function jobHeaderActions")]
-        self.assertIn('${product ? productStripHtml(product, jobs) : ""}', home)
+        self.assertIn('const productCardHtml = product ? productStripHtml(product, jobs, { collapsed: productComplete }) : "";', home)
         self.assertNotIn("sections.some((x) => x.filled) ? productStripHtml", home)
 
 
@@ -220,11 +220,17 @@ vm.runInContext(take('pages.home = async','function jobHeaderActions('),context)
         self.assertIn("Partially completed", card)
         self.assertNotIn("Last updated", card)
 
-    def test_the_card_sits_right_under_the_project_status_in_every_state(self):
-        for count in (0, 3, 6):
+    def test_the_card_sits_under_project_status_until_completed_then_folds_at_bottom(self):
+        for count in (0, 3):
             with self.subTest(filled=count):
                 html = self.home({"sections": self.sections(count), "updated": None})
                 self.assertLess(html.index('id="home-project-status"'), html.index('id="product-strip"'))
+                self.assertLess(html.index('id="product-strip"'), html.index('id="home-jobs"'))
+                self.assertNotIn('<details class="fold">', self.card(html))
+        completed_html = self.home({"sections": self.sections(6), "updated": None})
+        self.assertLess(completed_html.index('id="home-jobs"'), completed_html.index('id="product-strip"'))
+        self.assertIn('<details class="fold">', self.card(completed_html))
+        self.assertNotIn('<details class="fold" open', self.card(completed_html))
 
 
 @unittest.skipUnless(shutil.which("node"), "Node.js required")

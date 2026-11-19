@@ -330,6 +330,36 @@ def read_project_file(root: Path, rel: str) -> str:
         raise DocsError("That file couldn't be read.")
 
 
+def write_project_file(root: Path, rel: str, markdown: str) -> str:
+    """Create or update a repository markdown doc (`README.md` or `docs/**/*.md`)."""
+    clean = str(rel or "").strip().replace("\\", "/").lstrip("/")
+    if not clean or not clean.lower().endswith(".md"):
+        raise DocsError("Documentation files must end with .md.")
+    parts = Path(clean).parts
+    if any(p in ("", ".", "..") or p.startswith(".") for p in parts):
+        raise DocsError("Invalid documentation path.")
+    if len(parts) == 1:
+        if parts[0] not in ROOT_NOTES and not ROOT_DOC_NAME.match(parts[0]):
+            raise DocsError("Top-level docs must be README.md or a standard documentation file, or placed under docs/.")
+    elif parts[0] != "docs":
+        raise DocsError("Documentation files must live at README.md or under docs/.")
+    root_resolved = Path(root).resolve()
+    target = (root_resolved / clean).resolve()
+    try:
+        target.relative_to(root_resolved)
+    except ValueError:
+        raise DocsError("Documentation path must stay inside the project.")
+    text = str(markdown or "")[:MAX_FILE_CHARS]
+    if not text.strip():
+        raise DocsError("Document content cannot be empty.")
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text.rstrip() + "\n", encoding="utf-8")
+    except OSError as exc:
+        raise DocsError(f"Couldn't save {clean}: {exc}")
+    return target.relative_to(root_resolved).as_posix()
+
+
 # --------------------------------------------------------------------------- everything
 
 def export_all(project_name: str, prd_text: str | None, features: list[tuple[dict[str, Any], str]], jobs: list[tuple[dict[str, Any], str]], files: list[tuple[str, str]]) -> str:

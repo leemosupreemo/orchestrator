@@ -79,6 +79,30 @@ class GapTests(unittest.TestCase):
             ids = [g["id"] for g in ui.docs_index(root)["gaps"]]
             self.assertIn("readme_stale", ids)
 
+    def test_docs_gap_buttons_use_a_valid_job_type(self):
+        from orchestrator.web import server as ui
+        app = (Path(__file__).resolve().parents[1] / "orchestrator" / "web" / "static" / "app.js").read_text(encoding="utf-8")
+        self.assertNotIn('runAction("new_job", { type: "infra"', app)
+        self.assertIn('runAction("new_job", { type: "freestyle", summary, spec })', app)
+        self.assertIn("freestyle", ui.JOB_TYPES)
+        # Uniform right-aligned primary "Fix" button opens the AI / manual / import modal
+        self.assertIn('<div class="side"><button type="button" class="btn small primary" data-doc-gap="${i}">Fix</button></div>', app)
+        self.assertNotIn('id="proj-docs-fill"', app)
+        self.assertIn("Fix documentation gap", app)
+        self.assertIn('value="write">Write manually', app)
+        self.assertIn('value="import">Import file', app)
+
+    def test_write_project_file_saves_docs_and_rejects_unsafe_paths(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            saved = pd.write_project_file(root, "docs/build-test-commands.md", "# Build\n\n`pytest`\n")
+            self.assertEqual(saved, "docs/build-test-commands.md")
+            self.assertIn("pytest", (root / "docs" / "build-test-commands.md").read_text())
+            self.assertEqual(pd.write_project_file(root, "README.md", "# App\n"), "README.md")
+            for bad in ("../outside.md", "src/code.py", "docs/.secret.md", "docs/empty.md"):
+                with self.assertRaises(pd.DocsError, msg=bad):
+                    pd.write_project_file(root, bad, "" if bad.endswith("empty.md") else "# x")
+
 
 class DraftReadsRequirementDocsTests(unittest.TestCase):
     def test_whole_product_requirements_come_before_per_feature_specs_and_plans_are_skipped(self):

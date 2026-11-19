@@ -852,9 +852,7 @@ class ProjectDocumentationSectionTests(unittest.TestCase):
             'pages["project-docs"] = async',
             'api("docs")',
             'api("docs/export")',
-            'id="proj-docs-fill"',
-            'Fill gaps with AI',
-            'await runAction("new_job", { type: "infra", summary, spec })',
+            'await runAction("new_job", { type: "freestyle", summary, spec })',
             'data-doc-gap="${i}"',  # each gap has its own fix
             '<details class="fold docs-group"${c.id === "core" ? " open" : ""}>',  # grouped by kind, the core docs open
             '["Documentation", "#/project-docs"',

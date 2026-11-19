@@ -164,7 +164,7 @@ class WiringTests(unittest.TestCase):
     def test_home_shows_blockers_and_resumes_cleared_jobs(self):
         app = (ROOT / "orchestrator" / "web" / "static" / "app.js").read_text(encoding="utf-8")
         self.assertIn('api("blockers", { method: "POST", body: {} }).catch(() => api("blockers")', app)
-        self.assertIn("${blockersCard(homeBlockers?.blockers || [])}", app)
+        self.assertIn("HomeStatus.render({git: homeGit, jobs, runs: state.runs, blockers: homeBlockers?.blockers || []})", app)
         self.assertIn('api("blockers/clear-lock", { method: "POST", body: {} })', app)
 
 

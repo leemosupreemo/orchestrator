@@ -254,13 +254,15 @@ class PageTests(unittest.TestCase):
         app = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
         css = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "style.css").read_text()
         html = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "index.html").read_text()
-        self.assertIn('<symbol id="i-copy"', html)
+        self.assertIn('<symbol id="i-log"', html)
         self.assertIn('id="copy-job-failure-log"', app)
-        self.assertIn('<use href="#i-copy"/>', app)
-        self.assertIn('<div class="hero-error-row">${heroReasonDetails}${copyFailureBtnHtml}</div>', app)
+        self.assertIn('<use href="#i-log"/>', app)
+        self.assertIn('<div class="job-hero-head">${heroTitleHtml}${copyFailureBtnHtml}</div>', app)
         self.assertIn('toast("Failure details and logs copied")', app)
-        self.assertIn(".hero-error-row {", css)
+        self.assertIn(".job-hero-head {", css)
         self.assertIn(".hero-copy-log-btn {", css)
+        self.assertIn("const steer = activeRun || s.question || reviewingPlan || signIn ? null", app)
+        self.assertIn('const showNextAction = next && !(signInAction && next.action === "debug");', app)
 
 
 if __name__ == "__main__":

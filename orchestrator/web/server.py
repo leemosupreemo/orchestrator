@@ -8123,6 +8123,14 @@ class UIHandler(BaseHTTPRequestHandler):
             self._json(save_upload(root, (query.get("name") or [""])[0], self._read_upload()))
         elif parts and parts[0] == "product":
             self._product_route(root, method, parts, query)
+        elif method == "POST" and parts == ["docs", "file"]:
+            self._require_owner("edit project documentation")
+            body = self._body()
+            try:
+                saved = project_docs.write_project_file(root, str(body.get("path") or ""), str(body.get("markdown") or ""))
+            except project_docs.DocsError as exc:
+                raise UIError(str(exc), HTTPStatus.BAD_REQUEST)
+            self._json({"ok": True, "path": saved})
         elif method == "GET" and parts and parts[0] == "docs":
             try:
                 if parts == ["docs"]:

@@ -191,6 +191,24 @@ class HomeStatusRenderTests(unittest.TestCase):
         self.assertNotIn('<img ', html)
         self.assertIn('&lt;', html)
 
+    def test_blockers_render_succinctly_inside_project_status_card(self):
+        html = self.render({
+            'jobs': [], 'runs': [],
+            'blockers': [{
+                'kind': 'sign_in', 'provider': 'claude', 'name': 'Claude',
+                'title': 'Claude sign-in expired',
+                'detail': "Jobs can't use Claude until you sign in again.",
+                'jobs': [{'id': 'j1', 'title': 'Grass wind'}],
+            }],
+        })
+        self.assertIn('class="home-status-blocked"', html)
+        self.assertIn('Claude sign-in expired', html)
+        self.assertIn('Grass wind', html)
+        self.assertIn('Sign in to Claude', html)
+        self.assertNotIn('waiting jobs then resume', html)
+        app = (STATIC / "app.js").read_text()
+        self.assertNotIn('id="home-blockers"', app)
+
 
 @unittest.skipUnless(shutil.which('node'), 'Node.js required')
 class HomeIntegrationTests(unittest.TestCase):

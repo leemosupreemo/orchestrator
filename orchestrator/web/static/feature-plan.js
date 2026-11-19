@@ -116,8 +116,10 @@
       const jira = e.jira?.key ? jiraLink(e)
         : jiraConnected ? `<button type="button" class="btn small ghost" data-epic-send="${escapeHtml(e.id)}">Send to Jira</button>` : "";
       const built = job?.group === "done";
+      const featureId = e.feature_id || e.id;
+      const snapshot = featureId ? `<a class="btn small ghost icon-only" href="#/docs/feature/${encodeURIComponent(featureId)}" aria-label="Share snapshot (.md)" title="Share snapshot (.md)"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-download"/></svg></a>` : "";
       return `<div class="item epic-row" data-epic="${escapeHtml(e.id)}"><div class="main-col"><div class="title">${name}</div></div>
-        <div class="side">${jira}<span class="pill ${built ? "done" : "idle"}">${built ? "Implemented" : "Not implemented"}</span></div></div>`;
+        <div class="side">${jira}${snapshot}<span class="pill ${built ? "done" : "idle"}">${built ? "Implemented" : "Not implemented"}</span></div></div>`;
     };
     const build = canBuild && list.some((e) => !e.job_info || e.job_info.group !== "done")
       ? `<button type="button" class="btn small primary" id="epic-build-plan" title="Plan and build the chosen epics in dependency order, independent ones at the same time">Build the plan</button>` : "";
