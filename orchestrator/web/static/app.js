@@ -9680,7 +9680,7 @@ function productStripHtml(p, jobs = [], { collapsed = false } = {}) {
   const still = missing.length
     ? `${filled.length} of ${sections.length} sections filled in. Still to fill in: ${missing.slice(0, 3).map((x) => x.title).join(", ")}${missing.length > 3 ? ` and ${missing.length - 3} more` : ""}.` : "";
   if (collapsed) {
-    return `<section class="card mt-16" id="product-strip"><details class="fold"><summary class="card-h"><h2>Product</h2>${prdStatusPill(sections)}</summary>
+    return `<section class="card" id="product-strip"><details class="fold"><summary class="card-h"><h2>Product</h2>${prdStatusPill(sections)}</summary>
       <div class="card-b stack gap-8">
         <a class="product-pitch" href="#/product" title="Open the product requirements">${esc(prdSnippet(lead.body))}</a>
         <div class="row gap-12 align-center wrap">${prdUpdatedLine(p.updated, jobs)}<span class="spacer"></span><a class="btn small" href="#/product">Open product</a></div>
