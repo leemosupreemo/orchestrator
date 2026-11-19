@@ -75,7 +75,7 @@
       <div id="connect-status" role="status" aria-live="polite"></div>
       <pre id="connect-question" class="doc connect-question" hidden></pre>
       <div id="connect-browser" class="stack"></div>
-      <div id="connect-code-row" class="stack" hidden><label class="field"><span>2. Paste the code it shows</span><input id="connect-code" autocomplete="off" spellcheck="false" placeholder="Paste code or key"></label><div><button type="button" class="btn primary" id="connect-code-send">Submit code</button></div></div>
+      <div id="connect-code-row" class="stack" hidden><label class="field"><span>2. Paste the code it shows</span><input id="connect-code" autocomplete="off" spellcheck="false" placeholder="Paste code or key"></label><div><button type="button" class="btn primary" id="connect-code-send">Submit</button></div></div>
       <div class="row gap-8 wrap"><button type="button" class="btn primary" id="connect-agree" hidden>Agree and continue</button><button type="button" class="btn" id="connect-continue" hidden>Continue</button></div>
       `, "Done", {cancelLabel: "Close"});
     promise.then(() => {closed = true; onClose();});
