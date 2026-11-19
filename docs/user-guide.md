@@ -300,7 +300,7 @@ On **Manage AI tools**, **Connect** shows a guided checklist for Claude, Codex, 
 
 **What your AI tools can do.** Manage AI tools lists each installed tool's own slash commands, skills, plugins and commands, as the tool reports them on this computer (Claude Code reports everything it has loaded in the project; the others list their commands and the folders they keep custom commands and skills in). It rescans when you open the page and the last scan is over 15 minutes old, or on **Rescan**. A few of these are a button on a job, in its More menu, once the job has changes: **Code review by Claude** (`/code-review`), **Security review by Claude** (`/security-review`), **Code review by Codex** (`codex review`), and **Deep cloud review (Claude ultra)** (`/code-review ultra`, billed to your Claude account, so only the owner can start it, after a confirmation, and it opens in the run's terminal because Claude asks before it starts). A review runs on the job's branch in a scratch checkout, so your folder is never touched, and its text is saved with the job's documents. Each appears only when the scan found it and the tool is signed in.
 
-**When a job stops because an AI tool's sign-in expired**, its failure card (titled *AI sign-in expired*) has a **Sign in to Claude** button, or Codex, Antigravity or Pool, whichever tool the job was using. It opens this same dialog over the job, without starting a new job, and works the same way for every tool that has a sign-in: **Open sign-in**, **Copy link**, and the approval code or the box to paste a code. When it says the tool is connected, close the dialog and press **Rerun job**.
+**When a job stops because an AI tool's sign-in expired**, its failure card (titled *AI sign-in expired*) and job hero offer a **Sign in to Claude** button (or Codex, Antigravity or Pool, whichever tool the job was using). It opens the same guided sign-in dialog over the page without starting a separate job. As soon as sign-in succeeds, Orchestrator closes the dialog and **automatically retries the job** (or resumes any jobs waiting on that sign-in when signed in from Home's **Blocked** card or **Manage AI tools**).
 
 The orchestrator can use model provider CLIs or API keys. The setup check looks for common CLIs and environment keys:
 
@@ -867,7 +867,7 @@ From the top:
 
 The sidebar's **Primary machine** dropdown switches between your computers. The one marked **Primary** starts this project's jobs. Another computer can look at the project, but it can't start work until it's made primary.
 
-**Jobs on your other computers.** Home also lists the jobs your other computers run in this project, with the same state their own job page shows ("Blocked: Git is locked", "Tests passed, not committed", the run working now and its step), usually within 10 seconds of a change. The computer running a job is its one source of truth; your account only holds a read-only copy for the others. While a job runs, each finished task is pushed to the job's own branch (never the base branch), so if that computer fails, at most the task in progress is lost. Open one and press its next step to carry on here: the job comes to the computer you're on with what reached the branch and its unfinished work, and the computer it left steps aside until the job goes back to it the same way. It can't be picked up while a run is working on it there.
+**Jobs on your other computers.** Home also lists the jobs your other computers run in this project, with the same state their own job page shows ("Blocked: Git is locked", "Tests passed, not committed", the run working now and its step), usually within 10 seconds of a change. The computer running a job is its one source of truth; your account only holds a read-only copy for the others. While a job runs, each finished task is pushed to the job's own branch (never the base branch), so if that computer fails, at most the task in progress is lost. Opening a job from another computer always opens it on the local machine you're using: when the other computer is online and not actively running it, Orchestrator immediately brings the job's latest record, branch and unfinished work here and opens the job page locally (and the other computer steps aside until the job moves back the same way). It can't be picked up while a run is working on it there.
 
 ### When a computer is offline
 
@@ -877,10 +877,10 @@ before that computer goes away.
 - **One owner per job.** Each job has an ownership number; picking a job up on another computer raises it. The computer holding the
   highest number owns the job, and any other copy steps aside (**Last worked on <computer>**), even if its computer was offline during
   the move and syncs late. Copies brought over by an old project download never win.
-- **Carry on from any computer.** A job from another computer opens with its latest state and its own next step. Press
-  it (**Merge & complete**, **Resume**, **Approve**…) and the job is picked up here and the step runs: its record, branch
-  and unfinished work come along, and the other computer hands it over. **Work on it here** picks it up without running
-  anything. Only while a run is working on it there do you wait for that run to finish.
+- **Always opens on the local machine.** Opening an online, idle job from another computer automatically brings it to the machine
+  you're using (latest record, branch and unfinished work) and opens it locally—never switching your browser to the remote machine.
+  When the other computer is offline, its page pauses to warn about any unsynced work before you click **Work on it here** (or its
+  next step). Only while a run is actively working on it there do you wait for that run to finish.
 - **Every job is reachable.** Each computer sends your account a record of every job that changed, not only the newest
   ones, so you can continue any unfinished job from another computer.
 - **Unfinished work.** About once a minute, a paused or failed job's uncommitted files are backed up to GitHub, on a
@@ -901,6 +901,15 @@ sync and when it last worked. A job whose latest commits or unfinished files cou
 Brief blips (a laptop waking, a Wi-Fi hop) aren't shown, and everything retries by itself.
 
 The one thing no design can fix: work done while a computer was cut off reaches the others only once it reconnects.
+
+### Job page
+
+Each job page is focused on getting the feature realized and reviewed, with plumbing tucked out of the way:
+
+- **Agile iterative lifecycle stepper.** Shows the current iteration badge (`↻ Iter N`) alongside **Plan → Build → Verify → Document → Finalize**. **Plan** stays approved across fix and change cycles; when a new iteration loops back into **Build** or **Verify**, downstream stages partially reset (`Pending re-verify` / `Pending re-check`) until the new iteration passes, and a subtle dashed loop arc marks the repeating **Build → Verify → Finalize** cycle from `Iter 2` onward.
+- **Hero status & review summary.** Shows the job's current state and primary action. If the last run failed before updating the job, a warning banner links straight to its **Details**. When ready for review, a structured summary separates the file count and `+add/-del` diffstat, compact file chips, and **Inspect diff ↓** / **Open PR ↗** actions.
+- **Categorized More (`⋯`) menu.** Actions are grouped under **Work on this job**, **Share & export**, **Settings**, and **Finish or remove** (only showing groups with available actions). **Download ZIP** fetches the job bundle with authentication whether you're using localhost or the hosted web app.
+- **Collapsed run history.** Persisted and live runs for the job live in a single collapsed **Run** / **Runs** fold at the bottom of the page (just above **Technical details**), keeping raw run logs out of the main flow unless you need them.
 
 ### Ask AI
 

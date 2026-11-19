@@ -26,7 +26,7 @@ When the build or tests fail, or the worker raises, the job ends up in one of th
 | The AI's "question" is really a blocker ("rerun with write access") | `human_clarification_question`, classified by `classify_clarification` | The AI couldn't continue (`orchestrator/blocker_fix.py`) | The one fix that applies, e.g. **Plan again** telling the planner it plans only |
 | The work passed its tests but the commit failed | `passed_uncommitted: {files}` | Tests passed, not committed | **Commit the work**: Resume commits those files without building again, and without checking anything out (a forced checkout would throw the uncommitted work away) |
 | Another job is using the project folder | `waiting_for` (`folder_lock`) | Waiting | Starts by itself |
-| Continued on another computer | `moved_to` | Last worked on <computer> | Opening it shows the latest copy; its next step picks it up here |
+| Continued on another computer | `moved_to` | Last worked on <computer> | Opening it automatically brings it to the local machine when the other computer is online and idle; offline copies warn before continuing here |
 
 ### Blockers
 
