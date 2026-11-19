@@ -16,7 +16,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "orchestrator/scripts"))
 import worker_run as worker  # noqa: E402
-from common import dirty_file_hashes, files_changed_between  # noqa: E402
+from common import dirty_file_hashes, files_changed_between, project_config_hash  # noqa: E402
 from llm import get_llm_command  # noqa: E402
 from model_router import ModelRole  # noqa: E402
 from orchestrator.web import server as ui  # noqa: E402
@@ -86,6 +86,55 @@ class SnapshotTests(unittest.TestCase):
             self.assertEqual(dirty_file_hashes(root / "missing"), {})
 
 
+    def test_moving_a_submodule_pointer_is_seen_even_when_it_was_already_dirty(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, GIT_ENV):
+            base = Path(tmp)
+            sub, root = base / "sub", base / "root"
+            for d in (sub, root):
+                d.mkdir()
+                subprocess.run(["git", "init", "-q", "-b", "main"], cwd=d, check=True)
+            git = lambda cwd, *a: subprocess.run(["git", *a], cwd=cwd, check=True, capture_output=True, text=True).stdout.strip()
+            shas = []
+            for n in ("one", "two"):
+                (sub / "f.txt").write_text(n)
+                git(sub, "add", ".")
+                git(sub, "commit", "-q", "-m", n)
+                shas.append(git(sub, "rev-parse", "HEAD"))
+            (root / "a.txt").write_text("a")
+            git(root, "add", ".")
+            git(root, "commit", "-q", "-m", "start")
+            git(root, "-c", "protocol.file.allow=always", "submodule", "add", "-q", str(sub), "core")
+            git(root, "commit", "-q", "-m", "add core")
+            git(root / "core", "checkout", "-q", shas[0])  # the pointer is already dirty before the builder runs
+            before = dirty_file_hashes(root)
+            self.assertEqual(files_changed_between(before, dirty_file_hashes(root)), [])
+            git(root, "update-index", "--cacheinfo", f"160000,{shas[0]},core")  # a staged pointer move, as the builder did
+            self.assertEqual(files_changed_between(before, dirty_file_hashes(root)), ["core"])
+
+    def test_an_untracked_folder_is_still_a_plain_directory(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, GIT_ENV):
+            root = Path(tmp)
+            subprocess.run(["git", "init", "-q", "-b", "main"], cwd=root, check=True)
+            (root / "empty").mkdir()
+            (root / "empty" / ".keep").write_text("")
+            self.assertEqual(set(dirty_file_hashes(root).values()), {hashlib_sha("")})
+
+    def test_the_project_config_hash_follows_the_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.assertEqual(project_config_hash(root), "")
+            (root / ".orchestrator").mkdir()
+            (root / ".orchestrator" / "project.json").write_text('{"test_command": "a"}')
+            first = project_config_hash(root)
+            (root / ".orchestrator" / "project.json").write_text('{"test_command": "b"}')
+            self.assertNotEqual(first, project_config_hash(root))
+
+
+def hashlib_sha(text: str) -> str:
+    import hashlib
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
 class WorkerStopTests(unittest.TestCase):
     """The real worker, with the builder and git faked by the shared harness."""
     setUp = harness.WorkerRunTests.setUp
@@ -108,6 +157,15 @@ class WorkerStopTests(unittest.TestCase):
         hashes = iter([{"a.py": "old"}, {"a.py": "new"}])
         with self.pipeline({"type": "quick-fix"}, states=[{"modified": ["a.py"], "untracked": []}] * 4) as (path, calls), \
              patch.object(worker, "dirty_file_hashes", side_effect=lambda root=None: next(hashes)):
+            worker.execute_job(path)
+            job = worker.read_json(path)
+            self.assertEqual(job["status"], "review-needed")
+            self.assertNotIn("build_no_changes", job)
+
+    def test_editing_only_the_project_config_counts_as_building(self):
+        configs = iter(["old", "new"])
+        with self.pipeline({"type": "quick-fix"}, states=[NOTHING] * 4) as (path, calls), \
+             patch.object(worker, "project_config_hash", side_effect=lambda root=None: next(configs)):
             worker.execute_job(path)
             job = worker.read_json(path)
             self.assertEqual(job["status"], "review-needed")

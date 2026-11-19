@@ -939,10 +939,37 @@ def dirty_file_hashes(root: Path | None = None) -> dict[str, str]:
             i += 1  # a rename or copy is followed by its old path
         path = base / rel
         try:
-            out[rel] = hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else "deleted" if not path.exists() else "dir"
+            out[rel] = hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else "deleted" if not path.exists() else _directory_marker(base, rel)
         except OSError:
             out[rel] = "unreadable"
     return out
+
+
+def _directory_marker(base: Path, rel: str) -> str:
+    """What stands in for a directory in a `dirty_file_hashes` snapshot. A submodule is a directory git tracks by commit, so
+    moving its pointer (staged) or its checkout must show; a plain directory (an untracked folder) stays "dir"."""
+    def git(*args: str, cwd: Path = base) -> str:
+        try:
+            return subprocess.check_output(["git", *args], cwd=str(cwd), stderr=subprocess.DEVNULL).decode("utf-8", "replace").strip()
+        except Exception:
+            return ""
+    staged = git("ls-files", "-s", "--", rel).split()  # "160000 <sha> 0 <path>" for a submodule
+    if not staged or staged[0] != "160000":
+        return "dir"
+    return f"submodule:{staged[1]}:{git('rev-parse', 'HEAD', cwd=base / rel)}"
+
+
+PROJECT_CONFIG_FILE = ".orchestrator/project.json"
+
+
+def project_config_hash(root: Path | None = None) -> str:
+    """A hash of the project's orchestrator config. `.orchestrator/` is tool state, never swept into a commit, yet a fix that
+    only edits this file (a test command) is still a change the builder made."""
+    import hashlib
+    try:
+        return hashlib.sha256((Path(root or ROOT) / PROJECT_CONFIG_FILE).read_bytes()).hexdigest()
+    except OSError:
+        return ""
 
 
 def files_changed_between(before: dict[str, str], after: dict[str, str]) -> list[str]:

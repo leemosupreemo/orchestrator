@@ -38,7 +38,9 @@ from common import (
     find_latest_runtime_log,
     format_job_id,
     get_repo_state,
+    PROJECT_CONFIG_FILE,
     dirty_file_hashes,
+    project_config_hash,
     files_changed_between,
     gh_comment,
     is_firebase_configured,
@@ -981,6 +983,7 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
         # Capture state before builder
         pre_state = get_repo_state()
         pre_hashes = dirty_file_hashes(ROOT)
+        pre_config = project_config_hash(ROOT)
         touched_this_run: set[str] = set()  # files the plan's tasks changed in this run, committed or not
         # Done and tested last time, only the commit failed (a git lock): commit it now instead of building again, whether
         # the job is one task or a plan of several.
@@ -1266,6 +1269,9 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
             f for f in (set(ai_modified) | set(ai_untracked) | touched_this_run | set(files_changed_between(pre_hashes, dirty_file_hashes(ROOT))))
             if not builder_check.is_ignored_tool_path(f)
         )
+        # The project's own config (a test command) lives in ignored tool state but is a real change when the builder edits it.
+        if project_config_hash(ROOT) != pre_config:
+            changed_now = sorted({*changed_now, PROJECT_CONFIG_FILE})
         # The task loop may already have stopped the job with a more specific reason (phantom completion, unrelated tests).
         already_stopped = job.get("type") == "feature-plan" and job.get("status") == "human-needed"
         stop = "" if already_stopped else no_change_stop(job, changed_now, debug_attempt=os.environ.get("AI_DEBUG_CHILD") == "1")
