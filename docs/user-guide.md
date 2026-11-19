@@ -910,6 +910,7 @@ Each job page is focused on getting the feature realized and reviewed, with plum
 - **Hero status & review summary.** Shows the job's current state and primary action. If the last run failed before updating the job, a warning banner links straight to its **Details**. When ready for review, a structured summary separates the file count and `+add/-del` diffstat, compact file chips, and **Inspect diff ↓** / **Open PR ↗** actions.
 - **Categorized More (`⋯`) menu.** Actions are grouped under **Work on this job**, **Share & export**, **Settings**, and **Finish or remove** (only showing groups with available actions). **Download ZIP** fetches the job bundle with authentication whether you're using localhost or the hosted web app.
 - **Collapsed run history.** Persisted and live runs for the job live in a single collapsed **Run** / **Runs** fold at the bottom of the page (just above **Technical details**), keeping raw run logs out of the main flow unless you need them.
+- **Lean behind-the-scenes execution.** Non-overlapping jobs run up to 2 at once in isolated git worktrees by default; internal `.orchestrator/` and AI-tool dotfiles (`.claude/`, `.codex/`, `.gemini/`, `.poolside/`, `.cursor/`) are filtered out of review diffs and unsaved-file counts; fix loops pass a compact **Iteration Ledger** (ruled-out hypotheses, failing tests, modified files) so models don't re-explore dead ends; and planners follow YAGNI minimal vertical-slice scoping.
 
 ### Ask AI
 

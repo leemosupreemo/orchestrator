@@ -8380,6 +8380,140 @@ console.log(JSON.stringify({{ fromHyp, fromDoc }}));
         self.assertEqual(res["local_summary"], "")
         self.assertIn("10 insertions(+)", res["summary_line"])
 
+    def test_agile_stepper_partial_reset_iteration_badge_and_doc_autoskip(self):
+        script = r"""
+const fs = require('fs');
+const assert = require('assert');
+const source = fs.readFileSync(process.argv[1], 'utf8');
+require(process.argv[2]);
+const esc = Html.escape, pages = {};
+const state = { project: { dirty_files: 0, languages: [] }, you: { role: 'owner' }, runs: [] };
+const SIDE_RUNS = new Set(['export_job', 'web_preview']);
+const stoppingRuns = new Set();
+const isPreviewRun = () => false;
+const aiAbilities = { highlights: [], loaded: true };
+const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
+const ago = () => '1m ago';
+const escAttr = esc;
+const attrJSON = (v) => JSON.stringify(v);
+const act = (a) => `data-action="${a}"`;
+const matchMedia = () => ({ matches: false });
+const featureChip = () => '';
+const jobHeaderActions = () => '';
+const jobContextRail = () => '';
+const jobDocsOutlineHtml = () => '';
+const jobRunsCard = () => '';
+const uxReviewCard = () => '';
+const overlapAdviceHtml = () => '';
+const autoresponseNote = () => '';
+const wipRestoreNote = () => '';
+const strandedNote = () => '';
+const backupNote = () => '';
+const testCaseSummaryHtml = () => '';
+const testCaseRowsHtml = () => '';
+const activeRunCard = () => '';
+const liveRunCard = () => '';
+const clarificationThread = () => '';
+const jobChangeSummary = () => '';
+const Markdown = { render: (t) => t };
+const runningMark = '';
+const PROVIDER_LABEL = {};
+const clamped = (t) => t;
+const jobSizeAssessment = () => ({ too_large: false, reasons: [], deferred: [] });
+let mockData = null;
+const api = async () => mockData;
+
+const start = source.indexOf('pages.job = async ([id]) => {');
+const end = source.indexOf('\n// ', start + 50);
+const pageEnd = source.indexOf('\npages.', start + 20);
+eval(source.slice(start, pageEnd));
+
+(async () => {
+  // 1. Quick-fix with no doc files: auto-skips Document (4 steps: Plan, Build, Verify, Finalize)
+  mockData = {
+    summary: { id: 'q1', title: 'Quick tweak', type: 'quick-fix', status: 'review-needed', state: { label: 'Ready to merge', reason: 'PR #1', tone: 'attention', group: 'needs_you', next: { action: 'merge', label: 'Merge & complete' } } },
+    job: { job_id: 'q1', type: 'quick-fix', status: 'review-needed', pr_number: 1, ai_modified_files: ['src/a.swift'] },
+    outputs: [], runs: [], docs: [], links: [{ label: 'PR #1', url: 'https://example/pr/1' }],
+    changes: { files: ['src/a.swift'], local_files: [], summary_line: '1 file changed, 5 insertions(+), 2 deletions(-)', base: 'main' },
+    test_summary: { status: 'passed' }, pipeline: {}, tasks: [], completed_tasks: [],
+  };
+  const r1 = await pages.job(['q1']);
+  assert(r1.html.includes('Iter 1'), 'shows Iter 1');
+  assert(!r1.html.includes('>Document<'), 'skips Document on quick-fix without doc changes');
+  assert(r1.html.includes('>Finalize<'), 'keeps Finalize');
+  assert(r1.html.includes('+5') && r1.html.includes('-2'), 'shows structured diffstat badges');
+  assert(!r1.html.includes('Working tree clean.'), 'hides Working tree clean clutter');
+
+  // 2. Active debug iteration (Iter 2): Plan stays done, Build shows ↻ iterating, Verify resets to Pending re-verify, loop arc shown
+  mockData = {
+    summary: { id: 'f1', title: 'Feature', type: 'feature-plan', status: 'debugging', state: { label: 'Building', reason: 'Fixing', tone: 'working', group: 'working', next: null } },
+    job: { job_id: 'f1', type: 'feature-plan', status: 'debugging', iteration: 1, debug_phase: 'implement', ai_modified_files: ['src/b.swift', 'docs/guide.md'] },
+    outputs: [], runs: [{ id: 'r2', action: 'debug', running: true }],
+    job_runs: [{ id: 'r1', action: 'execute', side: false }, { id: 'r2', action: 'debug', side: false }],
+    docs: [], links: [],
+    changes: { files: ['src/b.swift', 'docs/guide.md'], local_files: [], summary_line: '2 files changed, 12 insertions(+), 3 deletions(-)', base: 'main' },
+    test_summary: {}, pipeline: {}, tasks: ['T1'], completed_tasks: ['0'],
+  };
+  const r2 = await pages.job(['f1']);
+  assert(r2.html.includes('data-iterating="1"'), 'marks stepper as iterating');
+  assert(r2.html.includes('Iter 2'), 'shows Iter 2');
+  assert(r2.html.includes('>Document<'), 'keeps Document when feature/docs changed');
+  assert(r2.html.includes('Pending re-verify'), 'resets Verify during Build iteration');
+  assert(r2.html.includes('Pending re-check'), 'resets Document during Build iteration');
+  assert(r2.html.includes('job-loop-arc'), 'renders Agile loop arc on Iter 2+');
+})().catch((e) => { console.error(e); process.exit(1); });
+"""
+        res = subprocess.run(
+            ["node", "-e", script, str(PACKAGE_ROOT / "orchestrator/web/static/app.js"), str(PACKAGE_ROOT / "orchestrator/web/static/html.js")],
+            capture_output=True, text=True,
+        )
+        self.assertEqual(res.returncode, 0, res.stderr + res.stdout)
+
+    def test_download_api_file_uses_backend_url_and_bearer_auth(self):
+        script = r"""
+const fs = require('fs');
+const assert = require('assert');
+const source = fs.readFileSync(process.argv[1], 'utf8');
+const start = source.indexOf('async function downloadApiFile(');
+const end = source.indexOf('\ndocument.addEventListener("click", async (e)', start);
+let fetched = null, clicked = null, revoked = null;
+const getBackendUrl = () => 'https://remote.example';
+const getToken = () => 'tok-xyz';
+global.fetch = async (url, opts) => {
+  fetched = { url, opts };
+  return {
+    ok: true, status: 200,
+    headers: { get: (k) => k.toLowerCase() === 'content-disposition' ? 'attachment; filename="job-9-export.zip"' : null },
+    blob: async () => new Blob(['zipdata']),
+  };
+};
+global.URL = { createObjectURL: () => 'blob:mock-1', revokeObjectURL: (u) => { revoked = u; } };
+global.document = {
+  createElement: () => ({ click() { clicked = { href: this.href, download: this.download }; }, remove() {} }),
+  body: { appendChild() {} },
+};
+eval(source.slice(start, end));
+(async () => {
+  await downloadApiFile('/api/jobs/job-9/export-zip');
+  assert.equal(fetched.url, 'https://remote.example/api/jobs/job-9/export-zip');
+  assert.equal(fetched.opts.headers.Authorization, 'Bearer tok-xyz');
+  assert.equal(fetched.opts.credentials, 'omit');
+  assert.deepEqual(clicked, { href: 'blob:mock-1', download: 'job-9-export.zip' });
+})().catch((e) => { console.error(e); process.exit(1); });
+"""
+        res = subprocess.run(
+            ["node", "-e", script, str(PACKAGE_ROOT / "orchestrator/web/static/app.js")],
+            capture_output=True, text=True,
+        )
+        self.assertEqual(res.returncode, 0, res.stderr + res.stdout)
+
+    def test_icon_only_small_css_cascade_and_balanced_braces(self):
+        css = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "style.css").read_text(encoding="utf-8")
+        self.assertEqual(css.count("{"), css.count("}"))
+        self.assertLess(css.index(".btn.small {"), css.index(".btn.icon-only.small {"))
+        small_icon_rule = css[css.index(".btn.icon-only.small {"):css.index("}", css.index(".btn.icon-only.small {")) + 1]
+        self.assertIn("padding: 0;", small_icon_rule)
+
     def test_waiting_epic_has_its_own_page(self):
         # Planning replaces the waiting job with a new one, so the page explains that and hands over to the new job.
         start = self.source.index("function waitingEpicPage")

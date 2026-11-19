@@ -90,6 +90,60 @@ class ScopedDebugTests(unittest.TestCase):
         self.assertIn("src/vegetation.swift", text)
         self.assertNotIn(".claude/settings.json", text)
 
+    def test_propose_persists_iteration_ledger_and_targeted_tests_and_clears_old_blocker(self):
+        self.write({
+            "job_id": "j-ledger",
+            "type": "bug-fix",
+            "status": "debugging",
+            "debug_phase": "propose",
+            "reviewer": "claude-sonnet-4-6",
+            "iteration": 1,
+            "blocker": {"kind": "sign_in", "provider": "claude"},
+            "ai_modified_files": ["src/app.swift", ".claude/settings.json"],
+            "debug_history": [{
+                "iteration": 1,
+                "model": "claude-sonnet-4-6",
+                "action": "patch",
+                "hypothesis": "Wrong cache key",
+                "result": {"build_ok": True, "tests_ok": False, "notes": "still failing"},
+            }],
+            "plan": {},
+        })
+        proposal = json.dumps({
+            "evidence": "test failed at line 42",
+            "hypothesis": "Stale observer retained after reset",
+            "confidence": 0.9,
+            "action": "patch",
+            "files_changed": ["src/app.swift"],
+            "targeted_tests": ["AppTests.testResetObserver"],
+            "implementation_plan": "Remove observer in reset()",
+            "expected_signal": "AppTests.testResetObserver passes",
+            "stop_condition": "Failure persists with observer removed",
+            "summary": "Fix retained observer on reset",
+        })
+        out_dir = self.path.parent / "output"
+        with patch.object(debug_job, "OUTPUT_DIR", out_dir), \
+             patch.object(debug_job, "run_llm", return_value=(proposal, "claude-sonnet-4-6", "sess-2")), \
+             patch.object(debug_job, "run_implement") as implement:
+            debug_job.run_debug_iteration(self.path)
+        implement.assert_called_once()
+        saved = json.loads(self.path.read_text())
+        self.assertEqual(saved["iteration"], 2)
+        self.assertNotIn("blocker", saved)
+        self.assertEqual(saved["last_blocker"]["provider"], "claude")
+        self.assertEqual(saved["targeted_tests"], ["AppTests.testResetObserver"])
+        self.assertEqual(saved["iteration_ledger"]["ruled_out_hypotheses"], ["Wrong cache key"])
+        prompt_text = (out_dir / "j-ledger" / "iter_2" / "prompt.md").read_text(encoding="utf-8")
+        self.assertIn("Do NOT repeat ruled-out hypotheses", prompt_text)
+        self.assertIn("Wrong cache key", prompt_text)
+
+    def test_lean_yagni_and_anti_relearning_rules_present_in_prompts(self):
+        prompts = Path(__file__).resolve().parents[1] / "orchestrator" / "prompts"
+        self.assertIn("Anti-Relearning", (prompts / "debug_agent.md").read_text(encoding="utf-8"))
+        self.assertIn("targeted_tests", (prompts / "debug_agent.md").read_text(encoding="utf-8"))
+        for fname in ("planner_feature.md", "planner_bug.md", "planner_quick.md"):
+            self.assertIn("YAGNI", (prompts / fname).read_text(encoding="utf-8"), fname)
+
 
 if __name__ == "__main__":
     unittest.main()
