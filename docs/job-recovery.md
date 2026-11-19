@@ -35,7 +35,9 @@ so a failure in the code is never taken for one. Each blocker has a `scope` (`pr
 Home's **Blocked** card shows it once with every job it holds up.
 
 - **Where they are recorded.** `worker_run.py` checks the run's `build.log`, `test.log` and `environment_failure.md` before
-  it would start a fix attempt (`blocker_in_logs`, `pause_on_blocker`), and checks the exception in its catch-all.
+  it would start a fix attempt (`blocker_in_logs`, `pause_on_blocker`), and checks the exception in its catch-all. `debug_job.py`
+  also catches LLM failures in `run_propose`, rolls back the unused iteration increment, and records any detected blocker so
+  expired sign-ins and environment issues trigger 1-click sign-in + auto-retry and automatic server resumption.
 - **Cleared or not.** `is_cleared` checks the blocker now rather than trusting when it was recorded: the lock file is
   gone, the person signed in since (`job_problem.signed_in_at`), the tool is on `PATH`, 2 GB is free, the folder is
   writable. Xcode and simulator problems can't be checked, so they wait for **Try again**.

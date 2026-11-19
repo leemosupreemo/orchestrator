@@ -4391,14 +4391,6 @@ document.addEventListener("click", async (e) => {
   }, true);
 }
 
-// Jobs waiting in other projects: one line, not a second list.
-function elsewhereLine(items) {
-  const byProject = new Map();
-  for (const i of items || []) byProject.set(i.project.root, { name: i.project.name, n: (byProject.get(i.project.root)?.n || 0) + 1 });
-  if (!byProject.size) return "";
-  return `<div class="card-b muted">Also waiting in other projects: ${[...byProject].map(([root, p]) => `<button type="button" class="linklike" data-switch-project="${esc(root)}" data-then="#/">${esc(p.name)} (${p.n})</button>`).join(", ")}</div>`;
-}
-
 // The YOLO all switch. On: every in-progress job continues in YOLO mode (queued and paused ones start again where they left
 // off, building ones are switched over). Off: they stop for review and confirmations again from their next step.
 async function yoloAll(input, jobs) {
@@ -4663,7 +4655,6 @@ pages.home = async (_, query) => {
             ${filteredJobs.length > HOME_JOBS_SHOWN ? `<div class="card-b"><button type="button" class="btn small" data-show-all="job-list">Show all ${filteredJobs.length}</button></div>` : ""}
           </div>
         ` : `<div class="empty">${runningRuns.length && activeJobs.every(isRunningNow) ? "Everything in progress is running above." : !activeJobs.length ? (jobs.length ? "Nothing in progress. Finished jobs are below." : 'No jobs yet. <a href="#/new">Start a new job</a> to plan work from a description, bug report, or design.') : "No jobs match this filter."}</div>`}
-        ${elsewhereLine(waiting.elsewhere)}
       </section>
 
       ${finishedJobs.length ? `<section class="card mb-16" id="home-finished">
@@ -6277,16 +6268,15 @@ pages.job = async ([id]) => {
           ${strandedNote(job)}
           ${backupNote(job)}
           ${s.state.steps?.length ? `<ol class="job-hero-reason blocker-steps">${s.state.steps.map((step) => `<li>${esc(step)}</li>`).join("")}</ol>` : ""}
-          ${job.worktree ? `<p class="job-hero-reason muted">Builds alongside other jobs in its own checkout (<span class="mono">${esc(job.worktree)}</span>).</p>` : ""}
           ${overlapAdviceHtml(data.overlaps, { readyHere: ["merge", "complete"].includes(nextAction), idle: !activeRun })}
           ${s.state.blocker ? `<details class="fold"><summary class="linklike muted">What the AI said</summary><p class="muted">${esc(s.state.blocker)}</p></details>` : ""}
           ${runRel?.unreported ? `<div class="notice warn hero-unreported-notice"><span>Last run (<strong>${esc(runRel.unreported.label)}</strong>) ${runRel.unreported.status === "failed" ? "failed" : "ended without reporting back"} before it could update this job.</span><a class="btn small ghost" href="#/runs/${encodeURIComponent(runRel.unreported.id)}">Details</a></div>` : ""}
-          ${reviewContextHtml}
           ${nextExecutionPreview ? `<div class="job-hero-next-preview">${nextExecutionPreview}</div>` : ""}
           ${showTaskBar ? `<div class="tasks-progress-wrap"><div class="progress-bar-container" role="progressbar" aria-label="Tasks built" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${tasksPct}"><div class="progress-bar-fill" style="width: ${tasksPct}%"></div></div><span class="progress-text">${tasksDone}/${tasksTotal}</span></div>` : ""}
           ${uxWarning ? `<p class="job-hero-reason"><button type="button" class="linklike" data-scroll-to="#ux-section">UX and design check: ${plural(uxWarning, "major finding")}. Look before you ${s.state.next?.action === "merge" ? "merge" : "finish"}.</button></p>` : ""}
         </div>
         <div class="job-hero-action">${heroAction}</div>
+        ${reviewContextHtml}
         ${steerHtml}
       </section>`}
 
@@ -6356,7 +6346,7 @@ pages.job = async ([id]) => {
         ${changeSummaryFull ? `<div class="card-b card-b-split t-secondary"><strong>What changed:</strong> ${esc(changeSummaryFull)}</div>` : ""}
         <div class="card-b delta-summary-line">
           ${deltaUnsaved ? `<div class="delta-line unsaved">${esc(deltaUnsaved)}</div>` : ""}
-          <div class="row wrap gap-8 muted t-secondary"><span>${state.project?.dirty_files ? `${plural(state.project.dirty_files, "uncommitted file")} in workspace.` : "Working tree clean."}</span><a href="#/git?show=changes">Open Git setup</a></div>
+          ${state.project?.dirty_files ? `<div class="row wrap gap-8 muted t-secondary"><span>${plural(state.project.dirty_files, "uncommitted file")} in workspace.</span><a href="#/git?show=changes">Open Git setup</a></div>` : ""}
           <div class="diff-files">${allFiles.slice(0, 12).map((f) => `<details class="diff-file" data-diff-path="${esc(f)}"><summary class="mono">${esc(f)}</summary><pre class="diff" aria-live="polite">Loading…</pre></details>`).join("") || `<span class="muted">No modified files</span>`}${allFiles.length > 12 ? `<div class="muted">+${allFiles.length - 12} more: download the full diff (the download button above) for every file</div>` : ""}</div>
         </div>
         ${builderSummaryDoc ? `<details class="raw diffstat-details"><summary>View builder summary</summary><div class="card-b md">${Markdown.render(builderSummaryDoc.text)}</div></details>` : ""}
@@ -6602,12 +6592,12 @@ pages.job = async ([id]) => {
 };
 
 const JOB_TYPE_INFO = [
-  ["bug", "Bug fix", "Something is broken"],
+  ["freestyle", "Freestyle", "Say it your way"],
   ["feature", "Feature", "Something new"],
+  ["bug", "Bug fix", "Something is broken"],
   ["design", "Design", "A screen or flow"],
   ["coverage", "Tests", "Add missing tests"],
   ["quick", "Quick change", "A small tweak"],
-  ["freestyle", "Freestyle", "Say it your way"],
 ];
 const NJ_VIBES = [["minimalist", "Minimalist: clean, lots of space"], ["glassmorphism", "Glassy: frosted glass, vivid colour"], ["brutalist", "Bold: raw, high contrast"],
   ["high-energy", "Playful: animated, dynamic"], ["gothic-noir", "Dark and moody"], ["other", "Something else…"]];
@@ -6704,7 +6694,7 @@ pages.new = async (_, query) => {
   const skipKey = `orchestrator_skip_discovery:${state.project?.root || ""}`;
   const skipped = () => { try { return localStorage.getItem(skipKey) === "1"; } catch { return false; } };
   const wanted = query.get("type");
-  const st = { type: JOB_TYPE_INFO.some(([v]) => v === wanted) ? wanted : "bug", uploads: {}, uploading: 0, logs: new Set(), recent: null, testCases: null,
+  const st = { type: JOB_TYPE_INFO.some(([v]) => v === wanted) ? wanted : "freestyle", uploads: {}, uploading: 0, logs: new Set(), recent: null, testCases: null,
     v: { summary: query.get("summary") || query.get("area") || "", details: query.get("spec") || "", audience: "", outcome: "", acceptance: "", constraints: "", repro: "", expected: "", vibe: "minimalist", customVibe: "", subsystems: "", test_cases: query.get("test_cases") || "", url: "" } };
 
   // "Add tests" on an untested file (Tests page): prefill the job from the file itself (orchestrator/gap_brief.py).

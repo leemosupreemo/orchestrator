@@ -8358,6 +8358,28 @@ console.log(JSON.stringify({{ fromHyp, fromDoc }}));
         # The stepper shows the stage and the hero's title and button say what's needed: no badge row repeating them.
         self.assertNotIn("job-hero-badge-row", self.job_page)
 
+    def test_job_changes_filters_internal_ai_tool_dotfiles(self):
+        from orchestrator.web import server as ui
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fake_git = {
+                ("diff", "--stat", "--stat-width=100", "main...feat/veg", "--"): " src/veg.swift | 10 +++\n",
+                ("diff", "--name-only", "main...feat/veg", "--"): ".claude/helpers/hook.cjs\nsrc/veg.swift\n",
+                ("diff", "--shortstat", "main...feat/veg", "--", "src/veg.swift"): " 1 file changed, 10 insertions(+)\n",
+                ("rev-parse", "--abbrev-ref", "HEAD"): "feat/veg\n",
+                ("diff", "--name-only", "HEAD", "--"): ".claude/helpers/.helpers-version\n.orchestrator/jobs/j1.json\n",
+            }
+            with patch.object(ui, "git", side_effect=lambda _r, *args: fake_git.get(args, "")):
+                res = ui.job_changes(root, {
+                    "branch": "feat/veg",
+                    "base_branch": "main",
+                    "ai_modified_files": [".claude/settings.json", "src/veg.swift"],
+                })
+        self.assertEqual(res["files"], ["src/veg.swift"])
+        self.assertEqual(res["local_files"], [])
+        self.assertEqual(res["local_summary"], "")
+        self.assertIn("10 insertions(+)", res["summary_line"])
+
     def test_waiting_epic_has_its_own_page(self):
         # Planning replaces the waiting job with a new one, so the page explains that and hands over to the new job.
         start = self.source.index("function waitingEpicPage")

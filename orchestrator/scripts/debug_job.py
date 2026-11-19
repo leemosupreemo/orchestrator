@@ -180,6 +180,10 @@ def run_debug_iteration(job_path: Path, logs: str | None = None, feedback: str |
             pass
         return
 
+    if isinstance(job.get("blocker"), dict):
+        job["last_blocker"] = job.pop("blocker")
+        write_json(job_path, job)
+
     job["iteration"] += 1
     iteration = job["iteration"]
     
@@ -311,14 +315,27 @@ def run_propose(job: dict, job_path: Path, logs_path: str | None, feedback: str 
 
     # Call LLM
     print_phase("agent_thinking", subtext="proposing debug fix")
-    raw_output, actual_model, session_id = run_llm(
-        job["reviewer"], 
-        full_prompt, 
-        cwd=ROOT, 
-        timeout=1200, 
-        allowed_models=job.get("allowed_models"),
-        role=ModelRole.DEBUGGER
-    )
+    try:
+        raw_output, actual_model, session_id = run_llm(
+            job["reviewer"], 
+            full_prompt, 
+            cwd=ROOT, 
+            timeout=1200, 
+            allowed_models=job.get("allowed_models"),
+            role=ModelRole.DEBUGGER
+        )
+    except Exception as exc:
+        # Don't burn an iteration when the model/tool couldn't even run (expired sign-in, quota, env blocker).
+        # Record a structured blocker so the UI offers 1-click sign-in + auto-retry and the server auto-resumes.
+        job["iteration"] = max(0, int(job.get("iteration") or 1) - 1)
+        job["last_error"] = str(exc)
+        job["updated_at"] = now_iso()
+        from orchestrator import blockers
+        if blocker := blockers.detect(f"{exc}\n{getattr(exc, 'stderr', '') or ''}"):
+            blockers.record(job, blocker)
+            job["status"] = "human-needed"
+        write_json(job_path, job)
+        raise
 
     # Track session IDs in the job
     if "llm_sessions" not in job:

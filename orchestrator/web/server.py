@@ -1112,6 +1112,7 @@ def job_summary(path: Path, job: dict[str, Any], feature_names: dict[str, str] |
         "imported_at": job.get("imported_at"),
         "moved_to": job.get("moved_to"),
         "yolo": bool(job.get("yolo") or job.get("is_yolo")),
+        "auto_passed_gates": bool(job.get("auto_passed_gates")),
     }
 
 
@@ -2676,6 +2677,9 @@ def job_detail(root: Path, job_id: str) -> dict[str, Any]:
         "scope": job_scope(root, job),
         "cruft": job_cruft(root, job),
         "plan_size": plan_size.measure(job.get("plan")),
+        "spec": job.get("spec"),
+        "risk_assessment": job.get("risk_assessment"),
+        "deferred_jobs": [s for s in (job_stub(root, jid) for jid in (job.get("deferred_job_ids") or [])) if s],
         "ux_review": job_ux_review(root, job_id, job),
         "context": job_context(root, job),
         "test_cases": test_case_view(root, test_case_lib.job_cases(job), {c["id"] for c in test_case_lib.due_cases(job)},
@@ -2750,9 +2754,28 @@ def job_documents(out_dir: Path, root: Path | None = None, job: dict[str, Any] |
     return docs
 
 
+INTERNAL_TOOL_PREFIXES = (
+    ".orchestrator/",
+    ".claude/",
+    ".codex/",
+    ".gemini/",
+    ".poolside/",
+    ".cursor/",
+    ".agents/",
+    ".superpowers/",
+)
+
+
+def _is_internal_tool_path(path: str) -> bool:
+    norm = str(path or "").strip()
+    while norm.startswith("./"):
+        norm = norm[2:]
+    return norm.startswith(INTERNAL_TOOL_PREFIXES) or norm in {p.rstrip("/") for p in INTERNAL_TOOL_PREFIXES}
+
+
 def job_changes(root: Path, job: dict[str, Any]) -> dict[str, Any]:
     """The console's "View AI Changes": files the AI touched plus a diffstat of its branch."""
-    files = [*(job.get("ai_modified_files") or []), *(job.get("ai_untracked_files") or [])]
+    files = [str(f) for f in [*(job.get("ai_modified_files") or []), *(job.get("ai_untracked_files") or [])] if f and not _is_internal_tool_path(str(f))]
     branch = job.get("branch")
     base = job.get("base_branch") or read_json_file(runtime_dir(root) / "project.json").get("base_branch") or "main"
     diffstat = ""
@@ -2760,16 +2783,23 @@ def job_changes(root: Path, job: dict[str, Any]) -> dict[str, Any]:
     changed_files = []
     if branch and re.fullmatch(r"[A-Za-z0-9._/-]+", branch) and re.fullmatch(r"[A-Za-z0-9._/-]+", base):
         diffstat = git(root, "diff", "--stat", "--stat-width=100", f"{base}...{branch}", "--")
-        summary_line = git(root, "diff", "--shortstat", f"{base}...{branch}", "--")
-        changed_files = [f for f in git(root, "diff", "--name-only", f"{base}...{branch}", "--").splitlines() if f.strip()]
+        changed_files = [
+            f for f in git(root, "diff", "--name-only", f"{base}...{branch}", "--").splitlines()
+            if f.strip() and not _is_internal_tool_path(f)
+        ]
+        summary_line = git(root, "diff", "--shortstat", f"{base}...{branch}", "--", *changed_files) if changed_files else ""
 
     # Uncommitted edits belong to this job only while its branch is checked out; otherwise they're someone else's work.
+    # Ignore Orchestrator and AI tool runtime files (e.g. .orchestrator/, .claude/) so tool housekeeping never shows as unsaved work.
     on_job_branch = bool(branch) and git(root, "rev-parse", "--abbrev-ref", "HEAD").strip() == branch
-    local_summary = git(root, "diff", "--shortstat", "HEAD", "--") if on_job_branch else ""
-    local_files = [f for f in git(root, "diff", "--name-only", "HEAD", "--").splitlines() if f.strip()] if on_job_branch else []
+    local_files = [
+        f for f in (git(root, "diff", "--name-only", "HEAD", "--").splitlines() if on_job_branch else [])
+        if f.strip() and not _is_internal_tool_path(f)
+    ]
+    local_summary = git(root, "diff", "--shortstat", "HEAD", "--", *local_files) if local_files else ""
 
-    # Orchestrator's own state (jobs, receipts, config) isn't part of the work being reviewed.
-    all_impacted = sorted(f for f in set(changed_files + local_files + [str(f) for f in files]) if not f.startswith(".orchestrator/"))
+    # Orchestrator's and AI tools' own state isn't part of the work being reviewed.
+    all_impacted = sorted(f for f in set(changed_files + local_files + files) if not _is_internal_tool_path(f))
 
     return {
         "files": all_impacted[:200],
@@ -4551,7 +4581,7 @@ def upload_display_name(path: Path) -> str:
 
 
 def build_new_job(params: dict[str, Any], root: Path) -> list[str]:
-    job_type = _choice(params, "type", JOB_TYPES, "bug")
+    job_type = _choice(params, "type", JOB_TYPES, "freestyle")
     summary_in = _text(params, "summary", required=True, limit=20_000 if job_type in ("quick", "bug", "freestyle") else 500)
     fields = {"summary": summary_in, "details": _text(params, "spec", limit=200_000), "repro": _text(params, "repro", limit=20_000),
               "expected": _text(params, "expected", limit=20_000), "vibe": _text(params, "vibe", limit=200),

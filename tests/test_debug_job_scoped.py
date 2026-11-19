@@ -39,6 +39,30 @@ class ScopedDebugTests(unittest.TestCase):
         implement.assert_not_called()
         self.assertEqual(propose.call_args.args[0]["status"], "debugging")
 
+    def test_auth_failure_in_propose_records_blocker_and_does_not_burn_iteration(self):
+        self.write({
+            "job_id": "j-auth",
+            "type": "quick-fix",
+            "status": "debugging",
+            "debug_phase": "propose",
+            "reviewer": "claude-sonnet-4-6",
+            "iteration": 0,
+            "plan": {},
+        })
+        err = RuntimeError(
+            "No model could answer (tried: claude-sonnet-4-6). Last error: Failed to authenticate: "
+            "this login reached its time limit and cannot be renewed. Run `claude auth login` to sign in again."
+        )
+        with patch.object(debug_job, "OUTPUT_DIR", self.path.parent / "output"), \
+             patch.object(debug_job, "run_llm", side_effect=err):
+            with self.assertRaises(RuntimeError):
+                debug_job.run_debug_iteration(self.path)
+        saved = json.loads(self.path.read_text())
+        self.assertEqual(saved["iteration"], 0)
+        self.assertEqual(saved["status"], "human-needed")
+        self.assertEqual(saved["blocker"]["kind"], "sign_in")
+        self.assertEqual(saved["blocker"]["provider"], "claude")
+
 
 if __name__ == "__main__":
     unittest.main()
