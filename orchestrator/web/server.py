@@ -75,6 +75,7 @@ from orchestrator import folder_lock
 from orchestrator import job_overlap
 from orchestrator import wip_backup
 from orchestrator import sync_health
+from orchestrator import self_update
 from orchestrator import plan_run
 from orchestrator import ux_review
 from orchestrator import inbox as inbox_view
@@ -6749,6 +6750,40 @@ class UIServer(ThreadingHTTPServer):
                                   "step": str(progress.get("step") or progress.get("label") or "")[:200]}
         return live
 
+    def start_self_update(self, first_check: float = 120.0) -> threading.Thread:
+        """Keeps Orchestrator itself current (self_update.py): checks the branch it came from every half hour, installs a
+        minor update by itself once no run is going (a breaking one when you allow it), then restarts the UI."""
+        def loop() -> None:
+            if self._stopping.wait(first_check):
+                return
+            while True:
+                try:
+                    self.self_update_tick()
+                except Exception as exc:
+                    print(f"  Update check: {exc}", flush=True)
+                if self._stopping.wait(300):  # look again in 5 minutes; a real check runs when one is due
+                    return
+
+        thread = threading.Thread(target=loop, daemon=True, name="self-update")
+        thread.start()
+        return thread
+
+    def self_update_tick(self, force: bool = False) -> dict[str, Any] | None:
+        data = self_update.load()
+        if not force and not self_update.due(data):
+            status = data.get("last_check") or {}
+        else:
+            status = self_update.check()
+        if not self_update.should_install(status, self_update.load()):
+            return status
+        if any(run.get("running") for run in self.sessions.list()):
+            return status  # never under a running job: the next tick tries again
+        result = self_update.apply()
+        print(f"  Update: {result['message']}", flush=True)
+        if result.get("ok") and result.get("restart"):
+            _trigger_ui_restart(self)
+        return status
+
     def _back_up_unfinished_work(self) -> None:
         """Each heartbeat, in the background: the uncommitted files of this project's paused or failed jobs go to a hidden
         ref on origin (wip_backup), so another computer can continue from them while this one is offline. One at a time."""
@@ -8674,6 +8709,30 @@ class UIHandler(BaseHTTPRequestHandler):
             if not isinstance(on, bool):
                 raise UIError("on must be true or false.")
             self._json(self._yolo_all(root) if on else self._yolo_all_off(root))
+        elif method == "GET" and parts == ["updates"]:
+            # Orchestrator's own updates on this computer (self_update.py): settings, the last check and what changed
+            data = self_update.load()
+            self._json({"settings": {"auto_minor": data["auto_minor"], "auto_breaking": data["auto_breaking"]},
+                        "last_check": data.get("last_check"), "history": (data.get("history") or [])[-10:],
+                        "install": self_update.install_kind(), "version": account.package_version(),
+                        "api_version": account.API_VERSION})
+        elif method == "POST" and parts == ["updates"]:
+            self._require_owner("update Orchestrator")
+            body = self._body()
+            op = _choice(body, "op", ["check", "install", "settings"])
+            if op == "settings":
+                data = self_update.set_options(body.get("auto_minor") if isinstance(body.get("auto_minor"), bool) else None,
+                                               body.get("auto_breaking") if isinstance(body.get("auto_breaking"), bool) else None)
+                self._json({"settings": {"auto_minor": data["auto_minor"], "auto_breaking": data["auto_breaking"]}})
+            elif op == "check":
+                self._json({"last_check": self_update.check()})
+            else:
+                if any(run.get("running") for run in self.server.sessions.list()):
+                    raise UIError("A run is going. Orchestrator updates once it finishes, or try again then.", HTTPStatus.CONFLICT)
+                result = self_update.apply()
+                self._json(result)
+                if result.get("ok") and result.get("restart"):
+                    _trigger_ui_restart(self.server)
         elif method == "GET" and parts == ["sync-health"]:
             # Is this computer keeping the others up to date? Failures past the grace period, with what to do (Home banner)
             self._json(sync_health.overview() if account.load_machine() else {"problems": [], "channels": []})
@@ -10747,6 +10806,7 @@ def _serve(args: argparse.Namespace, root: Path) -> int:
         server.start_heartbeat(reachable_url)
     else:
         print("  Tip: run `orchestrator connect` to sign in to this computer from anywhere with Google.")
+    server.start_self_update()
     if not args.no_open:
         open_browser(url)
 

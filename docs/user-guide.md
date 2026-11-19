@@ -1050,6 +1050,26 @@ In the console, **Link Logs → Pull Device Logs (cloud)...** lists recent launc
 
 Logs reach Sentry within about 5 seconds, and immediately when the app is backgrounded. Sentry keeps them for 30 days.
 
+## Updating Orchestrator
+
+Each computer keeps itself up to date. About every half hour it checks the branch it was installed from (`web-ui`), and
+sorts what's new into one of two kinds:
+
+- **Minor updates**: fixes and improvements. They install by themselves once no run is going, then Orchestrator restarts.
+  Jobs carry on where they were.
+- **Breaking updates**: changes your other computers or saved data depend on, such as a new way jobs sync. They wait for
+  you, so you know when it happens and can update your other computers too. A breaking update says what changed.
+
+**Configuration > Updates** shows this computer's version and what's waiting, with **Check now**, **Update now**, what's
+new in the update, and recent updates. Two settings: **Install minor updates by themselves** (on) and **Install breaking
+updates by themselves too** (off). An update never installs while a run is going, and a copy of Orchestrator with edits of
+its own (a development checkout) isn't updated over them; the page says so instead.
+
+The Orchestrator Mac app updates itself through its own menu (Check for Updates). A computer too old to update itself
+shows the command to run in **Your computers**.
+
+For developers: a change is breaking when it raises `breaking` in `orchestrator/release.json` (see AGENTS.md).
+
 ## Troubleshooting
 
 Run both checks first:

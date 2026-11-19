@@ -453,9 +453,10 @@ function moreMenu(items, { label = "More", left = false, compact = false, icon =
     const tip = compact && it[2] ? ` title="${esc(it[2])}"` : "";
     return `<button class="btn${it[3] === "danger" ? " danger" : ""}" ${it[1]}${tip}>${esc(it[0])}</button>${!compact && it[2] ? `<div class="hint">${esc(it[2])}</div>` : ""}`;
   }).join("");
+  // Always the ⋯ icon; the label is what it's called on hover and for screen readers.
   const summary = icon
     ? `<summary class="btn small ghost more-icon-btn" aria-label="${esc(ariaLabel || label)}">⋯</summary>`
-    : `<summary class="btn">${esc(label)} ▾</summary>`;
+    : `<summary class="btn icon-only more-icon-btn" aria-label="${esc(ariaLabel || label)}" title="${esc(ariaLabel || label)}"><svg class="icon" aria-hidden="true"><use href="#i-more"/></svg></summary>`;
   return `<details class="more${left ? " left" : ""}">${summary}<div class="more-menu">${body}</div></details>`;
 }
 // A design token's current value, for code that can't use CSS (the terminal).
@@ -1309,7 +1310,8 @@ let runnerWarned = false;
 let runnerAutoUpdating = false;
 function checkRunnerVersion(runner) {
   const backend = getBackendUrl();
-  if (!backend || !Account.outdated(runner?.api_version)) return;
+  // No version reported (a state read mid-restart, say) says nothing about the computer: never warn on that.
+  if (!backend || runner?.api_version == null || !Account.outdated(runner.api_version)) return;
   const verLabel = runner?.version ? ` (${runner.version})` : "";
   const canAutoUpdate = Boolean(state.actions?.update_local) && state.you?.role !== "member";
   const updateKey = `orchestrator_autoupdated:${backend}:${runner?.version || runner?.api_version || ""}`;
@@ -5783,7 +5785,7 @@ function jobDocsOutlineHtml({ s, featureName, docFilesChanged, otherDocs, docsIn
     <section class="card mb-16" id="document-section" tabindex="-1">
       <div class="card-h">
         <h2>Documentation</h2>
-        <div class="card-actions"><a class="btn small" href="#/project-docs">Open project docs</a></div>
+        <div class="card-actions"><a class="btn small ghost icon-only" href="#/project-docs" aria-label="Open project docs" title="Open project docs"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-doc"/></svg></a></div>
       </div>
       ${changedCaption}
       <div class="list" aria-label="Documentation table of contents">${rows}</div>
@@ -12266,22 +12268,86 @@ pages.config = async (args = []) => {
     };
   }
   if (section === "updates") {
-    return {
-      ...result,
+    const u = await api("updates").catch(() => null);
+    return { ...result, ...(u ? { html: updatesPageHtml(u) } : {}),
       after: () => {
         const onClick = async (event) => {
-          const button = event.target.closest("[data-config-action]");
+          const button = event.target.closest("[data-config-action], [data-update-op]");
           if (!button) return;
-          if (button.dataset.configAction === "update-local") await runAction("update_local");
-          else if (button.dataset.configAction === "update-fleet") await runAction("update_fleet");
+          if (button.dataset.configAction === "update-fleet") return runAction("update_fleet");
+          const op = button.dataset.updateOp;
+          if (!op) return;
+          button.disabled = true;
+          button.setAttribute("aria-busy", "true");
+          try {
+            const res = await api("updates", { method: "POST", body: { op } });
+            if (op === "install") {
+              toast(res.message || "Updated");
+              if (res.restart) notify("info", "Orchestrator is restarting with the update…", { id: "self-update", sticky: false });
+              else route();
+            } else route();
+          } catch (err) { toast(err.message, true); button.disabled = false; button.removeAttribute("aria-busy"); }
+        };
+        const onChange = async (event) => {
+          const box = event.target.closest("[data-update-setting]");
+          if (!box) return;
+          try { await api("updates", { method: "POST", body: { op: "settings", [box.dataset.updateSetting]: box.checked } }); toast("Saved"); }
+          catch (err) { box.checked = !box.checked; toast(err.message, true); }
         };
         view.addEventListener("click", onClick);
-        cleanup.push(() => view.removeEventListener("click", onClick));
+        view.addEventListener("change", onChange);
+        cleanup.push(() => { view.removeEventListener("click", onClick); view.removeEventListener("change", onChange); });
       },
     };
   }
   return result;
 };
+
+// Orchestrator's own updates on this computer (self_update.py): what's installed, what's newer and whether it's minor
+// (installs by itself once no run is going) or breaking (waits for you, unless you allow it), and the two settings.
+function updatesPageHtml(u) {
+  const c = u.last_check || {};
+  const when = (t) => t ? new Date(t * 1000).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "";
+  const installLabel = { git: "a git checkout", pip: "pipx", packaged: "the Orchestrator app" }[u.install] || u.install;
+  const state = c.update === "breaking" ? `<div class="notice warn"><p><strong>A breaking update is ready.</strong> It changes something your other computers or saved data depend on, so it waits for you.</p>${(c.breaking_changes || []).length ? `<ul>${c.breaking_changes.map((x) => `<li>${esc(x)}</li>`).join("")}</ul>` : ""}<p class="muted">Update your other computers too, so they keep working together.</p></div>`
+    : c.update === "minor" ? `<div class="notice"><p><strong>An update is ready</strong> (${plural(c.behind || 1, "change")}). ${u.settings.auto_minor ? "It installs by itself once no run is going." : "Automatic minor updates are off."}</p></div>`
+    : c.update === "unknown" ? `<div class="notice warn"><p>Couldn't check for updates: ${esc(c.error || "unknown error")}</p></div>`
+    : c.at ? `<p><strong>Up to date.</strong> <span class="muted">Checked ${esc(ago(c.at))}.</span></p>` : `<p class="muted">Not checked yet.</p>`;
+  const changes = (c.changes || []).length ? `<details class="fold"><summary class="linklike muted">What's new (${c.changes.length})</summary><ul class="muted">${c.changes.map((x) => `<li>${esc(x)}</li>`).join("")}</ul></details>` : "";
+  const history = (u.history || []).length ? `<details class="fold"><summary class="linklike muted">Recent updates</summary><ul class="muted">${u.history.slice().reverse().map((h) => `<li>${esc(when(h.at))}: ${esc(h.message)}</li>`).join("")}</ul></details>` : "";
+  const canInstall = ["minor", "breaking"].includes(c.update) && !c.blocked;
+  return `<div class="configuration-page">
+    <section class="card configuration-card">
+      <div class="card-h"><h2>This computer</h2></div>
+      <div class="card-b stack">
+        <p class="muted">Orchestrator ${esc(u.version || "")}${c.installed ? ` · <span class="mono">${esc(c.installed)}</span>` : ""}${c.branch ? ` on <span class="mono">${esc(c.branch)}</span>` : ""} · installed with ${esc(installLabel)}</p>
+        ${state}
+        ${c.blocked ? `<p class="text-bad">${esc(c.blocked)}</p>` : ""}
+        ${c.note ? `<p class="muted">${esc(c.note)}</p>` : ""}
+        ${changes}
+        <div class="row gap-8 wrap">
+          ${canInstall ? `<button type="button" class="btn primary" data-update-op="install">Update now</button>` : ""}
+          <button type="button" class="btn${canInstall ? "" : " primary"}" data-update-op="check">Check now</button>
+        </div>
+        ${history}
+      </div>
+    </section>
+    <section class="card configuration-card">
+      <div class="card-h"><h2>Automatic updates</h2></div>
+      <div class="card-b stack">
+        <label class="check"><input type="checkbox" data-update-setting="auto_minor"${u.settings.auto_minor ? " checked" : ""}><span><strong>Install minor updates by themselves</strong><br><span class="muted">Fixes and improvements. Checked every half hour, installed once no run is going, then Orchestrator restarts. Jobs carry on where they were.</span></span></label>
+        <label class="check"><input type="checkbox" data-update-setting="auto_breaking"${u.settings.auto_breaking ? " checked" : ""}><span><strong>Install breaking updates by themselves too</strong><br><span class="muted">Changes your other computers or saved data depend on. Off: they wait here for you to choose Update now.</span></span></label>
+      </div>
+    </section>
+    <section class="card configuration-card">
+      <div class="card-h"><h2>Build machines</h2></div>
+      <div class="card-b stack">
+        <p class="muted">Update Orchestrator on every machine in the build fleet.</p>
+        <div class="row"><button type="button" class="btn" data-config-action="update-fleet">Update fleet</button></div>
+      </div>
+    </section>
+  </div>`;
+}
 
 // ---------------------------------------------------------------- connections (Jira, Trello, Sentry, Figma)
 

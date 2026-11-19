@@ -912,7 +912,7 @@ console.log(JSON.stringify({{ withIndex, fallback }}));
         with_index = out["withIndex"]
         for expected in (
             'id="document-section"',
-            'href="#/project-docs">Open project docs</a>',
+            'href="#/project-docs" aria-label="Open project docs" title="Open project docs">',
             'Updated by this job:',
             'href="#/docs/file?path=README.md"',
             'href="#/docs/product"',

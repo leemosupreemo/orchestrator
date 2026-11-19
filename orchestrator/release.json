@@ -1,0 +1,9 @@
+{
+  "breaking": 1,
+  "breaking_changes": [
+    {
+      "level": 1,
+      "summary": "Jobs carry an ownership number and sync through your account; every computer needs this version to hand jobs over cleanly."
+    }
+  ]
+}
