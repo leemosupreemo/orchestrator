@@ -6340,9 +6340,6 @@ pages.job = async ([id]) => {
       ` : ""}
 
       <nav class="job-stepper" data-iterating="${isIterating ? "1" : "0"}" aria-label="Job lifecycle progress">
-        <span class="job-iter-badge${iterationNum > 1 ? " has-loops" : ""}" title="${iterationNum > 1 ? `Iteration ${iterationNum}: Build → Verify → Document → Finalize loops on each change or fix` : "Iteration 1"}">
-          <span class="job-iter-icon" aria-hidden="true">↻</span>Iter ${iterationNum}${exp?.version ? ` · v${esc(exp.version)}` : ""}
-        </span>
         <div class="job-stepper-track">
           ${stepperItems.map(({ p, idx, displayIcon }, pos) => `
             <button type="button" class="job-step ${p.state}" data-scroll-to="${idx === 0 && reviewingPlan ? "#plan-section" : phaseTargets[idx]}" ${idx === currentPhaseIndex ? 'aria-current="step"' : ""}>
@@ -9530,11 +9527,13 @@ function showModelsUpdate(note) {
   if (lastModelsNotice) clearMessage(`models:${lastModelsNotice}`);
   lastModelsNotice = note.id;
   newModelIds = note.added || [];
-  const seen = () => api("models/dismiss", { method: "POST", body: {} }).catch(() => {});
+  let dismissed = false;
+  const seen = () => { if (dismissed) return; dismissed = true; api("models/dismiss", { method: "POST", body: {} }).catch(() => {}); };
   notify("info", `AI models updated: ${note.summary}`, {
     id: `models:${note.id}`, onDismiss: seen,
     actions: [{ label: "See models", href: "#/config/ai", after: seen }],
   });
+  seen(); // once shown, advance the baseline so the same notice doesn't repeat on reload/republish
   if (!first) Notifications.show({ title: "AI models updated", body: note.summary, key: `models:${note.id}`, hash: "#/config/ai" });
 }
 
@@ -14352,10 +14351,10 @@ function runHeader(r, family = null) {
     : "";
   return {
     title: me ? `${me.label} run` : r.title,
-    sub: family ? runFamilyHtml(r, family) : "",
+    sub: "",
     actions: rerunBtn
       + ((typeof state !== "undefined" && state.you?.role === "member") ? "" // logs are private to owners
-        : `<details class="more"><summary class="btn icon-only" aria-label="Export log" title="Export log"><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg></summary><div class="more-menu">`
+        : `<details class="more"><summary class="btn icon-only" aria-label="Share log" title="Copy or export log"><svg class="icon" aria-hidden="true"><use href="#i-share"/></svg></summary><div class="more-menu">`
           + `<button class="btn small" data-run-log="copy" data-path="${esc(log)}">Copy log</button>`
           + `<button class="btn small" data-run-log="export" data-path="${esc(log)}" data-name="${esc(r.title)}">Export log</button>`
           + `</div></details>`)

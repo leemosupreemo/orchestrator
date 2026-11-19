@@ -101,9 +101,10 @@ def timeout_report(kind: str, command: str, seconds: int, output: str) -> str:
 
 
 FAILURE_LINE_RE = re.compile(
-    r"(?:\berror:\s|\bfatal error:\s|\bFAIL:\s|\bERROR:\s|\bFAILED\b|AssertionError|Traceback \(most recent call last\)|Test case .* failed|Test suite .* failed)",
+    r"(?:\berror\s*:\s|\bfatal error:\s|\bFAIL:\s|\bERROR:\s|\bFAILED\b|AssertionError|Traceback \(most recent call last\)|Test case .* failed|Test suite .* failed)",
     re.I,
 )
+_PASSING_SUMMARY_RE = re.compile(r"^\s*Passed!\s*-\s*Failed:\s*0\b", re.I)
 
 
 def extract_deterministic_failure_summary(kind: str, output: str) -> str:
@@ -111,6 +112,8 @@ def extract_deterministic_failure_summary(kind: str, output: str) -> str:
     lines = (output or "").splitlines()
     matched: list[str] = []
     for idx, line in enumerate(lines):
+        if _PASSING_SUMMARY_RE.search(line):
+            continue
         if FAILURE_LINE_RE.search(line):
             snippet = "\n".join(lines[idx : min(len(lines), idx + 4)]).strip()
             if snippet and snippet not in matched:

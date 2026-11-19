@@ -69,14 +69,18 @@ def _files(root: Path):
             yield Path(folder) / name
 
 
+_REQUIRES_MSBUILD_PROP = re.compile(r"<Error\b[^>]*\bText=[\"'][^\"']*-p:", re.I)
+
+
 def dotnet_test_projects(root: Path) -> list[str]:
-    """Project files (relative paths) that reference a .NET test framework."""
+    """Project files (relative paths) that reference a .NET test framework and can run standalone with `dotnet test`."""
     found = []
     for path in _files(root):
         if path.suffix.lower() not in (".csproj", ".fsproj"):
             continue
         try:
-            if TEST_PACKAGE.search(path.read_text(encoding="utf-8", errors="ignore")[:20_000]):
+            text = path.read_text(encoding="utf-8", errors="ignore")[:20_000]
+            if TEST_PACKAGE.search(text) and not _REQUIRES_MSBUILD_PROP.search(text):
                 found.append(path.relative_to(root).as_posix())
         except OSError:
             continue

@@ -1076,13 +1076,17 @@ Orchestrator combines an **Adaptive Specification & Planning Pipeline** with a *
    - When an analytics or monitoring app (Mixpanel, Amplitude, PostHog, Sentry, Datadog, New Relic) is connected, `spec.kpi_metrics` ties those success criteria to a **Primary KPI** and at least one **Guardrail / Counter-KPI** metric (e.g., error rate, latency, or abandonment counter-KPI).
    - When no analytics app is connected, Orchestrator recommends setting up analytics/KPIs **once** and then stays silent on KPIs until analytics is connected in setup.
 4. **Experience & Refine (`v0.1 → v0.2 → v0.3`)**:
-   - When a build reaches `review-needed`, the Job page shows the **Experience & Refine** workspace (`Version 0.1 · Preview ready`) with clickable **Assumed defaults** chips and a natural feedback prompt.
+   - When a build reaches `review-needed`, the Job page folds **Version history** (with clickable **Assumed defaults** chips and **Undo last iteration**) into the top lifecycle stepper, paired with a natural feedback prompt in the hero card.
    - Every reaction runs through a 5-way **Change-Impact Classifier** (`visual_or_copy`, `behavior_change`, `new_capability`, `fundamental_rethink`, `undo`), locks previously accepted criteria against regression (`locked_behaviors`), and triggers an **Architectural Refactor Guardrail** when the same files are patched $\ge 3$ times across iterations.
    - The **Analytics** page tracks the 5 **Intent-Convergence Metrics**: **Time to first experience (TTFE)**, **Time per feedback iteration**, **Iterations to acceptance**, **Rework & regression rate**, and **User interaction burden**.
 5. **Lean LLM Execution & Prompt Guardrails**:
    - Plan quality checks (test cases, size budget, and vertical slicing) run together with at most **1 combined self-correction retry**.
    - Grounded, single-slice plans from high-tier planners that auto-pass the deterministic Plan Gate skip the redundant Senior Architect verification LLM call.
-   - Small cohesive tasks touching overlapping files ($\le 4$ unique files) batch into a single builder pass; failed builds capture output on the first run and extract compiler/test errors deterministically; UI screenshot instructions only appear for UI-touching tasks or configured `ui_review` projects; and visual/copy or undo refinements skip redundant post-job PRD update LLM calls.
+   - Small cohesive tasks touching overlapping files ($\le 4$ unique files) batch into a single builder pass; failed builds capture output on the first run and extract compiler/test errors deterministically (including MSBuild `error :` diagnostics, ignoring `Passed! - Failed: 0` lines); UI screenshot instructions only appear for UI-touching tasks or configured `ui_review` projects; and visual/copy or undo refinements skip redundant post-job PRD update LLM calls.
+6. **Resilient AI Sign-In Fallback & Streamlined Workspace**:
+   - When a job's configured AI CLI rejects authentication (e.g., expired OAuth token) and the job is not restricted to free-only models, Orchestrator automatically falls back to ready signed-in models on this computer — including Antigravity-hosted Claude models (`claude-sonnet-*`, `claude-opus-*` routed via `agy`) — and marks the expired CLI rejected until re-authenticated.
+   - `.NET` test auto-detection (`dotnet_test_projects`) skips projects that enforce external MSBuild `-p:` properties so bare `dotnet test` commands stay green.
+   - Failure heroes include a one-click top-right log-copy icon (`#i-log`), Run pages place rerun (`#i-refresh`) and share-log (`#i-share`) icons in the upper-right header, Documentation **Gaps** offer a **Fix** modal (Use AI, Write manually, or Import file), and AI Tools starts fully collapsed with background-only capability scanning.
 
 ## Updating Orchestrator
 

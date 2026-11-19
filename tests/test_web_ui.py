@@ -8448,7 +8448,7 @@ eval(source.slice(start, pageEnd));
     test_summary: { status: 'passed' }, pipeline: {}, tasks: [], completed_tasks: [],
   };
   const r1 = await pages.job(['q1']);
-  assert(r1.html.includes('Iter 1'), 'shows Iter 1');
+  assert(!r1.html.includes('job-iter-badge'), 'omits Iter badge on Iter 1 too');
   assert(!r1.html.includes('>Document<'), 'skips Document on quick-fix without doc changes');
   assert(r1.html.includes('>Finalize<'), 'keeps Finalize');
   assert(r1.html.includes('+5') && r1.html.includes('-2'), 'shows structured diffstat badges');
@@ -8466,7 +8466,7 @@ eval(source.slice(start, pageEnd));
   };
   const r2 = await pages.job(['f1']);
   assert(r2.html.includes('data-iterating="1"'), 'marks stepper as iterating');
-  assert(r2.html.includes('Iter 2'), 'shows Iter 2');
+  assert(!r2.html.includes('job-iter-badge'), 'omits Iter badge from stepper');
   assert(r2.html.includes('>Document<'), 'keeps Document when feature/docs changed');
   assert(r2.html.includes('Pending re-verify'), 'resets Verify during Build iteration');
   assert(r2.html.includes('Pending re-check'), 'resets Document during Build iteration');
