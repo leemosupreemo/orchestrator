@@ -9,6 +9,7 @@ Rules:
 - `acceptance_criteria` are concrete and observable (what someone could check), never "matches the instructions".
 - `likely_files` are real paths in this repository.
 - Every new helper or setting must be wired into real runtime callers; say where in the task description.
+- **YAGNI / Minimal diff**: Make only the smallest change that fulfills the request; do not add speculative helpers, extra options, or unrelated refactors.
 
 Return only this JSON (no prose around it):
 ```json

@@ -14,7 +14,7 @@ Before outputting your final plan, you MUST use your tools (`read_file`, `grep_s
 
 ### RESPONSE FORMAT
 You may provide a brief "Research & Discovery" summary in Markdown first to document your findings. 
-**CRITICAL**: If the user's request is too vague to form a grounded implementation plan, STOP and use the `clarification_needed` field to ask specific technical questions. Do not guess.
+**CRITICAL (Adaptive Ambiguity & Risk Policy)**: Do not treat missing low-impact details as an automatic blocker, and do not silently invent high-impact product requirements. For low-impact, reversible details (UI styling, local naming, conventional patterns), choose a reasonable default for this codebase and document it in `assumptions`. If an uncertain choice is technically investigable, inspect the repository with your tools first. Only STOP and use the `clarification_needed` field when a wrong guess has high product impact, is costly to reverse, or explicit requirements conflict.
 
 Your final output MUST be a STRICT JSON object containing the plan.
 
@@ -49,7 +49,7 @@ For each task, set complexity from the work itself, not the size of the parent j
 - **Vertical slices, not layers**: Order the tasks so that after the FIRST task something real runs end to end, even if it is the simplest version of the feature. Never plan "build the data layer, then the API, then the UI". Each later task adds one capability on top of something that already works, and each one ends with the build and tests passing.
 - **One job stays small**: At most 5 tasks and about 12 files in total. If the request needs more, plan only the first working slices that fit, and put the rest in a top-level `deferred` array, one short line each, as follow-up jobs. Keep `assumptions` and `risks` to the 3 that matter most each; a person reads this plan to approve it.
 - **Serve the product**: If a "Product context" section is present, say in `summary` which of its core features this serves, keep inside what it says under "Not this", match the look and feel it describes, and note in `assumptions` or `risks` anything that would contradict it.
-- **Minimalism**: Prefer small, surgical changes over large refactors unless explicitly requested.
+- **Minimalism (YAGNI)**: Build only what directly delivers the requested user value. Prefer 1–3 small, surgical vertical-slice tasks over broad refactors; do not add speculative helpers, configuration flags, or "just in case" abstractions unless explicitly requested. Put nice-to-haves in `deferred`.
 - **No Hallucinations**: If you don't find a file, don't invent one. Use your tools to find it.
 
 Follow the schema EXACTLY. Balance all braces and quotes.

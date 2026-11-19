@@ -6036,6 +6036,18 @@ pages.job = async ([id]) => {
     if (runRel?.active?.phase === phase) phasesInfo[i].subtitle = `${runRel.active.label} running`;
     else if (n > 1) phasesInfo[i].subtitle = `${phasesInfo[i].subtitle} · ${n} runs`;
   });
+  // Lean ceremony: skip the Document stage on small/bug/quick/tests-only jobs unless docs actually changed.
+  const skipDocStep = !docFilesChanged.length && (
+    ["quick-fix", "bug-fix", "bug-investigate", "coverage", "test-audit"].includes(job.type)
+    || job.output_scope === "tests-only"
+  );
+  const stepperItems = phasesInfo
+    .map((p, idx) => ({ p, idx }))
+    .filter(({ idx }) => !(skipDocStep && idx === 3))
+    .map((item, visibleIdx) => ({
+      ...item,
+      displayIcon: /^\d+$/.test(item.p.icon) ? String(visibleIdx + 1) : item.p.icon,
+    }));
 
 
   // Test files a Tests job wrote are on disk even when checking them stopped, so say so and name them.
@@ -6244,15 +6256,15 @@ pages.job = async ([id]) => {
           <span class="job-iter-icon" aria-hidden="true">↻</span>Iter ${iterationNum}
         </span>
         <div class="job-stepper-track">
-          ${phasesInfo.map((p, idx) => `
+          ${stepperItems.map(({ p, idx, displayIcon }, pos) => `
             <button type="button" class="job-step ${p.state}" data-scroll-to="${idx === 0 && reviewingPlan ? "#plan-section" : phaseTargets[idx]}" ${idx === currentPhaseIndex ? 'aria-current="step"' : ""}>
-              <span class="job-step-dot" aria-hidden="true">${p.icon}</span>
+              <span class="job-step-dot" aria-hidden="true">${displayIcon}</span>
               <span class="job-step-meta">
                 <span class="job-step-title">${esc(p.title)}</span>
                 <span class="job-step-sub">${esc(p.subtitle)}</span>
               </span>
             </button>
-            ${idx < phasesInfo.length - 1 ? `<div class="job-step-arrow ${p.state}" aria-hidden="true"></div>` : ""}
+            ${pos < stepperItems.length - 1 ? `<div class="job-step-arrow ${p.state}" aria-hidden="true"></div>` : ""}
           `).join("")}
         </div>
         ${iterationNum > 1 ? `<div class="job-loop-arc" aria-hidden="true"><span class="job-loop-line"></span><span class="job-loop-label">↻ Build → Verify → Finalize loop</span></div>` : ""}
