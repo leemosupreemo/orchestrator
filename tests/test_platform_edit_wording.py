@@ -18,8 +18,8 @@ def between(start: str, end: str) -> str:
 class PlatformCardTests(unittest.TestCase):
     card = between("function platformCoverageHtml(", "// What Orchestrator found for testing")
 
-    def test_the_card_says_what_it_shows_and_where_the_parts_came_from(self):
-        self.assertIn("Your project split into parts, with test numbers for each.", self.card)
+    def test_the_card_says_where_the_parts_came_from(self):
+        self.assertNotIn("Your project split into parts", self.card)
         self.assertIn("Found automatically from your folders.", self.card)
         self.assertIn("You set these parts yourself.", self.card)
 

@@ -10934,7 +10934,6 @@ function platformCoverageHtml(data) {
   return `<section class="card mb-16" id="platform-coverage"><div class="card-h"><h2>Test coverage by platform <span class="pill" title="${custom ? "You named these platforms yourself." : "Worked out from your folders."}">${custom ? "Custom" : "Automatic"}</span></h2>
     </div>
     <div class="card-b stack gap-12">
-      <p class="muted t-secondary m-0">Your project split into parts, with test numbers for each.</p>
       <div class="stack gap-16">${rows}</div>
       <p class="muted t-secondary m-0" id="platform-split-note">${custom ? "You set these parts yourself." : "Found automatically from your folders."}${owner ? ` Does a part look wrong? <button type="button" class="linklike" id="edit-platforms" title="Rename the parts, change what each one is, or choose which folders belong to it.">Change how it's split</button>` : ""}</p>
       <details class="setup-legend"><summary>How is this worked out?</summary>
