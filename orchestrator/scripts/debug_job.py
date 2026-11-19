@@ -24,6 +24,84 @@ MAX_LOG_ENTRY_CHARS = 15_000
 MAX_RUNTIME_LOG_CHARS = 100_000
 
 
+INTERNAL_TOOL_PREFIXES = (
+    ".orchestrator/",
+    ".claude/",
+    ".codex/",
+    ".gemini/",
+    ".poolside/",
+    ".cursor/",
+    ".agents/",
+    ".superpowers/",
+)
+
+
+def _is_internal_path(path: str) -> bool:
+    norm = str(path or "").strip()
+    while norm.startswith("./"):
+        norm = norm[2:]
+    return norm.startswith(INTERNAL_TOOL_PREFIXES) or norm in {p.rstrip("/") for p in INTERNAL_TOOL_PREFIXES}
+
+
+def build_iteration_ledger(job: dict[str, Any]) -> dict[str, Any]:
+    """Compact structured memory of prior iterations so fix loops and fallback models never re-explore dead ends."""
+    history = [h for h in (job.get("debug_history") or []) if isinstance(h, dict)]
+    attempts = []
+    ruled_out: list[str] = []
+    for entry in history[-8:]:
+        result = entry.get("result")
+        failed = isinstance(result, dict) and (not result.get("build_ok", True) or not result.get("tests_ok", True))
+        hyp = str(entry.get("hypothesis") or "").strip()
+        if failed and hyp and hyp not in ruled_out:
+            ruled_out.append(hyp)
+        attempts.append({
+            "iteration": entry.get("iteration"),
+            "model": entry.get("model"),
+            "action": entry.get("action"),
+            "hypothesis": hyp,
+            "result": result,
+        })
+    changed_files = sorted(
+        f for f in set([*(job.get("ai_modified_files") or []), *(job.get("ai_untracked_files") or [])])
+        if isinstance(f, str) and f.strip() and not _is_internal_path(f)
+    )[:40]
+    failures = []
+    tv = job.get("test_validation") if isinstance(job.get("test_validation"), dict) else {}
+    for item in (tv.get("failures") or [])[:15]:
+        if isinstance(item, dict) and item.get("test"):
+            msg = str(item.get("message") or "").strip().splitlines()[0][:160] if item.get("message") else ""
+            failures.append(f"{item['test']}: {msg}" if msg else str(item["test"]))
+    return {
+        "iteration": int(job.get("iteration") or 0),
+        "attempts": attempts,
+        "ruled_out_hypotheses": ruled_out,
+        "changed_files": changed_files,
+        "failing_tests": failures,
+    }
+
+
+def format_iteration_ledger(job: dict[str, Any]) -> str:
+    """Human/LLM-readable Iteration Ledger injected into debug prompts before raw history."""
+    ledger = build_iteration_ledger(job)
+    if not ledger["attempts"] and not ledger["failing_tests"] and not ledger["changed_files"]:
+        return "No prior debug iterations."
+    lines = ["### Iteration Ledger (Do NOT repeat ruled-out hypotheses)"]
+    if ledger["failing_tests"]:
+        lines.append("Failing tests:")
+        for ft in ledger["failing_tests"]:
+            lines.append(f"- {ft}")
+    if ledger["changed_files"]:
+        lines.append("Files already modified in this job: " + ", ".join(ledger["changed_files"][:20]))
+    if ledger["ruled_out_hypotheses"]:
+        lines.append("Ruled-out hypotheses (already tried and still failed):")
+        for h in ledger["ruled_out_hypotheses"]:
+            lines.append(f"- {h}")
+    if ledger["attempts"]:
+        lines.append("Recent attempts:")
+        lines.append(json.dumps(ledger["attempts"], indent=2))
+    return "\n".join(lines)
+
+
 def split_log_sources(logs_path: str) -> list[str]:
     """Split comma-separated log paths without exploding pasted raw log text."""
     raw_log_markers = [
@@ -305,9 +383,11 @@ def run_propose(job: dict, job_path: Path, logs_path: str | None, feedback: str 
             else:
                 print(f"        [skip] log path not found: {lp}")
 
+    ledger = build_iteration_ledger(job)
+    job["iteration_ledger"] = ledger
     full_prompt = prompt_template.replace("{{brief}}", brief)
     full_prompt = full_prompt.replace("{{previous_implementation}}", prev_impl)
-    full_prompt = full_prompt.replace("{{debug_history}}", json.dumps(job.get("debug_history", []), indent=2))
+    full_prompt = full_prompt.replace("{{debug_history}}", format_iteration_ledger(job))
     full_prompt = full_prompt.replace("{{runtime_logs}}", runtime_logs)
     full_prompt = full_prompt.replace("{{human_feedback}}", feedback or "None")
 
@@ -354,6 +434,8 @@ def run_propose(job: dict, job_path: Path, logs_path: str | None, feedback: str 
 
         plan = json.loads(json_output)
         job["debug_proposal"] = plan
+        if isinstance(plan.get("targeted_tests"), list):
+            job["targeted_tests"] = [str(t).strip() for t in plan["targeted_tests"] if str(t).strip()][:10]
         job["debug_phase"] = "implement"
         
         # Record iteration in history

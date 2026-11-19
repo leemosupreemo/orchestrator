@@ -63,6 +63,33 @@ class ScopedDebugTests(unittest.TestCase):
         self.assertEqual(saved["blocker"]["kind"], "sign_in")
         self.assertEqual(saved["blocker"]["provider"], "claude")
 
+    def test_iteration_ledger_tracks_ruled_out_hypotheses_and_filters_tool_files(self):
+        job = {
+            "iteration": 2,
+            "ai_modified_files": [".claude/settings.json", ".orchestrator/jobs/j.json", "src/vegetation.swift"],
+            "test_validation": {
+                "failures": [{"test": "VegetationTests.testDensity", "message": "expected 0.8 got 0.2"}]
+            },
+            "debug_history": [
+                {
+                    "iteration": 1,
+                    "model": "claude-sonnet-4-6",
+                    "action": "patch",
+                    "hypothesis": "Shader alpha clip too low",
+                    "result": {"build_ok": True, "tests_ok": False, "notes": "testDensity failed"},
+                }
+            ],
+        }
+        ledger = debug_job.build_iteration_ledger(job)
+        self.assertEqual(ledger["changed_files"], ["src/vegetation.swift"])
+        self.assertEqual(ledger["ruled_out_hypotheses"], ["Shader alpha clip too low"])
+        self.assertEqual(ledger["failing_tests"], ["VegetationTests.testDensity: expected 0.8 got 0.2"])
+        text = debug_job.format_iteration_ledger(job)
+        self.assertIn("Do NOT repeat ruled-out hypotheses", text)
+        self.assertIn("Shader alpha clip too low", text)
+        self.assertIn("src/vegetation.swift", text)
+        self.assertNotIn(".claude/settings.json", text)
+
 
 if __name__ == "__main__":
     unittest.main()

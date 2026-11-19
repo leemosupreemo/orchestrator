@@ -49,7 +49,7 @@ class DecideTests(unittest.TestCase):
 
     def test_jobs_at_once_is_this_computers_max_concurrent_jobs(self):
         local = lambda n: [{"name": "mini", "execution_mode": "ssh", "max_concurrent_jobs": 4}, {"name": "local", "max_concurrent_jobs": n}]
-        self.assertEqual([parallel_jobs.limit(m) for m in ([], local(9), local("x"), local(3), local(None))], [1, 4, 1, 3, 1])
+        self.assertEqual([parallel_jobs.limit(m) for m in ([], local(9), local("x"), local(3), local(1), local(None))], [1, 4, 2, 3, 1, 2])
         self.assertEqual(parallel_jobs.limit([{"name": "local", "enabled": False, "max_concurrent_jobs": 3}]), 1)
 
 
@@ -121,7 +121,7 @@ class SettingTests(unittest.TestCase):
     def test_the_git_page_and_job_page_show_it(self):
         app = (ROOT / "orchestrator" / "web" / "static" / "app.js").read_text(encoding="utf-8")
         self.assertIn('mutate(event.submitter, "config/parallel-jobs"', app)
-        self.assertIn("Builds alongside other jobs in its own checkout", app)
+        self.assertNotIn("Builds alongside other jobs in its own checkout", app)  # worktree plumbing stays behind the scenes
         actions = (ROOT / "orchestrator" / "scripts" / "job_actions.py").read_text(encoding="utf-8")
         self.assertIn("drop_worktree(job, force=True)  # discarding", actions)
 

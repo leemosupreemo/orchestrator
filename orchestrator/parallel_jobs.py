@@ -22,6 +22,7 @@ from typing import Any
 
 from orchestrator import job_overlap, worktrees
 
+DEFAULT_AT_ONCE = 2
 MAX_AT_ONCE = 4
 ENV_MAIN = "ORCHESTRATOR_WORKTREE_OF"  # set in a worker running in a worktree: the project folder it belongs to
 SHARED_FOLDER_MODES = ("current", "manual")
@@ -34,12 +35,19 @@ def local_machine(machines: list[dict[str, Any]]) -> dict[str, Any] | None:
 
 
 def limit(machines: list[dict[str, Any]]) -> int:
-    """How many jobs this computer builds at once in this project: its machine's max_concurrent_jobs (1 to MAX_AT_ONCE)."""
-    machine = local_machine(machines) or {}
-    try:
-        return max(1, min(int(machine.get("max_concurrent_jobs") or 1), MAX_AT_ONCE))
-    except (TypeError, ValueError):
+    """How many jobs this computer builds at once in this project (1 to MAX_AT_ONCE).
+    Defaults to DEFAULT_AT_ONCE (2) so non-overlapping jobs run side-by-side in worktrees behind the scenes,
+    while honoring an explicit max_concurrent_jobs setting (including 1)."""
+    machine = local_machine(machines)
+    if not machine:
         return 1
+    raw = machine.get("max_concurrent_jobs")
+    if raw is None:
+        return DEFAULT_AT_ONCE
+    try:
+        return max(1, min(int(raw), MAX_AT_ONCE))
+    except (TypeError, ValueError):
+        return DEFAULT_AT_ONCE
 
 
 def set_limit(machines_file: Path, count: int) -> None:
