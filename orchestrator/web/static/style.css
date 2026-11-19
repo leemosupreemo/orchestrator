@@ -601,9 +601,10 @@ a.item:hover { background: var(--panel-2); }
 .banner.run-status p, .run-status-notice-body p { flex: 0 1 auto; } /* these stack in a column, where that basis would be a height */
 .run-status { display: flex; flex-direction: column; gap: var(--space-3); padding: var(--space-4); }
 .run-status.working { border-color: var(--accent); background: var(--accent-soft); }
-.run-status-heading { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2) var(--space-3); min-width: 0; }
-.run-status-heading strong { font-size: var(--type-secondary); line-height: 1.4; overflow-wrap: anywhere; }
-.run-status-task { flex-basis: 100%; color: var(--muted); overflow-wrap: anywhere; font-size: var(--type-secondary); }
+.run-status-heading { display: flex; align-items: center; flex-wrap: nowrap; gap: var(--space-2); min-width: 0; }
+.run-status-heading .pill { flex-shrink: 0; }
+.run-status-heading strong { font-size: var(--type-secondary); line-height: 1.4; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.run-status-task { color: var(--muted); overflow-wrap: anywhere; font-size: var(--type-secondary); }
 .run-status-details { display: grid; grid-template-columns: max-content minmax(0, 1fr); align-items: baseline; gap: var(--space-2) var(--space-4); margin: 0; }
 .run-status-details > div { display: contents; }
 .run-status-details dt { color: var(--text); font-size: var(--type-secondary); margin: 0; font-weight: var(--weight-bold); }

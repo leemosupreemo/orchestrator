@@ -15198,8 +15198,9 @@ function runStatus(r, vc = null) {
     : "";
   const found = !r.running && r.result?.headline ? r.result : null; // what the run found, read from its output
   const showFound = Boolean(found && !guidance?.fromResult && (done || !guidance || found.details?.length)); // failed tests are already in the summary on top // a failure with guidance and nothing more to add would only repeat it
-  const foundBlock = showFound ? `<div class="run-status-result ${found.tone === "bad" ? "bad" : found.tone === "warn" ? "warn" : "ok"}">
-      <strong>${esc(found.headline)}</strong>${found.details?.length ? `<ul>${found.details.map((d) => `<li>${esc(d)}</li>`).join("")}</ul>` : ""}</div>` : "";
+  const headerText = showFound && found?.headline ? found.headline : headline;
+  const foundBlock = showFound && found?.details?.length ? `<div class="run-status-result ${found.tone === "bad" ? "bad" : found.tone === "warn" ? "warn" : "ok"}">
+      <ul>${found.details.map((d) => `<li>${esc(d)}</li>`).join("")}</ul></div>` : "";
   const resultText = showFound ? "" : done ? "Completed (exit 0)" : (failed && r.exit_code != null ? `Failed (exit ${r.exit_code})` : "");
   const resultItem = resultText ? `<div><dt>Result</dt><dd class="${caveat ? "" : done ? "text-ok" : "text-bad"}">${esc(resultText)}</dd></div>` : "";
   const machines = Array.isArray(p.machines) ? p.machines : [];
@@ -15231,7 +15232,8 @@ function runStatus(r, vc = null) {
 
   return `<section class="banner ${tone} run-status" aria-label="Run status">
     <div class="run-status-heading" role="status" aria-live="polite"><span class="pill ${tone}">${esc(status)}</span>
-      <strong>${esc(headline)}</strong>${showTask ? `<span class="run-status-task">${esc(p.task)}</span>` : ""}</div>
+      <strong title="${esc(headerText)}">${esc(headerText)}</strong></div>
+    ${showTask ? `<div class="run-status-task">${esc(p.task)}</div>` : ""}
     ${foundBlock}
     <dl class="run-status-details">
       ${jobItem}
