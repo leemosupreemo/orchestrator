@@ -453,9 +453,9 @@ function moreMenu(items, { label = "More", left = false, compact = false, icon =
     const tip = compact && it[2] ? ` title="${esc(it[2])}"` : "";
     return `<button class="btn${it[3] === "danger" ? " danger" : ""}" ${it[1]}${tip}>${esc(it[0])}</button>${!compact && it[2] ? `<div class="hint">${esc(it[2])}</div>` : ""}`;
   }).join("");
-  // Always the ⋯ icon; the label is what it's called on hover and for screen readers.
+  // Always the #i-more SVG icon; the label is what it's called on hover and for screen readers.
   const summary = icon
-    ? `<summary class="btn small ghost more-icon-btn" aria-label="${esc(ariaLabel || label)}">⋯</summary>`
+    ? `<summary class="btn small ghost icon-only more-icon-btn" aria-label="${esc(ariaLabel || label)}" title="${esc(ariaLabel || label)}"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-more"/></svg></summary>`
     : `<summary class="btn icon-only more-icon-btn" aria-label="${esc(ariaLabel || label)}" title="${esc(ariaLabel || label)}"><svg class="icon" aria-hidden="true"><use href="#i-more"/></svg></summary>`;
   return `<details class="more${left ? " left" : ""}">${summary}<div class="more-menu">${body}</div></details>`;
 }
@@ -873,10 +873,27 @@ function addProjectsDialog(trackedProjects) {
 const steerDrafts = new Map(); // job id -> a half-written "Tell the AI what to change" note, kept across live redraws
 
 const dialogs = {
-  // Sign in to an AI tool on the spot (from a failed job's card): the same modal as the AI tools page, not a new run.
-  // Closing it redraws the page under it, so a job that asked for this sign-in stops asking once it is done.
+  // Sign in to an AI tool on the spot (from a failed job/run or blocker card): the same modal as the AI tools page,
+  // not a new run. Once sign-in succeeds, automatically retry the failed job (or resume blocked jobs).
   ai_connect(params) {
-    ToolConnect.open(params.provider, params.name || params.provider, {api, formDialog, onClose: () => { refreshState().then(() => route()).catch(() => {}); }});
+    let retried = false;
+    ToolConnect.open(params.provider, params.name || params.provider, {
+      api,
+      formDialog,
+      onConnected: () => {
+        if (retried) return;
+        retried = true;
+        if (params.retry_job && params.retry_action) {
+          $("#dialog")?.close("ok");
+          runAction(params.retry_action, { job: params.retry_job, ...(params.retry_params || {}) }, { skipConfirm: true });
+        } else {
+          api("blockers", { method: "POST", body: {} }).catch(() => {});
+        }
+      },
+      onClose: () => {
+        if (!retried) refreshState().then(() => route()).catch(() => {});
+      },
+    });
   },
 
   async fix(params) {
@@ -1081,8 +1098,12 @@ const dialogs = {
       </label>`, "Export");
     if (values) {
       if (values.destination === "direct") {
-        window.open(`/api/jobs/${encodeURIComponent(params.job)}/export-zip`, "_blank");
-        toast("Download started", "info");
+        try {
+          await downloadApiFile(`/api/jobs/${encodeURIComponent(params.job)}/export-zip`, `${params.job}-export.zip`);
+          toast("Download started", "info");
+        } catch (err) {
+          toast(err.message, true);
+        }
       } else {
         // Runs in the background: no run page, and the job doesn't show as busy. One message when it's done.
         const where = { icloud: "iCloud Drive", gdrive: "Google Drive", downloads: "your Downloads folder", local: "the project's exports folder" }[values.destination] || "the chosen folder";
@@ -4694,7 +4715,7 @@ pages.home = async (_, query) => {
 };
 
 function jobHeaderActions(s, links = [], ctx = {}) {
-  // One plain list, split by dividers instead of headings: work on the job, share or open it, its settings, then ending it.
+  // Categorised list with subheaders: work on the job, share or export it, its settings, then ending it.
   // Only what fits the job's stage, and never something the page already shows as a button (the hero's next step, the
   // plan card's Revise and Split, the hero's Run a fix).
   const j = { job: s.id };
@@ -4703,7 +4724,7 @@ function jobHeaderActions(s, links = [], ctx = {}) {
   const reviewed = ["review-needed", "completed"].includes(s.status);
   const simulator = state.project?.mobile_app !== false && (!state.project?.languages?.length || state.project.languages.some((l) => l.name === "Swift"));
   const groups = [
-    [
+    ["Work on this job", [
       // Run a fix and Revise plan live in the status box's "Tell the AI what to change" box; here only when it is hidden.
       idle && !ctx.steerShown && next !== "debug" && ["review-needed", "completed", "debugging", "failed"].includes(s.status)
         && ["Run a fix…", act("debug", j), "Describe what you saw, or leave it blank for another automatic attempt"],
@@ -4716,8 +4737,8 @@ function jobHeaderActions(s, links = [], ctx = {}) {
       // Reviews by the AI tools themselves (tool_abilities.py), only those this computer's ready tools have
       ...(s.branch && ctx.hasChanges ? (ctx.abilities || []).filter((a) => !a.billed || state.you?.role !== "member")
         .map((a) => [`${a.label}${a.billed ? "…" : ""}`, act(a.mode === "terminal" ? "ai_review_terminal" : "ai_review", { job: s.id, ability: a.id }), a.what]) : []),
-    ],
-    [
+    ]],
+    ["Share & export", [
       idle && state.you?.role !== "member" && s.branch && ["review-needed", "debugging"].includes(s.status)
         && (state.project?.web_app
           ? ["Publish preview link…", act("web_preview", { branch: s.branch }), `Publishes ${s.branch} on a shareable link for 7 days`]
@@ -4728,21 +4749,21 @@ function jobHeaderActions(s, links = [], ctx = {}) {
         && ["Submit for Prize 🏆", `data-submit-inclusion="${esc(s.id)}" data-job-title="${esc(s.title || '')}"`, "Submit this improvement to the core team for permanent inclusion"],
       ["Documentation", `data-href="#/docs/job/${encodeURIComponent(s.id)}"`, "This job's page, written from the live project"],
       ...links.map((link) => [`${link.where ? `Open a ${link.label}` : link.label} ↗`, `data-open="${esc(link.url)}"`, link.where || "On GitHub"]),
-    ],
-    [
+    ]],
+    ["Settings", [
       ["Move to feature…", `data-job-feature="${esc(s.id)}"`, "Group this job under a feature"],
       idle && s.status !== "completed" && ["Choose models…", act("select_models", j), "Which AI plans, builds and reviews this job"],
-    ],
-    [ // ending the job: last, and only when nothing is running
+    ]],
+    ["Finish or remove", [ // ending the job: last, and only when nothing is running
       idle && s.issue_number && [`Close issue #${s.issue_number} and finish job`, act("close_issue", { job: s.id, issue: s.issue_number }), "Closes it on GitHub and marks this job complete"],
       idle && ["Archive", `data-archive-jobs='${attrJSON([s.id])}'`, "Hide it from Home; branch and files stay. Restore from Configuration."],
       idle && ["Delete…", act("delete_job", j), "Remove the job, and optionally its changes", "danger"],
-    ],
+    ]],
   ];
   const items = [];
-  for (const entries of groups) {
+  for (const [heading, entries] of groups) {
     const shown = entries.filter(Boolean);
-    if (shown.length) items.push(...(items.length ? ["---"] : []), ...shown);
+    if (shown.length) items.push(["header", heading], ...shown);
   }
   return moreMenu(items, { compact: true });
 }
@@ -4765,9 +4786,44 @@ document.addEventListener("click", async (e) => {
   } catch (err) { toast(err.message, true); }
 });
 
-document.addEventListener("click", (e) => {
+async function downloadApiFile(apiPath, fallbackName = "download.zip") {
+  const backend = getBackendUrl();
+  const token = getToken();
+  const res = await fetch(`${backend ?? ""}${apiPath}`, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    credentials: backend ? "omit" : "same-origin",
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || `Download failed (${res.status})`);
+  }
+  const cd = res.headers.get("Content-Disposition") || "";
+  const match = cd.match(/filename="?([^";]+)"?/i);
+  const filename = match ? match[1] : fallbackName;
+  const url = URL.createObjectURL(await res.blob());
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+document.addEventListener("click", async (e) => {
   const open = e.target.closest("[data-open]");
-  if (open) window.open(open.dataset.open, "_blank", "noopener");
+  if (!open) return;
+  const target = open.dataset.open || "";
+  if (target.startsWith("/api/")) {
+    try {
+      await downloadApiFile(target);
+      toast("Download started", "info");
+    } catch (err) {
+      toast(err.message, true);
+    }
+  } else {
+    window.open(target, "_blank", "noopener");
+  }
 });
 
 document.addEventListener("click", (e) => {
@@ -5552,9 +5608,18 @@ pages["remote-job"] = async ([machineId, jobId]) => {
     : machine?.online
       ? `, ${machine.connection?.detail || (machine.connection?.state === "repairing" ? "repairing connection" : machine.connection?.state === "checking" ? "connecting" : "not reachable yet")}`
       : ", offline";
-  // One job, whichever computer it's on: its state and next step as its own page shows them, and doing that step here
-  // takes it over (latest record, branch and unfinished work; the ownership number goes up so there's never a second
-  // copy). Only a run working on it there right now has to finish first: two computers building one branch would clash.
+  // One job, whichever computer it's on: when the other computer is online and not actively running it, bring it here
+  // straight away and open it on this machine (latest record, branch and unfinished work; ownership goes up so there's
+  // never a second copy). Offline copies pause to warn about unsynced work; active runs wait for that run to finish.
+  if ((machine?.online || machine?.reachable) && !rj.active_run) {
+    const id = await takeOverJob(rj, machineLabel);
+    if (id) {
+      const target = `#/jobs/${encodeURIComponent(id)}`;
+      if (typeof location.replace === "function") location.replace(target);
+      else location.hash = target;
+      return { stale: true };
+    }
+  }
   const next = rj.state?.next;
   const direct = next && TAKE_OVER_THEN_RUN.has(next.action);
   const busy = rj.active_run ? `Running on ${machineLabel} now (${rj.active_run.label}${rj.active_run.step ? ` · ${rj.active_run.step}` : ""}). You can pick it up here once that run finishes.` : "";
@@ -5572,44 +5637,11 @@ pages["remote-job"] = async ([machineId, jobId]) => {
         <div class="row gap-8 wrap">
           ${direct ? `<button type="button" class="btn primary" data-take-over="run"${busy ? ` disabled data-why="${esc(machineLabel)} is running it now"` : ""}>${esc(next.label)}</button>` : ""}
           <button type="button" class="btn ${direct ? "" : "primary"}" data-take-over="open"${busy ? ` disabled data-why="${esc(machineLabel)} is running it now"` : ""}>${direct ? "Open it here" : "Work on it here"}</button>
-          ${machine?.reachable ? `<button type="button" class="btn ghost" id="open-remote-machine-job">Open on ${esc(machineLabel)}</button>` : ""}
         </div>
         <p class="muted">Its branch, history and unfinished work come with it, and ${esc(machineLabel)} hands it over: one job, never two copies.</p>
       </div>
     </section>`,
     after: () => {
-      $("#open-remote-machine-job")?.addEventListener("click", async (e) => {
-        const btn = e.currentTarget;
-        btn.disabled = true;
-        btn.textContent = `Opening ${machineLabel}…`;
-        // Signing in moves the browser to that computer and drops the token, so a failure has to put it back.
-        const keys = ["orchestrator_backend", ACCOUNT_BACKEND_KEY, Account.MACHINE_KEY, "orchestrator_token"];
-        const before = keys.map((k) => { try { return [k, localStorage.getItem(k)]; } catch { return [k, null]; } });
-        try {
-          let res;
-          try { res = await signInToMachine(machine); }
-          catch (error) { res = await repairMachineConnection(machine, error); } // its address may have changed since the list loaded
-          await unlockWith(res.token, `Opened ${machine.name}`);
-          const targetHash = `#/jobs/${encodeURIComponent(jobId)}`;
-          const rRepo = String(rj.repo || "").toLowerCase();
-          const rProj = String(rj.project || "").toLowerCase();
-          const targetProj = (state.project?.recent || []).find((p) => {
-            const pRepo = String(p.repo || p.github_repo || p.git_remote || "").toLowerCase();
-            if (rRepo && pRepo) return pRepo === rRepo;
-            return rProj && String(p.name || "").toLowerCase() === rProj;
-          });
-          if (targetProj && targetProj.root && targetProj.root !== state.project?.root) {
-            await switchProject(targetProj.root, targetHash);
-          } else {
-            location.hash = targetHash;
-          }
-        } catch (err) {
-          try { before.forEach(([k, v]) => (v === null ? localStorage.removeItem(k) : localStorage.setItem(k, v))); } catch { /* storage blocked */ }
-          toast(err.message, true);
-          btn.disabled = false;
-          btn.textContent = `Open on ${machineLabel}`;
-        }
-      });
       view.querySelectorAll("[data-take-over]").forEach((btn) => btn.addEventListener("click", async () => {
         view.querySelectorAll("[data-take-over]").forEach((b) => { b.disabled = true; });
         btn.textContent = "Bringing it here…";
@@ -5618,19 +5650,6 @@ pages["remote-job"] = async ([machineId, jobId]) => {
         location.hash = `#/jobs/${encodeURIComponent(id)}`;
         if (btn.dataset.takeOver === "run" && next) runAction(next.action, { job: id, ...(next.params || {}) });
       }));
-      if (machine?.online && !machine?.reachable) {
-        let checks = 0;
-        let stopped = false;
-        const timer = setInterval(async () => {
-          if (stopped || ++checks > 8) { clearInterval(timer); return; }
-          try {
-            const fresh = await cpApi("machines");
-            const hit = (fresh?.machines || []).find((m) => m.id === machineId);
-            if (hit?.reachable && !stopped) { clearInterval(timer); route(); }
-          } catch { /* retry next tick */ }
-        }, 4000);
-        cleanup.push(() => { stopped = true; clearInterval(timer); });
-      }
     },
   };
 };
@@ -5656,13 +5675,11 @@ function jobRunsCard(runs, rel, extraDetailsHtml = "") {
   if (!runs) return "";
   const work = runs.filter((r) => !r.side);
   const stages = Object.entries(rel?.per_phase || {}).filter(([, n]) => n).map(([phase, n]) => `${phase[0].toUpperCase()}${phase.slice(1)} ${n}`);
-  const intro = !work.length ? "Nothing has run for this job yet."
-    : rel?.single ? "This job ran in one go: a single run did the work. Open it for its steps and full output."
-    : "Each run is one go at part of this job: planning, a build, a fix attempt. Newest first; open one for its steps and full output.";
-  return `<section class="card mb-16" id="job-runs"><div class="card-h"><h2>${rel?.single ? "Run" : "Runs"}</h2>${work.length > 1 ? `<span class="count">${work.length}</span>` : ""}</div>
-    <div class="card-b stack"><span class="muted">${esc(intro)}</span>${stages.length > 1 ? `<span class="muted">By stage: ${esc(stages.join(" · "))}</span>` : ""}${extraDetailsHtml}</div>
+  const metaHtml = (stages.length > 1 ? `<span class="muted">By stage: ${esc(stages.join(" · "))}</span>` : "") + extraDetailsHtml;
+  return `<section class="card mb-16" id="job-runs"><details class="fold"><summary class="card-h"><h2>${rel?.single ? "Run" : "Runs"}</h2>${work.length ? `<span class="count">${work.length}</span>` : ""}</summary>
+    ${metaHtml ? `<div class="card-b stack">${metaHtml}</div>` : ""}
     ${runs.length ? `<div class="list" id="job-run-list">${runs.map((r, n) => n < 8 ? jobRunRow(r) : jobRunRow(r).replace('<a class="item', '<a hidden class="item')).join("")}</div>
-      ${runs.length > 8 ? `<div class="card-b"><button type="button" class="btn small" data-show-all="job-run-list">Show all ${runs.length}</button></div>` : ""}` : ""}</section>`;
+      ${runs.length > 8 ? `<div class="card-b"><button type="button" class="btn small" data-show-all="job-run-list">Show all ${runs.length}</button></div>` : ""}` : `<div class="empty">Nothing has run for this job yet.</div>`}</details></section>`;
 }
 
 // Extract a short 1-sentence summary of what a job actually changed, from its diff hypothesis or builder summary.
@@ -5878,16 +5895,32 @@ pages.job = async ([id]) => {
   const allFiles = (changes?.files && changes.files.length) ? changes.files : (changes?.local_files || []);
   const previewFiles = allFiles.slice(0, 5);
   const remainingFiles = Math.max(0, allFiles.length - previewFiles.length);
-  const filesHtml = previewFiles.length
-    ? `${previewFiles.map((f) => `<span class="delta-file-chip mono">${esc(f.split("/").pop() || f)}</span>`).join(", ")}${remainingFiles > 0 ? ` <span class="muted">(+${remainingFiles} more)</span>` : ""}`
+  const filesChipsHtml = previewFiles.length
+    ? `${previewFiles.map((f) => `<span class="delta-file-chip mono" title="${esc(f)}">${esc(f.split("/").pop() || f)}</span>`).join("")}${remainingFiles > 0 ? `<span class="delta-file-chip muted">+${remainingFiles} more</span>` : ""}`
     : `<span class="muted">No modified files</span>`;
+  const diffStatRaw = localCount > 0 ? (changes.local_summary || "") : (changes?.summary_line || "");
+  const insMatch = diffStatRaw.match(/(\d+)\s+insertion/);
+  const delMatch = diffStatRaw.match(/(\d+)\s+deletion/);
+  const diffStatBadges = [
+    insMatch ? `<span class="diff-stat-add mono">+${insMatch[1]}</span>` : "",
+    delMatch ? `<span class="diff-stat-del mono">-${delMatch[1]}</span>` : "",
+  ].filter(Boolean).join(" ");
+  const changeScopeLabel = localCount > 0
+    ? `${plural(localCount, "file")} unsaved (local)`
+    : `${plural(allFiles.length, "file")} changed`;
 
   const problem = s.state.next?.action === "debug" && data.problem ? data.problem : null; // what needs fixing, in words
   const next = s.state.next;
   const isStoppingActive = activeRun && (stoppingRuns.has(activeRun.id) || Boolean(activeRun.stopping));
   const signIn = problem?.sign_in || s.state.sign_in; // a failed fix's sign-in, or a blocker that needs one
   const signInAction = !activeRun && signIn
-    ? `<button type="button" class="btn small primary" ${act("ai_connect", { provider: signIn.provider, name: signIn.name })}>Sign in to ${esc(signIn.name)}</button>`
+    ? `<button type="button" class="btn small primary" ${act("ai_connect", {
+        provider: signIn.provider,
+        name: signIn.name,
+        retry_job: s.id,
+        retry_action: s.state.next?.action || "resume",
+        ...(s.state.next?.params ? { retry_params: s.state.next.params } : {}),
+      })}>Sign in to ${esc(signIn.name)}</button>`
     : "";
   const nextBtnClass = signInAction ? "btn small" : "btn small primary";
   // Another job building the same files right now: merging this one would race it, so Merge waits (overlapAdviceHtml says why).
@@ -5899,15 +5932,32 @@ pages.job = async ([id]) => {
     : `${signInAction}${next ? `<button class="${nextBtnClass}" ${act(next.action, { job: s.id, ...(next.params || {}) })}${overlapHold ? ` disabled data-why="Wait for ${esc(overlapHold.title)} to finish building first."` : ""}>${esc(next.label)}</button>` : ""}${next && job.task_growth && data.undoable_task === job.task_growth.task
       ? `<button class="btn small" data-undo-task="${job.task_growth.task}" title="Reverts what that task changed. Then revise the plan to make it smaller.">Undo task ${job.task_growth.task + 1}</button>` : ""}`;
 
-  // 5-Phase Lifecycle determination (Plan -> Build -> Verify -> Document -> Review)
+  // 5-Phase Agile Lifecycle determination (Plan -> [Build -> Verify -> Document -> Finalize] loop)
   const status = s.status || "";
   const docFilesChanged = allFiles.filter((f) => /(?:^|\/)(?:readme|contributing|changelog|architecture|agents|claude)\.md$/i.test(f) || /^docs\/.*\.md$/i.test(f));
+  const fixRuns = (jobRuns || []).filter((r) => !r.side && (r.action === "debug" || r.action === "fix")).length;
+  const planRevisions = Math.max(0, (runRel?.per_phase?.plan || 0) - 1);
+  const debugIterations = Math.max(Number(job.iteration || 0), (job.debug_history || []).length, fixRuns);
+  const iterationNum = 1 + debugIterations + planRevisions;
+  const activeAction = activeRun?.action || "";
+  const isIterating = iterationNum > 1 && !["completed", "archived"].includes(status);
+
   let currentPhase = "plan";
-  if (status === "completed" || status === "archived") {
+  if (activeAction === "revise" || activeAction === "plan") {
+    currentPhase = "plan";
+  } else if (activeAction === "debug" || activeAction === "fix") {
+    currentPhase = job.debug_phase === "verify" ? "verify" : "build";
+  } else if (activeAction === "execute" || activeAction === "resume") {
+    currentPhase = "build";
+  } else if (activeAction === "merge" || activeAction === "complete") {
+    currentPhase = "review";
+  } else if (status === "completed" || status === "archived") {
     currentPhase = "review";
   } else if (status === "review-needed") {
     currentPhase = "review";
-  } else if (status === "debugging" || (tasksTotal > 0 && tasksDone >= tasksTotal && !["planned", "designing", "human-needed"].includes(status))) {
+  } else if (status === "debugging") {
+    currentPhase = ["propose", "implement"].includes(job.debug_phase) ? "build" : "verify";
+  } else if (tasksTotal > 0 && tasksDone >= tasksTotal && !["planned", "designing", "human-needed"].includes(status)) {
     currentPhase = "verify";
   } else if (status === "scheduled" || status === "executing" || status === "running" || status === "in-progress" || (tasksDone > 0 && tasksDone < tasksTotal)) {
     currentPhase = "build";
@@ -5926,16 +5976,18 @@ pages.job = async ([id]) => {
   const phaseOrder = ["plan", "build", "verify", "document", "review"];
   const currentPhaseIndex = phaseOrder.indexOf(currentPhase);
   const isJobComplete = status === "completed" || status === "archived";
+  // Steps after the active phase partially reset when a new iteration loops back to Build/Verify.
+  const loopingBack = isIterating && currentPhaseIndex > 0 && currentPhaseIndex < 4;
 
   const getStepState = (idx) => {
     if (nothingBuilt && idx === 1) return { state: "active failed", icon: "!" };
     if (isJobComplete || idx < currentPhaseIndex) return { state: "done", icon: "✓" };
     if (idx === currentPhaseIndex) {
       const tone = s.state.tone === "failed" ? "failed" : ["merge", "complete"].includes(s.state.next?.action) ? "done" : s.state.group === "needs_you" ? "attention" : "active";
-      const icon = s.state.tone === "failed" ? "!" : String(idx + 1);
-      return { state: `active ${tone}`, icon };
+      const icon = s.state.tone === "failed" ? "!" : (loopingBack ? "↻" : String(idx + 1));
+      return { state: `active ${tone}${loopingBack ? " iterating" : ""}`, icon };
     }
-    return { state: "upcoming", icon: String(idx + 1) };
+    return { state: `upcoming${loopingBack ? " reset" : ""}`, icon: String(idx + 1) };
   };
 
   const planStep = {
@@ -5946,23 +5998,25 @@ pages.job = async ([id]) => {
 
   const buildStep = {
     title: "Build",
-    subtitle: nothingBuilt ? "No files changed" : !tasksTotal && (isJobComplete || currentPhaseIndex > 1) ? (job.output_scope === "tests-only" ? (Object.keys(job.output_digests || {}).length ? `${plural(Object.keys(job.output_digests).length, "test file")} written` : "No test files") : filesChanged ? `${plural(filesChanged, "file")} changed` : "No tasks needed") : isJobComplete || currentPhaseIndex > 1 ? `${tasksTotal}/${tasksTotal} done` : currentPhase === "build" ? (activeRun ? `Building ${tasksDone + 1}/${tasksTotal}` : s.state.label === "Paused" ? `Paused · ${tasksDone}/${tasksTotal}` : `${tasksDone}/${tasksTotal} tasks`) : `${tasksTotal || 0} tasks`,
+    subtitle: nothingBuilt ? "No files changed" : loopingBack && currentPhase === "build" ? `Iter ${iterationNum} changes` : !tasksTotal && (isJobComplete || currentPhaseIndex > 1) ? (job.output_scope === "tests-only" ? (Object.keys(job.output_digests || {}).length ? `${plural(Object.keys(job.output_digests).length, "test file")} written` : "No test files") : filesChanged ? `${plural(filesChanged, "file")} changed` : "No tasks needed") : isJobComplete || currentPhaseIndex > 1 ? `${tasksTotal}/${tasksTotal} done` : currentPhase === "build" ? (activeRun ? `Building ${tasksDone + 1}/${tasksTotal}` : s.state.label === "Paused" ? `Paused · ${tasksDone}/${tasksTotal}` : `${tasksDone}/${tasksTotal} tasks`) : `${tasksTotal || 0} tasks`,
     ...getStepState(1),
   };
 
   const verifyStep = {
     title: "Verify",
-    subtitle: nothingBuilt ? "Waits for the build" : isJobComplete || (currentPhaseIndex > 2 && s.state.tone !== "failed") ? "Verified" : status === "debugging" || s.state.tone === "failed" ? "Tests failing" : testSummary?.status === "passed" ? "Passed" : "Automated tests",
+    subtitle: nothingBuilt ? "Waits for the build" : loopingBack && currentPhaseIndex < 2 ? "Pending re-verify" : isJobComplete || (currentPhaseIndex > 2 && s.state.tone !== "failed") ? "Verified" : status === "debugging" || s.state.tone === "failed" ? "Tests failing" : testSummary?.status === "passed" ? "Passed" : "Automated tests",
     ...getStepState(2),
   };
 
   const docStep = {
     title: "Document",
-    subtitle: docFilesChanged.length
-      ? `${plural(docFilesChanged.length, "doc")} updated`
-      : isJobComplete || currentPhaseIndex > 3
-        ? "Checked"
-        : "Project docs",
+    subtitle: loopingBack && currentPhaseIndex < 3
+      ? "Pending re-check"
+      : docFilesChanged.length
+        ? `${plural(docFilesChanged.length, "doc")} updated`
+        : isJobComplete || currentPhaseIndex > 3
+          ? "Checked"
+          : "Project docs",
     ...getStepState(3),
   };
 
@@ -6050,7 +6104,18 @@ pages.job = async ([id]) => {
   }
 
   const reviewContextHtml = (currentPhase === "review" || ["merge", "complete"].includes(nextAction)) && (allFiles.length || prUrl)
-    ? `<div class="job-hero-next-preview">${allFiles.length ? `<span class="job-hero-next-label">Changed:</span> ${esc(deltaUnsaved || plural(allFiles.length, "file"))} · ${filesHtml} · <button type="button" class="linklike" data-scroll-to="#changes-section">Inspect diff ↓</button>` : ""}${prUrl ? `${allFiles.length ? " · " : ""}<a href="${esc(prUrl)}" target="_blank" rel="noopener">Open PR${job.pr_number ? ` #${esc(job.pr_number)}` : ""} ↗</a>` : ""}</div>`
+    ? `<div class="job-review-summary">
+        <div class="job-review-summary-head">
+          <div class="job-review-summary-stats">
+            ${allFiles.length ? `<span class="job-hero-next-label">Changes</span><span class="job-review-count">${esc(changeScopeLabel)}</span>${diffStatBadges}` : ""}
+          </div>
+          <div class="job-review-summary-actions">
+            ${allFiles.length ? `<button type="button" class="btn small ghost" data-scroll-to="#changes-section">Inspect diff ↓</button>` : ""}
+            ${prUrl ? `<a class="btn small ghost" href="${esc(prUrl)}" target="_blank" rel="noopener">Open PR${job.pr_number ? ` #${esc(job.pr_number)}` : ""} ↗</a>` : ""}
+          </div>
+        </div>
+        ${allFiles.length ? `<div class="job-review-files">${filesChipsHtml}</div>` : ""}
+      </div>`
     : "";
 
   // Approving (or starting) a plan: the plan is shown right under the decision, with what each task is done when,
@@ -6085,7 +6150,7 @@ pages.job = async ([id]) => {
     const isDone = done.has(key) || done.has(String(i));
     const doneWhen = withDetail && typeof t === "object" ? listOf(t.acceptance_criteria) : [];
     const files = withDetail && typeof t === "object" ? listOf(t.likely_files) : [];
-    const controls = canEditPlan && !isDone ? `<div class="side task-controls"><details class="more task-more"><summary class="btn small ghost" aria-label="Task actions: ${esc(title)}">⋯</summary><div class="more-menu">
+    const controls = canEditPlan && !isDone ? `<div class="side task-controls"><details class="more task-more"><summary class="btn small ghost icon-only more-icon-btn" aria-label="Task actions: ${esc(title)}" title="Task actions"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-more"/></svg></summary><div class="more-menu">
         <button class="btn small" data-task-op="edit" data-i="${i}">Edit</button>
         <button class="btn small" data-task-op="up" data-i="${i}" data-why="${i === 0 ? "Already first." : "Can't move above a finished task."}" ${i === 0 || done.has(String(i - 1)) ? "disabled" : ""}>Move up</button>
         <button class="btn small" data-task-op="down" data-i="${i}" data-why="Already last." ${i === tasks.length - 1 ? "disabled" : ""}>Move down</button>
@@ -6113,7 +6178,7 @@ pages.job = async ([id]) => {
         ${size.too_large ? `<span>${esc(size.reasons.join(" "))}</span>${splitInstead ? approveBtn(false) : ""}` : ""}
         ${sliceWarnings.length ? `<span class="plan-flag" title="${esc(sliceWarnings.join(" "))}">Tasks look layered, not working slices</span>` : ""}</div>
       <div class="list">${taskRowsHtml(true)}</div>
-      ${canEditPlan ? `<div class="card-b card-b-split"><button class="btn small" data-task-op="add">Add a task</button></div>` : ""}
+      ${canEditPlan ? `<div class="card-b card-b-split"><button type="button" class="btn small ghost icon-only" data-task-op="add" aria-label="Add a task" title="Add a task"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-plus"/></svg></button></div>` : ""}
       ${size.deferred.length ? `<details class="fold plan-notes"><summary class="card-h"><h2>Left for later <span class="count">${size.deferred.length}</span></h2></summary>
         <div class="card-b"><ul class="assumptions">${size.deferred.map((d) => `<li>${esc(d)}</li>`).join("")}</ul></div></details>` : ""}
       ${notes.length ? `<details class="fold plan-notes"><summary class="card-h"><h2>Assumptions and risks <span class="count">${notes.reduce((n, [, l]) => n + l.length, 0)}</span></h2></summary>
@@ -6183,17 +6248,23 @@ pages.job = async ([id]) => {
         </div>
       ` : ""}
 
-      <nav class="job-stepper" aria-label="Job lifecycle progress">
-        ${phasesInfo.map((p, idx) => `
-          <button type="button" class="job-step ${p.state}" data-scroll-to="${idx === 0 && reviewingPlan ? "#plan-section" : phaseTargets[idx]}" ${idx === currentPhaseIndex ? 'aria-current="step"' : ""}>
-            <span class="job-step-dot" aria-hidden="true">${p.icon}</span>
-            <span class="job-step-meta">
-              <span class="job-step-title">${esc(p.title)}</span>
-              <span class="job-step-sub">${esc(p.subtitle)}</span>
-            </span>
-          </button>
-          ${idx < phasesInfo.length - 1 ? `<div class="job-step-arrow ${p.state}" aria-hidden="true"></div>` : ""}
-        `).join("")}
+      <nav class="job-stepper" data-iterating="${isIterating ? "1" : "0"}" aria-label="Job lifecycle progress">
+        <span class="job-iter-badge${iterationNum > 1 ? " has-loops" : ""}" title="${iterationNum > 1 ? `Iteration ${iterationNum}: Build → Verify → Document → Finalize loops on each change or fix` : "Iteration 1"}">
+          <span class="job-iter-icon" aria-hidden="true">↻</span>Iter ${iterationNum}
+        </span>
+        <div class="job-stepper-track">
+          ${phasesInfo.map((p, idx) => `
+            <button type="button" class="job-step ${p.state}" data-scroll-to="${idx === 0 && reviewingPlan ? "#plan-section" : phaseTargets[idx]}" ${idx === currentPhaseIndex ? 'aria-current="step"' : ""}>
+              <span class="job-step-dot" aria-hidden="true">${p.icon}</span>
+              <span class="job-step-meta">
+                <span class="job-step-title">${esc(p.title)}</span>
+                <span class="job-step-sub">${esc(p.subtitle)}</span>
+              </span>
+            </button>
+            ${idx < phasesInfo.length - 1 ? `<div class="job-step-arrow ${p.state}" aria-hidden="true"></div>` : ""}
+          `).join("")}
+        </div>
+        ${iterationNum > 1 ? `<div class="job-loop-arc" aria-hidden="true"><span class="job-loop-line"></span><span class="job-loop-label">↻ Build → Verify → Finalize loop</span></div>` : ""}
       </nav>
 
       ${reviewingPlan ? "" : `<section id="job-hero" tabindex="-1" class="job-hero tone-${esc(heroTone)}${(activeRun && !activeRun.waiting) || s.state.label === "Building" ? " is-running" : ""}">
@@ -6209,7 +6280,7 @@ pages.job = async ([id]) => {
           ${job.worktree ? `<p class="job-hero-reason muted">Builds alongside other jobs in its own checkout (<span class="mono">${esc(job.worktree)}</span>).</p>` : ""}
           ${overlapAdviceHtml(data.overlaps, { readyHere: ["merge", "complete"].includes(nextAction), idle: !activeRun })}
           ${s.state.blocker ? `<details class="fold"><summary class="linklike muted">What the AI said</summary><p class="muted">${esc(s.state.blocker)}</p></details>` : ""}
-          ${runRel?.unreported ? `<p class="job-hero-reason run-unreported">The last run (${esc(runRel.unreported.label)}) ${runRel.unreported.status === "failed" ? "failed" : "ended without reporting back"} before it could update this job. <a href="#/runs/${encodeURIComponent(runRel.unreported.id)}">Open its log</a> to see what happened.</p>` : ""}
+          ${runRel?.unreported ? `<div class="notice warn hero-unreported-notice"><span>Last run (<strong>${esc(runRel.unreported.label)}</strong>) ${runRel.unreported.status === "failed" ? "failed" : "ended without reporting back"} before it could update this job.</span><a class="btn small ghost" href="#/runs/${encodeURIComponent(runRel.unreported.id)}">Details</a></div>` : ""}
           ${reviewContextHtml}
           ${nextExecutionPreview ? `<div class="job-hero-next-preview">${nextExecutionPreview}</div>` : ""}
           ${showTaskBar ? `<div class="tasks-progress-wrap"><div class="progress-bar-container" role="progressbar" aria-label="Tasks built" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${tasksPct}"><div class="progress-bar-fill" style="width: ${tasksPct}%"></div></div><span class="progress-text">${tasksDone}/${tasksTotal}</span></div>` : ""}
@@ -6268,7 +6339,7 @@ pages.job = async ([id]) => {
       </section>` : ""}
 
       <section class="card mb-16" id="verify-section" tabindex="-1"><div class="card-h"><h2>Test cases${testCases.cases.length ? ` <span class="count">${testCases.summary.covered}/${testCases.summary.automated} covered</span>` : ""}</h2>
-        ${canEditPlan ? `<div class="card-actions"><button class="btn small" data-job-tc-op="add" title="Add a test case">Add</button></div>` : ""}</div>
+        ${canEditPlan ? `<div class="card-actions"><button type="button" class="btn small ghost icon-only" data-job-tc-op="add" aria-label="Add a test case" title="Add a test case"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-plus"/></svg></button></div>` : ""}</div>
         ${testCases.cases.length ? `<div class="card-b">${testCaseSummaryHtml(testCases.summary)}${missingTests ? `<div class="notice bad mt-8">${missingTests} automated case${missingTests === 1 ? "" : "s"} due now ${missingTests === 1 ? "has" : "have"} no test yet.</div>` : ""}${unwrittenCases ? `<div class="notice mt-8">${plural(unwrittenCases, "case")} could not be written as automated ${unwrittenCases === 1 ? "test" : "tests"}. Open ${unwrittenCases === 1 ? "it" : "each"} below for the reason.</div>` : ""}</div>
         <div class="list">${canEditPlan ? testCaseRowsHtml(testCases.cases, { editable: true, actionPrefix: "job-tc" }) : testCaseRowsHtml(testCases.cases)}</div>`
           : quickNoPlan ? `<div class="empty">Quick changes skip planning, so no test cases were listed. Use a Feature or Bug job when you want them.</div>`
@@ -6279,12 +6350,6 @@ pages.job = async ([id]) => {
         <div class="card-b"><ul class="assumptions">${assumptions.map((t) => `<li>${esc(t)}</li>`).join("")}</ul>
         <div class="muted">Wrong about something? Use Revise plan in the menu.</div></div></section>` : ""}
 
-      ${jobRunsCard(jobRuns, runRel, `<details class="hero-error-details">
-            <summary class="linklike muted">Stage &amp; model details</summary>
-            <div class="progress-foot muted">${phasesInfo.map((p) => `${esc(p.title)}: ${esc(p.subtitle)}`).join(" · ")}</div>
-            ${pipe?.planner || pipe?.builder || pipe?.reviewer ? `<div class="progress-foot muted">Models: ${esc(pipeline.planner === pipeline.builder && pipeline.builder === pipeline.reviewer ? pipeline.planner : `plan ${pipeline.planner} → build ${pipeline.builder} → review ${pipeline.reviewer}`)}</div>` : ""}
-            ${job.auto_assignment ? `<div class="progress-foot muted">Picked by Auto (${esc(job.auto_assignment.complexity || "standard")}): ${esc((job.auto_assignment.reasons || []).join("; "))}.</div>` : ""}
-          </details>`)}
       <section class="card mb-16" id="changes-section">
         <div class="card-h"><h2>Changes</h2>${changes?.base ? `<span class="count">vs ${esc(changes.base)}</span>` : ""}
           ${(allFiles.length || changes?.diffstat) ? `<div class="card-actions"><button type="button" class="btn small ghost icon-only" id="download-job-diff" aria-label="Download full diff (.patch)" title="Download full diff (.patch)"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-download"/></svg></button></div>` : ""}</div>
@@ -6317,10 +6382,8 @@ pages.job = async ([id]) => {
         </section>
       ` : ""}
 
-      <!-- Tasks, runs, logs and output: folded on phones so the page isn't one long scroll -->
-      ${tasks.length && !reviewingPlan ? fold("Tasks", `${tasksDone}/${tasks.length}`, `<div class="list">${taskRowsHtml(false)}</div>${canEditPlan ? `<div class="card-b card-b-split"><button class="btn small" data-task-op="add">Add a task</button></div>` : ""}`) : ""}
-
-      ${runs.length ? fold("Activity & Runs", runs.length, `<div class="list">${runs.map(runItem).join("")}</div>`) : ""}
+      <!-- Tasks, logs and output: folded on phones so the page isn't one long scroll -->
+      ${tasks.length && !reviewingPlan ? fold("Tasks", `${tasksDone}/${tasks.length}`, `<div class="list">${taskRowsHtml(false)}</div>${canEditPlan ? `<div class="card-b card-b-split"><button type="button" class="btn small ghost icon-only" data-task-op="add" aria-label="Add a task" title="Add a task"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-plus"/></svg></button></div>` : ""}`) : ""}
 
       ${outputs.length ? fold("Output files", outputs.length, `<div class="list">${outputs.map((o) => `<a class="item" href="#/file?path=${encodeURIComponent(o.path)}">
           <div class="main-col"><div class="title mono">${esc(o.path.split("/").slice(2).join("/") || o.path)}</div>
@@ -6328,6 +6391,13 @@ pages.job = async ([id]) => {
 
       ${(data.context?.updates || []).length ? fold("Updates sent to linked apps", data.context.updates.length, `<div class="list">${data.context.updates.map((e) => `<div class="item"><span aria-label="${e.ok ? "sent" : "failed"}">${e.ok ? "✅" : "⚠️"}</span><div class="main-col">
           <div class="title">${esc(e.message)}</div><div class="meta">${esc([PROVIDER_LABEL[e.provider] || e.provider, e.ref, String(e.event || "").replace(":", " · ").replace("_", " "), e.t].filter(Boolean).join(" · "))}</div></div></div>`).join("")}</div>`) : ""}
+
+      ${jobRunsCard(jobRuns, runRel, `<details class="hero-error-details">
+            <summary class="linklike muted">Stage &amp; model details</summary>
+            <div class="progress-foot muted">${phasesInfo.map((p) => `${esc(p.title)}: ${esc(p.subtitle)}`).join(" · ")}</div>
+            ${pipe?.planner || pipe?.builder || pipe?.reviewer ? `<div class="progress-foot muted">Models: ${esc(pipeline.planner === pipeline.builder && pipeline.builder === pipeline.reviewer ? pipeline.planner : `plan ${pipeline.planner} → build ${pipeline.builder} → review ${pipeline.reviewer}`)}</div>` : ""}
+            ${job.auto_assignment ? `<div class="progress-foot muted">Picked by Auto (${esc(job.auto_assignment.complexity || "standard")}): ${esc((job.auto_assignment.reasons || []).join("; "))}.</div>` : ""}
+          </details>`)}
 
       <!-- Technical Details -->
       <section class="card"><details class="raw"><summary>Technical details (${esc(s.id)})</summary><pre>${esc(JSON.stringify(job, null, 2))}</pre></details></section>
@@ -9094,7 +9164,7 @@ pages["project-docs"] = async () => {
   return {
     title: "Documentation",
     sub: "All current documentation for this project, with AI gap-filling.",
-    actions: `<button type="button" class="btn primary" id="proj-docs-fill"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-plus"/></svg> Fill gaps with AI</button><button type="button" class="btn" id="proj-docs-export">Export all .md</button>`,
+    actions: `<button type="button" class="btn primary" id="proj-docs-fill"><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg> Fill gaps with AI</button><button type="button" class="btn" id="proj-docs-export">Export all .md</button>`,
     html: `
       ${gapsHtml}
       <section class="card">
@@ -9458,7 +9528,7 @@ pages.product = async (_, query) => {
           <span>A design or site to use as a reference</span>
           <form class="import-link-form row gap-8 mt-4" id="prd-link-form">
             <input type="url" id="prd-link-input" placeholder="https://" required aria-label="Reference link">
-            <button type="submit" class="btn small primary" id="prd-link-submit">Add</button>
+            <button type="submit" class="btn small primary icon-only" id="prd-link-submit" aria-label="Add reference link" title="Add reference link"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-plus"/></svg></button>
           </form>
         </div>
         <div class="import-option import-option-apps" id="prd-apps-section">
@@ -10738,7 +10808,7 @@ function extraCommandsHtml(commands) {
   }).join("");
   return `<section class="card" id="extra-commands"><div class="card-h"><h2>Extra test commands <span class="count">${commands.length}</span></h2>
       <div class="row gap-8"><button type="button" class="btn small ghost" id="commands-recheck" title="Look again at Docker, files and tools these need">Check again</button>
-      ${owner ? `<button type="button" class="btn small" id="command-add">Add command</button>` : ""}</div></div>
+      ${owner ? `<button type="button" class="btn small ghost icon-only" id="command-add" aria-label="Add command" title="Add command"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-plus"/></svg></button>` : ""}</div></div>
     ${commands.length ? `<div class="list">${rows}</div>`
       : `<div class="card-b stack"><p class="muted">Optional extra checks to run after main tests or on demand.</p></div>`}</section>`;
 }
@@ -12016,9 +12086,12 @@ pages.config = async (args = []) => {
             if (event.target.closest("[data-free-ai]")) { setUpFreeAi(); return; }
             const button = event.target.closest("[data-ai-connect]");
             if (!button || button.disabled) return;
-            ToolConnect.open(button.dataset.aiConnect, button.dataset.aiName, {api, formDialog, onClose: () => {
-              refreshState().then(() => { if (current.page === "config") route(); });
-            }});
+            ToolConnect.open(button.dataset.aiConnect, button.dataset.aiName, {
+              api,
+              formDialog,
+              onConnected: () => { api("blockers", { method: "POST", body: {} }).catch(() => {}); },
+              onClose: () => { refreshState().then(() => { if (current.page === "config") route(); }); },
+            });
           };
           view.addEventListener("click", onConnect);
           cleanup.push(() => view.removeEventListener("click", onConnect));
@@ -13038,7 +13111,7 @@ async function linkPickerHtml({ prefer = [], label = "Link from your apps", empt
   }
   const html = `<div class="link-picker field"><span>${esc(label)} <span class="muted">(optional)</span></span>
     <div class="row"><select class="lp-provider" aria-label="App">${providers.map((p) => `<option value="${esc(p.id)}" data-search="${p.searchable}">${esc(p.name)}</option>`).join("")}</select>
-      <input type="text" class="lp-input" autocomplete="off" autocapitalize="off" spellcheck="false" style="flex:1;min-width:160px"><button type="button" class="btn small lp-add">Add</button></div>
+      <input type="text" class="lp-input" autocomplete="off" autocapitalize="off" spellcheck="false" style="flex:1;min-width:160px"><button type="button" class="btn small icon-only lp-add" aria-label="Add link" title="Add link"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-plus"/></svg></button></div>
     <div class="row justify-between align-center mt-8 t-secondary">
       <span class="muted">Connected apps: ${providers.map((p) => esc(p.name)).join(", ")}</span>
       <a href="#/connections" class="linklike">Connect more apps ↗</a>
@@ -14040,8 +14113,8 @@ function runFamilyHtml(r, family) {
   const job = `<a href="#/jobs/${encodeURIComponent(family.job.id)}">${esc(family.job.title)}</a>`;
   // A job whose first kept run isn't its planning started before runs were kept: say "recorded" so the count isn't taken as all of them.
   const partial = work.length && work[0].phase !== "plan";
+  if (!me?.side && work.length <= 1) return "";
   const where = me?.side ? `A side errand for the job ${job}`
-    : work.length <= 1 ? (partial ? `The only recorded run of the job ${job}` : `The only run of the job ${job}`)
     : `Run ${at + 1} of ${work.length}${partial ? " recorded runs" : ""} of the job ${job}`;
   return `<span class="status-line run-family"><span>${where}</span></span>`;
 }
@@ -14221,12 +14294,16 @@ function runFailureGuidance(r) {
       ? `<button type="button" class="btn small" ${act(r.action || "execute", { job: targetJob })}><svg class="icon icon-sm" aria-hidden="true"><use href="#i-play"/></svg> Rerun job</button>`
       : "";
     const signInBtn = oauthProvider
-      ? `<button type="button" class="btn small primary" ${act("ai_connect", { provider: oauthProvider, name: oauthLabel })}>Sign in to ${oauthLabel}</button>`
+      ? `<button type="button" class="btn small primary" ${act("ai_connect", {
+          provider: oauthProvider,
+          name: oauthLabel,
+          ...(targetJob ? { retry_job: targetJob, retry_action: r.action || "execute" } : {}),
+        })}>Sign in to ${oauthLabel}</button>`
       : `<a class="btn small primary" href="#/config/ai">Open AI tools</a>`;
     const aiToolsBtn = oauthProvider ? `<a class="btn small" href="#/config/ai">Open AI tools</a>` : "";
     return {
       title: "AI sign-in expired",
-      detail: "Your login session expired. Sign in again, then rerun.",
+      detail: targetJob ? "Your login session expired. Sign in again to automatically retry this job." : "Your login session expired. Sign in again, then rerun.",
       action: signInBtn,
       secondary: `${aiToolsBtn}${rerunBtn}`,
     };

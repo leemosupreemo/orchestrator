@@ -8259,7 +8259,7 @@ console.log(JSON.stringify({{ fromHyp, fromDoc }}));
         self.assertIn("drawFeatureLinks", self.source)
         self.assertIn("job.plan?.slice_warnings", self.job_page)
         self.assertIn('matchMedia("(max-width: 760px)")', self.job_page)
-        for title in ("Tasks", "Activity & Runs", "Output files"):  # logs live under "What went wrong" now
+        for title in ("Tasks", "Output files"):  # logs live under "What went wrong" now; runs live in the collapsed #job-runs fold
             self.assertIn(f'fold("{title}"', self.job_page, title)
         self.assertIn("pages.help = async", self.source)
         self.assertIn('href="#/help"', (static / "index.html").read_text())
@@ -8291,12 +8291,13 @@ console.log(JSON.stringify({{ fromHyp, fromDoc }}));
         self.assertIn('["Delete…", act("delete_job", j), "Remove the job, and optionally its changes", "danger"]', header_actions_fn)
         self.assertLess(header_actions_fn.index('["Archive"'), header_actions_fn.index('["Delete…"'))
         self.assertNotIn(">Delete</button>", header_actions_fn)
-        self.assertIn('items.push(...(items.length ? ["---"] : []), ...shown)', header_actions_fn)  # each group apart; ending the job comes last
+        self.assertIn('items.push(["header", heading], ...shown)', header_actions_fn)  # each group headed; ending the job comes last
         self.assertIn("return moreMenu(items, { compact: true });", header_actions_fn)
 
     def test_job_menu_is_one_plain_list_that_never_repeats_a_button_on_the_page(self):
         fn = self.source[self.source.index("function jobHeaderActions"):self.source.index('document.addEventListener("click", async (e)', self.source.index("function jobHeaderActions"))]
-        self.assertNotIn('"header"', fn)  # dividers, not headings over one or two items
+        for heading in ("Work on this job", "Share & export", "Settings", "Finish or remove"):
+            self.assertIn(f'"{heading}"', fn)
         self.assertNotIn("Still broken?", fn)  # one way to ask for a fix
         self.assertIn('idle && !ctx.steerShown && next !== "debug"', fn)  # not when the status box offers Run fix
         self.assertIn('idle && !reviewed && !ctx.planShown && ctx.canSplinter', fn)  # the plan card has its own Split

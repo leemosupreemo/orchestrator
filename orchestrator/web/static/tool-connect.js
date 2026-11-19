@@ -65,9 +65,9 @@
       output, details};
   }
 
-  async function open(provider, name, {api, formDialog, onClose = () => {}}) {
+  async function open(provider, name, {api, formDialog, onClose = () => {}, onConnected = null}) {
     const doc = root.document, esc = root.Html.escape;
-    let closed = false, finished = false, checkingCode = false, stopRequested = false, runId, log = "", offset = 0;
+    let closed = false, finished = false, checkingCode = false, runId, log = "", offset = 0;
     // Two views in one dialog. Getting the tool ready shows the checklist. Signing in replaces it with just what you do:
     // open the page, then paste the code it gives you (or enter the code shown here). Short, so Submit is never off screen.
     const promise = formDialog(`Connect ${name}`, `<p class="muted" id="connect-intro">Orchestrator gets ${esc(name)} ready on this computer, then you approve it in your browser.</p>
@@ -76,12 +76,12 @@
       <pre id="connect-question" class="doc connect-question" hidden></pre>
       <div id="connect-browser" class="stack"></div>
       <div id="connect-code-row" class="stack" hidden><label class="field"><span>2. Paste the code it shows</span><input id="connect-code" autocomplete="off" spellcheck="false" placeholder="Paste code or key"></label><div><button type="button" class="btn primary" id="connect-code-send">Submit code</button></div></div>
-      <div class="row gap-8 wrap"><button type="button" class="btn primary" id="connect-agree" hidden>Agree and continue</button><button type="button" class="btn" id="connect-continue" hidden>Continue</button><button type="button" class="btn danger" id="connect-stop">Stop sign-in</button></div>
+      <div class="row gap-8 wrap"><button type="button" class="btn primary" id="connect-agree" hidden>Agree and continue</button><button type="button" class="btn" id="connect-continue" hidden>Continue</button></div>
       <p class="muted t-secondary">You can close this: sign-in keeps going under Running now<span id="connect-log"></span>.</p>`, "Done", {cancelLabel: "Close"});
     promise.then(() => {closed = true; onClose();});
     const el = id => doc.getElementById(id);
     const ok = el("dialog-ok"); if (ok) ok.hidden = true;
-    const hideControls = () => {for (const id of ["connect-agree", "connect-continue", "connect-stop", "connect-code-row", "connect-question"]) if (el(id)) el(id).hidden = true;};
+    const hideControls = () => {for (const id of ["connect-agree", "connect-continue", "connect-code-row", "connect-question"]) if (el(id)) el(id).hidden = true;};
     const stopSteps = () => {doc.querySelectorAll("[data-connect-step]").forEach(row => {if (String(row.className).includes("is-active")) row.className = "ai-step";});};
     const showError = message => { if (!closed && el("connect-status")) {el("connect-status").className="notice bad";el("connect-status").textContent=message;} };
     const send = async data => {
@@ -93,34 +93,11 @@
     const sendCode = () => {const input=el("connect-code"),value=input?.value.trim();if(value){checkingCode=true;send(value+"\r");input.value="";if(el("connect-status"))el("connect-status").textContent="Checking the code…";}};
     el("connect-code-send").onclick = sendCode;
     el("connect-code").onkeydown = event => {if(event.key==="Enter"){event.preventDefault();sendCode();}};
-    const requestStop = async () => {
-      if (finished) return;
-      stopRequested = true;
-      const btn = el("connect-stop");
-      if (btn) { btn.disabled = true; btn.textContent = "Stopping…"; }
-      if (!closed && el("connect-status")) { el("connect-status").className = ""; el("connect-status").textContent = "Stopping sign-in…"; }
-      if (!runId) return;
-      try {
-        await api(`runs/${encodeURIComponent(runId)}/stop`, {method:"POST", body:{}});
-      } catch (error) {
-        if (error?.status === 404 || /unknown run/i.test(error?.message || "")) {
-          finished = true; hideControls(); stopSteps();
-          if (!closed && el("connect-status")) { el("connect-status").className = "notice"; el("connect-status").textContent = "Sign-in stopped."; }
-          if (ok && !closed) ok.hidden = false;
-        } else {
-          if (btn) { btn.disabled = false; btn.textContent = "Stop sign-in"; }
-          stopRequested = false;
-          showError(error.message);
-        }
-      }
-    };
-    el("connect-stop").onclick = requestStop;
     let reached = 0, lastProgress, shownLinks = "";
     try {
       const response = await api("runs", {method:"POST",body:{action:"ai_connect",params:{provider,title:`Connect ${name}`}}});
       runId=response.run.id;
       if(el("connect-log"))el("connect-log").innerHTML=`, where <a href="#/runs/${encodeURIComponent(runId)}">its terminal</a> answers anything else it asks`;
-      if (stopRequested) await requestStop();
       const decoder = new TextDecoder();
       while (!closed && !finished) {
         const out=await api(`runs/${encodeURIComponent(runId)}/output?offset=${offset}&wait=1`);
@@ -143,7 +120,7 @@
         const asking=state.needsAgreement||state.needsContinue; // show what it asks, so Agree or Continue is an informed click
         el("connect-question").hidden=!asking;
         if(asking)el("connect-question").textContent=state.details.split("\n").filter(l=>l.trim()).slice(-6).join("\n");
-        el("connect-status").textContent=stopRequested?"Stopping sign-in…":checkingCode?"Checking the code…":state.detail;
+        el("connect-status").textContent=checkingCode?"Checking the code…":state.detail;
         const links=JSON.stringify([state.code,state.urls]);
         if(links!==shownLinks){ // only when it changes: the page is redrawn twice a second and would drop a half-pasted link
           shownLinks=links;
@@ -170,10 +147,7 @@
             el("connect-status").className="notice good";
             el("connect-status").textContent=`${name} is connected. Its models are ready for jobs.`;
             doc.querySelectorAll("[data-connect-step]").forEach(row=>row.className="ai-step is-done");
-          }else if(stopRequested){
-            stopSteps();
-            el("connect-status").className="notice";
-            el("connect-status").textContent="Sign-in stopped.";
+            if (typeof onConnected === "function") onConnected();
           }else{
             stopSteps();
             showError(state.step==="error"?state.detail:`${name} did not finish connecting. Check the sign-in details, then try Connect again.`);
@@ -184,9 +158,7 @@
       }
     }catch(error){
       finished=true;hideControls();stopSteps();
-      if(stopRequested&&(error?.status===404||/unknown run/i.test(error?.message||""))){
-        if(!closed&&el("connect-status")){el("connect-status").className="notice";el("connect-status").textContent="Sign-in stopped.";}
-      }else showError(error.message);
+      showError(error.message);
       if(ok&&!closed)ok.hidden=false;
     }
   }

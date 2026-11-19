@@ -658,14 +658,9 @@ class CrossMachineJobsTests(unittest.TestCase):
 
     def test_ui_remote_rows_follow_the_review_fixes(self):
         app = APP.read_text(encoding="utf-8")
-        # "Open on <computer>": repairs a moved connection, signs in properly, only then navigates, and on failure puts the
-        # browser back on the computer it came from (signing in drops the token and switches the backend)
-        opener = app[app.index("// Signing in moves the browser to that computer and drops the token"):]
-        opener = opener[:opener.index('btn.textContent = `Open on')]
-        order = [opener.index(bit) for bit in ("res = await signInToMachine(machine)", "res = await repairMachineConnection(machine, error)",
-                                               "await unlockWith(res.token", "location.hash", "before.forEach(")]
-        self.assertEqual(order, sorted(order))
-        self.assertIn('"orchestrator_token"', opener.split("const before")[0])  # the token is among what is restored
+        # Remote jobs always open on the local machine — never offer "Open on <remote machine>".
+        self.assertNotIn("open-remote-machine-job", app)
+        self.assertNotIn("Open on ${esc(machineLabel)}", app)
         # archived jobs count as present, the control plane can't stall Home, matching is by repo, yolo is local only
         for bit in (".concat(archivedJobs).map((j) => j.id)", 'cpApi("machines", { signal: AbortSignal.timeout(3000) })',
                     "Date.now() - homeRemoteSnaps.at > 30000", "p.repo || p.github_repo || p.git_remote",
@@ -798,18 +793,22 @@ eval(code.slice(start, end));
   assert(!rsHtml.includes('pip install --upgrade pip'), rsHtml);
   clearPendingUpdateResume();
 
-  // 1b. Online-but-connecting remote machine surfaces connection detail in sub
+  // 1b. Online-but-connecting remote machine surfaces connection detail when fallback card renders (e.g. active run)
   currentMachine = { id: 'm1', name: 'Pro', online: true, reachable: false, connection: { state: 'checking', detail: 'Testing Tailscale Funnel' } };
+  remoteJob.active_run = { label: 'Building', step: 'Tests' };
   const connecting = await pages['remote-job'](['m1', 'job-7']);
   assert(connecting.sub.includes('Testing Tailscale Funnel'), connecting.sub);
+  assert(!connecting.html.includes('Open on Pro'), connecting.html);
+  delete remoteJob.active_run;
 
-  // 2. Reachable remote machine: Open remote auto-switches to matching project on remote machine
-  currentMachine = { id: 'm1', name: 'Pro', reachable: true };
+  // 2. Online/reachable remote machine without active run: automatically brings the job here and opens it locally
+  currentMachine = { id: 'm1', name: 'Pro', online: true, reachable: true };
+  importShouldSucceed = true;
+  location.hash = '';
   const on = await pages['remote-job'](['m1', 'job-7']);
-  assert(on.html.includes('Open on Pro'), on.html);
-  on.after();
-  await listeners['open-remote-machine-job:click']({ currentTarget: buttons['open-remote-machine-job'] });
-  assert.deepEqual(switched, [{ root: '/Users/me/DAoC-Mobile', then: '#/jobs/job-7' }]);
+  assert.equal(on.stale, true);
+  assert.equal(location.hash, '#/jobs/job-7');
+  assert.deepEqual(switched, []);
 })().catch((e) => { console.error(e); process.exit(1); });
 """
         res = subprocess.run(["node", "-e", script, str(APP)], capture_output=True, text=True)
@@ -1002,11 +1001,12 @@ console.log(JSON.stringify({{ withIndex, fallback }}));
         for snippet in (
             'fullText.includes("oauth access token has expired")',
             'fullText.includes("re-authenticate to continue")',
-            'act("ai_connect", { provider: oauthProvider, name: oauthLabel })',
+            '...(targetJob ? { retry_job: targetJob, retry_action: r.action || "execute" } : {})',
             'Sign in to ${oauthLabel}',
             'ToolConnect.providerFromText(fullText)',  # one list of tools for the card and the dialog
-            'ai_connect(params) {\n    ToolConnect.open(params.provider',  # the card opens the sign-in modal, not a new run
-            'detail: "Your login session expired. Sign in again, then rerun."',
+            'if (params.retry_job && params.retry_action)',
+            'runAction(params.retry_action, { job: params.retry_job, ...(params.retry_params || {}) }, { skipConfirm: true })',
+            'Your login session expired. Sign in again to automatically retry this job.',
         ):
             self.assertIn(snippet, app)
 

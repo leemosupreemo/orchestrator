@@ -168,7 +168,9 @@ class PageTests(unittest.TestCase):
         self.assertIn("${jobRunsCard(jobRuns, runRel, ", self.app)
         self.assertIn("activeRunCard(r, (jobRuns || []).find((x) => x.id === r.id)", self.app)
         self.assertIn("· run in progress", self.app)
-        self.assertIn("This job ran in one go", self.app)  # 1:1
+        self.assertNotIn("This job ran in one go", self.app)
+        self.assertIn('<section class="card mb-16" id="job-runs"><details class="fold">', self.app)
+        self.assertNotIn('fold("Activity & Runs"', self.app)
         self.assertIn('detail.update(self._job_runs_view(root, parts[1], detail["runs"], detail["job"]))', self.server)
 
     def test_runs_bubble_up_into_the_job_stages_and_hero(self):
@@ -179,7 +181,9 @@ class PageTests(unittest.TestCase):
 
     def test_the_run_page_says_whose_run_it_is(self):
         self.assertIn('api(`jobs/${encodeURIComponent(familyOf)}/runs`)', self.app)
-        self.assertIn("The only run of the job", self.app)
+        self.assertNotIn("The only run of the job", self.app)
+        self.assertNotIn("The only recorded run of the job", self.app)
+        self.assertIn("if (!me?.side && work.length <= 1) return \"\";", self.app)
         self.assertIn('Run ${at + 1} of ${work.length}${partial ? " recorded runs" : ""} of the job', self.app)
         family = self.app[self.app.index("function runFamilyHtml"):self.app.index("function runHeader")]
         self.assertNotIn("Previous run:", family)
