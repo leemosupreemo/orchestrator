@@ -4532,7 +4532,9 @@ pages.home = async (_, query) => {
       };
     }
     const snaps = homeRemoteSnaps.snaps;
-    const seen = new Set(jobs.concat(archivedJobs).map((j) => j.id)); // an archived job is still here: never offer it again as "on another computer"
+    // an archived job is still here: never offer it again as "on another computer". A copy that moved away isn't: the
+    // owner's row stands in for it, with the job's real state, so it stays among the jobs rather than under Completed.
+    const seen = new Set(jobs.filter((j) => !j.moved_to).concat(archivedJobs).map((j) => j.id));
     const out = [];
     for (const item of snaps) {
       if (!item?.snap?.recent_jobs) continue;
@@ -4567,11 +4569,12 @@ pages.home = async (_, query) => {
     // one owner per job: this copy stops (the server refuses to run it) and reads "Moved to …" from the next refresh
     api(`jobs/${encodeURIComponent(j.id)}/moved`, { method: "POST", body: { machine: j.continued_on } }).catch(() => {});
   });
-  const mergedJobs = jobs.concat(remoteJobs);
+  const ownedElsewhere = new Set(remoteJobs.map((j) => j.id));
+  const mergedJobs = jobs.filter((j) => !(j.moved_to && ownedElsewhere.has(j.id))).concat(remoteJobs);
   const sortedJobs = sortJobs(mergedJobs);
 
   // Two sections: the work still going, and what's finished or put away. Old links with filter=done or filter=archived land on the second.
-  const isFinished = (j) => j.state.group === "done";
+  const isFinished = (j) => j.state.group === "done" && !j.moved_to; // moved on to another computer isn't finished
   const HOME_FILTERS = {
     all: ["All", (j) => !isFinished(j)],
     needs_you: ["Needs you", (j) => j.state.group === "needs_you" && !j.active_run],

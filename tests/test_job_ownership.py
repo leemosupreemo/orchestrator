@@ -91,6 +91,14 @@ class OwnershipTests(unittest.TestCase):
             worker.execute_job(self.path, resume=True)
         prepare.assert_not_called()  # nothing touched git or the AI here
 
+    def test_home_lists_a_moved_job_among_the_jobs_not_completed(self):
+        # it isn't finished: it lives on another computer. Home shows that computer's row in its place (its real state), and
+        # the moved copy itself stays among the jobs when that row isn't there (the other computer never synced)
+        app = (Path(__file__).resolve().parents[1] / "orchestrator" / "web" / "static" / "app.js").read_text(encoding="utf-8")
+        self.assertIn('const isFinished = (j) => j.state.group === "done" && !j.moved_to;', app)
+        self.assertIn("const seen = new Set(jobs.filter((j) => !j.moved_to).concat(archivedJobs).map((j) => j.id));", app)
+        self.assertIn("jobs.filter((j) => !(j.moved_to && ownedElsewhere.has(j.id))).concat(remoteJobs)", app)
+
     def test_continuing_it_back_takes_the_newer_copy(self):
         ui.mark_job_moved(self.root, "j1", "MacBook Air")
         with mock.patch("shutil.which", return_value=None):  # no git fetch in a test

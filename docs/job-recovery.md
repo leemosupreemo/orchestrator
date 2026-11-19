@@ -133,7 +133,7 @@ history. What belongs to one computer (its process, its blockers, uncommitted fi
    - **From Home.** Home there sees the newer copy in the other computer's snapshot and posts `/api/jobs/<id>/moved`.
 
    Either way, `mark_job_moved` records `moved_to`.
-3. A moved job reads **Moved to <computer>** (group `done`, no action). `_launch_run` refuses every run on it except
+3. A moved job reads **Moved to <computer>** (group `done`, no action). Home doesn't file it under Completed: it isn't finished, it lives elsewhere. The owner's row (from its snapshot, with the job's real state) stands in for it among the jobs; when there's no such row, the moved copy itself stays there. `_launch_run` refuses every run on it except
    delete and discard, and `execute_job` returns before touching git or a model.
 4. Continuing it back imports the other copy over the moved one, since that copy is newer. Comparing `imported_at` stops the
    two computers marking each other as moved.

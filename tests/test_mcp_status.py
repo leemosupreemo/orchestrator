@@ -667,7 +667,7 @@ class CrossMachineJobsTests(unittest.TestCase):
         self.assertEqual(order, sorted(order))
         self.assertIn('"orchestrator_token"', opener.split("const before")[0])  # the token is among what is restored
         # archived jobs count as present, the control plane can't stall Home, matching is by repo, yolo is local only
-        for bit in ("jobs.concat(archivedJobs)", 'cpApi("machines", { signal: AbortSignal.timeout(3000) })',
+        for bit in (".concat(archivedJobs).map((j) => j.id)", 'cpApi("machines", { signal: AbortSignal.timeout(3000) })',
                     "Date.now() - homeRemoteSnaps.at > 30000", "p.repo || p.github_repo || p.git_remote",
                     'const same = (myRepo && rRepo) ? myRepo === rRepo : (myName && String(rj.project || "").toLowerCase() === myName);',
                     "!j.remote_machine && HOME_FILTERS.working[1](j)", "rj.tasks_done", 'st === "failed"', 'st === "scheduled"'):
