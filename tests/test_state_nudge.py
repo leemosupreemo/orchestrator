@@ -52,8 +52,9 @@ class NudgeTests(unittest.TestCase):
         self.push_from_studio()
         heads = state_ref.local_heads([self.root["studio"]])
         self.assertEqual(list(heads.values())[0]["sha"], git(self.root["studio"], "rev-parse", state_ref.TRACKING_REF))
-        state_ref.set_consent(self.root["studio"], False)
-        self.assertEqual(state_ref.local_heads([self.root["studio"]]), {})  # stopped sharing: nothing reported
+        for scope in state_ref.SCOPES:
+            state_ref.set_consent(self.root["studio"], False, scope)
+        self.assertEqual(state_ref.local_heads([self.root["studio"]]), {})  # stopped sharing everything: nothing reported
 
     def test_a_computer_is_behind_until_it_has_the_newest_commit(self):
         self.push_from_studio()
@@ -64,7 +65,8 @@ class NudgeTests(unittest.TestCase):
         self.assertFalse(state_ref.behind(laptop, heads))
         self.assertFalse(state_ref.behind([self.root["studio"]], heads))  # its own push
         self.assertFalse(state_ref.behind(laptop, None))
-        state_ref.set_consent(self.root["laptop"], False)
+        for scope in state_ref.SCOPES:
+            state_ref.set_consent(self.root["laptop"], False, scope)
         self.assertFalse(state_ref.behind(laptop, {state_ref.project_key(self.root["laptop"]): "f" * 40}))  # not shared here
 
     def test_the_heads_go_through_the_real_control_plane_and_reach_the_other_computer(self):

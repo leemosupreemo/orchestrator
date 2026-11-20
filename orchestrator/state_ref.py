@@ -10,8 +10,8 @@ out, never in a branch, and not fetched by an ordinary clone. See docs/state-syn
   touched); `push` sends it WITHOUT --force, so a push based on an older state is rejected: that is the compare-and-swap that
   stops two computers overwriting each other. The caller fetches, merges and tries again.
 - Pushes use --no-verify: the repository's own pre-push hooks (a test run) are for code, not for this.
-- Sharing is per project and only after the person says yes (`consent`): anyone who can read the repository can read the ref,
-  and on a public repository that is everyone.
+- Sharing is on by default, per project and kind, until the person stops it (`sharing`, `consent`): anyone who can read the
+  repository can read the ref, and on a public repository that is everyone.
 """
 from __future__ import annotations
 
@@ -147,7 +147,7 @@ def push(repo: Path, sha: str) -> bool:
     raise StateRefError(_words(res) or "git push failed")
 
 
-# ---- consent: nothing is shared until the person says so, per project
+# ---- consent: on by default; the person can stop each kind per project (see SHARE_BY_DEFAULT)
 
 def _consent_file(root: Path) -> Path:
     from orchestrator.prd import shared_runtime
@@ -173,6 +173,22 @@ def consent(root: Path, scope: str = "product") -> bool | None:
     """True or False once the person decided for this project and kind of state, None while they haven't."""
     value = _consents(root).get(scope)
     return value if isinstance(value, bool) else None
+
+
+# On by default (the person's decision, 2026-11-20): with no answer, a project with a remote shares. An explicit "Stop sharing"
+# wins. Who may see a team's shared state is for the planned permission system; until then the repository's own access decides.
+SHARE_BY_DEFAULT = True
+SHARE_PUBLIC_BY_DEFAULT = True   # a public repository's shared state is readable by anyone
+
+
+def sharing(root: Path, scope: str = "product") -> bool:
+    """Whether this project shares this kind of state now: the person's answer, else the default."""
+    answer = consent(root, scope)
+    if answer is not None:
+        return answer
+    if not SHARE_BY_DEFAULT:
+        return False
+    return SHARE_PUBLIC_BY_DEFAULT or is_public(root) is not True
 
 
 def set_consent(root: Path, enabled: bool, scope: str = "product") -> None:
@@ -216,8 +232,18 @@ def status(root: Path) -> dict[str, Any]:
     where = f"{parsed[0]}/{parsed[1]}" if parsed else url
     if not url:
         return {"state": "no_remote", "jobs": "no_remote", "remote": "", "public": None}
-    word = lambda decided: "ask" if decided is None else ("on" if decided else "off")  # noqa: E731
-    return {"state": word(consent(root)), "jobs": word(consent(root, "jobs")), "remote": where, "public": is_public(root, url)}
+    public = is_public(root, url)
+
+    def word(scope: str) -> str:
+        answer = consent(root, scope)
+        if answer is not None:
+            return "on" if answer else "off"
+        if not SHARE_BY_DEFAULT or (public is True and not SHARE_PUBLIC_BY_DEFAULT):
+            return "ask"
+        return "on"
+
+    return {"state": word("product"), "jobs": word("jobs"), "remote": where, "public": public,
+            "default": consent(root) is None}
 
 
 # ---- the nudge: the account passes on which commit is newest (a key and a hash, never content), so others fetch at once
@@ -252,7 +278,7 @@ def pushed_head(root: Path) -> dict[str, Any] | None:
 
 
 def shares_anything(root: Path) -> bool:
-    return any(consent(root, scope) is True for scope in SCOPES)
+    return any(sharing(root, scope) for scope in SCOPES)
 
 
 def local_heads(roots: list[Path]) -> dict[str, dict[str, Any]]:

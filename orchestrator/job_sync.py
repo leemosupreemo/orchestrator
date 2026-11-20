@@ -11,8 +11,8 @@ Rules, the same ones the control plane uses:
 - **Archive and restore.** `job-events.json` keeps the newest event per job; each computer applies the ones newer than its own
   (`apply_job_archives`), as the heartbeat's `job_archives` does.
 
-Only after the person agreed to share this project's jobs (asked separately from the product requirements: jobs carry their
-answers and plans). A push built on an older state is rejected and the round starts again from what is there.
+On by default; the person can stop sharing this project's jobs separately from its product requirements (jobs carry their
+answers and plans).
 """
 from __future__ import annotations
 
@@ -88,7 +88,7 @@ def sync_project(root: Path, *, name: str, running: set[str] | None = None) -> d
     """One round for one project: push this computer's winning copies and newer events, apply other computers' moves and
     archives here. Returns {"outcome": off | no remote | idle | pushed | busy, "moved": [...], "archived": [...]}."""
     root = Path(root)
-    if state_ref.consent(root, "jobs") is not True:
+    if not state_ref.sharing(root, "jobs"):
         return {"outcome": "off", "moved": [], "archived": []}
     if not state_ref.remote_url(root):
         return {"outcome": "no remote", "moved": [], "archived": []}
@@ -125,7 +125,7 @@ def shared_jobs(root: Path, name: str) -> dict[str, Any]:
     """Other computers' jobs for this project, from the last fetched shared state, for the web app: {"jobs": [...],
     "synced_at": when that state was written}. Nothing when this project's jobs aren't shared."""
     root = Path(root)
-    if state_ref.consent(root, "jobs") is not True:
+    if not state_ref.sharing(root, "jobs"):
         return {"jobs": [], "synced_at": 0}
     head = state_ref.fetched(root)
     out = []

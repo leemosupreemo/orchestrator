@@ -163,7 +163,7 @@ With Jira connected (Connections) and a project key set (in the Epics section, o
 | Designs and sketches | `.orchestrator/product/designs/` (older projects: `docs/product/designs/`, copied once) | No; shared with the document once you agree |
 | Imported source documents | `.orchestrator/product/source/` (older projects: `docs/product/source/`, copied once) | No; shared with the document once you agree |
 | Where the last sync left things | `.orchestrator/product/sync.json` | No |
-| Whether you agreed to share | `.orchestrator/state/repo_sync.json` | No |
+| Whether you stopped sharing (unset means shared) | `.orchestrator/state/repo_sync.json` | No |
 | Features (including approved epics) | `.orchestrator/features.json` | No (local runtime state) |
 | Epics: suggestions, decisions, Jira links | `.orchestrator/epics.json` | No (local runtime state) |
 | A waiting or planned epic's job | `.orchestrator/jobs/` (`status: backlog` until planned) | No |
@@ -181,12 +181,13 @@ the starting copy. It travels through the project's own repository, not Orchestr
 `refs/orchestrator/state`, on `origin` (how that works, and what else will travel the same way: [Sharing project state between
 computers](state-sync.md)).
 
-**Asked once.** Nothing is shared until you say so for the project. The Product page asks "Share with your other computers?",
-says which repository it would go to and that anyone who can read that repository can read it. On a repository GitHub reports
-as public it warns and makes **Keep on this computer** the main button. Change it any time under **Keeping it up to date**
-(**Stop sharing**, **Share through ...**). A project with no Git remote says so there and stays on this computer.
+**On by default.** A project with a Git remote shares its document (and, separately, its jobs) with every computer working on
+it, without asking. **Keeping it up to date** on the Product page says "Shared with your other computers through ... (on by
+default)" with **Stop sharing**; on a repository GitHub reports as public it also warns that anyone can read what is shared.
+A project with no Git remote says so there and stays on this computer. A permission system for team projects is planned; until
+then, whoever can read the repository can read the shared document.
 
-Once shared, every minute (`orchestrator/product_sync.py`) each computer looks at the shared copy:
+Every minute, or within seconds when another computer pushed (`orchestrator/product_sync.py`), each computer looks at the shared copy:
 
 - **Your edit is pushed** when the document changed since the last sync and the shared copy hasn't.
 - **The shared copy is pulled** when it changed and yours didn't. It is written as a version with source `sync` ("Synced from

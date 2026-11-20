@@ -2,8 +2,8 @@
 repository (refs/orchestrator/state, see orchestrator/state_ref.py and docs/state-sync.md), not Orchestrator's servers.
 
 The document is `.orchestrator/product/prd.md`: git-ignored, so before this each computer had its own, and a job continued on
-another computer was judged against a different (older, or no) product description. Once the person agrees to share it for a
-project (asked once, on the Product page), each computer, every CHECK_SECONDS:
+another computer was judged against a different (older, or no) product description. Unless the person stopped sharing it for a
+project (on the Product page; it is on by default), each computer, every CHECK_SECONDS or when nudged:
 
 - pushes its document when it changed since the last sync;
 - pulls the shared one when that changed and this one didn't;
@@ -170,7 +170,7 @@ def sync_project(root: Path, *, name: str | None = None) -> str:
     pushed, pulled, merged, files (only design or source files moved), or busy (something changed under it: the next round
     starts again). Raises StateRefError when git can't reach or write the remote."""
     root = Path(root)
-    if state_ref.consent(root) is not True:
+    if not state_ref.sharing(root):
         return "off"
     if not state_ref.remote_url(root):
         return "no remote"

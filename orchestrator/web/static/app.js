@@ -9794,7 +9794,8 @@ pages.product = async (_, query) => {
       : s.jobs === "on"
         ? `<div class="row gap-12 align-center wrap" id="prd-sharing-jobs"><span class="muted">Jobs are shared too.</span><button type="button" class="btn small ghost" data-prd-share="false" data-prd-share-scope="jobs">Stop sharing jobs</button></div>`
         : `<div class="row gap-12 align-center wrap" id="prd-sharing-jobs"><span class="muted">Jobs stay on this computer.</span><button type="button" class="btn small ghost" data-prd-share="true" data-prd-share-scope="jobs">Share jobs too</button></div>`;
-    if (s.state === "on") return `<div class="row gap-12 align-center wrap" id="prd-sharing"><span class="muted">Shared with your other computers through <span class="mono">${esc(s.remote)}</span>.</span><button type="button" class="btn small ghost" data-prd-share="false">Stop sharing</button></div>${jobs}`;
+    if (s.state === "on") return `<div class="row gap-12 align-center wrap" id="prd-sharing"><span class="muted">Shared with your other computers through <span class="mono">${esc(s.remote)}</span>${s.default ? " (on by default)" : ""}.</span><button type="button" class="btn small ghost" data-prd-share="false">Stop sharing</button></div>
+      ${s.public ? `<div class="notice warn" id="prd-sharing-public">This repository is public, so anyone can read what is shared: these requirements${s.jobs === "on" ? ", and your jobs' plans, answers and fix history" : ""}. Stop sharing to keep them on this computer.</div>` : ""}${jobs}`;
     if (s.state === "off") return `<div class="row gap-12 align-center wrap" id="prd-sharing"><span class="muted">Kept on this computer.</span><button type="button" class="btn small ghost" data-prd-share="true">Share through ${esc(s.remote)}</button></div>`;
     return "";
   };

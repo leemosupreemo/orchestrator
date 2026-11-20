@@ -219,14 +219,22 @@ class FilesTests(TwoComputers):
 
 
 class RepositoryTests(TwoComputers):
-    def test_nothing_is_shared_until_the_person_says_yes_for_the_project(self):
-        state_ref.set_consent(self.root["studio"], False)
-        self.write("studio", doc(pitch="Private plans."))
-        self.assertEqual(self.sync("studio"), "off")
+    def test_sharing_is_on_by_default_and_an_explicit_no_stops_it(self):
         (self.root["laptop"] / ".orchestrator" / "state" / "repo_sync.json").unlink()
         self.assertIsNone(state_ref.consent(self.root["laptop"]))
-        self.assertEqual(self.sync("laptop"), "off")  # not asked yet is not a yes
-        self.assertEqual(subprocess.run(["git", "rev-parse", "--verify", "-q", state_ref.REF], cwd=self.remote).returncode, 1)
+        self.assertTrue(state_ref.sharing(self.root["laptop"]))           # nobody answered: on
+        self.write("laptop", doc(pitch="Shared by default."))
+        self.assertEqual(self.sync("laptop"), "pushed")
+        state_ref.set_consent(self.root["studio"], False)                  # Stop sharing on the other computer
+        self.write("studio", doc(pitch="Private plans."))
+        self.assertEqual(self.sync("studio"), "off")
+        self.assertNotIn("Private plans", git(self.remote, "show", f"{state_ref.REF}:product/prd.md"))
+
+    def test_public_repositories_can_be_held_back_by_a_switch(self):
+        self.assertTrue(state_ref.SHARE_PUBLIC_BY_DEFAULT)                 # the person's choice: public ones share too
+        with patch.object(state_ref, "SHARE_PUBLIC_BY_DEFAULT", False), patch.object(state_ref, "is_public", return_value=True):
+            self.assertFalse(state_ref.sharing(Path(self.tmp.name) / "unanswered"))
+        self.assertEqual(state_ref.sharing(self.root["studio"]), True)     # an explicit yes is always a yes
 
     def test_a_project_without_a_remote_stays_on_its_computer(self):
         git(self.root["studio"], "remote", "remove", "origin")
@@ -324,7 +332,7 @@ class ProductPageSharingTests(ServerTestCase):
         subprocess.run(["git", "init", "-q"], cwd=self.root, capture_output=True)
         subprocess.run(["git", "remote", "add", "origin", "https://gitlab.example.com/team/shop.git"], cwd=self.root, capture_output=True)
         _, data = self.request("GET", "/api/product")
-        self.assertEqual(data["sharing"], {"state": "ask", "jobs": "ask", "remote": "gitlab.example.com/team/shop", "public": None})
+        self.assertEqual(data["sharing"], {"state": "on", "jobs": "on", "remote": "gitlab.example.com/team/shop", "public": None, "default": True})  # on by default
         res, status = self.request("POST", "/api/product/sharing", body={"enabled": True}, headers=UI_HEADERS)
         self.assertEqual((res.status, status["state"]), (200, "on"))
         self.assertTrue(state_ref.consent(self.root))
@@ -343,7 +351,8 @@ class ProductPageSharingTests(ServerTestCase):
         self.assertIn("This repository is public, so anyone could read them.", page)
         public_buttons = page[page.index("s.public\n          ?"):page.index(":", page.index("s.public\n          ?") + 20)]
         self.assertIn('class="btn small primary" data-prd-share="false">Keep on this computer', public_buttons)  # the safe choice leads
-        for line in ("Stop sharing", "Share through", "this project has no Git remote", 'href="#/git"'):
+        for line in ("Stop sharing", "Share through", "this project has no Git remote", 'href="#/git"', "(on by default)",
+                     "This repository is public, so anyone can read what is shared"):
             self.assertIn(line, page)
 
 

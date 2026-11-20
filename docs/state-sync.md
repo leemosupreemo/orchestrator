@@ -40,16 +40,21 @@ function deployed. Phases 3 and 4 are planned.
 - **No remote, no sharing.** A project without `origin` stays on its computer, as its job branches already do. Two computers whose
   `origin` points at different repositories (a fork) don't share, which is correct.
 
-## Asked once, per project and per kind
+## On by default, per project and per kind
 
-Anyone who can read the repository can read the state ref; on a public repository that is everyone. So nothing is shared until
-the person says yes for that project, and the product requirements and the jobs are asked about separately: jobs carry the
-person's answers, plans and fix history. (A yes from before jobs were shared counts for the product requirements only.) The Product page asks once ("Share with your other computers?"), says where it would go and
-who could read it, and on a repository GitHub reports as public (checked with `gh`) warns and makes **Keep on this computer** the
-main button. Once the requirements are shared, the same card asks "Also share this project's jobs ... ?" (**Not now**, **Share
-jobs**). The answers are kept per project in `.orchestrator/state/repo_sync.json` (`product`, `jobs`) and can be changed any time
-(**Stop sharing**, **Share through ...**, **Stop sharing jobs**, **Share jobs too**). Hosts other than GitHub can't be asked whether a repository is public, so the prompt says who can read it
-and leaves the choice to the person.
+A project with a remote shares its product requirements and its jobs **by default** (the person's decision, 2026-11-20): every
+computer working on it, paired to the same account or not, reads and writes the same state through the repository. Each kind can
+be stopped per project on the Product page, under **Keeping it up to date** (**Stop sharing**, **Stop sharing jobs**, and
+**Share ... again**); an explicit answer always wins over the default and is kept in `.orchestrator/state/repo_sync.json`
+(`product`, `jobs`).
+
+Anyone who can read the repository can read the state ref. On a repository GitHub reports as public (checked with `gh`) that is
+everyone, and the Product page says so in a warning beside **Stop sharing**. `state_ref.SHARE_PUBLIC_BY_DEFAULT` holds public
+repositories back (they then ask first, with **Keep on this computer** as the main button); it is on, so they share too.
+
+**Teams.** Everyone with access to a repository who runs Orchestrator on it shares into the same state. A permission and admin
+system for team projects (who may read and write which state) is planned; until then the repository's own access is the only
+control, so on a shared team repository, decide per project whether to stop sharing.
 
 ## Merging
 
