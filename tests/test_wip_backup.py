@@ -57,6 +57,15 @@ class WipBackupTests(unittest.TestCase):
         self.assertFalse((self.air / "old.txt").exists())
         self.assertEqual(git(self.air, "diff", "--cached", "--name-only"), "")  # uncommitted again, as on the Pro
 
+    def test_the_repositorys_pre_push_hook_neither_runs_nor_blocks_a_backup(self):
+        hook = self.pro / ".git" / "hooks" / "pre-push"
+        hook.write_text("#!/bin/sh\ntouch hook-ran\nexit 1\n")  # a test run that fails, as husky's often does mid-work
+        hook.chmod(0o755)
+        (self.pro / "keep.txt").write_text("two\n")
+        record = wip_backup.backup_job(self.pro, "job-1", self.job, machine="Pro", now=1000.0)
+        self.assertIn("commit", record, record)
+        self.assertFalse((self.pro / "hook-ran").exists())
+
     def test_restore_never_overwrites_changes_here(self):
         (self.pro / "keep.txt").write_text("two\n")
         self.job["wip_backup"] = wip_backup.backup_job(self.pro, "job-1", self.job, now=1000.0)
