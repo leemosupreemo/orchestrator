@@ -51,6 +51,10 @@ class PrdError(ValueError):
     pass
 
 
+class PrdChanged(PrdError):
+    """The document changed between being read and being written, so the write was not made."""
+
+
 SECTIONS: list[dict[str, Any]] = [
     {"id": "pitch", "title": "Pitch", "optional": True,
      "hint": "Say what you have in mind as briefly as you can, the way you'd explain it to a friend. Rough is fine."},
@@ -497,6 +501,19 @@ class Prd:
         if track_before:
             self._record(before, "earlier", "The document before changes were tracked")
         return self._record(text, source, summary, job) if record else None
+
+    @_serialized
+    def write_if_current(self, expected: str | None, text: str, source: str, summary: str = "") -> dict[str, Any] | None:
+        """`write`, but only if the document is still exactly what the caller read (`expected`): otherwise PrdChanged, so a
+        change made in between (an edit, a job's update) is never overwritten by a decision made from the older text."""
+        if self.read() != expected:
+            raise PrdChanged("The document changed while it was being updated.")
+        return self.write(text, source, summary)
+
+    @_serialized
+    def announce(self, summary: str, version_id: str) -> None:
+        """Show the "product requirements updated" notice for a change no job made (one that arrived from another computer)."""
+        self._set_notice(summary, "", "", version_id)
 
     @_serialized
     def set_section(self, section_id: str, body: str, source: str = "you", summary: str = "") -> dict[str, Any] | None:

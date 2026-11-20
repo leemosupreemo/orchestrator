@@ -58,6 +58,17 @@ Heartbeat replies can carry `moved_jobs` (jobs another computer owns now, with `
 applies them to its own copies (`apply_moved_jobs`, `apply_job_archives`). Uncommitted work never goes through the account:
 it is pushed to `refs/orchestrator/wip/<job id>` on the project's own origin (`orchestrator/wip_backup.py`).
 
+## Product requirements across computers
+
+Each project's product requirements document is shared by the account's computers (details in [Product requirements](product-requirements.md#across-your-computers)). The account keeps one copy per project, in `account_products` (`<uid>_<sha256(project)[:32]>`, the same key `primaries` use; the project is its repository address):
+
+| Endpoint | Does |
+|---|---|
+| `machine/product` | `{project}` returns `{"product": {version, hash, text, machine_id, machine_name, updated_at}}`, or `{"product": null}` when no computer has shared one |
+| `machine/product/put` | `{project, text, base_version}` writes version `base_version + 1` only if `base_version` is the version there now (0 for none). Otherwise nothing is written and the reply is `{"conflict": true, "product": <what is there>}`. The same text again is `{"ok": true, "unchanged": true}` and makes no version |
+
+Both use the machine secret. Text is limited to 100,000 characters (413 above it). The product text is stored in Firestore with the account's other synced data, readable only through the function. Adding endpoints doesn't change `account.API_VERSION`: a computer that doesn't have the feature never calls them, and one that does treats a control plane without them (404) as "try again in an hour".
+
 ## Notifications
 
 Alerts reach a person's phones and browsers even with Orchestrator closed. They turn them on with **Notify me when done** in the hosted app (on iPhone and iPad, after adding it to the Home Screen: iOS only allows web push for home-screen apps).

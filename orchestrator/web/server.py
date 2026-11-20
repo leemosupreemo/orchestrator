@@ -77,7 +77,7 @@ from orchestrator import folder_lock
 from orchestrator import job_overlap
 from orchestrator import parallel_mece
 from orchestrator import wip_backup
-from orchestrator import sync_health
+from orchestrator import product_sync, sync_health
 from orchestrator import self_update
 from orchestrator import plan_run
 from orchestrator import ux_review
@@ -6988,6 +6988,17 @@ class UIServer(ThreadingHTTPServer):
                     last_sync[0] = time.time()
 
         threading.Thread(target=snapshot_sync, daemon=True, name="snapshot-sync").start()
+
+        def share_product_requirements() -> None:
+            # The product requirements document is one per account and project: push this computer's edits, pull the others'.
+            wait = product_sync.CHECK_SECONDS
+            while not self._stopping.wait(wait):
+                machine = account.load_machine()
+                if machine is None:
+                    return
+                wait = product_sync.run_round(machine, self.root)
+
+        threading.Thread(target=share_product_requirements, daemon=True, name="product-sync").start()
         wake_event = threading.Event()
         self.trigger_heartbeat = wake_event.set
 

@@ -9645,6 +9645,7 @@ const PRD_ACTOR = {
   auto: (job) => `by AI after ${job ? `“${job}”` : "a job"}`, ai: () => "with AI help", draft: () => "drafted by AI",
   reverse: () => "by AI, from the finished app", you: () => "by you", import: () => "imported", revert: () => "restored from an earlier version",
   answers: () => "from your answers", outside: () => "edited outside Orchestrator", migration: () => "", earlier: () => "",
+  sync: () => "synced from another computer",
 };
 
 // "today, 7:02 PM", "yesterday, 7:02 PM", "Nov 12" (with the year when it isn't this one).
