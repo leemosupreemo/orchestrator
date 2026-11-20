@@ -77,7 +77,7 @@ from orchestrator import folder_lock
 from orchestrator import job_overlap
 from orchestrator import parallel_mece
 from orchestrator import wip_backup
-from orchestrator import product_sync, state_ref, sync_health
+from orchestrator import job_sync, product_sync, state_ref, sync_health
 from orchestrator import self_update
 from orchestrator import plan_run
 from orchestrator import ux_review
@@ -7016,6 +7016,7 @@ class UIServer(ThreadingHTTPServer):
             wait = product_sync.CHECK_SECONDS
             while not self._stopping.wait(wait):
                 wait = product_sync.run_round(self.root)
+                job_sync.run_round(self.root, running=set(self.sessions.running_job_ids()))  # each asked for separately
 
         thread = threading.Thread(target=share, daemon=True, name="product-sync")
         thread.start()
@@ -7530,7 +7531,10 @@ class UIHandler(BaseHTTPRequestHandler):
                 body = self._body()
                 if not isinstance(body.get("enabled"), bool):
                     raise UIError("Say whether to share them: enabled true or false.")
-                state_ref.set_consent(root, body["enabled"])
+                scope = body.get("scope", "product")
+                if scope not in state_ref.SCOPES:
+                    raise UIError("Share what: product or jobs.")
+                state_ref.set_consent(root, body["enabled"], scope)
                 self._json(state_ref.status(root))
             elif method == "POST" and parts == ["product", "dismiss"]:
                 doc.dismiss_notice()
@@ -7956,6 +7960,9 @@ class UIHandler(BaseHTTPRequestHandler):
             res = dispatch_feedback(root, body)
             self._audit("feedback_submitted", who=body.get("userName") or "User", chars=len(body.get("feedbackText") or ""), delivered=res.get("delivered", False))
             self._json(res)
+        elif method == "GET" and parts == ["shared-jobs"]:
+            # Other computers' jobs for this project, from its repository's shared state (docs/state-sync.md, phase 2).
+            self._json(job_sync.shared_jobs(root, product_sync.computer_name()))
         elif method == "GET" and parts == ["projects"]:
             self._json({"projects": all_projects_info(root), "active": str(safe_resolve(root))})
         elif method == "POST" and parts == ["projects", "scan"]:

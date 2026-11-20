@@ -66,6 +66,19 @@ def fetch(repo: Path) -> str | None:
     return sha or None
 
 
+def fetched(repo: Path) -> str | None:
+    """The shared state as last fetched, without asking the remote (for showing it, not for building on it)."""
+    sha = _git(repo, "rev-parse", "--verify", "--quiet", TRACKING_REF).stdout.decode().strip()
+    return sha or None
+
+
+def committed_at(repo: Path, commit: str | None) -> float:
+    if not commit:
+        return 0.0
+    stamp = _git(repo, "show", "-s", "--format=%ct", commit).stdout.decode().strip()
+    return float(stamp) if stamp.isdigit() else 0.0
+
+
 def read(repo: Path, commit: str | None, path: str) -> bytes | None:
     if not commit:
         return None
@@ -139,19 +152,36 @@ def _consent_file(root: Path) -> Path:
     return shared_runtime(Path(root)) / "state" / "repo_sync.json"
 
 
-def consent(root: Path) -> bool | None:
-    """True or False once the person decided for this project, None while they haven't."""
+SCOPES = ("product", "jobs")   # each asked separately: jobs carry the person's answers and plans
+
+
+def _consents(root: Path) -> dict[str, Any]:
     try:
-        value = json.loads(_consent_file(root).read_text(encoding="utf-8")).get("enabled")
-    except (OSError, ValueError, AttributeError):
-        return None
+        data = json.loads(_consent_file(root).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    if "enabled" in data and "product" not in data:   # the first version had one answer, for the product requirements
+        data["product"] = data["enabled"]
+    return data
+
+
+def consent(root: Path, scope: str = "product") -> bool | None:
+    """True or False once the person decided for this project and kind of state, None while they haven't."""
+    value = _consents(root).get(scope)
     return value if isinstance(value, bool) else None
 
 
-def set_consent(root: Path, enabled: bool) -> None:
+def set_consent(root: Path, enabled: bool, scope: str = "product") -> None:
+    if scope not in SCOPES:
+        raise ValueError(f"Unknown sharing scope: {scope}")
+    data = {k: v for k, v in _consents(root).items() if k in SCOPES}
+    data[scope] = bool(enabled)
+    data["at"] = time.time()
     path = _consent_file(root)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({"enabled": bool(enabled), "at": time.time()}), encoding="utf-8")
+    path.write_text(json.dumps(data), encoding="utf-8")
 
 
 _visibility_cache: dict[str, tuple[float, bool | None]] = {}
@@ -183,6 +213,6 @@ def status(root: Path) -> dict[str, Any]:
     parsed = parse_remote(url) if url else None
     where = f"{parsed[0]}/{parsed[1]}" if parsed else url
     if not url:
-        return {"state": "no_remote", "remote": "", "public": None}
-    decided = consent(root)
-    return {"state": "ask" if decided is None else ("on" if decided else "off"), "remote": where, "public": is_public(root, url)}
+        return {"state": "no_remote", "jobs": "no_remote", "remote": "", "public": None}
+    word = lambda decided: "ask" if decided is None else ("on" if decided else "off")  # noqa: E731
+    return {"state": word(consent(root)), "jobs": word(consent(root, "jobs")), "remote": where, "public": is_public(root, url)}

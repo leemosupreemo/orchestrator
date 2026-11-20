@@ -23,6 +23,7 @@ CHANNELS = {
     "branches": "Backing up job branches to GitHub",
     "unfinished": "Backing up unfinished work to GitHub",
     "product": "Sharing your product requirements through your repository",
+    "shared_jobs": "Sharing jobs through your repository",
 }
 _lock = threading.Lock()
 

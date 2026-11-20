@@ -191,7 +191,7 @@ Callout and hero containers (`.job-hero`, `.banner`, `.notice`) frame actionable
 - One document, six optional sections, shown in full on the Product page; Home shows a short card. Guidance text is written for people who are not technical and may not know yet: "say so" is always an acceptable answer.
 - Anything the AI changes on its own is announced, shown as a diff in the history, and undoable. Never edit the document silently; never take a section's text away.
 - A change that arrives from another computer (source `sync`, "synced from another computer" on the Product card) follows the same rule: a history version, an announcement, undoable. When two computers changed a section, both texts are kept.
-- Sharing with other computers is asked once per project and never assumed: the question says where the document would go and who could read it, and on a public repository the safe choice (**Keep on this computer**) is the main button.
+- Sharing with other computers is asked once per project and per kind (requirements, then jobs) and never assumed: the question says where the document would go and who could read it, and on a public repository the safe choice (**Keep on this computer**) is the main button.
 
 ## Messages
 

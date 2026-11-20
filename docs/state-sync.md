@@ -4,14 +4,15 @@ Goal: every computer working on a project sees the same jobs, product requiremen
 Orchestrator's servers storing project content**. Project content travels where the code already does, the project's own
 repository. The control plane (Firestore, `docs/control-plane.md`) keeps only what it takes to find and reach computers.
 
-Status: **phase 1 is built** (the product requirements document, its design and source files). Phases 2 to 4 are planned.
+Status: **phase 1 is built** (the product requirements document, its design and source files). **Phase 2 is built** except the
+fast nudge (jobs written to the repository as well as the account, read from the repository first). Phases 3 and 4 are planned.
 
 ## What lives where
 
 | State | Where it belongs | Today |
 |---|---|---|
 | Product requirements, their designs and source documents (`.orchestrator/product/`) | The repository's state ref | **Phase 1, built** |
-| Jobs (`.orchestrator/jobs/`): records, plans, answers, fix history, archive and ownership events | The repository's state ref | Firestore (`account_jobs`, `job_owners`, `job_archives`, `machine_snapshots`); phase 2-3 moves them |
+| Jobs (`.orchestrator/jobs/`): records, plans, answers, fix history, archive and ownership events | The repository's state ref | **Phase 2, built:** written to both; phase 3 stops the Firestore copy (`account_jobs`, `job_owners`, `job_archives`, `machine_snapshots`) |
 | Setup profile: the portable parts of `project.json` (build and test commands, prompts), not machine paths | The repository's state ref | Firestore (`master_configs`, `machine_setups`); phase 4 |
 | PRD history, epics, features, project chat | Optional, later | Local |
 | Logs, run output, coverage caches, locks, `config/` | Stay on each computer: per machine or regenerable | Local |
@@ -38,13 +39,15 @@ Status: **phase 1 is built** (the product requirements document, its design and 
 - **No remote, no sharing.** A project without `origin` stays on its computer, as its job branches already do. Two computers whose
   `origin` points at different repositories (a fork) don't share, which is correct.
 
-## Asked once, per project
+## Asked once, per project and per kind
 
 Anyone who can read the repository can read the state ref; on a public repository that is everyone. So nothing is shared until
-the person says yes for that project. The Product page asks once ("Share with your other computers?"), says where it would go and
+the person says yes for that project, and the product requirements and the jobs are asked about separately: jobs carry the
+person's answers, plans and fix history. (A yes from before jobs were shared counts for the product requirements only.) The Product page asks once ("Share with your other computers?"), says where it would go and
 who could read it, and on a repository GitHub reports as public (checked with `gh`) warns and makes **Keep on this computer** the
-main button. The answer is kept per project in `.orchestrator/state/repo_sync.json` and can be changed any time (**Stop sharing**,
-**Share through ...**). Hosts other than GitHub can't be asked whether a repository is public, so the prompt says who can read it
+main button. Once the requirements are shared, the same card asks "Also share this project's jobs ... ?" (**Not now**, **Share
+jobs**). The answers are kept per project in `.orchestrator/state/repo_sync.json` (`product`, `jobs`) and can be changed any time
+(**Stop sharing**, **Share through ...**, **Stop sharing jobs**, **Share jobs too**). Hosts other than GitHub can't be asked whether a repository is public, so the prompt says who can read it
 and leaves the choice to the person.
 
 ## Merging
@@ -67,9 +70,15 @@ Every change that arrives is written as a version in that computer's own history
 1. **Product requirements (built).** `state_ref.py`, `product_sync.py` on it, consent on the Product page, design and source files,
    `--no-verify` for every Orchestrator push. The control-plane endpoints built for an earlier, Firestore-based version were never
    deployed and have been removed.
-2. **Jobs, written to both.** Each computer writes its jobs to the state ref and still to Firestore, and reads the state ref first.
-   Mixed versions keep working, so no `breaking` release is needed. The hosted app gets a computer's jobs from that computer, or,
-   when it is offline, from another of the account's computers that is online (each has the shared state).
+2. **Jobs, written to both (built).** `orchestrator/job_sync.py`, on the same thread as the product round: each computer writes its
+   jobs to `jobs/<id>.json` (the entry the account receives, `account._job_entry`, plus the computer's name) and the newest archive
+   event per job to `job-events.json`, while the account keeps receiving them as before, so mixed versions keep working and no
+   `breaking` release is needed. A copy is replaced only by a higher ownership number, or by its own computer; a computer whose job
+   was continued elsewhere marks its copy moved (`apply_moved_jobs`) and applies archive events (`apply_job_archives`), as the
+   heartbeat's replies do. Changes that say nothing new (only `updated_at` or the live step) aren't pushed. Home reads other
+   computers' jobs from `GET /api/shared-jobs` first and fills gaps from the account's snapshots; a shared job names its computer,
+   matched to the account's list when the computer is paired. Not yet: the content-free nudge (below), and the hosted app's
+   **Your computers** page, which still lists an offline computer's jobs from the account.
 3. **Jobs off Firestore.** Computers stop writing job content to the control plane. The stored content (`account_jobs`,
    `machine_snapshots` and the job titles in the others) is deleted, and the control plane gains a delete path for what an
    account still holds. When every one of an account's computers is offline, the hosted app shows the computers but no job list.
@@ -77,8 +86,8 @@ Every change that arrives is written as a version in that computer's own history
 
 ## What changes for speed
 
-The control plane told other computers about a change within seconds. Fetching the state ref every minute is slower. Phase 2 adds a
-content-free nudge: a computer that pushed a new state sends the commit's hash (40 characters, no content) with its heartbeat, and
+The control plane told other computers about a change within seconds. Fetching the state ref every minute is slower. Still to do,
+before phase 3: a content-free nudge: a computer that pushed a new state sends the commit's hash (40 characters, no content) with its heartbeat, and
 the reply tells the account's other computers to fetch now.
 
 ## Risks and limits
@@ -94,7 +103,9 @@ the reply tells the account's other computers to fetch now.
 
 ## Code and tests
 
-`orchestrator/state_ref.py` (transport, consent, public-repository check), `orchestrator/product_sync.py` (phase 1),
-`UIServer.start_state_sync` (the thread, paired or not), `GET /api/product` (`sharing`) and `POST /api/product/sharing`.
-Tests: `tests/test_product_sync.py` runs two computers against a real bare remote (merges, races, hooks, clones, consent,
-files), and `tests/test_wip_backup.py` checks backups ignore pre-push hooks.
+`orchestrator/state_ref.py` (transport, consent per kind, public-repository check), `orchestrator/product_sync.py` (phase 1),
+`orchestrator/job_sync.py` (phase 2), `UIServer.start_state_sync` (the thread, paired or not), `GET /api/product` (`sharing`),
+`POST /api/product/sharing` (`enabled`, `scope`: product or jobs) and `GET /api/shared-jobs`.
+Tests: `tests/test_product_sync.py` and `tests/test_job_sync.py` run two computers against a real bare remote (merges, races,
+ownership hand-over, archives, hooks, clones, consent, files), and `tests/test_wip_backup.py` checks backups ignore pre-push hooks.
+Sync problems show on Home under the `product` and `shared_jobs` channels.

@@ -4525,11 +4525,23 @@ pages.home = async (_, query) => {
       const { machines = [] } = await cpApi("machines", { signal: AbortSignal.timeout(3000) }).catch(() => ({ machines: [] }));
       const others = machines.filter((m) => m.id !== currentMachineId && m.has_snapshot);
       homeRemoteSnaps = {
-        key: currentMachineId, at: Date.now(), selfName: machines.find((m) => m.id === currentMachineId)?.name || "",
+        key: currentMachineId, at: Date.now(), selfName: machines.find((m) => m.id === currentMachineId)?.name || "", machines,
         snaps: await Promise.all(others.map((m) => cpApi("machine/snapshot", { method: "POST", body: { machine_id: m.id }, signal: AbortSignal.timeout(3000) }).then((d) => ({ m, snap: d?.snapshot })).catch(() => null))),
       };
     }
-    const snaps = homeRemoteSnaps.snaps;
+    // Jobs shared through the project's repository come first (docs/state-sync.md); the account's snapshots fill the gaps
+    // while both are written. A shared job names its computer, matched to the account's list when there is one.
+    const shared = await api("shared-jobs").catch(() => ({ jobs: [] }));
+    const sharedByComputer = new Map();
+    for (const entry of shared.jobs || []) {
+      if (!sharedByComputer.has(entry.machine)) sharedByComputer.set(entry.machine, []);
+      sharedByComputer.get(entry.machine).push(entry);
+    }
+    const sharedItems = [...sharedByComputer].map(([name, recent_jobs]) => {
+      const m = (homeRemoteSnaps.machines || []).find((x) => x.name === name) || { id: "", name, online: false, reachable: false };
+      return { m, snap: { recent_jobs, synced_at: shared.synced_at || 0 } };
+    });
+    const snaps = [...sharedItems, ...homeRemoteSnaps.snaps];
     // an archived job is still here: never offer it again as "on another computer". A copy that moved away isn't: the
     // owner's row stands in for it, with the job's real state, so it stays among the jobs rather than under Completed.
     const seen = new Set(jobs.filter((j) => !j.moved_to).concat(archivedJobs).map((j) => j.id));
@@ -9776,7 +9788,13 @@ pages.product = async (_, query) => {
   const sharingLine = () => {
     const s = sharing();
     if (s.state === "no_remote") return `<div class="muted" id="prd-sharing">Kept on this computer: this project has no Git remote. <a href="#/git">Add one under Git setup</a> to share it with your other computers.</div>`;
-    if (s.state === "on") return `<div class="row gap-12 align-center wrap" id="prd-sharing"><span class="muted">Shared with your other computers through <span class="mono">${esc(s.remote)}</span>.</span><button type="button" class="btn small ghost" data-prd-share="false">Stop sharing</button></div>`;
+    const jobs = s.jobs === "ask"
+      ? `<div class="stack gap-8" id="prd-sharing-jobs"><span class="muted">Also share this project's jobs (their plans, your answers and fix history) the same way, so another computer can see and continue them?</span>
+          <div class="row gap-8 wrap"><button type="button" class="btn small" data-prd-share="false" data-prd-share-scope="jobs">Not now</button><button type="button" class="btn small primary" data-prd-share="true" data-prd-share-scope="jobs">Share jobs</button></div></div>`
+      : s.jobs === "on"
+        ? `<div class="row gap-12 align-center wrap" id="prd-sharing-jobs"><span class="muted">Jobs are shared too.</span><button type="button" class="btn small ghost" data-prd-share="false" data-prd-share-scope="jobs">Stop sharing jobs</button></div>`
+        : `<div class="row gap-12 align-center wrap" id="prd-sharing-jobs"><span class="muted">Jobs stay on this computer.</span><button type="button" class="btn small ghost" data-prd-share="true" data-prd-share-scope="jobs">Share jobs too</button></div>`;
+    if (s.state === "on") return `<div class="row gap-12 align-center wrap" id="prd-sharing"><span class="muted">Shared with your other computers through <span class="mono">${esc(s.remote)}</span>.</span><button type="button" class="btn small ghost" data-prd-share="false">Stop sharing</button></div>${jobs}`;
     if (s.state === "off") return `<div class="row gap-12 align-center wrap" id="prd-sharing"><span class="muted">Kept on this computer.</span><button type="button" class="btn small ghost" data-prd-share="true">Share through ${esc(s.remote)}</button></div>`;
     return "";
   };
@@ -9999,11 +10017,12 @@ pages.product = async (_, query) => {
           }, reload);
         }));
         view.querySelectorAll("[data-prd-share]").forEach((btn) => btn.addEventListener("click", async () => {
-          const enabled = btn.dataset.prdShare === "true";
+          const enabled = btn.dataset.prdShare === "true", scope = btn.dataset.prdShareScope || "product";
           btn.disabled = true;
           try {
-            p.sharing = await api("product/sharing", { method: "POST", body: { enabled } });
-            toast(enabled ? "Shared with your other computers. They pick it up within a couple of minutes." : "Kept on this computer");
+            p.sharing = await api("product/sharing", { method: "POST", body: { enabled, scope } });
+            toast(enabled ? `${scope === "jobs" ? "Jobs" : "Requirements"} shared with your other computers. They pick them up within a couple of minutes.`
+              : scope === "jobs" ? "Jobs stay on this computer" : "Kept on this computer");
             await reload();
           } catch (e) { btn.disabled = false; toast(e.message, true); }
         }));

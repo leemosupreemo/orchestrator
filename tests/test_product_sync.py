@@ -264,6 +264,13 @@ class RepositoryTests(TwoComputers):
             self.sync("studio")
         self.assertEqual(self.section("studio", "pitch"), "x")
 
+    def test_the_first_versions_single_answer_still_counts_for_the_product_requirements_only(self):
+        path = self.root["studio"] / ".orchestrator" / "state" / "repo_sync.json"
+        path.write_text('{"enabled": true, "at": 1}')
+        self.assertEqual((state_ref.consent(self.root["studio"]), state_ref.consent(self.root["studio"], "jobs")), (True, None))
+        state_ref.set_consent(self.root["studio"], True, "jobs")
+        self.assertEqual((state_ref.consent(self.root["studio"]), state_ref.consent(self.root["studio"], "jobs")), (True, True))
+
     def test_status_says_what_the_product_page_should_ask(self):
         status = state_ref.status(self.root["studio"])
         self.assertEqual((status["state"], status["public"]), ("on", None))  # a local path: visibility unknown
@@ -317,13 +324,16 @@ class ProductPageSharingTests(ServerTestCase):
         subprocess.run(["git", "init", "-q"], cwd=self.root, capture_output=True)
         subprocess.run(["git", "remote", "add", "origin", "https://gitlab.example.com/team/shop.git"], cwd=self.root, capture_output=True)
         _, data = self.request("GET", "/api/product")
-        self.assertEqual(data["sharing"], {"state": "ask", "remote": "gitlab.example.com/team/shop", "public": None})
+        self.assertEqual(data["sharing"], {"state": "ask", "jobs": "ask", "remote": "gitlab.example.com/team/shop", "public": None})
         res, status = self.request("POST", "/api/product/sharing", body={"enabled": True}, headers=UI_HEADERS)
         self.assertEqual((res.status, status["state"]), (200, "on"))
         self.assertTrue(state_ref.consent(self.root))
         res, status = self.request("POST", "/api/product/sharing", body={"enabled": False}, headers=UI_HEADERS)
         self.assertEqual(status["state"], "off")
         self.assertEqual(self.request("POST", "/api/product/sharing", body={"enabled": "yes"}, headers=UI_HEADERS)[0].status, 400)
+        res, status = self.request("POST", "/api/product/sharing", body={"enabled": True, "scope": "jobs"}, headers=UI_HEADERS)
+        self.assertEqual((status["state"], status["jobs"]), ("off", "on"))  # each kind of state has its own answer
+        self.assertEqual(self.request("POST", "/api/product/sharing", body={"enabled": True, "scope": "logs"}, headers=UI_HEADERS)[0].status, 400)
 
     def test_the_page_asks_once_warns_on_public_repositories_and_offers_a_way_back(self):
         app = (ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
