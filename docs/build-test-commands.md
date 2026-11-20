@@ -28,6 +28,32 @@ python3 -m unittest discover -s tests
 
   Needs the `opencode` CLI signed in. `ORCHESTRATOR_E2E_MODEL` picks another free model; `ORCHESTRATOR_E2E_KEEP=1` keeps the project folder for inspection. The test fails if any model other than the one allowed is called.
 
+## Republishing the hosted web app
+
+The hosted app (Firebase Hosting) serves `orchestrator/web/static` exactly as it is on disk, separate from the local service.
+Republish it with the gate, never with a bare `firebase deploy --only hosting`:
+
+```bash
+python3 scripts/republish.py --dry-run                  # the checks only
+python3 scripts/republish.py                            # checks, then deploys hosting
+python3 scripts/republish.py --verify isBackgroundRun   # ...then confirms the live app.js contains this text
+```
+
+It refuses to deploy when:
+
+- `orchestrator/web/static` has uncommitted changes (they would be uploaded though no branch has them, including another
+  session's unfinished edits). `--allow-dirty` deploys them on purpose.
+- the whole suite (`python3 -m unittest discover -s tests`, several minutes) has a failure that is not listed in
+  `tests/known_failures.txt`, or did not run properly (no tests, or a crash). The full output of each run is kept under
+  `.orchestrator/output/republish/`.
+
+`tests/known_failures.txt` lists failures that already exist, one test id and a reason per line, so existing debt does not block
+every deploy while any new failure does. The script reports listed tests that pass again: delete their lines. Add a line only for a
+failure that is understood and acceptable, with the reason. `--only tests.test_web_ui ...` runs just those modules for a
+quick check, and `--skip-tests` skips the suite (it says so) for when the suite itself is what you are fixing. Exit codes: 0
+deployed or checks passed, 1 blocked, 2 the deploy or the verification failed. This deploys hosting only; the control
+plane's functions and rules are deployed as described in `control-plane.md`.
+
 ## Authentication integration
 
 ```bash

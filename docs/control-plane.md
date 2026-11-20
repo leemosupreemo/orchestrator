@@ -79,6 +79,8 @@ firebase deploy --only firestore:rules,functions:control-plane,hosting
 
 The Python venv must be built with Python 3.12 (the function's runtime): the CLI runs `python3.12` from it.
 
+To update only the hosted web app, use `python3 scripts/republish.py` rather than `firebase deploy --only hosting`: it checks that the shipped files are committed and that no new test fails first (see `build-test-commands.md`).
+
 ```bash
 # once per project: delete old function images so they don't accrue storage charges
 firebase functions:artifacts:setpolicy --location us-central1 --days 1 --force

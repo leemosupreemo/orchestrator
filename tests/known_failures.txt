@@ -1,0 +1,17 @@
+# Tests that fail today, so that `scripts/republish.py` blocks on NEW failures instead of on every deploy.
+# One test id per line, then `#` and why. Remove a line when its test passes again (the script says when). Do not add a line
+# to get a deploy through unless the failure is understood and acceptable: say why.
+#
+# All of these failed on a clean checkout of web-ui on 2026-11-19 (checked in a separate worktree), before the work on that day.
+# None has been investigated yet.
+test_worker_run.WorkerRunTests.test_single_builder_clarification_pause_headless_yolo_and_input_errors  # failing at HEAD, cause unknown
+test_icons.IconTests.test_icon_only_buttons_are_square_and_the_run_header_uses_them  # failing at HEAD, cause unknown
+test_job_ownership.BackupPushTests.test_each_task_and_the_final_commit_are_backed_up  # failing at HEAD, cause unknown
+test_job_problem.DescribeTests.test_closing_the_sign_in_dialog_redraws_the_page  # failing at HEAD, cause unknown
+test_passed_uncommitted.PassedUncommittedTests.test_the_worker_records_the_pass_before_committing_and_resume_skips_the_builder  # asserts UI text 'Next:</span> commit the finished work' that app.js no longer has
+test_previews.PreviewWiringTests.test_previews_are_errands_that_dont_make_the_job_busy  # failing at HEAD, cause unknown
+test_run_progress.RunStatusRenderingTests.test_live_panel_details_elapsed_waiting_and_terminal_states  # failing at HEAD, cause unknown
+test_web_ui.AccessibilityStaticTests.test_design_tokens_hold  # failing at HEAD, cause unknown
+test_web_ui.AccessibilityStaticTests.test_text_uses_the_type_roles  # failing at HEAD, cause unknown
+test_web_ui.ConnectionsAndModalLayoutConsistencyTests.test_container_padding_design_standard_enforces_consistency  # failing at HEAD, cause unknown
+test_web_ui.PackagesApiTests.test_recommending_is_the_blue_button_only_when_there_are_requirements_to_review  # failing at HEAD, cause unknown
