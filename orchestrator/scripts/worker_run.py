@@ -387,6 +387,20 @@ def _git_commit_step(cmd: str) -> None:
     raise res
 
 
+def commit_paths_command(files: list[str], message: str) -> str:
+    """`git commit` of exactly these paths. A bare `git commit` also takes whatever else is staged in the project (a tool's
+    helper files, a parallel session's work), which once put six `.claude/helpers` files into a job's commit; a pathspec
+    commits only the named files and leaves everything else staged where it was."""
+    return f"git commit -m {shlex.quote(message)} -- " + " ".join(shlex.quote(f) for f in files)
+
+
+def commit_job_files(files: list[str], message: str) -> None:
+    """Stage and commit the job's own files, and nothing else."""
+    for f in files:
+        _git_commit_step(f"git add -- {shlex.quote(f)}")
+    _git_commit_step(commit_paths_command(files, message))
+
+
 def _pull_branch_with_recovery(branch: str, *, allow_missing_remote: bool = False) -> None:
     """Fast-forward `branch` from origin; recover stale locks/identical untracked files or rebase, else raise."""
     git_env = {"LC_ALL": "C"}
@@ -1306,14 +1320,11 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
             write_json(job_path, job)
         if ai_modified or ai_untracked:
             print(f"      - Committing {len(ai_modified)} modified and {len(ai_untracked)} untracked files...")
-            for f in ai_modified + ai_untracked:
-                _git_commit_step(f"git add {shlex.quote(f)}")
-            
             commit_msg = f"feat: {job['title']} (AI generated)"
             if job.get("type") == "bug-fix":
                 commit_msg = f"fix: {job['title']} (AI generated)"
             
-            _git_commit_step(f"git commit -m {shlex.quote(commit_msg)}")
+            commit_job_files(ai_modified + ai_untracked, commit_msg)
             backup_push(job)
         if job.pop("passed_uncommitted", None) is not None:
             write_json(job_path, job)
@@ -1843,7 +1854,7 @@ def checkpoint_task(job: dict, index: int, total: int, title: str, files: list[s
     try:
         for f in files:
             subprocess.run(["git", "add", "--", f], cwd=str(ROOT), check=True, capture_output=True)
-        subprocess.run(["git", "commit", "-m", f"feat: task {label}: {title} (AI generated)"], cwd=str(ROOT), check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-m", f"feat: task {label}: {title} (AI generated)", "--", *files], cwd=str(ROOT), check=True, capture_output=True)
         sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=str(ROOT), check=True, capture_output=True, text=True).stdout.strip()
     except (subprocess.CalledProcessError, OSError) as exc:
         print(f"      - Could not checkpoint task {label} ({exc}); it will be committed with the rest.")

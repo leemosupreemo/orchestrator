@@ -32,7 +32,7 @@ class PassedUncommittedTests(unittest.TestCase):
     def test_the_worker_records_the_pass_before_committing_and_resume_skips_the_builder(self):
         source = (ROOT / "orchestrator" / "scripts" / "worker_run.py").read_text(encoding="utf-8")
         marked = source.index('job["passed_uncommitted"] = {"files"')
-        self.assertLess(marked, source.index('_git_commit_step(f"git add {shlex.quote(f)}")'))
+        self.assertLess(marked, source.index("commit_job_files(ai_modified + ai_untracked, commit_msg)"))
         self.assertIn('committing_only = bool(resume and isinstance(job.get("passed_uncommitted"), dict))', source)
         self.assertIn("        if committing_only:\n            pass\n        elif job.get(\"type\") == \"feature-plan\"", source)
         self.assertIn('if job.pop("passed_uncommitted", None) is not None:', source)
