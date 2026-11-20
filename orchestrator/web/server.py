@@ -139,6 +139,10 @@ MAX_BUFFER_BYTES = 4 * 1024 * 1024
 MAX_FILE_BYTES = 2 * 1024 * 1024
 MAX_SESSIONS_KEPT = 50
 IDLE_PROMPT_SECONDS = 20
+# Runs that only wait for a person (a tool's browser sign-in) end themselves after this long with no output. Closing the page
+# doesn't stop them, and one waited 54 minutes for a code nobody was going to paste. Work runs (builds, model calls, servers) are
+# not here: silence is normal for them, and model calls have their own limits.
+ABANDON_IDLE_SECONDS = {"ai_connect": 15 * 60}
 OUTPUT_MAX_WAIT_SECONDS = 20  # a long-poll answers within this, well inside the 100 s proxies such as Cloudflare allow
 JOB_TYPES = ["bug", "feature", "design", "coverage", "quick", "freestyle"]
 BRANCH_MODES = ["new", "current", "manual"]
@@ -346,6 +350,10 @@ class PtySession:
                 # own (a model call) can hold the terminal open, so waiting for the terminal to close would wait forever.
                 if self._proc.poll() is not None:
                     break
+                limit = ABANDON_IDLE_SECONDS.get(self.action)
+                if limit and not self.stopped and time.time() - self.last_output > limit:
+                    self._append(f"\r\n\x1b[90m[Stopped: nobody answered for {limit // 60} minutes. Start it again when you're ready.]\x1b[0m\r\n".encode())
+                    self.stop()
                 continue
             try:
                 chunk = os.read(self._fd, 65536)
