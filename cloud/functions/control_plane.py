@@ -67,7 +67,6 @@ ONLINE_WINDOW = 180       # a computer is online if it reported within this many
 CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"  # no 0/O, 1/I/L
 CODE_LENGTH = 8
 SETUP_PROFILE_LIMIT = 200_000  # characters of settings and prompts one computer may share per project
-PRODUCT_LIMIT = 100_000  # characters of the product requirements document one account shares per project (orchestrator/prd.py MAX_DOC_CHARS)
 MAX_MACHINES_PER_USER = 20
 MAX_MOVED_JOBS = 200  # jobs another computer took over, kept per computer for its heartbeat reply
 MAX_JOB_UPDATES = 60  # changed jobs one computer sends per sync (account_jobs: one record per job)
@@ -780,56 +779,6 @@ class ControlPlane:
         return {"machine_id": source_id, "name": source["name"], "progress": record.get("progress") or {},
                 "profile": record.get("profile") or {}}
 
-    # -- the product requirements document, one per account and project, shared by the owner's computers.
-    # Versioned: a computer may only replace the version it last saw (compare-and-swap), so two computers editing at once
-    # can't overwrite each other: the late one is told what is there now and merges (orchestrator/product_sync.py).
-
-    @staticmethod
-    def _product_view(record: dict[str, Any] | None) -> dict[str, Any] | None:
-        if not isinstance(record, dict) or not record.get("hash"):
-            return None
-        return {"version": int(record.get("version") or 0), "hash": record["hash"], "text": record.get("text") or "",
-                "machine_id": record.get("machine_id", ""), "machine_name": record.get("machine_name", ""),
-                "updated_at": record.get("updated_at", 0)}
-
-    def get_product(self, auth_header: str, body: dict[str, Any]) -> dict[str, Any]:
-        """The account's product requirements document for this project, or None when no computer has shared one."""
-        _machine_id, machine = self._machine_from_header(auth_header)
-        doc_id, _project = self._primary_doc(machine["owner_uid"], body)
-        record = self.store.get("account_products", doc_id)
-        if record is None or record.get("owner_uid") != machine["owner_uid"]:
-            return {"product": None}
-        return {"product": self._product_view(record)}
-
-    def put_product(self, auth_header: str, body: dict[str, Any]) -> dict[str, Any]:
-        """Replace the account's document with `text`, if `base_version` is the version there now (0 when there is none).
-        Otherwise nothing is written and the reply is {"conflict": True, "product": what is there}."""
-        machine_id, machine = self._machine_from_header(auth_header)
-        doc_id, project = self._primary_doc(machine["owner_uid"], body)
-        text, base = body.get("text"), body.get("base_version")
-        if not isinstance(text, str) or not text.strip():
-            raise ControlError("Send the product document's text.")
-        if len(text) > PRODUCT_LIMIT:
-            raise ControlError("That document is too large to share.", 413)
-        if isinstance(base, bool) or not isinstance(base, int) or base < 0:
-            raise ControlError("Say which version this builds on.")
-        digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
-        uid = machine["owner_uid"]
-
-        def transform(doc):
-            if doc is not None and doc.get("owner_uid") != uid:
-                return None, {"conflict": True, "product": None}
-            current = int((doc or {}).get("version") or 0)
-            if current != base:
-                return None, {"conflict": True, "product": self._product_view(doc)}
-            if doc is not None and doc.get("hash") == digest:
-                return None, {"ok": True, "unchanged": True, "product": self._product_view(doc)}
-            record = {"owner_uid": uid, "project": project, "version": current + 1, "hash": digest, "text": text,
-                      "machine_id": machine_id, "machine_name": _clean(machine.get("name") or "", 80), "updated_at": self.now()}
-            return record, {"ok": True, "product": self._product_view(record)}
-
-        return self.store.mutate("account_products", doc_id, transform)
-
     # -- the person, once paired
 
     # -- the primary computer for each project: the one that starts its jobs and hands work to supporting computers.
@@ -1083,8 +1032,6 @@ class ControlPlane:
                 ("POST", "/machine/setups"): lambda: self.list_setups(headers.get("authorization", ""), body),
                 ("POST", "/machine/setup/get"): lambda: self.get_setup(headers.get("authorization", ""), body),
                 ("POST", "/machine/setup/master"): lambda: self.get_master_setup(headers.get("authorization", ""), body),
-                ("POST", "/machine/product"): lambda: self.get_product(headers.get("authorization", ""), body),
-                ("POST", "/machine/product/put"): lambda: self.put_product(headers.get("authorization", ""), body),
                 ("POST", "/machine/primary"): lambda: self.primary(headers.get("authorization", ""), body),
                 ("POST", "/machine/primary/claim"): lambda: self.claim_primary(headers.get("authorization", ""), body),
                 ("POST", "/enroll/redeem"): lambda: self.redeem_enrollment(body),
