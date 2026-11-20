@@ -92,6 +92,35 @@ class NudgeTests(unittest.TestCase):
         self.assertNotIn("remote", stored)                       # not even the repository's name
 
 
+class HangingGitTests(unittest.TestCase):
+    def test_a_git_that_hangs_or_is_missing_comes_back_as_a_failure_not_an_exception(self):
+        with patch.object(state_ref.subprocess, "run", side_effect=subprocess.TimeoutExpired(["git"], 10)):
+            res = state_ref._git(Path("."), "remote", "get-url", "origin", timeout=10)
+            self.assertEqual((res.returncode, res.stderr), (124, b"git remote timed out after 10 seconds"))
+            self.assertEqual(state_ref.remote_url(Path(".")), "")       # read as "no remote" for this round
+        with patch.object(state_ref.subprocess, "run", side_effect=FileNotFoundError("git")):
+            self.assertEqual(state_ref._git(Path("."), "status").returncode, 127)
+
+
+class SyncThreadSurvivalTests(ServerTestCase):
+    def test_a_round_that_raises_does_not_stop_the_sync_thread(self):
+        rounds = []
+
+        def run_round(root):
+            rounds.append(1)
+            if len(rounds) == 1:
+                raise subprocess.TimeoutExpired(["git", "remote"], 10)   # what killed the thread on the real Mac
+            self.server._stopping.set()
+            return 0.01
+
+        with patch.object(product_sync, "run_round", side_effect=run_round), patch("orchestrator.job_sync.run_round", return_value=0.01), \
+                patch.object(product_sync, "CHECK_SECONDS", 0.01), patch("orchestrator.sync_health.record") as record:
+            thread = self.server.start_state_sync()
+            thread.join(5)
+        self.assertGreaterEqual(len(rounds), 2)   # it tried again after the failure
+        self.assertFalse(thread.is_alive())
+        self.assertIn("Sharing stopped for a round", record.call_args_list[0].args[2])
+
 class ServerNudgeTests(ServerTestCase):
     def test_a_heartbeat_reply_with_a_newer_commit_wakes_the_sync_at_once(self):
         rounds, woken = [], threading.Event()

@@ -40,8 +40,15 @@ class StateRefError(RuntimeError):
 
 
 def _git(repo: Path, *args: str, env: dict[str, str] | None = None, timeout: int = 60, data: bytes | None = None) -> subprocess.CompletedProcess:
-    return subprocess.run(["git", *args], cwd=str(repo), capture_output=True, timeout=timeout, input=data,
-                          env={**os.environ, **_ENV, **(env or {})})
+    """git, never raising: a git that hangs or can't start comes back as a failed result, which every caller already handles.
+    (A timeout used to escape as an exception and stop the whole sync thread.)"""
+    try:
+        return subprocess.run(["git", *args], cwd=str(repo), capture_output=True, timeout=timeout, input=data,
+                              env={**os.environ, **_ENV, **(env or {})})
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(["git", *args], 124, b"", f"git {args[0] if args else ''} timed out after {timeout} seconds".encode())
+    except OSError as exc:
+        return subprocess.CompletedProcess(["git", *args], 127, b"", str(exc).encode())
 
 
 def _words(res: subprocess.CompletedProcess) -> str:

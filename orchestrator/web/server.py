@@ -7026,12 +7026,17 @@ class UIServer(ThreadingHTTPServer):
                 wake.clear()
                 if self._stopping.is_set():
                     return
-                roots = product_sync.project_roots(self.root)
-                before = state_ref.local_heads(roots)
-                wait = product_sync.run_round(self.root)
-                job_sync.run_round(self.root, running=set(self.sessions.running_job_ids()))  # each asked for separately
-                if state_ref.local_heads(roots) != before and getattr(self, "trigger_heartbeat", None):
-                    self.trigger_heartbeat()  # pushed something: tell the account now, so the others fetch within seconds
+                try:  # nothing in a round may stop the thread: it has to try again next time
+                    roots = product_sync.project_roots(self.root)
+                    before = state_ref.local_heads(roots)
+                    wait = product_sync.run_round(self.root)
+                    job_sync.run_round(self.root, running=set(self.sessions.running_job_ids()))  # each asked for separately
+                    if state_ref.local_heads(roots) != before and getattr(self, "trigger_heartbeat", None):
+                        self.trigger_heartbeat()  # pushed something: tell the account now, so the others fetch within seconds
+                except Exception as exc:
+                    wait = product_sync.CHECK_SECONDS
+                    sync_health.record("product", False, f"Sharing stopped for a round: {exc}")
+                    print(f"  Sharing with your other computers: {exc}", flush=True)
 
         thread = threading.Thread(target=share, daemon=True, name="product-sync")
         thread.start()
