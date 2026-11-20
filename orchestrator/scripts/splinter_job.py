@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from common import (
+    ensure_labels,
     ROOT,
     JOBS_DIR,
     gh_text,
@@ -23,6 +24,8 @@ from orchestrator.project_config import PROJECT_CONFIG
 
 def create_subtask_issue(title: str, body: str, parent_issue: int) -> int:
     labels = ["job:bug", "source:splinter", "status:planned"]
+    failed = ensure_labels(labels)
+    labels = [label for label in labels if label not in failed]  # only labels the repository has or could be given
     label_flags = []
     for label in labels:
         label_flags.extend(["--label", label])

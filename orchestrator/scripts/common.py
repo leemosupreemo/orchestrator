@@ -1017,21 +1017,77 @@ def gh_comment(issue_number: int | None, body: str) -> None:
     if not issue_number or not shutil.which("gh"): return  # plain-git jobs have no issue
     run(["gh", "issue", "comment", str(issue_number), "--body", body], cwd=ROOT, check=False)
 
+# The labels Orchestrator puts on a job's issue, by family: (colour, what the family means). A repository that has never had a
+# job lacks them, and GitHub refuses to add a label that doesn't exist.
+LABEL_STYLE = {
+    "status": ("fbca04", "Where an Orchestrator job is"),
+    "job": ("5319e7", "The kind of Orchestrator job"),
+    "source": ("ededed", "Where an Orchestrator job came from"),
+}
+_LABEL_NOT_FOUND = re.compile(r"'([^']+)' not found")
+_labels_ensured: set[str] = set()   # this repository's labels known to exist, so each is checked once per process
+_label_warned: set[str] = set()
+
+
+def missing_label(text: str) -> str | None:
+    """The label GitHub says doesn't exist ("'status:planned' not found"), from a gh command's error text."""
+    match = _LABEL_NOT_FOUND.search(text or "")
+    return match.group(1) if match else None
+
+
+def ensure_labels(names: str | list[str]) -> list[str]:
+    """Create any of these labels the repository lacks, and return the ones that could not be created (no permission, no
+    network). An existing label is never touched, so a colour someone chose stays. Each label is checked once per process."""
+    if isinstance(names, str):
+        names = [names]
+    failed: list[str] = []
+    gh = shutil.which("gh")
+    for name in dict.fromkeys(n for n in names if n):
+        if name in _labels_ensured:
+            continue
+        if not gh:
+            failed.append(name)
+            continue
+        color, description = LABEL_STYLE.get(name.split(":", 1)[0], ("ededed", "Orchestrator"))
+        res = subprocess.run([gh, "label", "create", name, "--color", color, "--description", description],
+                             cwd=str(ROOT), capture_output=True, text=True, check=False)
+        if res.returncode == 0 or "already exists" in f"{res.stderr}\n{res.stdout}".lower():
+            _labels_ensured.add(name)
+        else:
+            failed.append(name)
+    return failed
+
+
 def update_issue_status(issue_number: int | None, labels_to_add: str | list[str], labels_to_remove: str | list[str] | None = None) -> None:
     if not issue_number or not shutil.which("gh"): return  # plain-git jobs have no issue
-    
+
     cmd = ["gh", "issue", "edit", str(issue_number)]
-    
+
     if isinstance(labels_to_add, str): labels_to_add = [labels_to_add]
     for l in labels_to_add:
         cmd.extend(["--add-label", l])
-        
+
     if labels_to_remove:
         if isinstance(labels_to_remove, str): labels_to_remove = [labels_to_remove]
         for l in labels_to_remove:
             cmd.extend(["--remove-label", l])
-            
-    run(cmd, cwd=ROOT, check=False)
+
+    # A label the repository doesn't have yet is created and the edit retried, instead of failing every status update for the
+    # life of the job. Quiet unless it still fails: then the error is shown once per label, not on every update.
+    for _ in range(len(set(labels_to_add) | set(labels_to_remove or [])) + 1):
+        res = subprocess.run(cmd, cwd=str(ROOT), capture_output=True, text=True, check=False)
+        if res.returncode == 0:
+            return
+        missing = missing_label(f"{res.stderr}\n{res.stdout}")
+        if missing and missing not in _labels_ensured and not ensure_labels(missing):
+            continue
+        key = missing or f"#{issue_number}"
+        if key not in _label_warned:
+            _label_warned.add(key)
+            _print_completed_process(res)
+            if missing:
+                print(f"      - Couldn't create the '{missing}' label on GitHub (it needs permission to manage labels), so the issue's status isn't shown there.", flush=True)
+        return
 
 
 def get_repo_github_base_url() -> str | None:

@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 
 from common import (
+    ensure_labels,
     interactive,
     ROOT,
     PROMPTS_DIR,
@@ -101,8 +102,10 @@ def create_issue(title: str, body: str, labels: list[str]) -> int:
             match = re.search(r"could not add label:\s*'([^']+)'\s*not found", stderr)
             if match and labels:
                 missing_label = match.group(1)
-                print(f"⚠️  could not add label: '{missing_label}' not found on repository. Retrying without this label...")
                 if missing_label in labels:
+                    if not ensure_labels(missing_label):  # created it: try again with the label
+                        continue
+                    print(f"⚠️  could not add label: '{missing_label}' not found on repository and it couldn't be created. Retrying without this label...")
                     labels.remove(missing_label)
                     continue
             raise
