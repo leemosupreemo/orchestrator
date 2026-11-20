@@ -23,10 +23,12 @@ How to report:
 - Medium-risk concerns are likely to cause trouble later but do not stop the merge.
 - Minor suggestions are optional polish. Keep them few.
 - Write "None" for an empty section. Do not pad.
+- When an "Acceptance criteria" list is given, answer every item under "## Acceptance criteria": **Met** (the file and line that meets it), **Not met**, or **Can't tell** (what is missing). Tests passing does not meet a criterion; the change must. A criterion marked as asked for by the person that is Not met is a Blocker.
 
 Return markdown with these sections:
 ## Blockers
 ## Medium-risk concerns
 ## Minor suggestions
+## Acceptance criteria
 ## Verdict
 End the Verdict with one of: Approve, Approve with changes, Request changes, and a one-sentence reason.

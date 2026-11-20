@@ -84,6 +84,8 @@ def verification_warnings(job: dict, root: Path) -> list[str]:
                 f"Builder's `test_command_override` ({override}) targets source-text-only tests "
                 f"({', '.join(grep_tests)}) that inspect source strings without executing behavior."
             )
+    from orchestrator import acceptance
+    warnings.extend(acceptance.diff_warnings(job))
     plan = job.get("plan") if isinstance(job.get("plan"), dict) else {}
     if job.get("type") == "quick-fix" and not (plan.get("likely_files") or []):
         warnings.append(
@@ -128,11 +130,12 @@ def main() -> None:
         if warnings else ""
     )
     from orchestrator import prd
+    from orchestrator import acceptance
     prompt = f"""{reviewer_prompt}
 {prd.context_block(ROOT, "reviewer")}
 Brief:
 {brief}
-{warnings_block}
+{acceptance.block(job)}{warnings_block}
 PR metadata:
 {pr_json}
 

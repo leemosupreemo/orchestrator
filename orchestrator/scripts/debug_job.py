@@ -280,6 +280,9 @@ def run_propose(job: dict, job_path: Path, logs_path: str | None, feedback: str 
     brief_file = OUTPUT_DIR / job["job_id"] / "brief.md"
     brief = brief_file.read_text(encoding="utf-8") if brief_file.exists() else "No brief available"
     brief += reference_context(job)
+    # The fix loop's goal is the job's criteria, not green tests: a requirement added after the brief (feedback) must stay in view.
+    from orchestrator import acceptance
+    brief += "\n" + acceptance.block(job)
     
     prev_impl = ""
     builder_summary = OUTPUT_DIR / job["job_id"] / "builder_summary.md"
