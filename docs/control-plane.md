@@ -65,6 +65,10 @@ push tokens, rate limits, primaries) **and** some project content: job records a
 `machine_snapshots`, `job_owners`, `job_archives`) and setup profiles (`master_configs`, `machine_setups`). Removing a computer
 deletes its own records, not the account's.
 
+It also passes on, with every heartbeat, which shared-state commit is newest for each project (`state_heads`: a hash of the
+repository's name and a commit hash per project, no content), so computers fetch from the project's repository at once
+([details](state-sync.md#what-changes-for-speed)).
+
 The plan is that it keeps only identity and rendezvous: project content moves to the project's own repository
 (`refs/orchestrator/state`), in phases, starting with the product requirements document, which never went through the control
 plane. See [Sharing project state between computers](state-sync.md). New features should not add project content here.

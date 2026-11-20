@@ -924,6 +924,54 @@ class PrimaryComputerTests(PlaneCase):
         self.assertEqual(self.primary(studio, s1, project="")[0], 400)
 
 
+class StateHeadTests(PlaneCase):
+    """The heartbeat passes on the newest shared-state commit per project (a key and a hash, never content), so a computer
+    that is behind fetches from the project's repository at once instead of on its next minute."""
+    KEY, OTHER = "a" * 32, "b" * 32
+    OLD, NEW = "1" * 40, "2" * 40
+
+    def beat_with(self, machine, secret, heads):
+        return self.call("POST", "/cp/machine/heartbeat", {"endpoint": "https://x.example.com", "state_heads": heads},
+                         machine_auth=f"Machine {machine}:{secret}")
+
+    def test_a_pushed_commit_reaches_the_accounts_other_computers(self):
+        studio, s1 = self.pair(name="Studio")
+        laptop, s2 = self.pair(name="Laptop")
+        self.assertNotIn("state_heads", self.beat_with(laptop, s2, {})[1])  # nothing shared yet
+        self.beat_with(studio, s1, {self.KEY: {"sha": self.NEW, "at": 100.0}})
+        self.assertEqual(self.beat_with(laptop, s2, {})[1]["state_heads"], {self.KEY: self.NEW})
+
+    def test_the_newest_report_wins_so_a_late_beat_with_an_older_commit_changes_nothing(self):
+        studio, s1 = self.pair(name="Studio")
+        laptop, s2 = self.pair(name="Laptop")
+        self.beat_with(studio, s1, {self.KEY: {"sha": self.NEW, "at": 200.0}})
+        status, reply = self.beat_with(laptop, s2, {self.KEY: {"sha": self.OLD, "at": 100.0}})
+        self.assertEqual(reply["state_heads"], {self.KEY: self.NEW})
+        stored = self.store.get("state_heads", "u-alice")
+        self.assertEqual(set(stored["heads"][self.KEY]), {"sha", "at", "machine_id"})  # no project content, ever
+
+    def test_reports_that_are_not_keys_and_commits_are_ignored(self):
+        studio, s1 = self.pair()
+        for bad in ({"not-a-key": {"sha": self.NEW, "at": 1.0}}, {self.KEY: {"sha": "main", "at": 1.0}}, {self.KEY: {"sha": self.NEW}},
+                    {self.KEY: {"sha": self.NEW, "at": True}}, {self.KEY: "x"}, "x", [1]):
+            status, reply = self.beat_with(studio, s1, bad)
+            self.assertEqual((status, reply.get("state_heads")), (200, None), bad)
+
+    def test_accounts_never_see_each_others_heads(self):
+        alice, s1 = self.pair(user="alice-token", name="Alice Mac")
+        bob, s2 = self.pair(user="bob-token", name="Bob Mac")
+        self.beat_with(alice, s1, {self.KEY: {"sha": self.NEW, "at": 1.0}})
+        self.assertNotIn("state_heads", self.beat_with(bob, s2, {})[1])
+
+    def test_the_list_is_capped_keeping_the_newest(self):
+        studio, s1 = self.pair()
+        for n in range(cp.MAX_STATE_HEADS + 5):
+            self.beat_with(studio, s1, {f"{n:032x}": {"sha": self.NEW, "at": float(n + 1)}})
+        heads = self.store.get("state_heads", "u-alice")["heads"]
+        self.assertEqual(len(heads), cp.MAX_STATE_HEADS)
+        self.assertNotIn(f"{0:032x}", heads)
+
+
 class CentralWebTelemetryTests(PlaneCase):
     def setUp(self):
         super().setUp()

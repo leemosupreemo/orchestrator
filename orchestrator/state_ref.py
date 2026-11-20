@@ -15,6 +15,7 @@ out, never in a branch, and not fetched by an ordinary clone. See docs/state-syn
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -138,6 +139,7 @@ def push(repo: Path, sha: str) -> bool:
     res = _git(repo, "push", "--no-verify", "--porcelain", "origin", f"{sha}:{REF}", timeout=120)
     if res.returncode == 0:
         _git(repo, "update-ref", TRACKING_REF, sha)
+        _record_push(repo, sha)
         return True
     words = _words(res) + (res.stdout or b"").decode("utf-8", "replace")
     if any(marker in words for marker in _REJECTED):
@@ -216,3 +218,62 @@ def status(root: Path) -> dict[str, Any]:
         return {"state": "no_remote", "jobs": "no_remote", "remote": "", "public": None}
     word = lambda decided: "ask" if decided is None else ("on" if decided else "off")  # noqa: E731
     return {"state": word(consent(root)), "jobs": word(consent(root, "jobs")), "remote": where, "public": is_public(root, url)}
+
+
+# ---- the nudge: the account passes on which commit is newest (a key and a hash, never content), so others fetch at once
+
+def project_key(root: Path) -> str:
+    """A project's name on the account: a hash of its repository, the same on every computer that has that remote."""
+    from orchestrator import account
+    name = account.project_repo(Path(root)) or remote_url(Path(root))
+    return hashlib.sha256(name.encode("utf-8")).hexdigest()[:32] if name else ""
+
+
+def _head_file(root: Path) -> Path:
+    from orchestrator.prd import shared_runtime
+    return shared_runtime(Path(root)) / "state" / "state_head.json"
+
+
+def _record_push(root: Path, sha: str) -> None:
+    try:
+        path = _head_file(root)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"sha": sha, "at": time.time()}), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def pushed_head(root: Path) -> dict[str, Any] | None:
+    try:
+        data = json.loads(_head_file(root).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) and isinstance(data.get("sha"), str) else None
+
+
+def shares_anything(root: Path) -> bool:
+    return any(consent(root, scope) is True for scope in SCOPES)
+
+
+def local_heads(roots: list[Path]) -> dict[str, dict[str, Any]]:
+    """What this computer reports with its heartbeat: for each shared project, the commit it last pushed and when."""
+    out = {}
+    for root in roots:
+        head = pushed_head(root) if shares_anything(root) else None
+        key = project_key(root) if head else ""
+        if key:
+            out[key] = {"sha": head["sha"], "at": float(head.get("at") or 0)}
+    return out
+
+
+def behind(roots: list[Path], heads: Any) -> bool:
+    """Whether the account knows a newer commit than this computer has for any shared project: time to fetch now."""
+    if not isinstance(heads, dict) or not heads:
+        return False
+    for root in roots:
+        if not shares_anything(root):
+            continue
+        newest = heads.get(project_key(root))
+        if isinstance(newest, str) and newest not in (fetched(root), (pushed_head(root) or {}).get("sha")):
+            return True
+    return False

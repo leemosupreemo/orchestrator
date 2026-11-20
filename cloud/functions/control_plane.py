@@ -72,6 +72,9 @@ MAX_MOVED_JOBS = 200  # jobs another computer took over, kept per computer for i
 MAX_JOB_UPDATES = 60  # changed jobs one computer sends per sync (account_jobs: one record per job)
 DONE_STATUSES = {"completed", "archived", "discarded", "done"}
 MAX_JOB_OWNERS = 500  # which computer owns each job (highest ownership number), per account
+MAX_STATE_HEADS = 200  # projects per account whose shared-state commit is passed on (a key and a commit hash, no content)
+STATE_KEY_RE = re.compile(r"^[0-9a-f]{32}$")
+STATE_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 MAX_JOB_ARCHIVES = 300  # the newest archive or restore of each job, per account, for every computer's heartbeat reply
 MAX_DEVICES_PER_USER = 20
 MAX_EVENTS_PER_CALL = 10
@@ -408,6 +411,9 @@ class ControlPlane:
                  "reset_tunnel": reset_tunnel_requested}
         if isinstance(machine.get("moved_jobs"), dict) and machine["moved_jobs"]:
             reply["moved_jobs"] = machine["moved_jobs"]  # jobs another computer took over: this one stops working on them
+        heads = self._record_state_heads(machine_id, machine, body.get("state_heads"))
+        if heads:
+            reply["state_heads"] = heads  # the newest shared-state commit per project: a computer behind fetches now
         archives = (self.store.get("job_archives", machine["owner_uid"]) or {}).get("jobs")
         if isinstance(archives, dict) and archives:
             reply["job_archives"] = {k: {"archived": v.get("archived"), "at": v.get("at")} for k, v in archives.items()}
@@ -417,6 +423,35 @@ class ControlPlane:
         if operation is not None:
             reply["update_operation"] = operation
         return reply
+
+    def _record_state_heads(self, machine_id: str, machine: dict[str, Any], reported: Any) -> dict[str, str]:
+        """The account's newest shared-state commit per project, after taking this computer's report. Projects travel through
+        their own repositories (docs/state-sync.md); this only passes on which commit is newest, so a computer that is behind
+        fetches at once. Keys are a hash of the project's repository name; nothing of the project itself is stored."""
+        clean: dict[str, dict[str, Any]] = {}
+        if isinstance(reported, dict):
+            for key, value in list(reported.items())[:MAX_STATE_HEADS]:
+                if not (isinstance(key, str) and STATE_KEY_RE.match(key) and isinstance(value, dict)):
+                    continue
+                sha, at = value.get("sha"), value.get("at")
+                if isinstance(sha, str) and STATE_SHA_RE.match(sha) and isinstance(at, (int, float)) and not isinstance(at, bool):
+                    clean[key] = {"sha": sha, "at": float(at), "machine_id": machine_id}
+
+        def transform(doc):
+            heads = dict((doc or {}).get("heads") or {})
+            changed = False
+            for key, value in clean.items():
+                if float((heads.get(key) or {}).get("at") or 0) < value["at"] and (heads.get(key) or {}).get("sha") != value["sha"]:
+                    heads[key] = value
+                    changed = True
+            if len(heads) > MAX_STATE_HEADS:
+                heads = dict(sorted(heads.items(), key=lambda kv: kv[1].get("at") or 0)[-MAX_STATE_HEADS:])
+                changed = True
+            return ({"owner_uid": machine["owner_uid"], "heads": heads} if changed else None), heads
+
+        heads = self.store.mutate("state_heads", machine["owner_uid"], transform) if clean else \
+            ((self.store.get("state_heads", machine["owner_uid"]) or {}).get("heads") or {})
+        return {key: value["sha"] for key, value in heads.items() if isinstance(value, dict) and value.get("sha")}
 
     def _new_connection_command(self, action: str) -> dict[str, Any]:
         now = self.now()

@@ -6931,8 +6931,12 @@ class UIServer(ThreadingHTTPServer):
             try:
                 manager = self.connection_manager
                 connection = {"connection": manager.status(), "connection_ack": manager.ack_id} if manager else {}
-                reply = account.heartbeat(machine, endpoint(), running=sum(1 for run in self.sessions.list() if run.get("running")), **connection)
+                roots = product_sync.project_roots(self.root)
+                reply = account.heartbeat(machine, endpoint(), running=sum(1 for run in self.sessions.list() if run.get("running")),
+                                          state_heads=state_ref.local_heads(roots), **connection)
                 sync_health.record("account", True)
+                if isinstance(reply, dict) and state_ref.behind(roots, reply.get("state_heads")) and getattr(self, "wake_state_sync", None):
+                    self.wake_state_sync()  # another computer pushed shared state: fetch it now, not on the next minute
                 command = reply.get("connection_command") if isinstance(reply, dict) else None
                 if manager and account.valid_connection_command(command):
                     manager.request(command["id"], command["action"], expires=command["expires"])
@@ -7012,11 +7016,22 @@ class UIServer(ThreadingHTTPServer):
     def start_state_sync(self) -> threading.Thread:
         """Share each project's product requirements with the other computers working on it, through the project's own
         repository (orchestrator/product_sync.py). Paired or not: it needs only the project's remote and the person's yes."""
+        wake = threading.Event()
+        self.wake_state_sync = wake.set  # the heartbeat calls it when the account knows a newer shared commit
+
         def share() -> None:
             wait = product_sync.CHECK_SECONDS
-            while not self._stopping.wait(wait):
+            while True:
+                wake.wait(wait)
+                wake.clear()
+                if self._stopping.is_set():
+                    return
+                roots = product_sync.project_roots(self.root)
+                before = state_ref.local_heads(roots)
                 wait = product_sync.run_round(self.root)
                 job_sync.run_round(self.root, running=set(self.sessions.running_job_ids()))  # each asked for separately
+                if state_ref.local_heads(roots) != before and getattr(self, "trigger_heartbeat", None):
+                    self.trigger_heartbeat()  # pushed something: tell the account now, so the others fetch within seconds
 
         thread = threading.Thread(target=share, daemon=True, name="product-sync")
         thread.start()

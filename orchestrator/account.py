@@ -187,7 +187,8 @@ def valid_connection_command(command: Any, now: float | None = None) -> bool:
 
 def heartbeat(machine: dict[str, Any], endpoint: str, running: int = 0, update_state: str | None = None,
               readiness: dict[str, str] | None = None, connection: dict[str, Any] | None = None,
-              connection_ack: str | None = None, update_control: int = 0, update_ack: str | None = None) -> dict[str, Any]:
+              connection_ack: str | None = None, update_control: int = 0, update_ack: str | None = None,
+              state_heads: dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:
     """Tell the control plane this computer is up, where browsers reach it, and how many runs are going (so it can say
     so if the computer disappears mid-run). The app also reports its update progress, and the reply may ask it to update.
     Forgets the pairing if the account removed it."""
@@ -204,6 +205,8 @@ def heartbeat(machine: dict[str, Any], endpoint: str, running: int = 0, update_s
     body["connection"] = connection if connection is not None else {}
     if connection_ack:
         body["connection_ack"] = connection_ack
+    if state_heads:
+        body["state_heads"] = state_heads  # which shared-state commit this computer last pushed, per project (docs/state-sync.md)
     try:
         return call("machine/heartbeat", body, machine=machine)
     except AccountError as exc:

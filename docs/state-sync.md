@@ -4,8 +4,9 @@ Goal: every computer working on a project sees the same jobs, product requiremen
 Orchestrator's servers storing project content**. Project content travels where the code already does, the project's own
 repository. The control plane (Firestore, `docs/control-plane.md`) keeps only what it takes to find and reach computers.
 
-Status: **phase 1 is built** (the product requirements document, its design and source files). **Phase 2 is built** except the
-fast nudge (jobs written to the repository as well as the account, read from the repository first). Phases 3 and 4 are planned.
+Status: **phase 1 is built** (the product requirements document, its design and source files). **Phase 2 is built**, with the fast
+nudge (jobs written to the repository as well as the account, read from the repository first); the nudge needs the control-plane
+function deployed. Phases 3 and 4 are planned.
 
 ## What lives where
 
@@ -77,8 +78,8 @@ Every change that arrives is written as a version in that computer's own history
    was continued elsewhere marks its copy moved (`apply_moved_jobs`) and applies archive events (`apply_job_archives`), as the
    heartbeat's replies do. Changes that say nothing new (only `updated_at` or the live step) aren't pushed. Home reads other
    computers' jobs from `GET /api/shared-jobs` first and fills gaps from the account's snapshots; a shared job names its computer,
-   matched to the account's list when the computer is paired. Not yet: the content-free nudge (below), and the hosted app's
-   **Your computers** page, which still lists an offline computer's jobs from the account.
+   matched to the account's list when the computer is paired. Not yet: the hosted app's **Your computers** page, which still
+   lists an offline computer's jobs from the account.
 3. **Jobs off Firestore.** Computers stop writing job content to the control plane. The stored content (`account_jobs`,
    `machine_snapshots` and the job titles in the others) is deleted, and the control plane gains a delete path for what an
    account still holds. When every one of an account's computers is offline, the hosted app shows the computers but no job list.
@@ -86,9 +87,20 @@ Every change that arrives is written as a version in that computer's own history
 
 ## What changes for speed
 
-The control plane told other computers about a change within seconds. Fetching the state ref every minute is slower. Still to do,
-before phase 3: a content-free nudge: a computer that pushed a new state sends the commit's hash (40 characters, no content) with its heartbeat, and
-the reply tells the account's other computers to fetch now.
+The control plane told other computers about a change within seconds. Fetching the state ref every minute alone would be slower,
+so there is a content-free nudge (built; it works once the control-plane function is deployed, and until then computers simply
+fetch every minute):
+
+- A computer that pushed shared state reports, with its heartbeat, the commit it last pushed for each shared project
+  (`state_heads`: `{project key: {sha, at}}`). The key is a hash of the repository's name (`state_ref.project_key`), the same on
+  every computer with that remote. The account keeps the newest report per key (`state_heads` collection, one document per
+  account: key, commit hash, time, computer; nothing of the project itself) and returns `{key: sha}` in every heartbeat reply.
+- A computer whose fetched copy and last push are both different from that commit is behind (`state_ref.behind`): the heartbeat
+  wakes the sync thread, which fetches and merges at once.
+- After a round that pushed, the computer sends a heartbeat straight away rather than at the next minute.
+
+So a change reaches the others within a few seconds of the pushing computer's round. A computer on an older version ignores the
+reply's `state_heads`, and an older control plane ignores the report: both fall back to the minute's fetch.
 
 ## Risks and limits
 
