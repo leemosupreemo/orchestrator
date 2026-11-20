@@ -15,7 +15,7 @@ from pathlib import Path
 
 from common import CONFIG_DIR, ROOT, append_log, ProgressIndicator, colorize_diff_line, LoopTroubleDetector
 from model_registry import get_model, ModelTier, get_all_models, preferred_cli, summarize_cli_error, model_usable, model_substitute
-from model_router import get_prioritized_models, ModelRole
+from model_router import get_prioritized_models, ModelRole, ROLE_REQUIREMENTS
 from orchestrator import usage_limits
 
 class LLMTimeoutError(RuntimeError):
@@ -201,6 +201,32 @@ def _is_free_only_allowlist(allowed_models: list[str] | None) -> bool:
     return bool(metas) and all(m.cost_factor == 0.0 for m in metas)
 
 
+def _cheapest_adequate_first(candidates: list[str], role: str | None, primary_id: str) -> list[str]:
+    """Order sign-in fallbacks so the work moves to the cheapest model that is still up to it, instead of to the strongest.
+
+    The router ranks by suitability, which puts the top tier first: when a Sonnet sign-in expired, the fallback was the
+    Antigravity-hosted Opus (twice the price) ahead of its Sonnet. A model is adequate when it is no weaker than the one that
+    failed and meets the role's own minimum tier (a verifier needs the top tier, a builder doesn't). Adequate models come
+    first, cheapest first, and the router's order breaks ties; the rest follow in the router's order, in case nothing adequate
+    works. The caller's "hosted Claude first" grouping is applied after this and keeps this order inside each group."""
+    floor = ROLE_REQUIREMENTS.get(role or "", {}).get("min_tier")
+    tiers = [int(floor)] if floor is not None else []
+    failed = get_model(primary_id)
+    if failed:
+        tiers.append(int(failed.tier))
+    if not tiers:
+        return candidates
+    bar = min(tiers)  # a smaller tier number is a stronger model
+
+    def key(mid: str) -> tuple[bool, float]:
+        meta = get_model(mid)
+        if not meta or int(meta.tier) > bar:
+            return (True, 0.0)
+        return (False, meta.cost_factor)
+
+    return sorted(candidates, key=key)  # stable: ties and the weaker models keep the router's order
+
+
 def _auth_fallback_models(
     role: str | None,
     failed_clis: set[str],
@@ -229,6 +255,7 @@ def _auth_fallback_models(
         candidates.append(mid)
     if not candidates:
         return []
+    candidates = _cheapest_adequate_first(candidates, role, primary_id)
     # If Claude CLI's sign-in expired, try Antigravity-hosted Claude models first before other providers.
     if "claude" in failed_clis or primary_id.startswith("claude-"):
         hosted_claude = [mid for mid in candidates if mid.startswith("claude-")]
