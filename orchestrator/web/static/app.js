@@ -9761,12 +9761,32 @@ pages.product = async (_, query) => {
       <div class="meta">${esc(ago(v.at))}${v.summary ? ` · ${esc(v.summary)}` : ""}</div><div class="prd-diff" hidden></div></div>
       <div class="side"><button type="button" class="btn small ghost" data-prd-diff="${esc(v.id)}">See changes</button>${i === 0 ? "" : `<button type="button" class="btn small" data-prd-restore="${esc(v.id)}">Restore</button>`}</div></div>`).join("");
   const prdFilled = () => (p.sections || []).some((x) => x.filled);
+  // Sharing between computers goes through the project's own repository (docs/state-sync.md): asked once, never assumed.
+  const sharing = () => p.sharing || { state: "no_remote" };
+  const sharingAsk = () => {
+    const s = sharing();
+    if (s.state !== "ask") return "";
+    return `<section class="card mb-16" id="prd-sharing-ask"><div class="card-h"><h2>Share with your other computers?</h2></div>
+      <div class="card-b stack"><p class="m-0">Keep these requirements, with their designs and source documents, the same on every computer working on this project. They are kept in your repository (<span class="mono">${esc(s.remote)}</span>) on a hidden ref that branches and ordinary clones don't show. Anyone who can read the repository can read them.</p>
+        ${s.public ? `<div class="notice warn">This repository is public, so anyone could read them.</div>` : ""}
+        <div class="row gap-8 wrap">${s.public
+          ? `<button type="button" class="btn small" data-prd-share="true">Share anyway</button><button type="button" class="btn small primary" data-prd-share="false">Keep on this computer</button>`
+          : `<button type="button" class="btn small" data-prd-share="false">Keep on this computer</button><button type="button" class="btn small primary" data-prd-share="true">Share</button>`}</div></div></section>`;
+  };
+  const sharingLine = () => {
+    const s = sharing();
+    if (s.state === "no_remote") return `<div class="muted" id="prd-sharing">Kept on this computer: this project has no Git remote. <a href="#/git">Add one under Git setup</a> to share it with your other computers.</div>`;
+    if (s.state === "on") return `<div class="row gap-12 align-center wrap" id="prd-sharing"><span class="muted">Shared with your other computers through <span class="mono">${esc(s.remote)}</span>.</span><button type="button" class="btn small ghost" data-prd-share="false">Stop sharing</button></div>`;
+    if (s.state === "off") return `<div class="row gap-12 align-center wrap" id="prd-sharing"><span class="muted">Kept on this computer.</span><button type="button" class="btn small ghost" data-prd-share="true">Share through ${esc(s.remote)}</button></div>`;
+    return "";
+  };
   const render = () => `
       <section class="card mb-16"><div class="card-h"><h2>Product requirements</h2>${prdStatusPill(p.sections || [])}</div>
         <div class="card-b stack">
           <div class="row gap-12 wrap">${p.can_draft ? `<button class="btn primary" id="prd-draft">${prdFilled() ? "Update with AI" : "Draft with AI"}</button>` : ""}<button class="btn primary" id="prd-import">Import PRD</button><button class="btn" id="prd-reverse" title="Reverse engineer using the REA MCP server">Reverse engineer (REA)</button></div>
           <div><a class="mono prd-file-link" href="#/docs/product" title="View and download the PRD Markdown file">${esc(p.path)}</a> · ${p.shared ? "Shared across branches. " : ""}Every job reads this first.</div>
         </div></section>
+      ${sharingAsk()}
       <div id="prd-panel"></div>
       ${p.sections.map(sectionCard).join("")}
       ${p.sources?.length ? `<section class="card mb-16" id="prd-sources"><div class="card-h"><h2>Source documents</h2><span class="count">${p.sources.length}</span></div>
@@ -9793,7 +9813,8 @@ pages.product = async (_, query) => {
             <option value="__manage_llms__">⚙️ Manage LLMs</option>
           </select>
         </div>
-        <div class="muted">AI keeps this up to date as jobs finish, and you can review or undo any change in History.</div></div></section>
+        <div class="muted">AI keeps this up to date as jobs finish, and you can review or undo any change in History.</div>
+        ${sharingLine()}</div></section>
       <section class="card"><div class="card-h"><h2>History</h2><span class="count">${p.history.length}</span></div>
         <div class="list">${p.history.length ? historyRows(p.history) : `<div class="empty">Nothing yet. Every change you or the AI makes will be listed here.</div>`}</div></section>`;
   return {
@@ -9976,6 +9997,15 @@ pages.product = async (_, query) => {
           showSectionEditor(id, box, s.body, s.hint, s.title, async (body) => {
             try { await save({ section: id, body }); toast("Saved"); await reload(); } catch (e) { toast(e.message, true); }
           }, reload);
+        }));
+        view.querySelectorAll("[data-prd-share]").forEach((btn) => btn.addEventListener("click", async () => {
+          const enabled = btn.dataset.prdShare === "true";
+          btn.disabled = true;
+          try {
+            p.sharing = await api("product/sharing", { method: "POST", body: { enabled } });
+            toast(enabled ? "Shared with your other computers. They pick it up within a couple of minutes." : "Kept on this computer");
+            await reload();
+          } catch (e) { btn.disabled = false; toast(e.message, true); }
         }));
         $("#prd-auto")?.addEventListener("change", async (e) => { try { p = await api("product/settings", { method: "POST", body: { auto_update: e.target.checked } }); toast(p.auto_update ? "It will keep itself up to date" : "Automatic updates are off"); } catch (err) { e.target.checked = !e.target.checked; toast(err.message, true); } });
         const updateModelSelect = $("#prd-update-model-select");

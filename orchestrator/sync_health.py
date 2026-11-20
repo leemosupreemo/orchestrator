@@ -22,7 +22,7 @@ CHANNELS = {
     "jobs": "Sending job updates to your account",
     "branches": "Backing up job branches to GitHub",
     "unfinished": "Backing up unfinished work to GitHub",
-    "product": "Sharing your product requirements with your account",
+    "product": "Sharing your product requirements through your repository",
 }
 _lock = threading.Lock()
 

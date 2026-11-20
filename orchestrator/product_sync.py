@@ -1,51 +1,47 @@
-"""Keep a project's product requirements document the same on all of an account's computers.
+"""Keep a project's product requirements document the same on all the computers working on it, through the project's own
+repository (refs/orchestrator/state, see orchestrator/state_ref.py and docs/state-sync.md), not Orchestrator's servers.
 
 The document is `.orchestrator/product/prd.md`: git-ignored, so before this each computer had its own, and a job continued on
-another computer was judged against a different (older, or no) product description. The account now keeps one copy per project
-(`machine/product` and `machine/product/put` on the control plane: a version number, replaced only by a computer that built on the
-current version), and each computer, every CHECK_SECONDS:
+another computer was judged against a different (older, or no) product description. Once the person agrees to share it for a
+project (asked once, on the Product page), each computer, every CHECK_SECONDS:
 
 - pushes its document when it changed since the last sync;
-- pulls the account's when that changed and this one didn't;
+- pulls the shared one when that changed and this one didn't;
 - when both changed, merges them section by section (see `merge`): a section only one side changed takes that side's text; a
   section both changed differently keeps BOTH texts, the other computer's under "Also written on <name>:". Nothing is dropped.
 
 Every change that arrives is a version in this computer's own history (source "sync", undoable) and is announced, never silent.
-What is shared is the document's text. Not shared: its history (each computer keeps its own), the "Source documents" list and the
-design and source files it points to (they are files on one computer), and its settings. A project with no repository address
-can't be matched across computers and is skipped. These functions are pure or take the control-plane call as an argument.
+The design and source files the document points to travel too (a union: a file one computer has is copied to the others; a
+file is never overwritten or deleted), and so does its "Source documents" list (merged). Each computer keeps its own history
+and settings. A project without a remote (`origin`) stays on its computer. A push built on an older state is rejected by git
+and the round starts again from what is there, so two computers can't overwrite each other.
 """
 from __future__ import annotations
 
 import hashlib
 import json
 import os
+import socket
 import tempfile
 import time
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
-from orchestrator import account, sync_health
-from orchestrator.prd import PATH as SEED_PATH, SECTIONS, Prd, PrdChanged, PrdError, replace_section, sections_view, set_sources, split
+from orchestrator import state_ref, sync_health
+from orchestrator.prd import (PATH as SEED_PATH, SECTIONS, Prd, PrdChanged, PrdError, replace_section, sections_view, set_sources,
+                              sources, split)
 
 CHECK_SECONDS = 60
-UNAVAILABLE_WAIT = 3600  # a control plane that doesn't carry this yet is asked again in an hour
 MAX_PROJECTS = 10
+DOC = "product/prd.md"
+ASSET_KINDS = ("designs", "source")
+MAX_FILE_BYTES = 15 * 1024 * 1024
+MAX_FILES = 200
 ALSO_WRITTEN = "**Also written on {name}:**"
 
 
-class Unavailable(Exception):
-    """The control plane has no product endpoints (it hasn't been updated yet): don't ask again for a while."""
-
-
-def digest(text: str) -> str:
-    """The same 16 characters the control plane stores as a document's hash."""
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
-
-
-def shareable(text: str) -> str:
-    """The document as shared: without its "Source documents" list, which names files that exist on one computer only."""
-    return set_sources(text, [])
+def digest(text: str | None) -> str:
+    return hashlib.sha256((text or "").encode("utf-8")).hexdigest()[:16]
 
 
 def has_content(text: str | None) -> bool:
@@ -53,10 +49,21 @@ def has_content(text: str | None) -> bool:
     return any(s["filled"] for s in sections_view(text))
 
 
+def _union_sources(text: str, *others: str | None) -> str:
+    """`text` with a "Source documents" list holding every document any of the texts lists, once each."""
+    seen, items = set(), []
+    for t in (text, *others):
+        for item in sources(t):
+            if item["target"] not in seen:
+                seen.add(item["target"])
+                items.append(item)
+    return set_sources(text, items) if items else text
+
+
 def merge(base: str | None, local: str, remote: str, remote_name: str) -> tuple[str, list[str]]:
     """Three-way merge by section. `base` is the text the two last agreed on (None if they never did). Returns (text, titles of
     the sections both sides changed differently). A section only one side changed takes that side's text; both changed: this
-    computer's text stays and the other's follows it, marked, so nothing the person wrote is lost."""
+    computer's text stays and the other's follows it, marked, so nothing the person wrote is lost. Source lists are joined."""
     before, mine, theirs = split(base or ""), split(local), split(remote)
     text, conflicts = local, []
     for section in SECTIONS:
@@ -69,18 +76,19 @@ def merge(base: str | None, local: str, remote: str, remote_name: str) -> tuple[
         else:
             text = replace_section(text, sid, f"{l}\n\n{ALSO_WRITTEN.format(name=remote_name)}\n\n{r}")
             conflicts.append(section["title"])
-    return text, conflicts
+    return _union_sources(text, remote), conflicts
 
 
 def _is_untouched_seed(root: Path, local: str) -> bool:
     """Whether this computer's document is still the project's tracked starting copy (docs/product/prd.md), copied in the first
-    time it was read and never edited. It is somebody else's ancestor, not this person's work, so it must neither be pushed
-    nor merged against a document that grew from it."""
+    time it was read and never edited. It is an ancestor of the shared one, not this person's work: never pushed or merged."""
     try:
-        return shareable((Path(root) / SEED_PATH).read_text(encoding="utf-8")) == local
+        return (Path(root) / SEED_PATH).read_text(encoding="utf-8") == local
     except OSError:
         return False
 
+
+# ---- what was last agreed
 
 def _state_path(prd: Prd) -> Path:
     return prd.path.parent / "sync.json"
@@ -91,13 +99,12 @@ def read_state(prd: Prd) -> dict[str, Any]:
         data = json.loads(_state_path(prd).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
-    return data if isinstance(data, dict) and "local_hash" in data and "version" in data else {}
+    return data if isinstance(data, dict) and {"commit", "local_hash", "base_text"} <= set(data) else {}
 
 
-def _write_state(prd: Prd, *, version: int, text: str, local_text: str) -> dict[str, Any]:
-    """Remember what was agreed: the account's version, its text (the base of the next merge) and a hash of this computer's
-    document as it is now, to tell later whether it changed. Normalising on write can make the two differ, hence two texts."""
-    state = {"version": version, "base_text": text, "local_hash": digest(shareable(local_text)), "at": time.time()}
+def _write_state(prd: Prd, *, commit: str, text: str, local_text: str | None) -> None:
+    """Remember the shared commit, its text (the base of the next merge) and a hash of this computer's document now."""
+    state = {"commit": commit, "base_text": text, "local_hash": digest(local_text), "at": time.time()}
     path = _state_path(prd)
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temporary = tempfile.mkstemp(prefix=".sync-", dir=path.parent)
@@ -108,126 +115,152 @@ def _write_state(prd: Prd, *, version: int, text: str, local_text: str) -> dict[
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)
-    return state
 
 
-def _ask(call: Callable[..., dict[str, Any]], path: str, body: dict[str, Any], machine: dict[str, Any]) -> dict[str, Any]:
+# ---- design and source files: a union, never overwritten or deleted
+
+def _local_files(prd: Prd) -> dict[str, Path]:
+    out = {}
+    for kind in ASSET_KINDS:
+        folder = prd.asset_folder(kind)
+        if folder.is_dir():
+            for path in sorted(folder.iterdir()):
+                if path.is_file() and not path.is_symlink() and not path.name.startswith(".") and path.stat().st_size <= MAX_FILE_BYTES:
+                    out[f"product/{kind}/{path.name}"] = path
+    return dict(list(out.items())[:MAX_FILES])
+
+
+def _pull_files(prd: Prd, root: Path, head: str | None) -> list[str]:
+    """Copy in the shared files this computer doesn't have. Returns their shared paths."""
+    have = _local_files(prd)
+    pulled = []
+    for shared in (p for kind in ASSET_KINDS for p in state_ref.files(root, head, f"product/{kind}/")):
+        kind, name = shared.split("/")[1], shared.split("/")[-1]
+        if shared in have or name.startswith(".") or "/" in shared.removeprefix(f"product/{kind}/"):
+            continue
+        content = state_ref.read(root, head, shared)
+        if content is None or len(content) > MAX_FILE_BYTES:
+            continue
+        target = prd.path.parent / kind / name
+        if target.exists():
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(content)
+        pulled.append(shared)
+    return pulled
+
+
+def _files_to_push(prd: Prd, root: Path, head: str | None) -> dict[str, bytes]:
+    there = set(p for kind in ASSET_KINDS for p in state_ref.files(root, head, f"product/{kind}/"))
+    return {shared: path.read_bytes() for shared, path in _local_files(prd).items() if shared not in there}
+
+
+# ---- one round
+
+def computer_name() -> str:
     try:
-        return call(path, body, machine=machine)
-    except account.AccountError as exc:
-        if exc.status == 404 and "not found" in str(exc).lower():
-            raise Unavailable(str(exc)) from exc
-        raise
+        from orchestrator import account
+        return str((account.load_machine() or {}).get("name") or socket.gethostname().split(".")[0])
+    except Exception:
+        return socket.gethostname().split(".")[0]
 
 
-def sync_project(machine: dict[str, Any], root: Path, repo: str, *, call: Callable[..., dict[str, Any]] = account.call) -> str:
-    """One round for one project. Returns what happened: idle, adopted (already the same), pushed, pulled, merged, or busy (the
-    document changed under it: the next round starts again from what is there)."""
-    prd = Prd(root, Path(root) / ".orchestrator")
-    for _ in range(3):  # a computer that pushed in between sends us round again with the new version
+def sync_project(root: Path, *, name: str | None = None) -> str:
+    """One round for one project. Returns what happened: off (not shared), no remote, idle, adopted (already the same),
+    pushed, pulled, merged, files (only design or source files moved), or busy (something changed under it: the next round
+    starts again). Raises StateRefError when git can't reach or write the remote."""
+    root = Path(root)
+    if state_ref.consent(root) is not True:
+        return "off"
+    if not state_ref.remote_url(root):
+        return "no remote"
+    name = name or computer_name()
+    prd = Prd(root, root / ".orchestrator")
+    for _ in range(3):  # a computer that pushed in between sends us round again from the newer state
         raw = prd.read()
-        local = shareable(raw) if raw is not None else None
-        filled = has_content(local)
-        remote = _ask(call, "machine/product", {"project": repo}, machine).get("product")
+        filled = has_content(raw)
         state = read_state(prd)
-        if not state and filled and _is_untouched_seed(root, local):
+        if not state and filled and _is_untouched_seed(root, raw):
             filled = False
+        head = state_ref.fetch(root)
+        remote_bytes = state_ref.read(root, head, DOC)
+        remote = remote_bytes.decode("utf-8", "replace") if remote_bytes is not None else None
+        sender = state_ref.computer(root, head) or "another computer"
+        pulled_files = _pull_files(prd, root, head)
+        changes: dict[str, bytes | None] = dict(_files_to_push(prd, root, head))
 
         if remote is None:
-            if not filled:
-                return "idle"
-            reply = _ask(call, "machine/product/put", {"project": repo, "text": local, "base_version": 0}, machine)
-            if reply.get("ok"):
-                _write_state(prd, version=reply["product"]["version"], text=local, local_text=raw)
-                return "pushed"
-            continue
+            outcome = "pushed" if filled else ("files" if changes else "idle")
+            push_text = raw if filled else None
+        elif filled and state and state["commit"] == head and state["local_hash"] == digest(raw):
+            outcome, push_text = ("files" if changes or pulled_files else "idle"), None
+        elif filled and digest(raw) == digest(remote):
+            outcome, push_text = "adopted", None
+        else:
+            local_changed = bool(state) and filled and digest(raw) != state["local_hash"]
+            remote_changed = bool(state) and head != state["commit"]
+            if state and local_changed and not remote_changed:
+                outcome, push_text = "pushed", raw
+            else:
+                if not filled or (state and not local_changed):
+                    outcome, text, summary = "pulled", _union_sources(remote, raw), f"Synced from {sender}"
+                else:  # first time here with a different document, or both changed since the last sync
+                    text, conflicts = merge(state.get("base_text") if state else None, raw, remote, sender)
+                    outcome = "merged"
+                    summary = (f"Merged with {sender}'s version; both kept in {', '.join(conflicts)}" if conflicts
+                               else f"Merged with {sender}'s version")
+                try:
+                    version = prd.write_if_current(raw, text, "sync", summary)
+                except (PrdChanged, PrdError):
+                    return "busy"
+                if version:
+                    prd.announce(summary, version["id"])
+                raw = prd.read()
+                push_text = raw if raw != remote else None   # this computer added something (a merge, its source list)
 
-        if filled and state and state["version"] == remote["version"] and state["local_hash"] == digest(local):
-            return "idle"                                # unchanged on both sides since the last round
-        if filled and digest(local) == remote["hash"]:   # both hold the same text already: just remember that
-            _write_state(prd, version=remote["version"], text=remote["text"], local_text=raw)
-            return "adopted"
-
-        local_changed = bool(state) and filled and digest(local) != state["local_hash"]
-        remote_changed = bool(state) and remote["version"] != state["version"]
-        name = remote.get("machine_name") or "another computer"
-
-        if state and filled and not local_changed and not remote_changed:
-            return "idle"
-        if state and local_changed and not remote_changed:
-            outcome, text, summary = "pushed", local, ""
-        elif not filled or (state and not local_changed):
-            outcome, text, summary = "pulled", remote["text"], f"Synced from {name}"
-        else:  # first time here with a different document, or both changed since the last sync
-            text, conflicts = merge(state.get("base_text") if state else None, local, remote["text"], name)
-            outcome = "merged"
-            summary = (f"Merged with {name}'s version; both kept in {', '.join(conflicts)}" if conflicts
-                       else f"Merged with {name}'s version")
-
-        if outcome != "pushed":
-            try:
-                version = prd.write_if_current(raw, text, "sync", summary)
-            except (PrdChanged, PrdError):
-                return "busy"
-            if version:
-                prd.announce(summary, version["id"])
-            raw = prd.read()
-            text = shareable(raw)
-            if outcome == "pulled":
-                _write_state(prd, version=remote["version"], text=remote["text"], local_text=raw)
-                return "pulled"
-        reply = _ask(call, "machine/product/put", {"project": repo, "text": text, "base_version": remote["version"]}, machine)
-        if reply.get("ok"):
-            _write_state(prd, version=reply["product"]["version"], text=text, local_text=raw if outcome != "pushed" else (raw or text))
+        if push_text is not None:
+            changes[DOC] = push_text.encode("utf-8")
+        if not changes:
+            if head:
+                _write_state(prd, commit=head, text=remote or raw or "", local_text=raw)
             return outcome
+        sha = state_ref.commit(root, head, changes, "Product requirements" if DOC in changes else "Product files", name)
+        if state_ref.push(root, sha):
+            _write_state(prd, commit=sha, text=push_text if push_text is not None else (remote or ""), local_text=raw)
+            return outcome if outcome not in ("idle", "adopted") else "files"
     return "busy"
 
 
-def project_roots(root: Path | None = None) -> list[tuple[Path, str]]:
-    """(project folder, repository address) for this computer's recent projects, one per product document, up to MAX_PROJECTS."""
+def project_roots(root: Path | None = None) -> list[Path]:
+    """This computer's recent projects, one per product document, up to MAX_PROJECTS."""
     from orchestrator.project_config import load_recent_projects
-    found: list[tuple[Path, str | None]] = [(Path(root), None)] if root else []
-    for entry in load_recent_projects(prune_missing=False).get("projects", []):
-        if entry.get("root"):
-            found.append((Path(entry["root"]).expanduser(), entry.get("github_repo")))
+    found = [Path(root)] if root else []
+    found += [Path(e["root"]).expanduser() for e in load_recent_projects(prune_missing=False).get("projects", []) if e.get("root")]
     out, seen = [], set()
-    for path, github_repo in found:
-        if not path.is_dir():
-            continue
-        repo = account.project_repo(path, github_repo)
-        key = str(Prd(path, path / ".orchestrator").path)   # a project's worktrees share one document
-        if repo and key not in seen:
-            seen.add(key)
-            out.append((path, repo))
+    for path in found:
+        if path.is_dir():
+            key = str(Prd(path, path / ".orchestrator").path)   # a project's worktrees share one document
+            if key not in seen:
+                seen.add(key)
+                out.append(path)
     return out[:MAX_PROJECTS]
 
 
-def sync_all(machine: dict[str, Any], root: Path | None = None, *, call: Callable[..., dict[str, Any]] = account.call) -> dict[str, str]:
-    """A round for every project. {repo: outcome}; a project that failed says why instead. Raises Unavailable when the control
-    plane doesn't offer this yet."""
+def sync_all(root: Path | None = None) -> dict[str, str]:
+    """A round for every project: {project folder: outcome, or "error: ..." for one that failed}."""
     results: dict[str, str] = {}
-    for path, repo in project_roots(root):
+    for path in project_roots(root):
         try:
-            results[repo] = sync_project(machine, path, repo, call=call)
-        except Unavailable:
-            raise
-        except account.AccountError as exc:
-            results[repo] = f"error: {exc}"
-        except Exception as exc:  # one project's trouble (an unreadable file) must not stop the others
-            results[repo] = f"error: {exc}"
+            results[str(path)] = sync_project(path)
+        except Exception as exc:  # offline, no rights, an unreadable file: that project waits, the others go on
+            results[str(path)] = f"error: {exc}"
     return results
 
 
-def run_round(machine: dict[str, Any], root: Path | None, *, call: Callable[..., dict[str, Any]] = account.call) -> int:
-    """One scheduled round, for the server's thread: sync every project, record how it went for the sync-problems notice on
-    Home, and say how many seconds to wait before the next."""
-    try:
-        results = sync_all(machine, root, call=call)
-    except Unavailable:
-        return UNAVAILABLE_WAIT
-    except Exception as exc:
-        sync_health.record("product", False, str(exc))
-        return CHECK_SECONDS
-    failed = [text for text in results.values() if text.startswith("error:")]
-    sync_health.record("product", not failed, failed[0].removeprefix("error: ") if failed else "")
+def run_round(root: Path | None) -> int:
+    """One scheduled round for the server's thread; records how it went for the sync-problems notice on Home."""
+    results = sync_all(root)
+    failed = [text.removeprefix("error: ") for text in results.values() if text.startswith("error:")]
+    if any(text not in ("off", "no remote") for text in results.values()):
+        sync_health.record("product", not failed, failed[0] if failed else "")
     return CHECK_SECONDS

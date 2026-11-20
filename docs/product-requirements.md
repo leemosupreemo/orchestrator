@@ -158,11 +158,12 @@ With Jira connected (Connections) and a project key set (in the Epics section, o
 
 | What | Where | Committed? |
 |---|---|---|
-| The document | `.orchestrator/product/prd.md`, shared by the project's worktrees | No (local runtime state); [shared between your computers](#across-your-computers) through your account |
+| The document | `.orchestrator/product/prd.md`, shared by the project's worktrees | No (local runtime state). [Shared between computers](#across-your-computers) through `refs/orchestrator/state` once you agree |
 | Its starting copy | `docs/product/prd.md` | Yes. Copied into the shared document once, the first time it is read, and not used again |
-| Designs and sketches | `.orchestrator/product/designs/` (older projects: `docs/product/designs/`, copied once) | No; on this computer only |
-| Imported source documents | `.orchestrator/product/source/` (older projects: `docs/product/source/`, copied once) | No; on this computer only |
+| Designs and sketches | `.orchestrator/product/designs/` (older projects: `docs/product/designs/`, copied once) | No; shared with the document once you agree |
+| Imported source documents | `.orchestrator/product/source/` (older projects: `docs/product/source/`, copied once) | No; shared with the document once you agree |
 | Where the last sync left things | `.orchestrator/product/sync.json` | No |
+| Whether you agreed to share | `.orchestrator/state/repo_sync.json` | No |
 | Features (including approved epics) | `.orchestrator/features.json` | No (local runtime state) |
 | Epics: suggestions, decisions, Jira links | `.orchestrator/epics.json` | No (local runtime state) |
 | A waiting or planned epic's job | `.orchestrator/jobs/` (`status: backlog` until planned) | No |
@@ -174,19 +175,37 @@ History is local to the machine running Orchestrator: each computer keeps its ow
 
 ## Across your computers
 
-Computers paired to the same account share each project's document, so a job continued on another computer is judged against the same product description. Before this each computer kept its own: git doesn't carry `.orchestrator/`, so another computer held only the starting copy. Projects are matched by their repository address, so a project needs a Git remote to be shared.
+The computers working on a project can share its document, so a job continued on another computer is judged against the same
+product description. Before this each computer kept its own: git doesn't carry `.orchestrator/`, so another computer held only
+the starting copy. It travels through the project's own repository, not Orchestrator's servers: a hidden ref,
+`refs/orchestrator/state`, on `origin` (how that works, and what else will travel the same way: [Sharing project state between
+computers](state-sync.md)).
 
-Every minute (`orchestrator/product_sync.py`, a thread beside the heartbeat) a computer looks at the account's copy:
+**Asked once.** Nothing is shared until you say so for the project. The Product page asks "Share with your other computers?",
+says which repository it would go to and that anyone who can read that repository can read it. On a repository GitHub reports
+as public it warns and makes **Keep on this computer** the main button. Change it any time under **Keeping it up to date**
+(**Stop sharing**, **Share through ...**). A project with no Git remote says so there and stays on this computer.
 
-- **Your edit is pushed** when the document changed since the last sync, and the account's copy hasn't.
-- **The account's copy is pulled** when it changed and yours didn't. It is written as a version with source `sync` ("Synced from Studio Mac"), shown in History and announced like an automatic update ("Product requirements updated: Synced from Studio Mac"), with **Undo**. A change never arrives silently.
-- **Both changed:** the two are merged section by section against the text they last agreed on. A section only one side changed takes that side's text. A section both changed differently keeps **both** texts, this computer's first, then `**Also written on Studio Mac:**` and the other computer's, and the notice says which sections: "Merged with Studio Mac's version; both kept in Pitch". Nothing anyone wrote is dropped; tidy the section when you see it.
+Once shared, every minute (`orchestrator/product_sync.py`) each computer looks at the shared copy:
 
-The account only accepts a document built on the version it holds now (`machine/product/put` with `base_version`), so two computers pushing at once can't overwrite each other: the later one is told what is there, merges and pushes again.
+- **Your edit is pushed** when the document changed since the last sync and the shared copy hasn't.
+- **The shared copy is pulled** when it changed and yours didn't. It is written as a version with source `sync` ("Synced from
+  Studio Mac"), shown in History and announced like an automatic update ("Product requirements updated: Synced from Studio Mac"),
+  with **Undo**. A change never arrives silently.
+- **Both changed:** the two are merged section by section against the text they last agreed on. A section only one side changed
+  takes that side's text. A section both changed differently keeps **both** texts, this computer's first, then
+  `**Also written on Studio Mac:**` and the other computer's, and the notice says which sections: "Merged with Studio Mac's
+  version; both kept in Pitch". Nothing anyone wrote is dropped; tidy the section when you see it.
+- **Designs and source documents** travel too: a file one computer has is copied to the others (never overwritten or deleted
+  anywhere), and the "Source documents" list is joined.
 
-A document that is still the untouched starting copy counts as empty: it takes the shared document rather than merging with it, and is never pushed. An empty template is never pushed over a real document, and a computer whose document was emptied takes the shared one back.
+Two computers pushing at once can't overwrite each other: git rejects a push built on an older shared copy, and that computer
+merges with what is there and tries again. A document that is still the untouched starting copy counts as empty (it takes the
+shared document rather than merging with it, and is never pushed), and an empty template is never pushed over a real document.
 
-**Shared:** the document's text. **Not shared:** the history, the "Source documents" list and the designs and source files it points to (they stay on the computer they were added on, so a link to a design added elsewhere won't open), and the settings (automatic updates, the notice). The account keeps one copy of the text per project, up to 100,000 characters. A control plane that hasn't been updated to carry this is asked again once an hour, and a sync that keeps failing shows on Home with the other sync problems ("Sharing your product requirements with your account").
+**Shared:** the text, its source list, the design and source files. **Not shared:** the history (each computer keeps its own) and
+the settings (automatic updates, the notice). A sync that keeps failing (no push rights, offline) shows on Home with the other
+sync problems ("Sharing your product requirements through your repository").
 
 ## Earlier projects
 
@@ -230,14 +249,14 @@ A project that has the older product documents (`docs/product-brief.md`, `docs/p
 
 ## Tests
 
-`tests/test_prd.py` (the module), `tests/test_product_sync.py` and `tests/test_control_plane.py` (`ProductDocumentTests`) (sharing it between computers), `tests/test_web_ui.py` (`ProductEndpointTests` and the static page checks), `tests/test_product_context_wiring.py` and `tests/test_e2e_workflow.py` (what each role is handed), and `tests/e2e/test_pipeline_offline.py` (`LivingPrdTests`, `ReadOnlyModelCallTests`: the real worker through a finished job, with a scripted model). See [build-test-commands.md](build-test-commands.md).
+`tests/test_prd.py` (the module), `tests/test_product_sync.py` (sharing it between computers), `tests/test_web_ui.py` (`ProductEndpointTests` and the static page checks), `tests/test_product_context_wiring.py` and `tests/test_e2e_workflow.py` (what each role is handed), and `tests/e2e/test_pipeline_offline.py` (`LivingPrdTests`, `ReadOnlyModelCallTests`: the real worker through a finished job, with a scripted model). See [build-test-commands.md](build-test-commands.md).
 
 ## Limits worth knowing
 
 - How closely any given model follows the product context, and how good its automatic edits are, has not been measured. The safety check refuses damaging edits; it can't judge whether a good-looking edit is right. That is what the banner and Undo are for.
 - A draft is built from what the project contains. A thin project (no README, few files) gives a thin draft, and a model can still misread what a project is for; the proposal states what it inferred so the person can correct it.
 - The history is local runtime state, not committed and not shared between computers.
-- Across computers only the text is shared. Designs, sketches and imported source files stay on the computer that has them, and a section both computers edited keeps both versions for a person to tidy.
+- Sharing between computers needs a Git remote you can push to, and anyone who can read that repository can read the shared document. A section both computers edited keeps both versions for a person to tidy, and a design changed under the same name on two computers stays different on each.
 - An import sends the model at most its first 40,000 characters to summarise (the whole file is still saved), and a source document is read for the breakdown up to 30,000 characters.
 - An approved epic's feature keeps the requirements and slice it was suggested with. Its name, summary, files and dependencies can be edited later, or the feature deleted, but its requirements and slice can't yet.
 - Epics are created in Jira once and linked by key. Later edits to an epic here aren't pushed to Jira, and changes in Jira aren't pulled back; import brings in new epics only.

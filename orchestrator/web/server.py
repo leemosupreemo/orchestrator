@@ -77,7 +77,7 @@ from orchestrator import folder_lock
 from orchestrator import job_overlap
 from orchestrator import parallel_mece
 from orchestrator import wip_backup
-from orchestrator import product_sync, sync_health
+from orchestrator import product_sync, state_ref, sync_health
 from orchestrator import self_update
 from orchestrator import plan_run
 from orchestrator import ux_review
@@ -6988,17 +6988,6 @@ class UIServer(ThreadingHTTPServer):
                     last_sync[0] = time.time()
 
         threading.Thread(target=snapshot_sync, daemon=True, name="snapshot-sync").start()
-
-        def share_product_requirements() -> None:
-            # The product requirements document is one per account and project: push this computer's edits, pull the others'.
-            wait = product_sync.CHECK_SECONDS
-            while not self._stopping.wait(wait):
-                machine = account.load_machine()
-                if machine is None:
-                    return
-                wait = product_sync.run_round(machine, self.root)
-
-        threading.Thread(target=share_product_requirements, daemon=True, name="product-sync").start()
         wake_event = threading.Event()
         self.trigger_heartbeat = wake_event.set
 
@@ -7017,6 +7006,18 @@ class UIServer(ThreadingHTTPServer):
                     break
 
         thread = threading.Thread(target=loop, daemon=True, name="heartbeat")
+        thread.start()
+        return thread
+
+    def start_state_sync(self) -> threading.Thread:
+        """Share each project's product requirements with the other computers working on it, through the project's own
+        repository (orchestrator/product_sync.py). Paired or not: it needs only the project's remote and the person's yes."""
+        def share() -> None:
+            wait = product_sync.CHECK_SECONDS
+            while not self._stopping.wait(wait):
+                wait = product_sync.run_round(self.root)
+
+        thread = threading.Thread(target=share, daemon=True, name="product-sync")
         thread.start()
         return thread
 
@@ -7483,6 +7484,7 @@ class UIHandler(BaseHTTPRequestHandler):
                 resp = doc.overview()
                 resp["model"] = current_model
                 resp["available_models"] = available_models()
+                resp["sharing"] = state_ref.status(root)  # through the project's own repository: asked once, never silent
                 self._json(resp)
             elif method == "GET" and len(parts) == 3 and parts[1] == "design":
                 name = parts[2]
@@ -7524,6 +7526,12 @@ class UIHandler(BaseHTTPRequestHandler):
                 if "breakdown_offered" in body:
                     doc.set_breakdown_offered(bool(body["breakdown_offered"]))
                 self._json(doc.overview())
+            elif method == "POST" and parts == ["product", "sharing"]:
+                body = self._body()
+                if not isinstance(body.get("enabled"), bool):
+                    raise UIError("Say whether to share them: enabled true or false.")
+                state_ref.set_consent(root, body["enabled"])
+                self._json(state_ref.status(root))
             elif method == "POST" and parts == ["product", "dismiss"]:
                 doc.dismiss_notice()
                 self._json({"ok": True})
@@ -10940,6 +10948,7 @@ def _serve(args: argparse.Namespace, root: Path) -> int:
     try:
         print("  Ctrl-C to stop (running commands are stopped too).", flush=True)
         server.start_notifier()
+        server.start_state_sync()
         server.serve_forever(poll_interval=0.5)
     except KeyboardInterrupt:
         print("\nStopping...")

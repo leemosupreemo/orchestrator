@@ -185,6 +185,7 @@ class DesktopAgent:
                 thread.start()
                 threads.append(thread)
             self.local.start_notifier()
+            self.local.start_state_sync()
             while not self.stop_event.wait(.1):
                 self._reconcile()
             return 0

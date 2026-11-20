@@ -166,13 +166,17 @@ away. The rules, from local-first sync practice:
 | Work a computer never uploaded | side branch `<branch>-from-<computer>`, ref `<job id>-from-<computer>` | When a job is marked moved, unpushed commits and uncommitted files go there (`wip_backup.keep_stranded`), not onto the job's branch; the moved job's page says where. |
 | History when a job comes back | the job | Taking a job back keeps both copies' answers and fix attempts, without repeats. |
 
+Planned: job records, ownership and archive events move from the account to the project's repository
+(`refs/orchestrator/state`), with the same ownership rule, so the account stops holding job content. See
+[Sharing project state between computers](state-sync.md), phases 2 and 3.
+
 The remote job page says when the other computer last synced and, offline, that it may have newer work not uploaded yet
 (`remoteFreshnessHtml`). Home's row says "offline, synced 3h ago".
 
 **When sync fails** (`orchestrator/sync_health.py`). Each channel records its last success and failure in
 `~/.orchestrator/sync_health.json`: `account` (the heartbeat), `jobs` (snapshot and job record sends,
-`send_snapshot_if_changed`), `branches` (any open job's `backup_error` from `backup_push`) and `unfinished`
-(`wip_backup.backup_job`). A channel failing for longer than `GRACE_SECONDS` (10 minutes) is a problem:
+`send_snapshot_if_changed`), `branches` (any open job's `backup_error` from `backup_push`), `unfinished`
+(`wip_backup.backup_job`) and `product` (the shared product requirements, `product_sync`). A channel failing for longer than `GRACE_SECONDS` (10 minutes) is a problem:
 `/api/sync-health` returns it with `advice` for the usual causes (offline, signed out of the account, GitHub refusing the
 push, a rejected push), and Home shows it (`syncHealthBanner`) with each channel's state under **Sync details**. A
 success clears it. The job page says when that job's commits or unfinished files aren't backed up (`backupNote`). Errors
