@@ -6608,6 +6608,19 @@ class UxReviewEndpointTests(ServerTestCase):
         for body in ({"url": "localhost"}, {"widths": "wide"}, {"widths": "100"}):
             self.assertEqual(self.post("/api/ui-review", body)[0].status, 400, body)
 
+    def test_saving_the_screens_form_keeps_the_capture_command_and_paths_set_in_the_file(self):
+        project_file = self.root / ".orchestrator" / "project.json"
+        project = json.loads(project_file.read_text())
+        project["ui_review"] = {"capture": {"command": "python3 tools/shots.py", "timeout": 600}, "paths": ["lib/theme/**"], "url": "http://localhost:3000"}
+        project_file.write_text(json.dumps(project))
+        res, data = self.post("/api/ui-review", {"url": "http://localhost:4000", "routes": "/", "widths": "390", "dark_mode": True})
+        self.assertEqual(res.status, 200)
+        saved = json.loads(project_file.read_text())["ui_review"]
+        self.assertEqual(saved["url"], "http://localhost:4000")  # what the form owns changed
+        self.assertEqual(saved["capture"], {"command": "python3 tools/shots.py", "timeout": 600})  # what it doesn't own stayed
+        self.assertEqual(saved["paths"], ["lib/theme/**"])
+        self.assertEqual(data["settings"]["capture"]["timeout"], 600)
+
     def test_android_mac_and_ios_screens_are_saved_and_validated(self):
         res, data = self.post("/api/ui-review", {
             "simulator": True, "simulator_screens": "myapp://settings\n\n", "android_package": "com.example.app", "android_screens": "myapp://profile",

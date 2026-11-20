@@ -2,6 +2,7 @@
 
 - the Android emulator (or a device), through adb: install the build, launch it, open each deep link, capture;
 - a macOS app: build, launch, capture its window with screencapture;
+- the project's own capture command (ui_review.capture), for anything Orchestrator has no way to screenshot itself;
 - (extra iOS screens are opened by deep link in scripts/simulator_visual_check.py, which already owns the simulator.)
 
 Each capture returns (shots, problem) like ux_review.capture_web: shots are {file, route, width, dark} dicts saved in
@@ -11,8 +12,11 @@ from __future__ import annotations
 
 import os
 import re
+import json
 import shutil
+import signal
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 from typing import Any, Callable
@@ -178,3 +182,79 @@ def capture_macos(root: Path, cfg: dict[str, Any], out_dir: Path, *, log: Callab
         return [{"file": target.name, "route": f"{app.stem} window", "width": 0, "dark": False}], ""
     finally:
         run(["pkill", "-f", executables], capture_output=True, check=False)
+
+
+CAPTURE_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp"}
+CAPTURE_MAX_IMAGES = 20
+CAPTURE_MAX_BYTES = 15 * 1024 * 1024
+
+
+def _run_capture_command(command: str, root: Path, env: dict[str, str], timeout: int) -> tuple[int | None, str]:
+    """Run the project's capture command in its own process group. (exit code, last output line); the code is None when it
+    ran out of time, and then everything it started is stopped, politely first (a game engine has helper processes)."""
+    process = subprocess.Popen(command, cwd=str(root), shell=True, executable="/bin/bash", env=env, stdout=subprocess.PIPE,
+                               stderr=subprocess.STDOUT, text=True, errors="replace", start_new_session=True)
+    try:
+        output, _ = process.communicate(timeout=timeout)
+        return process.returncode, _tail(output)
+    except subprocess.TimeoutExpired:
+        for sig, grace in ((signal.SIGTERM, 5), (signal.SIGKILL, 5)):
+            try:
+                os.killpg(process.pid, sig)
+            except OSError:
+                pass
+            try:
+                output, _ = process.communicate(timeout=grace)
+                return None, _tail(output)
+            except subprocess.TimeoutExpired:
+                continue
+        return None, ""
+
+
+def capture_command(root: Path, cfg: dict[str, Any], out_dir: Path, *, job_id: str = "", dark_mode: bool = True,
+                    log: Callable[[str], Any] = print,
+                    run: Callable[[str, Path, dict[str, str], int], tuple[int | None, str]] = _run_capture_command) -> tuple[list[dict[str, Any]], str]:
+    """Run the project's own capture command and use the images it writes as screens.
+
+    The contract (documented in the user guide): the command runs in the project folder through bash, with these set:
+    ORCHESTRATOR_CAPTURE_DIR (an empty folder to write into), ORCHESTRATOR_CAPTURE_JOB (the job, or empty for a product
+    pass) and ORCHESTRATOR_CAPTURE_DARK ("1" when dark screens were asked for). Every .png, .jpg or .webp it writes there,
+    in any subfolder, becomes a screen (up to 20, 15 MB each), named from its file name or from captions.json, a
+    {"file name": "label"} map beside the images. A file ending in -dark or _dark is a dark screen. It must exit 0."""
+    minutes = max(1, int(cfg["timeout"]) // 60)
+    with tempfile.TemporaryDirectory(prefix="orchestrator-capture-") as scratch:
+        folder = Path(scratch)
+        env = {**os.environ, "ORCHESTRATOR_CAPTURE_DIR": str(folder), "ORCHESTRATOR_CAPTURE_JOB": job_id,
+               "ORCHESTRATOR_CAPTURE_DARK": "1" if dark_mode else "0"}
+        log(f"Running the project's capture command: {cfg['command']}")
+        try:
+            code, last = run(cfg["command"], root, env, int(cfg["timeout"]))
+        except OSError as exc:
+            return [], f"The project's capture command couldn't start: {exc}."
+        if code is None:
+            return [], f"The project's capture command didn't finish in {minutes} minute{'s' if minutes != 1 else ''} and was stopped."
+        if code != 0:
+            return [], f"The project's capture command failed (exit {code}){': ' + last if last else ''}."
+        try:
+            captions = json.loads((folder / "captions.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            captions = {}
+        captions = captions if isinstance(captions, dict) else {}
+        found = sorted(p for p in folder.rglob("*") if p.suffix.lower() in CAPTURE_IMAGE_EXTS and p.is_file() and not p.is_symlink())
+        if not found:
+            return [], "The project's capture command finished but wrote no images to $ORCHESTRATOR_CAPTURE_DIR."
+        out_dir.mkdir(parents=True, exist_ok=True)
+        shots, skipped = [], 0
+        for n, image in enumerate(found, start=1):
+            if len(shots) >= CAPTURE_MAX_IMAGES or image.stat().st_size > CAPTURE_MAX_BYTES or not image.stat().st_size:
+                skipped += 1
+                continue
+            name = f"project-{n:02d}-{slug(image.stem)}{image.suffix.lower()}"
+            shutil.copy2(image, out_dir / name)
+            relative = image.relative_to(folder).as_posix()
+            label = str(captions.get(relative) or captions.get(image.name) or image.stem.replace("-", " ").replace("_", " "))[:150]
+            shots.append({"file": name, "route": label, "width": 0, "dark": image.stem.lower().endswith(("-dark", "_dark"))})
+        log(f"  captured {len(shots)} image{'s' if len(shots) != 1 else ''}")
+        problem = (f"{skipped} image{'s' if skipped != 1 else ''} from the project's capture command "
+                   f"{'was' if skipped == 1 else 'were'} left out (more than {CAPTURE_MAX_IMAGES}, over 15 MB, or empty).") if skipped else ""
+        return shots, problem

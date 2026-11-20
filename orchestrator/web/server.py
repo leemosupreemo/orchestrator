@@ -2555,6 +2555,10 @@ def save_ui_review(root: Path, body: dict[str, Any]) -> dict[str, Any]:
         raise UIError(str(exc))
     path = runtime_dir(root) / "project.json"
     project = read_json_file(path)
+    before = project.get("ui_review") if isinstance(project.get("ui_review"), dict) else {}
+    for key in ("capture", "paths"):  # set in the file, not on this form: saving the form must not delete them
+        if before.get(key):
+            raw[key] = before[key]
     project["ui_review"] = raw
     write_json_file(path, project)
     return ui_review_settings(root)

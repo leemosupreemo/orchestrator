@@ -184,7 +184,7 @@ def temporary_preview(branch: str, *, timeout: float = PREVIEW_START_TIMEOUT):
 def with_detected_devices(cfg: dict, raw: dict) -> tuple[dict, str]:
     """When ui_review names no native target, use the simulator or device setup the project already has, so a job's UI
     change still gets screenshots. A target set to false in ui_review stays off. Returns (cfg, note); note is "" if unchanged."""
-    if cfg["simulator"] or cfg["android"] or cfg["macos"]:
+    if cfg["simulator"] or cfg["android"] or cfg["macos"] or cfg.get("capture"):
         return cfg, ""
     ui = raw.get("ui_review") if isinstance(raw.get("ui_review"), dict) else {}
     found = ux.inferred_targets(ROOT, git_out("ls-files").splitlines(), config=raw)
@@ -251,6 +251,12 @@ def capture(cfg: dict, screens_dir: Path, *, dark: bool | None, job_id: str = ""
     if cfg["macos"]:
         mac_shots, problem = native.capture_macos(ROOT, cfg["macos"], screens_dir, log=lambda line: print(line, flush=True))
         shots += mac_shots
+        if problem:
+            limits.append(problem)
+    if cfg.get("capture"):
+        own_shots, problem = native.capture_command(ROOT, cfg["capture"], screens_dir, job_id=job_id,
+                                                    dark_mode=cfg["dark_mode"] if dark is None else dark, log=lambda line: print(line, flush=True))
+        shots += own_shots
         if problem:
             limits.append(problem)
     if not web_cfg["url"] and not auto_preview_attempted and not ux.has_screens(cfg):

@@ -97,14 +97,14 @@ def settings(project: dict[str, Any]) -> dict[str, Any]:
     return {"url": url, "start_command": str(raw.get("start_command") or "").strip(), "routes": [r.strip() for r in routes][:40],
             "widths": widths[:4], "dark_mode": raw.get("dark_mode", True) is not False, "simulator": bool(raw.get("simulator")),
             "simulator_screens": _deep_links(raw.get("simulator_screens"), "ui_review.simulator_screens"),
-            "android": _android(raw.get("android")), "macos": _macos(raw.get("macos")),
+            "android": _android(raw.get("android")), "macos": _macos(raw.get("macos")), "capture": _capture(raw.get("capture")),
             "paths": paths, "conventions": str(raw.get("conventions") or "").strip(),
             "review_changes": raw.get("review_changes", True) is not False}
 
 
 def has_screens(cfg: dict[str, Any]) -> bool:
-    """Is anything set up to screenshot: a web address, the iOS simulator, an Android app or a Mac app?"""
-    return bool(cfg["url"] or cfg["simulator"] or cfg["android"] or cfg["macos"])
+    """Is anything set up to screenshot: a web address, the iOS simulator, an Android app, a Mac app or the project's own command?"""
+    return bool(cfg["url"] or cfg["simulator"] or cfg["android"] or cfg["macos"] or cfg.get("capture"))
 
 
 def _deep_links(value: Any, name: str) -> list[str]:
@@ -132,6 +132,27 @@ def _android(raw: Any) -> dict[str, Any] | None:
     return {"package": package, "apk": _text(raw, "apk", "ui_review.android"), "avd": _text(raw, "avd", "ui_review.android"),
             "build_command": _text(raw, "build_command", "ui_review.android"),
             "screens": _deep_links(raw.get("screens"), "ui_review.android.screens")}
+
+
+CAPTURE_TIMEOUT = (10, 3600)   # seconds a project's capture command may run: the least that can work, the most worth waiting
+CAPTURE_DEFAULT_TIMEOUT = 900
+
+
+def _capture(raw: Any) -> dict[str, Any] | None:
+    """`ui_review.capture`: a command the project supplies for screens Orchestrator can't take itself (a game engine, a desktop
+    toolkit, a hardware rig). It runs in the project folder and writes images into $ORCHESTRATOR_CAPTURE_DIR."""
+    if not raw:
+        return None
+    if not isinstance(raw, dict):
+        raise ConfigError("ui_review.capture must be an object with a command.")
+    command = _text(raw, "command", "ui_review.capture")
+    if not command or len(command) > 2000:
+        raise ConfigError("ui_review.capture.command is the command that writes the screenshots, up to 2000 characters.")
+    timeout = raw.get("timeout", CAPTURE_DEFAULT_TIMEOUT)
+    low, high = CAPTURE_TIMEOUT
+    if isinstance(timeout, bool) or not isinstance(timeout, int) or not low <= timeout <= high:
+        raise ConfigError(f"ui_review.capture.timeout is the seconds it may run, between {low} and {high}.")
+    return {"command": command, "timeout": timeout}
 
 
 def _macos(raw: Any) -> dict[str, Any] | None:

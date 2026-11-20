@@ -587,6 +587,34 @@ Native apps need no URL. Set up any of these (together with, or instead of, `url
 
 Anything that fails is listed in the review's capture limits, and the review carries on from the code.
 
+**Your own capture command.** For anything Orchestrator can't screenshot itself (a game engine, a desktop toolkit, a
+hardware rig), give it a command that writes the pictures:
+
+```json
+"ui_review": {
+  "capture": {
+    "command": "python3 tools/capture_review.py --output \"$ORCHESTRATOR_CAPTURE_DIR\"",
+    "timeout": 900
+  }
+}
+```
+
+The command runs through `bash` in the project folder, after any other targets, and must exit 0. Orchestrator sets:
+
+| Variable | Value |
+|---|---|
+| `ORCHESTRATOR_CAPTURE_DIR` | an empty folder to write into (removed afterwards) |
+| `ORCHESTRATOR_CAPTURE_JOB` | the job being checked, empty for a product pass |
+| `ORCHESTRATOR_CAPTURE_DARK` | `1` when dark screens were asked for, else `0` |
+
+Every `.png`, `.jpg` or `.webp` it writes there (subfolders included) becomes a screen: up to 20 images, 15 MB each.
+Screens are named from the file name, or from a `captions.json` beside them (`{"eye-level.png": "Eye level, forest"}`); a
+file ending in `-dark` or `_dark` counts as a dark screen. Files that aren't images are ignored. `timeout` is seconds
+(10 to 3600, default 900); a command that runs over is stopped together with everything it started. If it fails, runs
+out of time or writes nothing, the review's capture limits say so (with the command's last line of output) and
+the review carries on from the code. Its images are not used if it exits with an error. The command comes from your own
+`project.json`, like `build_command`, and runs with your permissions. Saving the **Screens** form in the Web UI leaves `capture` and `paths` alone, so they live in the file.
+
 Models see the screenshots as attachments (Codex, opencode) or through their file tools (Claude, Gemini, agy); a model
 that can't open images says so in the report's limits.
 
