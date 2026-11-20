@@ -43,14 +43,17 @@ function deployed. Phases 3 and 4 are planned.
 ## On by default, per project and per kind
 
 A project with a remote shares its product requirements and its jobs **by default** (the person's decision, 2026-11-20): every
-computer working on it, paired to the same account or not, reads and writes the same state through the repository. Each kind can
-be stopped per project on the Product page, under **Keeping it up to date** (**Stop sharing**, **Stop sharing jobs**, and
-**Share ... again**); an explicit answer always wins over the default and is kept in `.orchestrator/state/repo_sync.json`
-(`product`, `jobs`).
+computer working on it, paired to the same account or not, reads and writes the same state through the repository. **A public
+repository asks first** (`state_ref.SHARE_PUBLIC_BY_DEFAULT` is off): anyone can read its state ref, so its requirements, plans and
+your answers would be public. Whether a repository is public is asked of GitHub with `gh`; other hosts can't say, and are
+treated as private.
 
-Anyone who can read the repository can read the state ref. On a repository GitHub reports as public (checked with `gh`) that is
-everyone, and the Product page says so in a warning beside **Stop sharing**. `state_ref.SHARE_PUBLIC_BY_DEFAULT` holds public
-repositories back (they then ask first, with **Keep on this computer** as the main button); it is on, so they share too.
+The choice is part of setup: **Set up an existing project** has a "Your other computers" section ("Share its requirements and
+jobs with your other computers through ...", ticked for a private repository, unticked with a warning for a public one, or a
+note when there is no remote), and **Start a new project** puts the same box under "Who can see the repository?", following
+that choice until it is ticked by hand. After setup, each kind can be stopped or started per project on the Product page, under
+**Keeping it up to date** (**Stop sharing**, **Stop sharing jobs**, **Share ... again**). An explicit answer always wins over the
+default and is kept in `.orchestrator/state/repo_sync.json` (`product`, `jobs`); setup records the same answer for both.
 
 **Teams.** Everyone with access to a repository who runs Orchestrator on it shares into the same state. A permission and admin
 system for team projects (who may read and write which state) is planned; until then the repository's own access is the only

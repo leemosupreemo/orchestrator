@@ -230,10 +230,13 @@ class RepositoryTests(TwoComputers):
         self.assertEqual(self.sync("studio"), "off")
         self.assertNotIn("Private plans", git(self.remote, "show", f"{state_ref.REF}:product/prd.md"))
 
-    def test_public_repositories_can_be_held_back_by_a_switch(self):
-        self.assertTrue(state_ref.SHARE_PUBLIC_BY_DEFAULT)                 # the person's choice: public ones share too
-        with patch.object(state_ref, "SHARE_PUBLIC_BY_DEFAULT", False), patch.object(state_ref, "is_public", return_value=True):
-            self.assertFalse(state_ref.sharing(Path(self.tmp.name) / "unanswered"))
+    def test_public_repositories_ask_first(self):
+        self.assertFalse(state_ref.SHARE_PUBLIC_BY_DEFAULT)                # the person's choice: public ones ask, private ones share
+        unanswered = Path(self.tmp.name) / "unanswered"
+        with patch.object(state_ref, "is_public", return_value=True):
+            self.assertFalse(state_ref.sharing(unanswered))
+        with patch.object(state_ref, "is_public", return_value=False):
+            self.assertTrue(state_ref.sharing(unanswered))
         self.assertEqual(state_ref.sharing(self.root["studio"]), True)     # an explicit yes is always a yes
 
     def test_a_project_without_a_remote_stays_on_its_computer(self):

@@ -178,7 +178,7 @@ def consent(root: Path, scope: str = "product") -> bool | None:
 # On by default (the person's decision, 2026-11-20): with no answer, a project with a remote shares. An explicit "Stop sharing"
 # wins. Who may see a team's shared state is for the planned permission system; until then the repository's own access decides.
 SHARE_BY_DEFAULT = True
-SHARE_PUBLIC_BY_DEFAULT = True   # a public repository's shared state is readable by anyone
+SHARE_PUBLIC_BY_DEFAULT = False  # a public repository's shared state is readable by anyone: it asks first
 
 
 def sharing(root: Path, scope: str = "product") -> bool:

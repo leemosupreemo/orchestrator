@@ -13660,7 +13660,11 @@ pages["new-project"] = async (_, query) => {
             <small>Jobs run using local records and branches. Connect a Git host later to publish your work.</small></label>
         </div>
         ${host === "github" ? `${ghPanel()}
-          <label class="field"><span>Who can see the repository?</span><select name="visibility"><option value="private" ${draft.visibility !== "public" ? "selected" : ""}>Only me (private)</option><option value="public" ${draft.visibility === "public" ? "selected" : ""}>Anyone (public)</option></select></label>` : ""}
+          <label class="field"><span>Who can see the repository?</span><select name="visibility"><option value="private" ${draft.visibility !== "public" ? "selected" : ""}>Only me (private)</option><option value="public" ${draft.visibility === "public" ? "selected" : ""}>Anyone (public)</option></select></label>
+          <label class="check"><input type="checkbox" name="share" ${(typeof draft.share === "boolean" ? draft.share : draft.visibility !== "public") ? "checked" : ""}>
+            <span>Share its requirements and jobs with my other computers through this repository</span></label>
+          <small class="hint-text" id="np-share-hint">${draft.visibility === "public" ? "The repository is public, so anyone could read them. Leave this off to keep them on this computer." : "Kept in the repository on a hidden ref: anyone who can read the repository can read them. Change it any time on the Product page."}</small>`
+          : `<small class="hint-text">Its requirements and jobs stay on this computer until it has a Git remote; then they are shared with your other computers by default.</small>`}
         <label class="field"><span>Where on this computer?</span><input type="text" name="parent" value="${esc(draft.parent)}" required spellcheck="false" autocapitalize="off">
           <small class="hint-text">A folder named “${esc(answersSlug(draft))}” is created inside this one.</small></label>
         <div class="row"><button type="button" class="btn ghost" id="np-back">Back</button><span class="spacer"></span>
@@ -13670,7 +13674,15 @@ pages["new-project"] = async (_, query) => {
       after: () => {
         wireIdeaChoice();
         const form = $("#np-where");
-        const collect = (extra = {}) => ({ ...draft, host: form.host.value, visibility: form.visibility?.value || draft.visibility, parent: form.parent.value.trim(), ...extra });
+        const collect = (extra = {}) => ({ ...draft, host: form.host.value, visibility: form.visibility?.value || draft.visibility, parent: form.parent.value.trim(),
+          ...(form.share ? { share: form.share.checked } : {}), ...extra });
+        form.visibility?.addEventListener("change", () => {  // the default follows who can see it, until the person ticks it themselves
+          if (typeof draft.share !== "boolean" && form.share) form.share.checked = form.visibility.value !== "public";
+          const hint = $("#np-share-hint");
+          if (hint) hint.textContent = form.visibility.value === "public" ? "The repository is public, so anyone could read them. Leave this off to keep them on this computer."
+            : "Kept in the repository on a hidden ref: anyone who can read the repository can read them. Change it any time on the Product page.";
+        });
+        form.share?.addEventListener("change", () => { draft.share = form.share.checked; });
         form.querySelectorAll('input[name="host"]').forEach((r) => r.addEventListener("change", async () => { await npSave(collect({ step: "where" })); route(); }));
         $("#np-back").addEventListener("click", async () => { await npSave(collect({ step: "describe" })); location.hash = "#/new-project?step=describe"; route(); });
         $("#np-recheck")?.addEventListener("click", () => route());
@@ -14207,6 +14219,23 @@ pages.projects = async () => {
   };
 };
 
+// ---------------------------------------------------------------- sharing with the person's other computers, during setup
+// Requirements and jobs travel through the project's own repository (docs/state-sync.md). On by default; a public repository
+// asks first, because anyone could read them there. Stopped or started later on the Product page.
+function setupSharingHtml(sharing, { id = "setup-share" } = {}) {
+  const s = sharing || { state: "no_remote" };
+  if (s.state === "no_remote") {
+    return `<fieldset class="np-section-card stack"><legend class="np-section-legend">Your other computers</legend>
+      <div class="muted">No Git remote yet, so its requirements and jobs stay on this computer. Once it has one they are shared with your other computers by default (a public repository asks first).</div></fieldset>`;
+  }
+  const on = s.public ? s.state === "on" : s.state !== "off";
+  return `<fieldset class="np-section-card stack"><legend class="np-section-legend">Your other computers</legend>
+    <label class="check"><input type="checkbox" id="${esc(id)}" ${on ? "checked" : ""}>
+      <span>Share its requirements and jobs with your other computers through <span class="mono">${esc(s.remote)}</span></span></label>
+    <small class="hint-text">They are kept in the repository on a hidden ref, so anyone who can read the repository can read them. Change it any time on the Product page.</small>
+    ${s.public ? `<div class="notice warn">This repository is public, so anyone could read them. Leave this off to keep them on this computer.</div>` : ""}</fieldset>`;
+}
+
 // ---------------------------------------------------------------- import project page
 
 pages["import-project"] = async (_, query) => {
@@ -14303,6 +14332,7 @@ pages["import-project"] = async (_, query) => {
             <label class="check"><input type="checkbox" id="ip-active-confirm">
               <span>Switch to this project when import is done</span></label>
           </fieldset>
+          ${setupSharingHtml(info?.sharing, { id: "ip-share" })}
           ${info?.has_config ? `<div class="notice">This project already has a .orchestrator/config. It will be updated.</div>` : ""}
           <div class="row mt-8">
             <button class="btn" id="ip-back">Back</button>
@@ -14325,6 +14355,7 @@ pages["import-project"] = async (_, query) => {
               force: $("#ip-force").checked,
               draft_prd: $("#ip-draft-prd-confirm").checked,
               active: $("#ip-active-confirm").checked,
+              ...($("#ip-share") ? { share: $("#ip-share").checked } : {}),
             };
             const result = await api("projects/import", { method: "POST", body });
             if (result.task_id) {

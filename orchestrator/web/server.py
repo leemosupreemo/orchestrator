@@ -8039,6 +8039,7 @@ class UIHandler(BaseHTTPRequestHandler):
                 "has_readme": (p / "README.md").exists() or (p / "README.rst").exists(),
                 "has_git": (p / ".git").is_dir(),
                 "name": project_display_name(p),
+                "sharing": state_ref.status(p),  # setup says whether it will share with your other computers, and asks for public repos
             }
             self._json(info)
         elif method == "POST" and parts == ["projects", "import"]:
@@ -8067,6 +8068,9 @@ class UIHandler(BaseHTTPRequestHandler):
             from orchestrator.cli import init_project
             with _contextlib.redirect_stdout(io.StringIO()):
                 init_project(init_args)
+            if isinstance(body.get("share"), bool):  # the setup's answer: requirements and jobs, with the person's other computers
+                for scope in state_ref.SCOPES:
+                    state_ref.set_consent(p, body["share"], scope)
             stack = detect_project_stack(p)
             result = {"ok": True, "root": str(p), "name": project_name,
                       "display_name": stack.display_name,

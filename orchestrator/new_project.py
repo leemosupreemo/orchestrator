@@ -140,6 +140,8 @@ def save_draft(raw: dict[str, Any]) -> dict[str, Any]:
         # Set once the local project exists, so finishing GitHub later publishes it instead of recreating it.
         "created_root": str(raw.get("created_root") or prior.get("created_root") or "")[:500],
         "designs": _kept_designs(raw["designs"] if "designs" in raw else prior.get("designs")),
+        # Share its requirements and jobs with the person's other computers (docs/state-sync.md); None follows the default.
+        "share": raw["share"] if isinstance(raw.get("share"), bool) else prior.get("share") if isinstance(prior.get("share"), bool) else None,
     }
     path = draft_path()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -340,17 +342,32 @@ def publish_to_github(root: Path, name: str, visibility: str) -> dict[str, Any]:
     return {"name": "Create the GitHub repository", "ok": True, "detail": url or f"{state['user']}/{slugify(name)}", "url": url}
 
 
+def record_sharing(root: Path, share: bool | None, visibility: str) -> dict[str, Any]:
+    """The person's answer to sharing with their other computers, kept for both kinds of state. With no answer: on for a private
+    repository, off for a public one (anyone could read it)."""
+    from orchestrator import state_ref
+    on = share if isinstance(share, bool) else visibility != "public"
+    for scope in state_ref.SCOPES:
+        state_ref.set_consent(root, on, scope)
+    return {"name": "Share with your other computers", "ok": True,
+            "detail": "On: requirements and jobs travel through the repository" if on else "Off: they stay on this computer"}
+
+
 def create_project(draft: dict[str, Any]) -> dict[str, Any]:
     """Run the whole creation from a saved draft. Local creation is all-or-nothing up front;
     GitHub is attempted after, and a GitHub failure keeps the local project and says what's left."""
     answers = draft.get("answers") or {}
     root, steps = create_local(answers, draft.get("parent") or default_parent(), draft.get("designs"))
     github = draft.get("host") == "github"
-    if github:
-        steps.append(publish_to_github(root, answers["name"], draft.get("visibility", "private")))
+    published = publish_to_github(root, answers["name"], draft.get("visibility", "private")) if github else None
+    if published:
+        steps.append(published)
+        shared = record_sharing(root, draft.get("share"), draft.get("visibility", "private"))  # kept for when GitHub is finished later
+        if published["ok"]:
+            steps.append(shared)
     remember_project(root, answers["name"], active=True)
     steps.append({"name": "Added to your projects", "ok": True, "detail": answers["name"]})
     return {"root": str(root), "name": answers["name"], "steps": steps, "github": github,
             "platform_needs": platform_needs(answers.get("platform", "")), "recommend_platform": RECOMMEND in platform_list(answers.get("platform", "")),
-            "github_ok": (not github) or steps[-2]["ok"],
+            "github_ok": (not github) or bool(published and published["ok"]),
             "prd_filled": any(str(answers.get(key) or "").strip() for key in ("pitch", "audience", "features", "look", "not", "success"))}

@@ -182,10 +182,10 @@ the starting copy. It travels through the project's own repository, not Orchestr
 computers](state-sync.md)).
 
 **On by default.** A project with a Git remote shares its document (and, separately, its jobs) with every computer working on
-it, without asking. **Keeping it up to date** on the Product page says "Shared with your other computers through ... (on by
-default)" with **Stop sharing**; on a repository GitHub reports as public it also warns that anyone can read what is shared.
-A project with no Git remote says so there and stays on this computer. A permission system for team projects is planned; until
-then, whoever can read the repository can read the shared document.
+it. The choice is made at setup (**Set up an existing project**, **Start a new project**) and can be changed under **Keeping it up
+to date** on the Product page, which says "Shared with your other computers through ... (on by default)" with **Stop sharing**. A
+public repository asks first, because anyone could read what is shared. A project with no Git remote says so and stays on this
+computer. A permission system for team projects is planned; until then, whoever can read the repository can read it.
 
 Every minute, or within seconds when another computer pushed (`orchestrator/product_sync.py`), each computer looks at the shared copy:
 
