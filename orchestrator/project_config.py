@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import time
 from dataclasses import dataclass, field
@@ -38,6 +39,67 @@ def safe_resolve(path: Path) -> Path:
         return path.resolve()
     except InterruptedError:
         return path.absolute()
+
+
+def secure_key_dirs() -> list[Path]:
+    """The folders xcodebuild reads App Store Connect API keys from, on this computer."""
+    home = safe_resolve(Path.home())
+    return [safe_resolve(home / ".private_keys"), safe_resolve(home / ".appstoreconnect" / "private_keys")]
+
+
+def locate_asc_key(key_path: str | None, key_id: str | None, root: Path) -> Path | None:
+    """Where this computer keeps the project's App Store Connect key.
+
+    A project's settings are shared (they are committed), but a key lives on one computer, and its path includes that
+    computer's user name. So the configured path is used when it works here; otherwise the key is looked for by its ID
+    (AuthKey_<id>.p8) in the two folders xcodebuild reads, on this computer. Nothing is created or moved."""
+    if not key_path:
+        return None
+    configured = Path(key_path).expanduser()
+    configured = safe_resolve(configured if configured.is_absolute() else root / configured)
+    folders = secure_key_dirs()
+    if configured.parent in folders and configured.exists():
+        return configured
+    if key_id and re.fullmatch(r"[A-Za-z0-9]{6,20}", key_id.strip()):
+        for folder in folders:
+            candidate = folder / f"AuthKey_{key_id.strip()}.p8"
+            if candidate.is_file():
+                return safe_resolve(candidate)
+    return configured
+
+
+def asc_key_is_on_another_computer(key_path: str | None) -> bool:
+    """The configured path is inside another user's home folder (/Users/<name>/..., /home/<name>/...) that isn't here."""
+    if not key_path:
+        return False
+    path = Path(key_path).expanduser()
+    if not path.is_absolute() or len(path.parts) < 4 or path.parts[1] not in ("Users", "home"):
+        return False
+    home = safe_resolve(Path.home())
+    try:
+        path.relative_to(home)
+        return False
+    except ValueError:
+        pass
+    return not path.exists()
+
+
+def asc_key_location_error(key_path: str | None, key_id: str | None, root: Path) -> str | None:
+    """Why the key can't be used from where it is, or None when its location is fine."""
+    if not key_path:
+        return None
+    found = locate_asc_key(key_path, key_id, root)
+    if found is not None and found.parent in secure_key_dirs():
+        return None
+    if asc_key_is_on_another_computer(key_path):
+        name = f"AuthKey_{key_id.strip()}.p8" if key_id and key_id.strip() else Path(key_path).name
+        return (f"The App Store Connect key for this project isn't on this computer. The project's settings point to '{key_path}', "
+                f"which is in another computer's folder, and {name} isn't in ~/.private_keys/ or ~/.appstoreconnect/private_keys/ here either. "
+                f"Copy {name} into ~/.private_keys/ on this computer (AirDrop or scp, never git) and distribute again. "
+                "The settings don't need to change.")
+    return (f"App Store Connect API key path '{key_path}' is not in a designated secure Xcode directory. "
+            "xcodebuild ignores/rejects .p8 keys stored elsewhere (e.g. inside the project repository). "
+            "Please store your key in ~/.private_keys/ or ~/.appstoreconnect/private_keys/ and update project.json.")
 
 
 PACKAGE_ROOT = safe_resolve(Path(__file__)).parent
@@ -77,6 +139,11 @@ def load_recent_projects(prune_missing: bool = True) -> dict[str, Any]:
                 changed = True
                 continue
             root_path = Path(root_val).expanduser()
+            projects_alt = Path.home() / "Projects" / root_path.name
+            if (not root_path.exists() or "Documents" in str(root_path)) and projects_alt.is_dir() and (projects_alt / ".orchestrator" / "project.json").is_file():
+                project["root"] = str(projects_alt)
+                root_path = projects_alt
+                changed = True
             if root_path.exists() and root_path.is_dir():
                 valid_projects.append(project)
             else:
@@ -140,20 +207,37 @@ def project_display_name(root: Path) -> str:
     return data.get("project_name") or root.name
 
 
-def remember_project(root: Path, name: str | None = None, active: bool = True) -> None:
+def remember_project(
+    root: Path,
+    name: str | None = None,
+    active: bool = True,
+    source_type: str | None = None,
+    source_label: str | None = None,
+    github_repo: str | None = None,
+) -> None:
     root = safe_resolve(root.expanduser())
     display_name = name or project_display_name(root)
     data = load_recent_projects(prune_missing=True)
+    existing_entry = next((p for p in data.get("projects", []) if safe_resolve(Path(p.get("root", "")).expanduser()) == root), {})
     projects = [
         project for project in data.get("projects", [])
         if safe_resolve(Path(project.get("root", "")).expanduser()) != root
         and project.get("name") != display_name
     ]
-    projects.insert(0, {"name": display_name, "root": str(root)})
+    entry = dict(existing_entry)
+    entry.update({"name": display_name, "root": str(root)})
+    if source_type is not None:
+        entry["source_type"] = source_type
+    if source_label is not None:
+        entry["source_label"] = source_label
+    if github_repo is not None:
+        entry["github_repo"] = github_repo
+    projects.insert(0, entry)
     data["projects"] = projects[:20]
     if active:
         data["active"] = display_name
     save_recent_projects(data)
+
 
 
 def resolve_project_reference(reference: str | None) -> Path | None:
@@ -221,6 +305,25 @@ def _git_remote(root: Path) -> str | None:
         return None
 
 
+class PromptFolder:
+    """Where role prompts are read from. A prompt the project has customised wins; every other prompt comes from the
+    built-in set, so customising one role never hides the rest."""
+
+    def __init__(self, project: Path, package: Path):
+        self.project = project
+        self.package = package
+
+    def __truediv__(self, name: str) -> Path:
+        mine = self.project / name
+        return mine if mine.is_file() else self.package / name
+
+    def __fspath__(self) -> str:
+        return str(self.package)
+
+    def __str__(self) -> str:
+        return str(self.package)
+
+
 @dataclass(frozen=True)
 class ProjectConfig:
     root: Path
@@ -256,8 +359,32 @@ class ProjectConfig:
     signing_style: str | None = None
     firebase_testers: str | None = None
     firebase_groups: str | None = None
+    # Where finished builds go: "ios" (default, the distribution script), "android" or "web"; see delivery_adapters.py.
+    delivery_platform: str = "ios"
+    delivery_build_command: str | None = None
+    delivery_artifact: str | None = None
+    firebase_app_id: str | None = None
+    firebase_project_id: str | None = None
+    firebase_hosting_target: str | None = None
     # Central runtime-log store the app ships to; see scripts/cloud_logs.py.
     remote_logs: dict[str, Any] = field(default_factory=dict)
+    # "github", "git" or "auto" (the default: GitHub when origin is on github.com). See orchestrator/code_host.py.
+    code_host: str = "auto"
+    # Extra test commands run after test_command passes; see orchestrator/test_commands.py.
+    test_commands: list[Any] = field(default_factory=list)
+    # Seconds the main build and test command may run before they are stopped; None is the default, 0 means no limit.
+    build_timeout: int | None = None
+    test_timeout: int | None = None
+
+    @property
+    def code_host_mode(self) -> str:
+        """"github" (issues and pull requests through gh) or "git" (plain git branches, any host or none)."""
+        from orchestrator.code_host import resolve_mode
+        return resolve_mode(self.code_host, self.git_remote or "")
+
+    @property
+    def uses_github(self) -> bool:
+        return self.code_host_mode == "github"
 
     @property
     def stack(self) -> Any:
@@ -271,7 +398,7 @@ class ProjectConfig:
             self.xcode_project or self.xcode_workspace
             or any("xcodebuild" in command for command in
                    (self.build_command or "", self.test_command or ""))
-            or self.firebase_distribution or self.visual_app_path
+            or (self.firebase_distribution and (self.delivery_platform or "ios") == "ios") or self.visual_app_path
         )
 
     @property
@@ -279,7 +406,11 @@ class ProjectConfig:
         return self.runtime_dir / "config"
 
     def validate_distribution_config(self) -> list[str]:
-        """Returns a list of missing required fields for iOS distribution."""
+        """Returns a list of missing required fields for distribution (iOS signing, or the Android/web adapter's)."""
+        platform = (self.delivery_platform or "ios").strip().lower()
+        if platform != "ios":
+            from orchestrator import delivery_adapters
+            return delivery_adapters.validate_platform(self)
         errors = []
         if not self.development_team:
             errors.append("Apple Development Team ID (development_team) is not set.")
@@ -302,34 +433,11 @@ class ProjectConfig:
                  errors.append("App Store Connect API keys are partially configured. Please provide all three (ID, Issuer, Path).")
 
         if self.asc_key_path:
-            p = Path(self.asc_key_path).expanduser()
-            if not p.is_absolute():
-                p = safe_resolve(self.root / p)
-            else:
-                p = safe_resolve(p)
-
-            home = safe_resolve(Path.home())
-            secure_paths = [
-                home / ".private_keys",
-                home / ".appstoreconnect" / "private_keys"
-            ]
-            
-            is_secure = False
-            for sp in secure_paths:
-                try:
-                    if p.parent == safe_resolve(sp):
-                        is_secure = True
-                        break
-                except Exception:
-                    pass
-            
-            if not is_secure:
-                errors.append(
-                    f"App Store Connect API key path '{self.asc_key_path}' is not in a designated secure Xcode directory. "
-                    "xcodebuild ignores/rejects .p8 keys stored elsewhere (e.g. inside the project repository). "
-                    "Please store your key in ~/.private_keys/ or ~/.appstoreconnect/private_keys/ and update project.json."
-                )
-            elif p.exists():
+            p = locate_asc_key(self.asc_key_path, self.asc_key_id, self.root)
+            problem = asc_key_location_error(self.asc_key_path, self.asc_key_id, self.root)
+            if problem:
+                errors.append(problem)
+            elif p is not None and p.exists():
                 try:
                     mode = p.stat().st_mode
                     if (mode & 0o077) != 0:
@@ -359,21 +467,21 @@ class ProjectConfig:
         return errors
 
     @property
-    def prompts_dir(self) -> Path:
-        project_prompts = self.runtime_dir / "prompts"
-        return project_prompts if project_prompts.exists() else self.package_prompts_dir
+    def prompts_dir(self) -> "PromptFolder":
+        return PromptFolder(self.runtime_dir / "prompts", self.package_prompts_dir)
 
 
-def load_project_config() -> ProjectConfig:
-    root = find_project_root()
-    config_path = os.environ.get("ORCHESTRATOR_CONFIG")
+def load_project_config(root: Path | None = None) -> ProjectConfig:
+    explicit_root = root is not None
+    root = safe_resolve(root) if explicit_root else find_project_root()
+    config_path = None if explicit_root else os.environ.get("ORCHESTRATOR_CONFIG")
     if config_path:
         config_file = safe_resolve(Path(config_path).expanduser())
     else:
         config_file = root / DEFAULT_RUNTIME_DIRNAME / "project.json"
 
     data = _load_json(config_file)
-    runtime_dir = Path(
+    runtime_dir = root / DEFAULT_RUNTIME_DIRNAME if explicit_root else Path(
         os.environ.get(
             "ORCHESTRATOR_RUNTIME_DIR",
             os.environ.get("AI_RUNTIME_DIR", str(root / DEFAULT_RUNTIME_DIRNAME)),
@@ -430,7 +538,17 @@ def load_project_config() -> ProjectConfig:
         signing_style=data.get("signing_style", "automatic"),
         firebase_testers=data.get("firebase_testers"),
         firebase_groups=data.get("firebase_groups"),
+        delivery_platform=str(data.get("delivery_platform") or "ios").strip().lower(),
+        delivery_build_command=data.get("delivery_build_command"),
+        delivery_artifact=data.get("delivery_artifact"),
+        firebase_app_id=data.get("firebase_app_id"),
+        firebase_project_id=data.get("firebase_project_id"),
+        firebase_hosting_target=data.get("firebase_hosting_target"),
         remote_logs=data.get("remote_logs") or {},
+        code_host=str(data.get("code_host") or "auto"),
+        test_commands=data.get("test_commands") or [],
+        build_timeout=data.get("build_timeout"),
+        test_timeout=data.get("test_timeout"),
     )
 
 

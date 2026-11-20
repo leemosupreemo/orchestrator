@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from common import OUTPUT_DIR, PROMPTS_DIR, ROOT, read_json, write_text, print_phase, StatusBar, format_clarification_history, format_investigation_history
 from llm import run_llm, extract_json_block
-from model_router import ModelRole
+from model_router import ModelRole, resolve_builder_model
 from run_build_and_tests import run_build_and_tests
 from reference_artifacts import reference_context
+from orchestrator import reuse_brief
 from orchestrator.project_config import PROJECT_CONFIG
 
 
@@ -46,82 +48,57 @@ def make_brief(job: dict) -> str:
             verification_text += "\n**Risks Identified**:\n" + "\n".join(f"- {x}" for x in verification["risks_identified"])
         verification_text += "\n"
 
+    # Every brief has the same shape: a heading per part, and a plain note when a part is empty (people read briefs on the
+    # job page; the builder reads the same text), so "Likely files:" with nothing under it never looks like a gap.
+    def items(values: Any, empty: str) -> str:
+        values = [str(v).strip() for v in (values or []) if str(v).strip()] if isinstance(values, list) else []
+        return "\n".join(f"- {v}" for v in values) if values else f"_{empty}_"
+
+    def text(value: Any, empty: str) -> str:
+        value = str(value or "").strip()
+        return value if value else f"_{empty}_"
+
+    def part(title: str, body: str) -> str:
+        return f"## {title}\n\n{body.strip()}\n"
+
+    issue = f"#{job['issue_number']}" if job.get("issue_number") else "_No issue linked._"
+    head = f"**Issue:** {issue}  \n**Title:** {job.get('title') or '_Untitled_'}\n"
+    extras = "\n".join(x.strip() for x in (clarification_text, investigation_text) if x and x.strip())
+    files = part("Likely files", items(plan.get("likely_files"), "None listed yet: the builder works out which files to change."))
+    criteria = part("Acceptance criteria", items(plan.get("acceptance_criteria"), "None listed: done when the summary above is met and the tests pass."))
+
     if job["type"] in {"bug-fix", "bug-investigate"}:
-        return f'''# Bug brief
-
-Issue: #{job["issue_number"]}
-Title: {job["title"]}
-
-Summary:
-{plan.get("summary", "No summary provided.")}
-{clarification_text}
-{investigation_text}
-{verification_text}
-Repro steps:
-''' + "\n".join(f'- {x}' for x in plan.get("repro_steps", [])) + f'''
-
-Expected behavior:
-{plan.get("expected_behavior", "No expected behavior provided.")}
-
-Acceptance criteria:
-''' + "\n".join(f'- {x}' for x in plan.get("acceptance_criteria", [])) + f'''
-
-Constraints:
-''' + "\n".join(f'- {x}' for x in plan.get("constraints", [])) + f'''
-
-Likely files:
-''' + "\n".join(f'- {x}' for x in plan.get("likely_files", [])) + (f'''
-
-Test recommendations (TDD):
-''' + "\n".join(f'- {x}' for x in plan.get("test_recommendations", [])) if plan.get("test_recommendations") else "") + f"\n{references}\n"
-    elif job["type"] == "feature-plan":
-        return f'''# Feature task brief
-
-Issue: #{job["issue_number"]}
-Title: {job["title"]}
-
-Summary:
-{plan.get("summary", "No summary provided.")}
-{clarification_text}
-{investigation_text}
-
-Acceptance criteria:
-''' + "\n".join(f'- {x}' for x in plan.get("acceptance_criteria", [])) + f'''
-
-Likely files:
-''' + "\n".join(f'- {x}' for x in plan.get("likely_files", [])) + f"\n{references}\n"
-    elif job["type"] == "quick-fix":
-        return f'''# Quick task brief
-
-Issue: #{job["issue_number"]}
-Title: {job["title"]}
-
-Instructions:
-{plan.get("instructions", "No instructions provided.")}
-
-Summary:
-{plan.get("summary", "No summary provided.")}
-{clarification_text}
-{investigation_text}
-
-Acceptance criteria:
-''' + "\n".join(f'- {x}' for x in plan.get("acceptance_criteria", [])) + f'''
-Likely files:
-''' + "\n".join(f'- {x}' for x in plan.get("likely_files", [])) + f"\n{references}\n"
+        sections = [
+            part("Summary", text(plan.get("summary"), "No summary given.")),
+            extras,
+            verification_text.strip(),
+            part("Steps to reproduce", items(plan.get("repro_steps"), "None given.")),
+            part("Expected behavior", text(plan.get("expected_behavior"), "Not described.")),
+            criteria,
+            part("Constraints", items(plan.get("constraints"), "None.")),
+            files,
+            part("Test recommendations (TDD)", items(plan.get("test_recommendations"), "")) if plan.get("test_recommendations") else "",
+        ]
+        title = "Bug brief"
+    elif job["type"] in ("feature-plan", "quick-fix"):
+        tasks = plan.get("tasks") or []
+        plan_lines = "\n".join(f"{i}. {t.get('title', '')}" + (f": {t['description']}" if t.get("description") else "")
+                               for i, t in enumerate(tasks, start=1) if isinstance(t, dict))
+        quick = job["type"] == "quick-fix"
+        sections = [
+            part("Instructions", text(plan.get("instructions"), "None beyond the summary: the summary is the whole request.")) if quick else "",
+            part("Fast-tracked plan", "Build all of it in this one pass.\n\n" + plan_lines) if quick and plan_lines else "",
+            part("Summary", text(plan.get("summary"), "No summary given.")),
+            extras,
+            criteria,
+            files,
+        ]
+        title = "Quick task brief" if quick else "Feature task brief"
     else:
-        return f'''# Feature task brief
-
-Issue: #{job["issue_number"]}
-Title: {job["title"]}
-
-Summary:
-{plan.get("summary", "No summary provided.")}
-{clarification_text}
-{investigation_text}
-{verification_text}
-{references}
-'''
-
+        sections = [part("Summary", text(plan.get("summary"), "No summary given.")), extras, verification_text.strip()]
+        title = "Feature task brief"
+    body = "\n".join(x for x in sections if x)
+    return f"# {title}\n\n{head}\n{body}\n{references}\n"
 
 def inspect_progress(job: dict) -> bool:
     """Returns True if work appears already done based on git/logs."""
@@ -145,8 +122,24 @@ def inspect_progress(job: dict) -> bool:
     return False
 
 
+def _quick_scope_guardrail(job: dict, likely_files: list) -> str:
+    """Extra scoping guidance for unplanned quick jobs so broad/visual requests don't degrade into token stubs."""
+    if job.get("type") != "quick-fix" or likely_files:
+        return ""
+    return """
+### QUICK TASK SCOPING GUARDRAIL
+This quick task has no detailed plan or target file list. Before editing:
+- Inspect the relevant subsystem end-to-end so broad or qualitative requests (e.g., visual quality, realism, rendering, performance, polish) produce cohesive, noticeable improvements across shaders, materials, spawning/callers, or runtime logic rather than minimal token tweaks.
+- Every new helper, method, or field MUST be wired into real runtime callers (never leave dead helpers).
+- Tests MUST execute real behavior or compilation — NEVER write tests that merely open source/shader files and assert substrings (`assertIn` / regex), and never use `test_command` to hide the repository's configured test suite.
+"""
+
+
 def run_builder(job_path: Path, resume: bool = False) -> tuple[bool, bool, Path]:
     job = read_json(job_path)
+    from orchestrator.job_scope import NONPRODUCTION_TYPES
+    if job.get("type") in NONPRODUCTION_TYPES:
+        raise RuntimeError("The production builder is disabled for Design and Tests jobs.")
     if "type" not in job:
         if "repro_steps" in job.get("plan", {}):
             job["type"] = "bug-fix"
@@ -184,6 +177,11 @@ def run_builder(job_path: Path, resume: bool = False) -> tuple[bool, bool, Path]
     output = None
     actual_builder = job.get("actual_builder_used")
 
+    from orchestrator import builder_check
+    if resume and summary_file.exists() and builder_check.writes_blocked(summary_file.read_text(encoding="utf-8", errors="replace")):
+        # That run changed nothing (its writes were refused), so there is nothing to resume from: build it again.
+        print(f"      - The saved builder summary says its writes were blocked, so nothing was built. Running the builder again.")
+        resume = False
     if resume and summary_file.exists():
         print(f"      - Resuming: Found existing builder summary at {summary_file.name}")
         output = summary_file.read_text(encoding="utf-8")
@@ -239,6 +237,55 @@ STRICT REQUIREMENT: Do NOT use the `clarification_needed` field unless it is phy
 If you are unsure between two valid approaches, pick the safest, most conventional one, document your assumption in the summary, and proceed. DO NOT PAUSE for human confirmation.
 """
 
+        from test_cases import prompt_block
+        test_case_block = prompt_block(job.get("plan", {}).get("test_cases") or [])
+        from orchestrator import architecture, prd
+        product_context = prd.context_block(ROOT, "builder") + architecture.context_block(ROOT, "builder")
+
+        # What the project already has that matches this task, so the builder reuses it instead of writing a second copy.
+        # Bug fixes edit existing code by nature. A failed search just means no suggestions, never a failed build.
+        reuse_found: list[dict] = []
+        reuse_context = ""
+        if job["type"] not in {"bug-fix", "bug-investigate"}:
+            try:
+                reuse_found = reuse_brief.candidates(ROOT, job)
+            except Exception:
+                reuse_found = []
+            reuse_context = reuse_brief.prompt_block(reuse_found, ROOT, likely_files)
+        job["reuse_suggested"] = reuse_found  # the job page reports how many of these the finished change used
+
+        try:
+            from orchestrator import parallel_mece
+            peer_lanes = parallel_mece.lane_context(
+                parallel_mece.load_active_peers(
+                    job_path.parent,
+                    current_job_id=job.get("job_id") or job_path.stem,
+                    current_job=job,
+                ),
+                role="builder",
+            )
+        except Exception:
+            peer_lanes = ""
+
+        ui_screenshot_block = ""
+        try:
+            from orchestrator import ux_review
+            ux_cfg = ux_review.from_project(ROOT)
+            touches_ui = bool(ux_review.frontend_files(likely_files, ux_cfg.get("paths"))) if likely_files else False
+            if touches_ui or ux_review.has_screens(ux_cfg):
+                ui_screenshot_block = f"""### UI screenshot evidence
+For every new screen or visible UI alteration, update `{OUTPUT_DIR / job['job_id'] / 'ux-screens.json'}` before finishing.
+List every changed page and interactive state, preserving entries from earlier tasks in this job. Use this JSON shape:
+{{"routes": ["/changed-page"], "screens": [{{"name": "Dialog open", "route": "/changed-page", "actions": [{{"click": "button.open-dialog"}}]}}], "notes": []}}
+Routes must be relative to the configured app. Actions support {{"click": "CSS selector"}} and {{"fill": "CSS selector", "value": "non-sensitive test value"}}.
+Use stable selectors and test data. Do not put credentials in the capture plan. For a state that cannot be reached automatically, add a clear explanation under notes.
+Ensure the app at ui_review.url serves this job's changes; use ui_review.start_command for a local app if needed.
+The runner captures configured pages plus this inventory at the configured phone/desktop widths and colour modes, and saves them in UX review.
+Screenshot capture is evidence, separate from whether the optional AI review is enabled. If no UI changes, no capture plan is needed.
+"""
+        except Exception:
+            ui_screenshot_block = ""
+
         full_prompt = f"""{prompt_template}
 
 Grounding docs to inspect first:
@@ -249,23 +296,32 @@ Grounding docs to inspect first:
 {stack_context}
 Available Tests (use for selecting test_command):
 {test_index}
-{debug_context}
+{test_case_block}{debug_context}
 {yolo_context}
-
-Brief:
+{_quick_scope_guardrail(job, likely_files)}
+{product_context}
+{peer_lanes}{reuse_context}{ui_screenshot_block}Brief:
 {brief}
 """
 
         print_phase("agent_thinking")
         status_bar.render()
+        tree_before = builder_check.tree_fingerprint(ROOT)
         output, actual_builder, session_id = run_llm(
-            job["builder"], 
+            resolve_builder_model(job), 
             full_prompt, 
             cwd=ROOT, 
             timeout=1200, 
             allowed_models=job.get("allowed_models"),
             role=ModelRole.BUILDER
         )
+
+        if builder_check.writes_blocked(output) and not builder_check.changed(tree_before, builder_check.tree_fingerprint(ROOT)):
+            # Its own report says the AI tool refused every write, and the working tree agrees. Building and testing now would only
+            # test the old code against tests it never wrote, so stop here and say why.
+            write_text(summary_file, output)
+            raise RuntimeError("The builder could not change any files: its writes were blocked, most likely by the AI tool's permission mode. "
+                               "Nothing was built. Check that tool's permissions, then rerun the job.")
 
         # Track session IDs in the job
         if "llm_sessions" not in job:
@@ -286,8 +342,13 @@ Brief:
         parsed_output = json.loads(json_output)
         
         # Check for clarification needed from builder
-        if "clarification_needed" in parsed_output and parsed_output["clarification_needed"]:
-            q = parsed_output["clarification_needed"]
+        from common import classify_clarification
+        clar_kind, q = classify_clarification(parsed_output.get("clarification_needed"))
+        if clar_kind == "blocking":
+            raise RuntimeError(f"Builder blocked: {q}")
+        if clar_kind == "ignore" and q:
+            print(f"      - Ignoring non-question clarification note: {q}")
+        if clar_kind == "question":
             job["status"] = "human-needed"
             job["human_clarification_question"] = q
             write_json(job_path, job)

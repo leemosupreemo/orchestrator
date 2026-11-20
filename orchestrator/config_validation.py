@@ -1,8 +1,19 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from orchestrator.project_config import ProjectConfig
+
+
+def _ui_review_errors(project_file: Path) -> list[str]:
+    """`ui_review` (screens for the UX and design review) is read raw: ProjectConfig doesn't model it."""
+    from orchestrator import ux_review
+    try:
+        ux_review.settings(json.loads(project_file.read_text(encoding="utf-8")) if project_file.is_file() else {})
+    except (ValueError, ux_review.ConfigError) as exc:
+        return [f"ui_review: {exc}"] if isinstance(exc, ux_review.ConfigError) else []
+    return []
 
 
 def validate_project_config(config: ProjectConfig) -> list[str]:
@@ -10,6 +21,10 @@ def validate_project_config(config: ProjectConfig) -> list[str]:
 
     if not config.project_name:
         errors.append("project_name is required.")
+    if config.code_host.strip().lower() not in ("auto", "github", "git"):
+        errors.append('code_host must be "github", "git" or "auto".')
+    if config.code_host.strip().lower() not in ("auto", "github", "git"):
+        errors.append('code_host must be "github", "git" or "auto".')
     if config.uses_xcode and not config.scheme:
         errors.append("scheme is required. Set it in .orchestrator/project.json.")
     if not config.xcode_project and not config.xcode_workspace and not config.build_command:
@@ -21,9 +36,25 @@ def validate_project_config(config: ProjectConfig) -> list[str]:
     if not config.test_command and (not config.uses_xcode or not config.test_target):
         errors.append("Configure test_target or test_command." if config.uses_xcode
                       else "Configure test_command for a non-Xcode project.")
-    if config.firebase_distribution:
-        if config.delivery_provider and config.delivery_provider != "firebase":
-            errors.append("Only delivery_provider='firebase' is currently supported.")
+    from orchestrator import test_commands
+    errors += test_commands.from_config(config)[1]
+    from orchestrator import platforms as platform_view
+    try:
+        raw_project = json.loads((config.runtime_dir / "project.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        raw_project = {}
+    errors += platform_view.parse(raw_project.get("platforms"), config.root)[1]
+    for key in ("build_timeout", "test_timeout"):
+        value = getattr(config, key, None)
+        if value is not None and (isinstance(value, bool) or not isinstance(value, int) or value < 0):
+            errors.append(f"{key} must be a whole number of seconds (0 means no limit).")
+    from orchestrator import delivery_adapters
+    platform = delivery_adapters.platform_of(config)
+    if config.firebase_distribution and config.delivery_provider and config.delivery_provider != "firebase":
+        errors.append("Only delivery_provider='firebase' is currently supported.")
+    if platform not in delivery_adapters.PLATFORMS or (config.firebase_distribution and platform != "ios"):
+        errors += delivery_adapters.validate_platform(config)  # android / web: the adapter's own checks
+    elif config.firebase_distribution:
         if not config.distribution_script_path:
             errors.append("firebase_distribution requires distribution_script_path. Run 'orchestrator wizard' to set this up.")
         elif not (config.root / config.distribution_script_path).exists():
@@ -37,6 +68,7 @@ def validate_project_config(config: ProjectConfig) -> list[str]:
         errors.append(f"visual_app_path does not exist: {config.visual_app_path}")
     if config.visual_app_path and not config.app_bundle_id:
         errors.append("visual_app_path requires app_bundle_id for simulator launch.")
+    errors += _ui_review_errors(config.runtime_dir / "project.json")
     remote_logs = getattr(config, "remote_logs", None) or {}
     if remote_logs:
         if remote_logs.get("provider", "sentry") != "sentry":

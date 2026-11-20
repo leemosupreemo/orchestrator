@@ -7,7 +7,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from common import OUTPUT_DIR, PROMPTS_DIR, ROOT, gh_text, write_text
+from common import OUTPUT_DIR, PROMPTS_DIR, ROOT, gh_text, run, write_text
 from llm import run_llm
 from model_router import ModelRole
 
@@ -59,38 +59,89 @@ def load_pr_diff(pr_number: int, pr_json: str) -> str:
     return diff_text
 
 
+def load_branch_diff(branch: str, base: str) -> tuple[str, str]:
+    """For a job without a pull request (plain git): (metadata, diff) of the branch against its base, from this repo."""
+    stat = run(["git", "diff", "--stat", f"{base}...{branch}"], cwd=ROOT).stdout
+    commits = run(["git", "log", "--oneline", f"{base}..{branch}"], cwd=ROOT).stdout
+    diff_text = run(["git", "diff", f"{base}...{branch}"], cwd=ROOT).stdout
+    if len(diff_text) > MAX_DIFF_CHARS:
+        diff_text = diff_text[:MAX_DIFF_CHARS] + f"\n\n...[review_ready truncated diff: {len(diff_text) - MAX_DIFF_CHARS} chars omitted]..."
+    return f"Branch {branch} against {base}\n\nCommits:\n{commits}\nFiles:\n{stat}", diff_text
+
+
+def verification_warnings(job: dict, root: Path) -> list[str]:
+    """Automated red flags on the builder's verification and scoping for the reviewer to check."""
+    if not job:
+        return []
+    from orchestrator import builder_check
+
+    warnings: list[str] = []
+    override = (job.get("test_command_override") or "").strip()
+    if override:
+        grep_tests = builder_check.source_only_test_files(override, root)
+        if grep_tests:
+            warnings.append(
+                f"Builder's `test_command_override` ({override}) targets source-text-only tests "
+                f"({', '.join(grep_tests)}) that inspect source strings without executing behavior."
+            )
+    from orchestrator import acceptance
+    warnings.extend(acceptance.diff_warnings(job))
+    plan = job.get("plan") if isinstance(job.get("plan"), dict) else {}
+    if job.get("type") == "quick-fix" and not (plan.get("likely_files") or []):
+        warnings.append(
+            "This was an unplanned `quick-fix` brief with no explicit acceptance criteria or target files: "
+            "check closely for token tweaks, dead/uncalled helpers, or superficial fixes that do not meaningfully deliver the prompt."
+        )
+    return warnings
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("pr_number", type=int)
+    parser.add_argument("pr_number", type=int, nargs="?", help="The pull request to review (GitHub)")
+    parser.add_argument("--branch", help="Review this branch against --base instead of a pull request (plain git)")
+    parser.add_argument("--base", default="main")
     parser.add_argument("--reviewer", default="gemini")
     parser.add_argument("--brief-file", required=True)
     parser.add_argument("--job-file", help="Path to job JSON file to update")
     args = parser.parse_args()
 
+    if args.pr_number is None and not args.branch:
+        parser.error("Give a pull request number, or --branch to review a branch.")
     brief = Path(args.brief_file).read_text(encoding="utf-8")
-    pr_json = gh_text("pr", "view", str(args.pr_number), "--json", "title,body,files,commits,url")
-    diff_text = load_pr_diff(args.pr_number, pr_json)
+    if args.pr_number is not None:
+        pr_json = gh_text("pr", "view", str(args.pr_number), "--json", "title,body,files,commits,url")
+        diff_text = load_pr_diff(args.pr_number, pr_json)
+    else:
+        pr_json, diff_text = load_branch_diff(args.branch, args.base)
     reviewer_prompt = (PROMPTS_DIR / "reviewer.md").read_text(encoding="utf-8")
 
-    prompt = f"""{reviewer_prompt}
-
-Brief:
-{brief}
-
-PR metadata:
-{pr_json}
-
-Diff:
-{diff_text}
-"""
-
     allowed_models = None
+    job: dict = {}  # without --job-file there is no job to update, but the session bookkeeping below still runs
     if args.job_file:
         from common import now_iso, read_json, write_json
         job_path = Path(args.job_file)
         if job_path.exists():
             job = read_json(job_path)
             allowed_models = job.get("allowed_models")
+
+    warnings = verification_warnings(job, ROOT)
+    warnings_block = (
+        "\nAutomated verification warnings (must inspect closely):\n" + "\n".join(f"- {w}" for w in warnings) + "\n"
+        if warnings else ""
+    )
+    from orchestrator import prd
+    from orchestrator import acceptance
+    prompt = f"""{reviewer_prompt}
+{prd.context_block(ROOT, "reviewer")}
+Brief:
+{brief}
+{acceptance.block(job)}{warnings_block}
+PR metadata:
+{pr_json}
+
+Diff:
+{diff_text}
+"""
             
     try:
         review, actual_reviewer, session_id = run_llm(args.reviewer, prompt, cwd=ROOT, timeout=300, role=ModelRole.REVIEWER, allowed_models=allowed_models)
@@ -110,7 +161,7 @@ Diff:
         job["updated_at"] = now_iso()
         write_json(job_path, job)
 
-    out_dir = OUTPUT_DIR / f"pr-{args.pr_number}"
+    out_dir = OUTPUT_DIR / (f"pr-{args.pr_number}" if args.pr_number is not None else f"branch-{args.branch.replace('/', '-')}")
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / "review.md"
     write_text(out_path, review)
@@ -118,8 +169,9 @@ Diff:
     print(review)
     print(f"\nSaved review to {out_path}")
 
-    print(f"Posting review to PR #{args.pr_number}...")
-    gh_text("pr", "comment", str(args.pr_number), "--body", review)
+    if args.pr_number is not None:
+        print(f"Posting review to PR #{args.pr_number}...")
+        gh_text("pr", "comment", str(args.pr_number), "--body", review)
     print("Done.")
 
 

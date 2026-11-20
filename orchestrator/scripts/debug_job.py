@@ -24,6 +24,68 @@ MAX_LOG_ENTRY_CHARS = 15_000
 MAX_RUNTIME_LOG_CHARS = 100_000
 
 
+from orchestrator.scope_check import INTERNAL_TOOL_PREFIXES, is_internal_tool_path as _is_internal_path
+
+
+def build_iteration_ledger(job: dict[str, Any]) -> dict[str, Any]:
+    """Compact structured memory of prior iterations so fix loops and fallback models never re-explore dead ends."""
+    history = [h for h in (job.get("debug_history") or []) if isinstance(h, dict)]
+    attempts = []
+    ruled_out: list[str] = []
+    for entry in history[-8:]:
+        result = entry.get("result")
+        failed = isinstance(result, dict) and (not result.get("build_ok", True) or not result.get("tests_ok", True))
+        hyp = str(entry.get("hypothesis") or "").strip()
+        if failed and hyp and hyp not in ruled_out:
+            ruled_out.append(hyp)
+        attempts.append({
+            "iteration": entry.get("iteration"),
+            "model": entry.get("model"),
+            "action": entry.get("action"),
+            "hypothesis": hyp,
+            "result": result,
+        })
+    changed_files = sorted(
+        f for f in set([*(job.get("ai_modified_files") or []), *(job.get("ai_untracked_files") or [])])
+        if isinstance(f, str) and f.strip() and not _is_internal_path(f)
+    )[:40]
+    failures = []
+    tv = job.get("test_validation") if isinstance(job.get("test_validation"), dict) else {}
+    for item in (tv.get("failures") or [])[:15]:
+        if isinstance(item, dict) and item.get("test"):
+            msg = str(item.get("message") or "").strip().splitlines()[0][:160] if item.get("message") else ""
+            failures.append(f"{item['test']}: {msg}" if msg else str(item["test"]))
+    return {
+        "iteration": int(job.get("iteration") or 0),
+        "attempts": attempts,
+        "ruled_out_hypotheses": ruled_out,
+        "changed_files": changed_files,
+        "failing_tests": failures,
+    }
+
+
+def format_iteration_ledger(job: dict[str, Any]) -> str:
+    """Human/LLM-readable Iteration Ledger injected into debug prompts before raw history."""
+    ledger = build_iteration_ledger(job)
+    if not ledger["attempts"] and not ledger["failing_tests"] and not ledger["changed_files"]:
+        return "No prior debug iterations."
+    lines = ["### Iteration Ledger (Do NOT repeat ruled-out hypotheses)"]
+    if ledger["failing_tests"]:
+        lines.append("Failing tests:")
+        for ft in ledger["failing_tests"]:
+            lines.append(f"- {ft}")
+    if ledger["changed_files"]:
+        lines.append("Files already modified in this job: " + ", ".join(ledger["changed_files"][:20]))
+    if ledger["ruled_out_hypotheses"]:
+        lines.append("Ruled-out hypotheses (already tried and still failed):")
+        for h in ledger["ruled_out_hypotheses"]:
+            lines.append(f"- {h}")
+    if ledger["attempts"]:
+        lines.append("Recent attempts:")
+        lines.append(json.dumps(ledger["attempts"], indent=2))
+    return "\n".join(lines)
+
+
 def split_log_sources(logs_path: str) -> list[str]:
     """Split comma-separated log paths without exploding pasted raw log text."""
     raw_log_markers = [
@@ -125,6 +187,17 @@ def describe_log_source(source: str) -> str:
 
 def run_debug_iteration(job_path: Path, logs: str | None = None, feedback: str | None = None, max_iterations: int | None = None) -> None:
     job = read_json(job_path)
+
+    from orchestrator.job_scope import NONPRODUCTION_TYPES
+    if job.get("type") in NONPRODUCTION_TYPES:
+        # Design and Tests jobs have no debug loop: the builder rewrites its own files, and is told which of its tests failed and why
+        # (and anything the person said), so a separate diagnosis step would only repeat what it reads for itself.
+        if feedback:
+            job["debug_feedback"] = feedback
+        write_json(job_path, job)
+        print_phase("implementation", subtext="rewriting the failing tests" if job.get("output_scope") == "tests-only" else "revising")
+        run_implement(job, job_path)
+        return
     
     # 1. State Machine Initialization
     if job.get("status") != "debugging":
@@ -169,6 +242,10 @@ def run_debug_iteration(job_path: Path, logs: str | None = None, feedback: str |
             pass
         return
 
+    if isinstance(job.get("blocker"), dict):
+        job["last_blocker"] = job.pop("blocker")
+        write_json(job_path, job)
+
     job["iteration"] += 1
     iteration = job["iteration"]
     
@@ -196,11 +273,16 @@ def run_propose(job: dict, job_path: Path, logs_path: str | None, feedback: str 
 
     # Build prompt
     prompt_template = (PROMPTS_DIR / "debug_agent.md").read_text(encoding="utf-8")
+    from orchestrator import prd
+    prompt_template = f"{prompt_template}\n{prd.context_block(ROOT, 'builder')}"
     
     # Ingest context
     brief_file = OUTPUT_DIR / job["job_id"] / "brief.md"
     brief = brief_file.read_text(encoding="utf-8") if brief_file.exists() else "No brief available"
     brief += reference_context(job)
+    # The fix loop's goal is the job's criteria, not green tests: a requirement added after the brief (feedback) must stay in view.
+    from orchestrator import acceptance
+    brief += "\n" + acceptance.block(job)
     
     prev_impl = ""
     builder_summary = OUTPUT_DIR / job["job_id"] / "builder_summary.md"
@@ -212,10 +294,15 @@ def run_propose(job: dict, job_path: Path, logs_path: str | None, feedback: str 
     auto_logs = []
     job_out_dir = OUTPUT_DIR / job["job_id"]
     
-    # Always include build log if it exists (captured compiler errors)
+    # Only include build log if it contains actual build failure output (skip "** BUILD SUCCEEDED **" marker)
     build_log = job_out_dir / "build.log"
     if build_log.exists():
-        auto_logs.append(str(build_log))
+        try:
+            b_text = build_log.read_text(encoding="utf-8", errors="replace").strip()
+        except OSError:
+            b_text = ""
+        if b_text and not b_text.startswith("** BUILD SUCCEEDED"):
+            auto_logs.append(str(build_log))
         
     # Always include test log
     test_log = job_out_dir / "test.log"
@@ -288,9 +375,11 @@ def run_propose(job: dict, job_path: Path, logs_path: str | None, feedback: str 
             else:
                 print(f"        [skip] log path not found: {lp}")
 
+    ledger = build_iteration_ledger(job)
+    job["iteration_ledger"] = ledger
     full_prompt = prompt_template.replace("{{brief}}", brief)
     full_prompt = full_prompt.replace("{{previous_implementation}}", prev_impl)
-    full_prompt = full_prompt.replace("{{debug_history}}", json.dumps(job.get("debug_history", []), indent=2))
+    full_prompt = full_prompt.replace("{{debug_history}}", format_iteration_ledger(job))
     full_prompt = full_prompt.replace("{{runtime_logs}}", runtime_logs)
     full_prompt = full_prompt.replace("{{human_feedback}}", feedback or "None")
 
@@ -298,14 +387,27 @@ def run_propose(job: dict, job_path: Path, logs_path: str | None, feedback: str 
 
     # Call LLM
     print_phase("agent_thinking", subtext="proposing debug fix")
-    raw_output, actual_model, session_id = run_llm(
-        job["reviewer"], 
-        full_prompt, 
-        cwd=ROOT, 
-        timeout=1200, 
-        allowed_models=job.get("allowed_models"),
-        role=ModelRole.DEBUGGER
-    )
+    try:
+        raw_output, actual_model, session_id = run_llm(
+            job["reviewer"], 
+            full_prompt, 
+            cwd=ROOT, 
+            timeout=1200, 
+            allowed_models=job.get("allowed_models"),
+            role=ModelRole.DEBUGGER
+        )
+    except Exception as exc:
+        # Don't burn an iteration when the model/tool couldn't even run (expired sign-in, quota, env blocker).
+        # Record a structured blocker so the UI offers 1-click sign-in + auto-retry and the server auto-resumes.
+        job["iteration"] = max(0, int(job.get("iteration") or 1) - 1)
+        job["last_error"] = str(exc)
+        job["updated_at"] = now_iso()
+        from orchestrator import blockers
+        if blocker := blockers.detect(f"{exc}\n{getattr(exc, 'stderr', '') or ''}"):
+            blockers.record(job, blocker)
+            job["status"] = "human-needed"
+        write_json(job_path, job)
+        raise
 
     # Track session IDs in the job
     if "llm_sessions" not in job:
@@ -324,6 +426,8 @@ def run_propose(job: dict, job_path: Path, logs_path: str | None, feedback: str 
 
         plan = json.loads(json_output)
         job["debug_proposal"] = plan
+        if isinstance(plan.get("targeted_tests"), list):
+            job["targeted_tests"] = [str(t).strip() for t in plan["targeted_tests"] if str(t).strip()][:10]
         job["debug_phase"] = "implement"
         
         # Record iteration in history

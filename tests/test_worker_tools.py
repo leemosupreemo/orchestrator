@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import io
 import sys
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -71,6 +73,37 @@ class WorkerToolsTests(unittest.TestCase):
         self.assertIn("--delete", rsync_args)
         self.assertEqual(rsync_args[-1], "worker-host:/remote/package/orchestrator/")
         mock_check_remote.assert_called_once_with(machine)
+
+
+class WorkerCheckSummaryTests(unittest.TestCase):
+    def test_summary_line_counts_ready_machines_and_names_the_others(self):
+        with patch("worker_tools.sys.stdout.isatty", return_value=False):
+            self.assertEqual(worker_tools.summary_line(2, 2, []), "✅ 2 of 2 machines ready")
+            self.assertEqual(worker_tools.summary_line(1, 1, []), "✅ 1 of 1 machine ready")
+            self.assertEqual(worker_tools.summary_line(2, 3, ["mini"]), "⚠️ 2 of 3 machines ready. Not ready: mini")
+            self.assertEqual(worker_tools.summary_line(0, 2, ["a", "b"]), "❌ 0 of 2 machines ready. Not ready: a, b")
+            self.assertIn("No machines are enabled", worker_tools.summary_line(0, 0, []))
+
+    def test_summary_is_coloured_only_on_a_terminal(self):
+        with patch("worker_tools.sys.stdout.isatty", return_value=True), patch.dict("os.environ", {}, clear=True):
+            self.assertTrue(worker_tools.summary_line(1, 1, []).startswith("\033[92m"))
+            self.assertTrue(worker_tools.summary_line(1, 2, ["x"]).startswith("\033[93m"))
+            self.assertTrue(worker_tools.summary_line(0, 2, ["x", "y"]).startswith("\033[91m"))
+        with patch("worker_tools.sys.stdout.isatty", return_value=True), patch.dict("os.environ", {"NO_COLOR": "1"}):
+            self.assertNotIn("\033", worker_tools.summary_line(1, 1, []))
+
+    def test_check_prints_the_summary_and_fails_when_a_machine_is_not_ready(self):
+        machines = [{"name": "here", "execution_mode": "local", "repo_path": "/r"}, {"name": "far", "execution_mode": "ssh", "repo_path": "/r"}]
+        out = io.StringIO()
+        with patch("worker_tools.selected_machines", return_value=machines), patch("worker_tools.check_local", return_value=0), \
+                patch("worker_tools.check_remote", return_value=1), patch("sys.argv", ["worker_tools.py", "check"]), redirect_stdout(out):
+            code = worker_tools.main()
+        self.assertEqual(code, 1)
+        self.assertTrue(out.getvalue().rstrip().endswith("1 of 2 machines ready. Not ready: far"))
+        out = io.StringIO()
+        with patch("worker_tools.selected_machines", return_value=[]), patch("sys.argv", ["worker_tools.py", "check"]), redirect_stdout(out):
+            self.assertEqual(worker_tools.main(), 0)
+        self.assertIn("No machines are enabled", out.getvalue())
 
 
 if __name__ == "__main__":

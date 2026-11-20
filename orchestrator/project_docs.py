@@ -1,0 +1,411 @@
+"""The project's documentation, in one place, always generated from what is true now.
+
+Three kinds of document:
+
+  a job's page      what it set out to do, what was decided, what was built, how it was tested, what the review said
+  a feature's page  what it is, who it serves, what it depends on, and every job that went into it
+  the project's own files   README, AGENTS.md and the markdown under docs/, read as they are in the repository
+
+Job and feature pages are composed on request from the job files and the feature store, never stored, so they cannot drift from
+the work they describe and add no files to the repository. `export_all` joins everything into one markdown file.
+
+Pure functions: callers gather the data, nothing here touches git or a model.
+"""
+from __future__ import annotations
+
+import re
+from pathlib import Path
+from typing import Any
+
+MAX_FILE_CHARS = 200_000
+MAX_PROJECT_FILES = 300
+SKIP_DIRS = {".git", ".orchestrator", "node_modules", "build", "dist", "target", "venv", ".venv", "__pycache__", "Pods", "DerivedData", "designs"}
+ROOT_NOTES = ("README.md", "AGENTS.md", "CLAUDE.md", "GEMINI.md", "CONTRIBUTING.md", "CHANGELOG.md")
+ROOT_DOC_NAME = re.compile(r"^(?!\.)(?=.*(?:architecture|audit|design|requirement|spec|guide|handoff|roadmap|overview|notes|status|setup|security|plan))", re.I)
+
+
+# How the Documentation page groups a project's files: the few documents people and the AI rely on first, then the reference
+# material by kind. Matched on the path, first rule wins.
+CATEGORIES = (("core", "Core docs"), ("requirements", "Requirements and specs"), ("plans", "Plans"), ("verification", "Verification"),
+              ("research", "Research and findings"), ("releases", "Releases"), ("other", "Other docs"))
+CORE_DOCS = {"docs/architecture.md", "docs/build-test-commands.md", "docs/coding-standards.md", "docs/ui-conventions.md", "docs/product/prd.md"}
+_CATEGORY_RULES = (
+    ("requirements", re.compile(r"(^|/)specs?/|requirement", re.I)),  # a specs folder is specs, whatever a file's name mentions
+    ("plans", re.compile(r"(^|/)plans?/|plan|handoff|roadmap", re.I)),
+    ("releases", re.compile(r"release|changelog", re.I)),
+    ("verification", re.compile(r"verification|acceptance|validation|(^|/)qa/", re.I)),
+    ("research", re.compile(r"finding|investigation|research|audit|baseline|status", re.I)),
+    ("requirements", re.compile(r"requirement|spec|design|vision|brief|scope", re.I)),
+)
+STALE_README_COMMITS = 15  # this many commits since README.md last changed: worth a look
+_STATUS_LINE = re.compile(r"^\s*(?:\*\*)?status(?:\*\*)?\s*[:\-]|^#+\s*status\b|^\s*[-*]\s*\[[ xX]\]", re.I | re.M)
+
+
+class DocsError(ValueError):
+    pass
+
+
+def category(rel: str) -> str:
+    """Which group a markdown file belongs to on the Documentation page."""
+    if "/" not in rel or rel in CORE_DOCS:
+        return "core"
+    return next((cat for cat, rule in _CATEGORY_RULES if rule.search(rel)), "other")
+
+
+def plans_without_status(root: Path, files: list[dict[str, Any]]) -> list[str]:
+    """Plans that never say whether they are done (no status line, no checklist): a reader can't tell finished from abandoned."""
+    out = []
+    for f in files:
+        if f.get("category") != "plans":
+            continue
+        try:
+            head = "\n".join((Path(root) / f["path"]).read_text(encoding="utf-8", errors="replace").splitlines()[:60])
+        except OSError:
+            continue
+        if not _STATUS_LINE.search(head):
+            out.append(f["path"])
+    return out
+
+
+def gaps(files: list[dict[str, Any]], product: dict[str, Any], *, has_architecture: bool, has_test_commands: bool,
+         readme_behind: int = 0, unmarked_plans: int = 0) -> list[dict[str, Any]]:
+    """What the project's documentation is missing, most useful first, each with the fix: a page to open, or a job to run."""
+    out: list[dict[str, Any]] = []
+    def add(gid: str, text: str, label: str, route: str = "") -> None:
+        out.append({"id": gid, "text": text, "fix": {"label": label, **({"route": route} if route else {"job": True})}})
+    written, total = int(product.get("written") or 0), int(product.get("total") or 0)
+    if not product.get("exists") or (total and written < total):
+        add("prd", f"Product requirements: {written} of {total} sections written" if product.get("exists") else "No product requirements yet",
+            "Draft from your docs", "#/product?draft=1")  # the draft reads the project's requirement docs first (prd.requirement_docs)
+    if not has_architecture:
+        add("architecture", "No architecture recorded", "Describe it", "#/product?section=architecture")
+    if not any(f["path"].lower() == "readme.md" for f in files):
+        add("readme", "No README.md", "Write it with AI")
+    elif readme_behind >= STALE_README_COMMITS:
+        add("readme_stale", f"README.md hasn't changed in {readme_behind} commits", "Update it with AI")
+    if not has_test_commands:
+        add("commands", "No build and test commands doc (docs/build-test-commands.md)", "Write it with AI")
+    if unmarked_plans:
+        add("plans", f"{unmarked_plans} plan{'' if unmarked_plans == 1 else 's'} don't say whether {'it is' if unmarked_plans == 1 else 'they are'} done",
+            "Mark them with AI")
+    if not any(f["path"].startswith("docs/") for f in files):
+        add("docs", "No markdown files under docs/", "Write them with AI")
+    return out
+
+
+def _clip(text: str, n: int) -> str:
+    text = (text or "").strip()
+    return text if len(text) <= n else text[:n].rstrip() + "\n…(shortened)"
+
+
+def _bullets(items: list[Any]) -> str:
+    return "\n".join(f"- {str(i).strip()}" for i in items if str(i).strip())
+
+
+def _section(title: str, body: str) -> str:
+    return f"\n## {title}\n\n{body.strip()}\n" if body and body.strip() else ""
+
+
+STATUS_WORDS = {"planned": "Planned, waiting for approval", "scheduled": "Scheduled", "executing": "Running", "review-needed": "Built, ready for review",
+                "completed": "Done", "human-needed": "Waiting on a person", "debugging": "Needs a fix", "failed": "Failed", "designing": "Being designed",
+                "discarded": "Discarded"}
+
+
+# --------------------------------------------------------------------------- one job
+
+
+def job_doc(job: dict[str, Any], review: str = "", changed_files: list[str] | None = None, feature_name: str = "", links: list[dict[str, str]] | None = None) -> str:
+    plan = job.get("plan") if isinstance(job.get("plan"), dict) else {}
+    tasks = [t for t in plan.get("tasks") or [] if isinstance(t, dict)]
+    done = set(job.get("completed_task_indices") or [])
+    status = STATUS_WORDS.get(str(job.get("status")), str(job.get("status") or "unknown"))
+    head = [f"# {job.get('title') or job.get('job_id') or 'Job'}", ""]
+    facts = [("Kind", str(job.get("type") or "").replace("-", " ")), ("Status", status), ("Feature", feature_name),
+             ("Branch", f"`{job['branch']}`" if job.get("branch") else ""), ("Issue", f"#{job['issue_number']}" if job.get("issue_number") else ""),
+             ("Pull request", f"#{job['pr_number']}" if job.get("pr_number") else ""), ("Started", str(job.get("created_at") or "")[:16].replace("T", " "))]
+    head += [f"- **{k}:** {v}" for k, v in facts if v]
+    out = ["\n".join(head) + "\n"]
+    out.append(_section("What it is", plan.get("summary") or job.get("raw_input") or ""))
+    out.append(_section("Assumptions the AI made", _bullets(plan.get("assumptions") or [])))
+    out.append(_section("Constraints", _bullets(plan.get("constraints") or [])))
+    out.append(_section("Risks", _bullets(plan.get("risks") or [])))
+
+    decisions = []
+    for h in job.get("clarification_history") or []:
+        if isinstance(h, dict) and (h.get("question") or h.get("answer")):
+            decisions.append(f"- **{str(h.get('question', '')).strip()}**\n  {str(h.get('answer', '')).strip()}")
+    out.append(_section("Decisions you made", "\n".join(decisions)))
+
+    ver = job.get("verification") if isinstance(job.get("verification"), dict) else None
+    if ver:
+        body = f"**{str(ver.get('status', '')).capitalize()}.** {str(ver.get('comments', '')).strip()}"
+        extra = _bullets(ver.get("risks_identified") or [])
+        out.append(_section("Architect check", body + ("\n\nRisks it raised:\n\n" + extra if extra else "")))
+
+    if tasks:
+        lines = []
+        for i, t in enumerate(tasks):
+            mark = "x" if i in done else " "
+            lines.append(f"- [{mark}] **{str(t.get('title') or t.get('name') or f'Task {i + 1}').strip()}**")
+            if str(t.get("description") or "").strip():
+                lines.append(f"  {str(t['description']).strip()}")
+            for c in t.get("acceptance_criteria") or []:
+                lines.append(f"  - Done when: {str(c).strip()}")
+        out.append(_section(f"Tasks ({len(done & set(range(len(tasks))))} of {len(tasks)} done)", "\n".join(lines)))
+
+    cases = [c for c in plan.get("test_cases") or [] if isinstance(c, dict)]
+    if cases:
+        lines = []
+        for c in cases:
+            line = f"- **{str(c.get('title', '')).strip()}** ({str(c.get('type') or 'functionality')}): {str(c.get('expected', '')).strip()}"
+            if c.get("tests"):
+                line += f" Tests: {', '.join(f'`{t}`' for t in c['tests'])}"
+            lines.append(line)
+        out.append(_section("How it is tested", "\n".join(lines)))
+
+    out.append(_section("What was built", _clip(str(job.get("builder_summary") or ""), 3000)))
+    if changed_files:
+        shown = changed_files[:40]
+        out.append(_section("Files changed", _bullets([f"`{f}`" for f in shown]) + (f"\n- …and {len(changed_files) - 40} more" if len(changed_files) > 40 else "")))
+    out.append(_section("Review", _clip(review, 4000)))
+    refs = [f"- [{l.get('title') or l.get('ref')}]({l['url']})" if l.get("url") else f"- {l.get('title') or l.get('ref')}" for l in (links or []) if l.get("title") or l.get("ref")]
+    out.append(_section("Linked tickets, errors and designs", "\n".join(refs)))
+    text = "".join(out).rstrip() + "\n"
+    if len(text) < 80 + len(head[0]):
+        text += "\n_This job has not recorded anything more yet._\n"
+    return text
+
+
+# --------------------------------------------------------------------------- one feature
+
+
+def feature_doc(feature: dict[str, Any], jobs: list[dict[str, Any]], names: dict[str, str] | None = None) -> str:
+    """`jobs`: the web job summaries for this feature, each optionally carrying a `blurb` (its plan summary)."""
+    names = names or {}
+    out = [f"# {feature.get('name') or feature.get('id')}", ""]
+    status = {"planned": "Planned", "in-progress": "In progress", "complete": "Complete"}.get(str(feature.get("status")), str(feature.get("status") or ""))
+    out.append(f"- **Status:** {status}")
+    if feature.get("depends_on"):
+        out.append("- **Builds on:** " + ", ".join(names.get(d, d) for d in feature["depends_on"]))
+    if feature.get("waiting_on"):
+        out.append("- **Waiting on:** " + ", ".join(names.get(d, d) for d in feature["waiting_on"]))
+    text = "\n".join(out) + "\n"
+    text += _section("What it is", str(feature.get("summary") or ""))
+    text += _section("Who and what it serves", str(feature.get("serves") or ""))
+    paths = [str(p) for p in feature.get("paths") or []]
+    text += _section("Where it lives in the code", _bullets([f"`{p}`" for p in paths]))
+    if jobs:
+        lines = []
+        for j in jobs:
+            state = (j.get("state") or {}).get("label") or STATUS_WORDS.get(str(j.get("status")), str(j.get("status")))
+            lines.append(f"- **{j.get('title') or j.get('id')}** ({state})" + (f": {j['blurb']}" if j.get("blurb") else ""))
+        done = sum(1 for j in jobs if (j.get("state") or {}).get("group") == "done")
+        text += _section(f"Jobs ({done} of {len(jobs)} done)", "\n".join(lines))
+    else:
+        text += _section("Jobs", "_No jobs yet._")
+    kpis = [k for k in feature.get("kpis") or [] if isinstance(k, dict)]
+    if kpis:
+        lines = []
+        for k in kpis:
+            st = k.get("status") if isinstance(k.get("status"), dict) else {}
+            target = f" (target: {'at least' if k.get('direction') == 'up' else 'at most'} {k['target']}{(' ' + k['unit']) if k.get('unit') else ''})" if k.get("target") is not None else ""
+            latest = st.get("latest") or {}
+            lines.append(f"- **{k.get('name')}** (`{k.get('event')}`){target}: " + (f"latest {latest.get('value')}" if latest else "no result yet"))
+        text += _section("How it is measured", "\n".join(lines))
+    return text.rstrip() + "\n"
+
+
+# --------------------------------------------------------------------------- the project's own files
+
+
+def project_files(root: Path) -> list[dict[str, Any]]:
+    """README, AI-helper notes and the markdown under docs/, as they are in the repository."""
+    from orchestrator import prd
+    root = Path(root)
+    found: list[Path] = [root / n for n in ROOT_NOTES if (root / n).is_file()]
+    try:  # other top-level markdown whose name says it is documentation (an architecture audit, a handoff), never just any file
+        found += sorted(f for f in root.glob("*.md") if f.is_file() and f.name not in ROOT_NOTES and ROOT_DOC_NAME.search(f.stem))
+    except OSError:
+        pass
+    docs = root / "docs"
+    if docs.is_dir():
+        for f in sorted(docs.rglob("*.md")):
+            rel = f.relative_to(root)
+            if set(rel.parts) & SKIP_DIRS or f.name.startswith("."):
+                continue
+            found.append(f)
+    out = []
+    for f in found[:MAX_PROJECT_FILES]:
+        rel = f.relative_to(root).as_posix()
+        parent = Path(rel).parent.as_posix()
+        shared = prd.document_path(root) if rel == prd.PATH else f
+        shown = shared if shared.is_file() else f
+        out.append({"path": rel, "title": _file_title(shown, rel), "size": shown.stat().st_size, "group": "Project notes" if parent == "." else parent,
+                    "category": category(rel)})
+    if not any(f["path"] == prd.PATH for f in out):
+        shared = prd.document_path(root)
+        if shared.is_file():
+            out.append({"path": prd.PATH, "title": "Product requirements", "size": shared.stat().st_size, "group": "docs/product", "category": "core"})
+    return out
+
+
+AI_TOOL_NOTES = {"AGENTS.md", "CLAUDE.md", "GEMINI.md"}  # instructions for AI tools, not documentation about the project
+_TEXT_CACHE: dict[Path, tuple[float, str]] = {}  # the job page refreshes live; reread a doc only when it changes
+
+
+def _cached_text(path: Path) -> str | None:
+    try:
+        mtime = path.stat().st_mtime
+        if path not in _TEXT_CACHE or _TEXT_CACHE[path][0] != mtime:
+            _TEXT_CACHE[path] = (mtime, path.read_text(encoding="utf-8", errors="replace")[:200_000])
+        return _TEXT_CACHE[path][1]
+    except OSError:
+        return None
+
+
+def job_files(job: dict[str, Any]) -> list[str]:
+    """The files a job changed or planned to change."""
+    plan = job.get("plan") if isinstance(job.get("plan"), dict) else {}
+    paths = [*(job.get("ai_modified_files") or []), *(job.get("ai_untracked_files") or []), *(plan.get("likely_files") or [])]
+    for task in plan.get("tasks") or []:
+        if isinstance(task, dict):
+            paths += task.get("likely_files") or []
+    # Tool state in hidden folders (.claude/, .github/) says nothing about what the job is about.
+    return list(dict.fromkeys(str(p) for p in paths if isinstance(p, str) and p.strip()
+                              and not any(part.startswith(".") for part in Path(p).parts)))
+
+
+def related_files(root: Path, job: dict[str, Any], limit: int = 6) -> list[dict[str, Any]]:
+    """The project's docs that concern this job: ones it changed, then ones that name the files it touched or planned to
+    touch (by path or file name), most mentions first. Never the AI tools' instruction files. Empty when nothing matches."""
+    root = Path(root)
+    files = job_files(job)
+    changed = set(files)
+    names = {Path(f).stem for f in files if len(Path(f).stem) >= 4} | {f for f in files if "/" in f}
+    pattern = re.compile("|".join(sorted((re.escape(n) for n in names), key=len, reverse=True))) if names else None
+    scored = []
+    for entry in project_files(root):
+        if Path(entry["path"]).name in AI_TOOL_NOTES and "/" not in entry["path"]:
+            continue
+        if entry["path"] in changed:
+            scored.append((10_000, {**entry, "why": "Changed by this job"}))
+            continue
+        if not pattern:
+            continue
+        text = _cached_text(root / entry["path"])
+        if text is None:
+            continue
+        hits = pattern.findall(text)
+        if hits:
+            top = sorted(set(hits), key=hits.count, reverse=True)[:3]
+            scored.append((len(hits), {**entry, "why": "Mentions " + ", ".join(Path(h).name for h in top)}))
+    scored.sort(key=lambda pair: -pair[0])
+    return [entry for _, entry in scored[:limit]]
+
+
+def _file_title(f: Path, rel: str) -> str:
+    try:
+        for line in f.read_text(encoding="utf-8", errors="replace").splitlines()[:30]:
+            m = re.match(r"^#\s+(.+)", line)
+            if m:
+                return m.group(1).strip()[:120]
+    except OSError:
+        pass
+    return Path(rel).stem.replace("-", " ").replace("_", " ").strip().capitalize() or rel
+
+
+def read_project_file(root: Path, rel: str) -> str:
+    """One of the files `project_files` lists, and nothing else."""
+    allowed = {f["path"] for f in project_files(root)}
+    if rel not in allowed:
+        raise DocsError("That file isn't part of the project documentation.")
+    from orchestrator import prd
+    if rel == prd.PATH:
+        text = prd.read_text(root)
+        if text is not None:
+            return text[:MAX_FILE_CHARS]
+    try:
+        return (Path(root) / rel).read_text(encoding="utf-8", errors="replace")[:MAX_FILE_CHARS]
+    except OSError:
+        raise DocsError("That file couldn't be read.")
+
+
+def write_project_file(root: Path, rel: str, markdown: str) -> str:
+    """Create or update a repository markdown doc (`README.md` or `docs/**/*.md`)."""
+    clean = str(rel or "").strip().replace("\\", "/").lstrip("/")
+    if not clean or not clean.lower().endswith(".md"):
+        raise DocsError("Documentation files must end with .md.")
+    parts = Path(clean).parts
+    if any(p in ("", ".", "..") or p.startswith(".") for p in parts):
+        raise DocsError("Invalid documentation path.")
+    if len(parts) == 1:
+        if parts[0] not in ROOT_NOTES and not ROOT_DOC_NAME.match(parts[0]):
+            raise DocsError("Top-level docs must be README.md or a standard documentation file, or placed under docs/.")
+    elif parts[0] != "docs":
+        raise DocsError("Documentation files must live at README.md or under docs/.")
+    root_resolved = Path(root).resolve()
+    target = (root_resolved / clean).resolve()
+    try:
+        target.relative_to(root_resolved)
+    except ValueError:
+        raise DocsError("Documentation path must stay inside the project.")
+    text = str(markdown or "")[:MAX_FILE_CHARS]
+    if not text.strip():
+        raise DocsError("Document content cannot be empty.")
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text.rstrip() + "\n", encoding="utf-8")
+    except OSError as exc:
+        raise DocsError(f"Couldn't save {clean}: {exc}")
+    return target.relative_to(root_resolved).as_posix()
+
+
+# --------------------------------------------------------------------------- everything
+
+def export_all(project_name: str, prd_text: str | None, features: list[tuple[dict[str, Any], str]], jobs: list[tuple[dict[str, Any], str]], files: list[tuple[str, str]]) -> str:
+    """One markdown file: the product requirements, every feature, every job, and the project's own notes."""
+    parts = [f"# {project_name}: project documentation\n\n_Generated from the live project. Product requirements first, then features, then jobs, then the project's own files._\n"]
+    if prd_text and prd_text.strip():
+        parts.append("\n---\n\n" + _demote(prd_text))
+    for f, text in features:
+        parts.append("\n---\n\n" + _demote(text))
+    for j, text in jobs:
+        parts.append("\n---\n\n" + _demote(text))
+    for rel, text in files:
+        parts.append(f"\n---\n\n## File: `{rel}`\n\n" + _demote(text, by=2))
+    return "".join(parts).rstrip() + "\n"
+
+
+def _demote(text: str, by: int = 1) -> str:
+    """Push headings down so the pieces nest under the document's own title."""
+    return re.sub(r"^(#{1,5})(\s)", lambda m: "#" * min(6, len(m.group(1)) + by) + m.group(2), text, flags=re.M)
+
+
+def context_block(root: Path, *, max_files: int = 12, per_file_chars: int = 2000, max_total_chars: int = 12000) -> str:
+    """Bounded project documentation context (README, agent notes, docs/**/*.md) for planning larger jobs."""
+    from orchestrator import prd
+    parts: list[str] = []
+    used = 0
+    for entry in project_files(root):
+        rel = entry["path"]
+        if rel == prd.PATH:
+            continue
+        try:
+            raw = read_project_file(root, rel).strip()
+        except DocsError:
+            continue
+        if not raw:
+            continue
+        snippet = raw[:per_file_chars].rstrip()
+        if len(raw) > per_file_chars:
+            snippet += "\n…(truncated)"
+        section = f"### {rel}\n{snippet}"
+        if parts and used + len(section) > max_total_chars:
+            break
+        parts.append(section)
+        used += len(section)
+        if len(parts) >= max_files:
+            break
+    if not parts:
+        return ""
+    return "## Project documentation\n\nUse the existing project documentation below as context when planning:\n\n" + "\n\n".join(parts) + "\n"

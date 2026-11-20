@@ -251,7 +251,7 @@ def export_job(job_path_str: str, output_zip: str | None = None, destination: st
         output_path = Path(output_zip).resolve()
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    print_phase("exporting", subtext=job_id)
+    print_phase("exporting", subtext=job.get("title") or job.get("summary") or job_id)
     print(f"\n📦 \033[1;97mCreating export archive:\033[0m \033[96m{output_path.name}\033[0m")
 
     from common import format_investigation_history

@@ -44,6 +44,20 @@ class UtilitiesTests(unittest.TestCase):
         self.assertIn("osascript", mock_subproc.call_args[0][0])
         mock_email.assert_called_once_with("Test Title", "Test Message", "job-123", "Done")
 
+    @patch("notify.subprocess.run")
+    @patch("notify.send_email_notification", return_value=True)
+    def test_desktop_notification_can_be_turned_off_in_settings_while_email_still_goes(self, mock_email, mock_subproc):
+        with patch.object(notify, "read_json", return_value={"desktop_notifications": False}):
+            self.assertTrue(notify.desktop_notifications_off())
+            notify.notify("Title", "Message", job_id="j")
+        mock_subproc.assert_not_called()
+        mock_email.assert_called_once()
+        for settings, off in (({}, False), ({"desktop_notifications": True}, False)):
+            with patch.object(notify, "read_json", return_value=settings):
+                self.assertEqual(notify.desktop_notifications_off(), off)
+        with patch.object(notify, "read_json", side_effect=OSError("unreadable")):
+            self.assertFalse(notify.desktop_notifications_off())  # when in doubt, notify
+
     def test_notify_disabled_env(self):
         """Verify notification skips when ORCHESTRATOR_DISABLE_NOTIFICATIONS=1."""
         with patch.dict(os.environ, {"ORCHESTRATOR_DISABLE_NOTIFICATIONS": "1"}):

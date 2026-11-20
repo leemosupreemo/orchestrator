@@ -3,11 +3,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import secrets
 import sys
 from pathlib import Path
 from typing import Any
 
 from common import (
+    ensure_labels,
     ROOT,
     JOBS_DIR,
     gh_text,
@@ -18,9 +20,12 @@ from common import (
     write_text,
     timestamp,
 )
+from orchestrator.project_config import PROJECT_CONFIG
 
 def create_subtask_issue(title: str, body: str, parent_issue: int) -> int:
     labels = ["job:bug", "source:splinter", "status:planned"]
+    failed = ensure_labels(labels)
+    labels = [label for label in labels if label not in failed]  # only labels the repository has or could be given
     label_flags = []
     for label in labels:
         label_flags.extend(["--label", label])
@@ -47,12 +52,14 @@ def splinter_job(job_path: Path) -> list[str]:
         return []
 
     parent_id = job["job_id"]
-    parent_issue = job["issue_number"]
+    parent_issue = job.get("issue_number")
+    github = PROJECT_CONFIG.uses_github and bool(parent_issue)
     tasks = job["plan"]["tasks"]
     
     print(f"\n--- Splintering Parent Job: {parent_id} ({len(tasks)} tasks) ---")
     
     subtask_ids = []
+    created_subtasks: list[tuple[str, dict[str, Any]]] = []
     
     for i, task in enumerate(tasks, start=1):
         sub_title = f"[Sub-task {i}] {job['title']}: {task['title']}"
@@ -76,22 +83,30 @@ def splinter_job(job_path: Path) -> list[str]:
         sub_body = f"## Description\n{task['description']}\n\n## Acceptance Criteria\n"
         sub_body += "\n".join([f"- {ac}" for x in task["acceptance_criteria"] for ac in (x if isinstance(x, list) else [x])])
         
-        sub_issue_number = create_subtask_issue(sub_title, sub_body, parent_issue)
-        
-        sub_job_id = f"{timestamp()}-task-{sub_issue_number}"
+        if github:
+            sub_issue_number = create_subtask_issue(sub_title, sub_body, parent_issue)
+            sub_ref = str(sub_issue_number)
+        else:  # plain git: no sub-issues, a local reference names each sub-job
+            sub_issue_number, sub_ref = None, secrets.token_hex(3)
+
+        sub_job_id = f"{timestamp()}-task-{sub_ref}"
         paths = make_job_paths(sub_job_id)
         
+        from model_router import resolve_builder_model
+        fallback_model = resolve_builder_model(job)
         sub_job = {
             "job_id": sub_job_id,
             "parent_job_id": parent_id,
             "type": "bug-fix", # Treat sub-tasks as bug-fixes for implementation consistency
             "source": "splinter",
             "issue_number": sub_issue_number,
+            "job_ref": sub_ref,
+            "code_host": "github" if sub_issue_number else "git",
             "title": sub_title,
             "status": "planned",
-            "planner": job["planner"],
-            "builder": job["builder"],
-            "reviewer": job["reviewer"],
+            "planner": job.get("planner") or fallback_model,
+            "builder": fallback_model,
+            "reviewer": job.get("reviewer") or fallback_model,
             "branch": None,
             "pr_number": None,
             "created_at": now_iso(),
@@ -106,11 +121,18 @@ def splinter_job(job_path: Path) -> list[str]:
         write_text(paths.brief_file, build_bug_issue_body(sub_plan))
         
         subtask_ids.append(sub_job_id)
-        print(f"        ✅ Created job: {sub_job_id} (# {sub_issue_number})")
+        created_subtasks.append((sub_job_id, sub_job))
+        print(f"        ✅ Created job: {sub_job_id}" + (f" (#{sub_issue_number})" if sub_issue_number else ""))
 
     # Mark parent as decomposed
     job["status"] = "decomposed"
     job["subtask_job_ids"] = subtask_ids
+    from orchestrator import parallel_mece
+    coverage = parallel_mece.evaluate_parent_coverage(parent_id, job, created_subtasks)
+    if coverage:
+        job["mece_coverage"] = coverage
+        if coverage.get("summary"):
+            print(f"      - MECE check (advisory): {coverage['summary']}")
     job["updated_at"] = now_iso()
     write_json(job_path, job)
     
