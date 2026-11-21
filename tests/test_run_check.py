@@ -52,6 +52,10 @@ class RunCheckTests(unittest.TestCase):
         self.assertIn("6 GB", b[0]["text"])
         self.assertIn("15 GB", b[0]["text"])
 
+    def test_low_disk_is_visible_alongside_a_model_mismatch(self):
+        self.assertEqual(self.ids({"allowed_models": ["other-model"]}, [machine()], disk=12),
+                         ["model-not-on-machine", "low-disk"])
+
     def test_low_disk_is_not_blamed_when_a_remote_machine_could_run_it(self):
         self.assertEqual(self.ids({}, [machine(), machine("box", mode="remote")], disk=2), [])
 

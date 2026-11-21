@@ -67,16 +67,19 @@ def blockers(job: dict[str, Any], machines: list[dict[str, Any]], disk_free_gb: 
         return [{"id": "machine-not-allowed", "text": f"This job is limited to {', '.join(allowed_names)}, which isn't set up or is switched off.",
                  "fix": "Open Machines", "route": "#/config/fleet"}]
 
+    found = []
     allowed_models = job.get("allowed_models") or []
     if allowed_models:
-        usable = [m for m in usable if any(models_overlap(a, mm) for a in allowed_models for mm in m.get("models", []))]
-        if not usable:
-            return [{"id": "model-not-on-machine", "text": "None of the models this job may use is enabled on a machine that can run it.",
-                     "fix": "Choose models", "route": "#/config/models"}]
+        compatible = [m for m in usable if any(models_overlap(a, mm) for a in allowed_models for mm in m.get("models", []))]
+        if compatible:
+            usable = compatible
+        else:
+            found.append({"id": "model-not-on-machine", "text": "None of the models this job may use is enabled on a machine that can run it.",
+                          "fix": "Choose models", "route": "#/config/models"})
     elif not any(m.get("models") for m in usable):
-        return [{"id": "no-model", "text": "No model is selected on any machine, so nothing can plan or build.", "fix": "Choose models", "route": "#/config/models"}]
+        found.append({"id": "no-model", "text": "No model is selected on any machine, so nothing can plan or build.",
+                      "fix": "Choose models", "route": "#/config/models"})
 
-    found = []
     local = [m for m in usable if m.get("execution_mode", "local") == "local"]
     if disk_free_gb is not None and local and len(local) == len(usable) and disk_free_gb < min_disk_gb:
         found.append({"id": "low-disk", "text": f"Only {disk_free_gb:.0f} GB is free on this computer and builds want {min_disk_gb} GB. Free some space, or lower the limit with ORCHESTRATOR_MIN_DISK_GB if this project builds small.",

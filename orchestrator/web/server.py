@@ -2279,7 +2279,7 @@ def job_blockers(root: Path, job: dict[str, Any]) -> list[dict[str, str]]:
     import shutil
     from orchestrator import run_check
     try:
-        free = shutil.disk_usage(root).free / 1e9
+        free = shutil.disk_usage(root).free // (1024**3)
     except OSError:
         free = None
     machines = [m for m in read_json_file(runtime_dir(root) / "config" / "machines.json").get("machines", []) if isinstance(m, dict)]

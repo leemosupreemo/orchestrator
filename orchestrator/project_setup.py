@@ -78,22 +78,37 @@ def models_ready_here(root: Path) -> list[str]:
     return [m.id for m in get_all_models() if runnable_here(m) and all(ready_cli(cli) for cli in m.required_clis)]
 
 
+def update_ready_models(root: Path, machines: list[dict[str, Any]]) -> bool:
+    """Update local workers that follow readiness, including the original CLI defaults."""
+    follow = []
+    legacy_defaults = ["gemini", "codex", "claude"]
+    for machine in machines:
+        if not isinstance(machine, dict) or machine.get("execution_mode") != "local":
+            continue
+        if "models_follow_ready" not in machine and machine.get("models") == legacy_defaults:
+            machine["models_follow_ready"] = True
+            follow.append((machine, True))
+        elif machine.get("models_follow_ready"):
+            follow.append((machine, False))
+    if not follow:
+        return False
+    ready = models_ready_here(root)
+    changed = False
+    for machine, adopted in follow:
+        changed |= adopted or machine.get("models") != ready
+        machine["models"] = ready
+    return changed
+
+
 def refresh_ready_models(root: Path) -> None:
-    """Bring each computer marked `models_follow_ready` up to date with the models ready on it. Setup happens before an AI
-    is connected, so the list it starts with is often empty; jobs call this before choosing models."""
+    """Persist the models ready on workers that follow local tool readiness."""
     path = root / ".orchestrator/config/machines.json"
     try:
         data = json.loads(path.read_text())
     except (OSError, ValueError):
         return
     machines = data.get("machines") if isinstance(data, dict) else None
-    follow = [m for m in machines or [] if isinstance(m, dict) and m.get("models_follow_ready") and m.get("execution_mode") == "local"]
-    if not follow:
-        return
-    ready = models_ready_here(root)
-    if any(m.get("models") != ready for m in follow):
-        for m in follow:
-            m["models"] = ready
+    if isinstance(machines, list) and update_ready_models(root, machines):
         _atomic_json(path, data)
 
 

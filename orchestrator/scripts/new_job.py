@@ -601,7 +601,7 @@ def main(args_override: list[str] | None = None) -> None:
         runnable = models_machines_can_run(usable_defaults, load_machines())
         if not runnable and not interactive():
             if usable_defaults:
-                print("ℹ️  No model in machines.json matched ready AI tools; using ready models on this computer.")
+                print("ℹ️  Planning with models ready on this computer. To schedule the job, enable one of its models on an eligible worker.")
                 runnable = usable_defaults
             else:
                 print("\n\033[1;91m⚠️  ERROR: No AI tool or API key is ready on this computer right now.\033[0m")

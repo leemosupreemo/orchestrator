@@ -68,6 +68,15 @@ class SchedulerTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'No compatible'):
                 scheduler.choose_model(group, machine, {'allowed_models': allowed})
 
+    def test_existing_job_can_schedule_with_detected_models_on_a_legacy_worker(self):
+        machine = {**self.machine, 'models': ['gemini', 'codex', 'claude']}
+        with patch.object(scheduler, 'read_json', return_value={'machines': [machine]}), \
+             patch('orchestrator.project_setup.models_ready_here', return_value=['gpt-6.2-astra']):
+            workers = scheduler.load_machines()
+        job = {'allowed_models': ['gpt-6.2-astra']}
+        group = {'resource_profile': 'implementation'}
+        self.assertEqual(scheduler.choose_model(group, workers[0], job), 'gpt-6.2-astra')
+
     def test_machine_scoring_rewards_capacity_and_penalizes_load(self):
         group = {'resource_profile': 'implementation', 'preferred_roles': ['worker']}
         self.assertEqual(scheduler.score_machine(self.machine, {}, group)[0], -9999)

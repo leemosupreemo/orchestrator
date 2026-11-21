@@ -27,8 +27,12 @@ RESOURCE_PROFILES = {
 
 
 def load_machines() -> list[dict[str, Any]]:
+    from orchestrator.project_setup import update_ready_models
+
     config = read_json(CONFIG_DIR / "machines.json")
-    return [machine for machine in config["machines"] if machine.get("enabled", True)]
+    machines = [machine for machine in config["machines"] if machine.get("enabled", True)]
+    update_ready_models(ROOT, machines)
+    return machines
 
 
 def load_job(job_path: Path) -> dict[str, Any]:

@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from orchestrator.project_setup import apply_project_setup, inspect_project
+from orchestrator.project_setup import apply_project_setup, inspect_project, refresh_ready_models
 from orchestrator.project_config import load_project_config
 
 
@@ -34,6 +34,24 @@ class ProjectSetupTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertTrue(result["errors"])
         self.assertFalse((self.root / ".orchestrator").exists())
+
+    def test_refresh_adopts_legacy_local_defaults_only(self):
+        path = self.root / ".orchestrator/config/machines.json"
+        path.parent.mkdir(parents=True)
+        legacy = ["gemini", "codex", "claude"]
+        machines = [
+            {"execution_mode": "local", "models": legacy},
+            {"execution_mode": "local", "models": legacy, "models_follow_ready": False},
+            {"execution_mode": "local", "models": ["claude-sonnet-4-6"]},
+            {"execution_mode": "ssh", "models": legacy},
+        ]
+        path.write_text(json.dumps({"machines": machines}))
+        with patch("orchestrator.project_setup.models_ready_here", return_value=["gpt-6.2-astra"]):
+            refresh_ready_models(self.root)
+        updated = json.loads(path.read_text())["machines"]
+        self.assertEqual(updated[0]["models"], ["gpt-6.2-astra"])
+        self.assertTrue(updated[0]["models_follow_ready"])
+        self.assertEqual(updated[1:], machines[1:])
 
     def test_existing_configuration_keeps_unknown_settings(self):
         runtime = self.root / ".orchestrator"
