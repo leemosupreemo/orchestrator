@@ -890,7 +890,7 @@ process.stdout.write(JSON.stringify({
         self.assertIn('["freestyle", "Freestyle", "Say it your way"]', js)
         fields = js[js.index('case "freestyle":'):][:1500]
         self.assertIn('name="summary" required', fields)
-        self.assertIn("asks a question or two", fields)
+        self.assertNotIn("asks a question or two", fields)
         job = js[js.index("pages.job = async"):]
         self.assertIn("clarificationThread(job.clarification_history)", job)
         self.assertIn("function clarificationThread", js)
@@ -7307,6 +7307,18 @@ class PlanTestCaseEditEndpointTests(ServerTestCase):
 
 
 class JobBriefTests(ServerTestCase):
+    def test_full_brief_returns_complete_markdown(self):
+        brief = self.root / ".orchestrator" / "output" / self.JOB / "brief.md"
+        brief.parent.mkdir(parents=True, exist_ok=True)
+        text = "# Scope\n" + ("A long supplemental note.\n" * 9_000) + "\nLast line.\n"
+        brief.write_text(text, encoding="utf-8")
+        response, preview = self.request("GET", f"/api/jobs/{self.JOB}/brief")
+        self.assertEqual(response.status, 200)
+        self.assertNotIn("Last line.", preview["text"])
+        response, full = self.request("GET", f"/api/jobs/{self.JOB}/brief?full=1")
+        self.assertEqual(response.status, 200)
+        self.assertEqual(full["text"], text)
+
     JOB = "20260922-bug-1"
 
     def test_get_and_post_job_brief(self):
@@ -8183,6 +8195,7 @@ const matchMedia = () => ({ matches: false });
 const formatJobTests = () => '';
 const jiraChip = () => '';
 const featureChip = () => '';
+const splitJobTitle = title => ({ title });
 const jobPill = () => '';
 const runPill = () => '';
 const runItem = () => '';
@@ -8196,6 +8209,8 @@ const strandedNote = () => '';
 const backupNote = () => '';
 const jobDocsOutlineHtml = () => '';
 const uxReviewCard = () => '';
+const jobPlanNotes = () => '';
+const jobStartBlockers = () => '';
 const testCaseSummaryHtml = () => '';
 const testCaseRowsHtml = () => '';
 const clarificationQuestionsHtml = () => '';
@@ -8224,6 +8239,7 @@ const block = source.slice(source.indexOf('let aiAbilities ='), source.indexOf('
 eval(block);
 pages.job(['j1']).then(res => {
   if (!res || !res.html || !res.html.includes('Did the thing')) throw new Error('Missing plan summary');
+  if (!res.html.includes('<li>Did the thing</li>') || res.html.includes('id="brief-section"')) throw new Error('Brief should appear only as bullets in the Plan');
   if (!res.html.includes('job-hero tone-done')) throw new Error('Merge status container should be green (tone-done)');
   if (!res.html.includes('id="job-steer" data-mode="iterate"') || !res.html.includes('>Request changes</button>')) throw new Error('Ready to merge should offer the Tell-the-AI box as Request changes');
   if (res.html.includes('>Progress<')) throw new Error('Redundant Progress card should be omitted during review without tasks');
@@ -8277,12 +8293,12 @@ after();
         self.assertIn("${reviewingPlan ? planCardHtml : \"\"}", self.job_page)  # in the top section, by the hero
         self.assertIn('data-scroll-to="#plan-section">the plan below</button>', self.job_page)
         self.assertIn("!ctx.planShown &&", self.source)  # no second Revise plan in More while the card offers it
-        self.assertIn("tasks.length && !reviewingPlan ? fold(\"Tasks\"", self.job_page)  # one task list, not two
+        self.assertNotIn('fold("Tasks"', self.job_page)
 
     def test_the_approval_card_is_one_decision_with_the_detail_a_tap_away(self):
         start = self.job_page.index("const planCardHtml")
         card = self.job_page[start:self.job_page.index("const architectConcerns", start)]
-        self.assertIn("clamped(planSummary, 160)", card)  # a sentence, not the whole summary
+        self.assertIn("${planBriefHtml}", card)
         self.assertIn('class="plan-size"', card)  # tasks, files and how big
         self.assertIn('<details class="task-detail">', self.job_page)  # description, done-when and files fold away
         # a plan past the budget leads with splitting it; approving it anyway is the quiet option
@@ -8333,10 +8349,10 @@ console.log(JSON.stringify({{ fromHyp, fromDoc, bullets, html }}));
         self.assertIn("idle && !ctx.steerShown && next !== \"debug\"", app_js)
         self.assertNotIn("Keep iterating", app_js)
         self.assertIn("starts with `CHANGE REQUEST:`", (PACKAGE_ROOT / "orchestrator" / "prompts" / "debug_agent.md").read_text())
-        # A Quick change has no planner: no Plan card repeating the brief, and the empty Test cases card says why.
+        # A Quick change can show its scope without empty task rows.
         self.assertIn('const quickNoPlan = job.type === "quick-fix" && !tasksTotal;', self.job_page)
         self.assertIn("Quick changes skip planning, so no test cases were listed.", self.job_page)
-        self.assertIn("!reviewingPlan && (tasksTotal > 0 || showSummary || !hasBuildWork)", self.job_page)
+        self.assertIn('${tasksTotal ? `<div class="list">${taskRowsHtml}</div>` : ""}', self.job_page)
 
     def test_job_changes_offers_downloadable_full_patch_diff(self):
         self.assertIn('id="download-job-diff"', self.job_page)
@@ -8395,8 +8411,7 @@ console.log(JSON.stringify({{ fromHyp, fromDoc, bullets, html }}));
         self.assertIn("drawFeatureLinks", self.source)
         self.assertIn("job.plan?.slice_warnings", self.job_page)
         self.assertIn('matchMedia("(max-width: 760px)")', self.job_page)
-        for title in ("Tasks", "Output files"):  # logs live under "What went wrong" now; runs live in the collapsed #job-runs fold
-            self.assertIn(f'fold("{title}"', self.job_page, title)
+        self.assertIn('fold("Output files"', self.job_page)
         self.assertIn("pages.help = async", self.source)
         self.assertIn('href="#/help"', (static / "index.html").read_text())
         self.assertIn('label: "Undo"', self.source)
@@ -8557,13 +8572,15 @@ const runningMark = '';
 const PROVIDER_LABEL = {};
 const clamped = (t) => t;
 const jobSizeAssessment = () => ({ too_large: false, reasons: [], deferred: [] });
+const splitJobTitle = title => ({ title });
+const jobPlanNotes = () => '';
+const jobStartBlockers = () => '';
 let mockData = null;
 const api = async () => mockData;
 
 const start = source.indexOf('pages.job = async ([id]) => {');
-const end = source.indexOf('\n// ', start + 50);
 const pageEnd = source.indexOf('\npages.', start + 20);
-eval(source.slice(start, pageEnd));
+eval(source.slice(source.indexOf('function planBriefItems('), pageEnd));
 
 (async () => {
   // 1. Quick-fix with no doc files: auto-skips Document (4 steps: Plan, Build, Verify, Finalize)
@@ -8592,6 +8609,8 @@ eval(source.slice(start, pageEnd));
     test_summary: {}, pipeline: {}, tasks: ['T1'], completed_tasks: ['0'],
   };
   const r2 = await pages.job(['f1']);
+  assert.equal((r2.html.match(/class="item task-row/g) || []).length, 1, 'renders each task once');
+  assert(r2.html.includes('1/1 tasks done'), 'shows task completion in the Plan');
   assert(r2.html.includes('data-iterating="1"'), 'marks stepper as iterating');
   assert(!r2.html.includes('job-iter-badge'), 'omits Iter badge from stepper');
   assert(r2.html.includes('>Document<'), 'keeps Document when feature/docs changed');
@@ -8666,20 +8685,33 @@ eval(source.slice(start, end));
         # the run card points at the planned job, not the waiting one that planning removes
         self.assertIn('r.action === "plan_epic" && r.result_job ? r.result_job : r.job || r.result_job', self.source)
 
-    def test_brief_section_positioned_near_top_and_editable(self):
-        static = PACKAGE_ROOT / "orchestrator" / "web" / "static"
-        css = (static / "style.css").read_text()
-        self.assertIn('id="brief-section"', self.job_page)
-        self.assertLess(self.job_page.index('id="brief-section"'), self.job_page.index('<h2>Test cases'))
+    def test_plan_contains_brief_bullets_with_access_to_full_markdown(self):
+        self.assertNotIn('id="brief-section"', self.job_page)
+        self.assertIn('<ul class="assumptions plan-brief-items">', self.job_page)
+        self.assertIn('${planBriefHtml}', self.job_page)
+        self.assertIn('data-brief-full>Full brief', self.job_page)
         self.assertIn('data-brief-edit', self.job_page)
-        self.assertIn('brief-path-chip', self.job_page)
-        self.assertIn('.brief-path-chip {', css)
-        self.assertIn('brief-content', self.job_page)
-        self.assertIn('.brief-content {', css)
-        self.assertIn('>Raw</a>', self.job_page)
-        self.assertIn('data-expandable="320"', self.job_page)  # long briefs fold behind Show more, not a scroll box
+        self.assertIn('api(`${briefEndpoint}?full=1`)', self.job_page)
+        self.assertIn('downloadText(`${s.id}-brief.md`, text)', self.job_page)
         self.assertIn('name="revise_plan"', self.job_page)
         self.assertIn('runAction("revise", { job: id, from_brief: true })', self.job_page)
+
+    @unittest.skipUnless(shutil.which("node"), "node is required")
+    def test_brief_bullets_cap_length_and_use_edited_scope(self):
+        source = self.source.split("function planBriefItems(", 1)[1].split("pages.job = async", 1)[0]
+        markdown = ("# Feature brief\n**Issue:** #123\n## Summary\nImprove the grass in Camelot Hills.\n"
+                    "## Acceptance criteria\n- " + "Measure both views. " * 24 +
+                    "\n- Check the device.\n- A third check.\n## Constraints\n- Keep the budget.\n- Another constraint.")
+        script = "function planBriefItems(" + source + """
+const items = planBriefItems(process.argv[1], {summary: "Old scope"});
+process.stdout.write(JSON.stringify(items));
+"""
+        items = json.loads(subprocess.run(["node", "-e", script, markdown], capture_output=True, text=True, check=True).stdout)
+        self.assertEqual(len(items), 4)
+        self.assertEqual(items[0], "Improve the grass in Camelot Hills.")
+        self.assertLessEqual(len(items[1]), 150)
+        self.assertTrue(items[1].endswith("…"))
+        self.assertEqual(items[2:], ["Check the device.", "Keep the budget."])
 
     def test_add_existing_project_modal_is_tabbed_with_mobile_exit_controls(self):
         static = PACKAGE_ROOT / "orchestrator" / "web" / "static"
@@ -9418,6 +9450,47 @@ class AutoRecoveryTests(ServerTestCase):
             self.assertTrue(data.get("ok"))
             self.assertIn("Reclaimed disk space", data.get("message", ""))
 
+    def test_disk_space_modal_inventory_and_cleanup_are_separate(self):
+        cache = {"id": "cache-a", "name": "App", "bytes": 512}
+        from orchestrator.disk_space import CacheBusyError
+
+        with patch("orchestrator.disk_space.cache_candidates", return_value=[cache]) as inventory, \
+             patch("orchestrator.disk_space.clear_caches", return_value=(["App"], [])) as clear:
+            response, data = self.request("GET", "/api/recovery/disk-space")
+            self.assertEqual(response.status, 200)
+            self.assertEqual(data["caches"], [])
+            inventory.assert_not_called()
+            response, data = self.request("GET", "/api/recovery/disk-space?caches=1")
+            self.assertEqual(response.status, 200)
+            self.assertEqual(data["caches"], [cache])
+            clear.assert_not_called()
+            clear.side_effect = CacheBusyError("Close Xcode first.")
+            response, _ = self.request("POST", "/api/recovery/disk-space", body={"caches": ["cache-a"]}, headers=UI_HEADERS)
+            self.assertEqual(response.status, 409)
+            clear.reset_mock(side_effect=True)
+            response, data = self.request("POST", "/api/recovery/disk-space", body={"caches": ["cache-a"]}, headers=UI_HEADERS)
+            self.assertEqual(response.status, 200)
+            self.assertEqual(data["removed"], ["App"])
+            self.assertIn("free_bytes", data)
+            clear.assert_called_once_with(self.root, ["cache-a"])
+
+    def test_disk_cleanup_points_to_the_assigned_ssh_machine(self):
+        job_id = "20260922-bug-1"
+        job_path = ui.resolve_job_path(self.root, job_id)
+        ui.write_json_file(job_path, {**ui.read_json_file(job_path), "assigned_machine": "air"})
+        ui.write_json_file(self.root / ".orchestrator" / "config" / "machines.json",
+                           {"machines": [{"name": "air", "execution_mode": "ssh"}]})
+        with patch("orchestrator.disk_space.clear_caches") as clear, \
+             patch("orchestrator.disk_space.cache_candidates") as inventory:
+            response, data = self.request("GET", f"/api/recovery/disk-space?job={job_id}&caches=1")
+            self.assertEqual(response.status, 200)
+            self.assertEqual(data["remote_machine"], "air")
+            inventory.assert_not_called()
+            response, _ = self.request("POST", "/api/recovery/disk-space",
+                                       body={"job": job_id, "caches": ["cache-a"]}, headers=UI_HEADERS)
+            self.assertEqual(response.status, 409)
+            clear.assert_not_called()
+
     def test_api_key_update_and_child_env(self):
         res, data = self.request("POST", "/api/config/keys", body={"id": "anthropic_api_key", "value": "sk-ant-test1234"}, headers=UI_HEADERS)
         self.assertEqual(res.status, 200)
@@ -9463,8 +9536,12 @@ assert(g5.action.includes('data-recover="git-prune-worktrees"'));
 
 // 6. Disk space exhausted
 const g6 = runFailureGuidance({ exit_code: 1, error_summary: "fatal error: No space left on device while writing cache", job: "j1", action: "build" });
-assert.equal(g6.recoveryAction, "reclaim-space");
-assert(g6.action.includes('data-recover="reclaim-space"'));
+assert.equal(g6.recoveryAction, "disk-space");
+assert(g6.action.includes('data-disk-space'));
+assert(!g6.action.includes('Rerun'));
+const diskPackage = runFailureGuidance({ exit_code: 1, error_summary: "OSError: [Errno 28] Write failed", action: "package_update", job: "j1" });
+assert.equal(diskPackage.recoveryAction, "disk-space");
+assert(!diskPackage.action.includes('data-attempt-fix'));
 
 // 7. Missing API key
 const g7 = runFailureGuidance({ exit_code: 1, error_summary: "No model is available. Missing api key: anthropic_api_key", job: "j1", action: "execute" });

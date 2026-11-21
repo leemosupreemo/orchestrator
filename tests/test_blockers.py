@@ -142,7 +142,7 @@ class WiringTests(unittest.TestCase):
             saved = json.loads(path.read_text())
         self.assertEqual((saved["status"], saved["blocker"]["kind"]), ("human-needed", "disk_full"))
         self.assertNotIn("debug_phase", saved)
-        self.assertIn("The disk is full", notify.call_args[0][1])
+        self.assertIn("Low disk space", notify.call_args[0][1])
 
     def test_a_run_starting_moves_the_blocker_to_last_blocker(self):
         import worker_run

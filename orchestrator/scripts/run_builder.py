@@ -7,7 +7,7 @@ from typing import Any
 from common import OUTPUT_DIR, PROMPTS_DIR, ROOT, read_json, write_text, print_phase, StatusBar, format_clarification_history, format_investigation_history
 from llm import run_llm, extract_json_block
 from model_router import ModelRole, resolve_builder_model
-from run_build_and_tests import run_build_and_tests
+from run_build_and_tests import require_build_space, run_build_and_tests
 from reference_artifacts import reference_context
 from orchestrator import reuse_brief
 from orchestrator.project_config import PROJECT_CONFIG
@@ -140,6 +140,7 @@ def run_builder(job_path: Path, resume: bool = False) -> tuple[bool, bool, Path]
     from orchestrator.job_scope import NONPRODUCTION_TYPES
     if job.get("type") in NONPRODUCTION_TYPES:
         raise RuntimeError("The production builder is disabled for Design and Tests jobs.")
+    require_build_space()
     assist_options = {}
     if PROJECT_CONFIG.verification_mode == "assist":
         import os
@@ -400,6 +401,7 @@ Available Tests (use for selecting test_command):
     if not resume or not summary_file.exists():
         write_text(summary_file, output)
 
+    require_build_space()
     build_ok, test_ok = run_build_and_tests(job, summary_file, **assist_options)
     
     # Return parsed output dictionary so callers can inspect what was built

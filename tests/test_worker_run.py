@@ -456,6 +456,28 @@ class WorkerRunTests(unittest.TestCase):
             self.assertEqual(job['status'], 'human-needed')
             self.assertEqual(calls['send_notifications'].call_args.args[1], 'Job Paused: Review Requested Changes')
 
+    def test_yolo_mode_attempts_fix_on_first_blocker_then_pauses_on_repeat(self):
+        blocker = {'kind': 'tool', 'scope': 'machine', 'key': 'swiftlint', 'title': "swiftlint isn't installed", 'detail': 'Missing tool'}
+        with self.pipeline({'is_yolo': True}, results=[(False, False, Path('summary'))]) as (path, calls):
+            with patch.object(worker, 'require_build_space'), \
+                 patch.object(worker, 'blocker_in_logs', return_value=blocker), \
+                 patch.object(worker, 'pause_on_blocker') as pause:
+                worker.execute_job(path)
+            pause.assert_not_called()
+            self.assertEqual(calls['debug'].call_count, 1)
+            job = worker.read_json(path)
+            self.assertEqual(job['status'], 'debugging')
+            self.assertEqual(job['yolo_blocker_fix_attempts'], 1)
+            self.assertIn("swiftlint isn't installed", job['debug_feedback'])
+
+        with self.pipeline({'is_yolo': True, 'yolo_blocker_fix_attempts': 1}, results=[(False, False, Path('summary'))]) as (path, calls):
+            with patch.object(worker, 'require_build_space'), \
+                 patch.object(worker, 'blocker_in_logs', return_value=blocker), \
+                 patch.object(worker, 'pause_on_blocker') as pause:
+                worker.execute_job(path)
+            pause.assert_called_once()
+            self.assertEqual(calls['debug'].call_count, 0)
+
     def test_remaining_tasks_continue_automatically_in_both_worker_modes(self):
         for kind, automatic in (('feature-plan', True), ('feature-plan', False), ('feature', True)):
             with self.subTest(kind=kind, automatic=automatic), \
@@ -780,10 +802,21 @@ class ResolveBuilderModelTests(unittest.TestCase):
     def test_codex_builder_command_has_full_auto_write_access(self):
         import llm
         from model_router import ModelRole
+        flag = llm._codex_exec_auto_flag()
+        self.assertIn(flag, ('--approve-for-me', '--full-auto'))
         cmd = llm.get_llm_command('codex', '/tmp/prompt.txt', role=ModelRole.BUILDER)
-        self.assertIn('--full-auto', cmd)
+        self.assertIn(flag, cmd)
         cmd_plan = llm.get_llm_command('codex', '/tmp/prompt.txt', role=ModelRole.PLANNER)
+        self.assertNotIn('--approve-for-me', cmd_plan)
         self.assertNotIn('--full-auto', cmd_plan)
+
+        llm._codex_exec_auto_flag.cache_clear()
+        with patch.object(llm.subprocess, 'run', return_value=SimpleNamespace(stdout='  --full-auto  ', stderr='')):
+            self.assertEqual(llm._codex_exec_auto_flag(), '--full-auto')
+        llm._codex_exec_auto_flag.cache_clear()
+        with patch.object(llm.subprocess, 'run', return_value=SimpleNamespace(stdout='  --approve-for-me  ', stderr='')):
+            self.assertEqual(llm._codex_exec_auto_flag(), '--approve-for-me')
+        llm._codex_exec_auto_flag.cache_clear()
 
     def test_run_builder_blocks_on_write_error_and_ignores_non_question_clarification(self):
         import run_builder

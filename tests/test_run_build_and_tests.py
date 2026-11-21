@@ -17,6 +17,11 @@ import run_build_and_tests as runner  # noqa: E402
 
 
 class RunBuildAndTestsHelperTests(unittest.TestCase):
+    def test_low_space_stops_build_preflight(self):
+        with patch.object(runner, "low_disk_message", return_value="Not enough disk space."):
+            with self.assertRaisesRegex(runner.DiskFullError, "Not enough disk space"):
+                runner.require_build_space()
+
     def test_uses_configured_test_tool_matches_executable(self):
         self.assertTrue(runner.uses_configured_test_tool("pytest tests/test_one.py", "pytest -v"))
         self.assertTrue(runner.uses_configured_test_tool("python3 -m unittest -v", "python3 -m unittest"))

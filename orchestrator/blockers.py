@@ -17,17 +17,15 @@ import time
 from pathlib import Path
 from typing import Any
 
-from orchestrator import job_problem
+from orchestrator import disk_space, job_problem
 
 AUTO_RESUME_EVERY = 3600  # seconds: one automatic resume per job per hour, per blocker
 LOCK_STALE_AFTER = 10
-MIN_FREE_BYTES = 2 * 1024 ** 3
 
 _GIT_LOCK = re.compile(r"index\.lock'?: File exists|Another git process seems to be running|holding this project's git lock", re.I)
 _SIGN_IN = re.compile(r"oauth access token has expired|failed to authenticate|re-?authenticate to continue|not logged in|"
                       r"invalid api key|missing api key|please run /login", re.I)
 _TOOL = re.compile(r"(?:^|[\s:'\"`])([\w.+-]{2,40}): command not found", re.M)
-_DISK = re.compile(r"No space left on device", re.I)
 _READ_ONLY = re.compile(r"Read-only file system", re.I)
 
 
@@ -36,6 +34,8 @@ def detect(text: str) -> dict[str, Any] | None:
     text = str(text or "")
     if not text.strip():
         return None
+    if disk_space.is_disk_error(text):
+        return _make("disk_full", "machine", "disk", "Low disk space", "Free up space on the computer running this job.")
     if _GIT_LOCK.search(text):
         return _make("git_lock", "project", "git", "Git is locked in this project",
                      "A git command that didn't finish left .git/index.lock behind, so every git step fails.")
@@ -46,8 +46,6 @@ def detect(text: str) -> dict[str, Any] | None:
     if match := _TOOL.search(text):
         name = match.group(1)
         return _make("tool", "machine", name, f"{name} isn't installed", f"The build needs {name}, which this Mac can't find.")
-    if _DISK.search(text):
-        return _make("disk_full", "machine", "disk", "The disk is full", "The build ran out of disk space.")
     if _READ_ONLY.search(text):
         return _make("write_access", "project", "folder", "The project folder is read-only", "Files in the project can't be written.")
     try:
@@ -162,10 +160,8 @@ def is_cleared(blocker: dict[str, Any], root: Path) -> bool | None:
     if kind == "tool":
         return shutil.which(str(blocker.get("key") or "")) is not None
     if kind == "disk_full":
-        try:
-            return shutil.disk_usage(root).free >= MIN_FREE_BYTES
-        except OSError:
-            return None
+        needed = disk_space.status(root)["needed_bytes"]
+        return needed == 0 if needed is not None else None
     if kind == "write_access":
         return os.access(root, os.W_OK)
     if kind == "job_work":  # the other job's files are committed (or put away) now
@@ -183,7 +179,7 @@ def steps(blocker: dict[str, Any], root: Path) -> list[str]:
     if kind == "tool":
         return [f"Install {blocker.get('key')}; waiting jobs then resume."]
     if kind == "disk_full":
-        return ["Free up disk space (Xcode's DerivedData and old simulators are usually the biggest).", "Waiting jobs resume once 2 GB is free."]
+        return ["Open Free up space to check the build's storage target and available cleanup."]
     if kind == "write_access":
         return [f"In Finder, Get Info on {Path(root).name}, and under Sharing & Permissions give your account Read & Write."]
     if kind == "job_work":

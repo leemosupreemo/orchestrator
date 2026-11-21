@@ -827,6 +827,10 @@ def append_log(name: str, content: str) -> Path:
 
 def is_disk_full_error(text: str) -> bool:
     """Checks if the given text contains common 'disk full' error indicators."""
+    from orchestrator.disk_space import is_disk_error
+
+    if is_disk_error(text):
+        return True
     patterns = [
         r"No space left on device",
         r"ENOSPC",

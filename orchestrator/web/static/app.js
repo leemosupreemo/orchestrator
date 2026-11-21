@@ -488,7 +488,7 @@ async function projectHasTests() {
   }
 }
 
-async function runAction(action, params = {}, { skipConfirm = false, button = null } = {}) {
+async function runAction(action, params = {}, { skipConfirm = false, button = null, stayOnJob = false } = {}) {
   const meta = state.actions[action] || {};
   if (action === "test" && !(await projectHasTests())) {
     if (await formDialog("No tests to run", `<p>This project has no tests yet. Add them now: a job writes tests for your code and measures coverage.</p>`, "Add tests", { compact: true })) await dialogs.add_tests();
@@ -507,8 +507,17 @@ async function runAction(action, params = {}, { skipConfirm = false, button = nu
     if (run && Array.isArray(state.runs) && !state.runs.some((r) => r.id === run.id)) {
       state.runs.unshift(run);
     }
-    location.hash = `#/runs/${run.id}`;
-    void refreshState();
+    const stayHere = (stayOnJob || action === "debug")
+      && current.page === "job"
+      && params?.job
+      && String(params.job) === String(current.args?.[0] || "");
+    if (stayHere) {
+      await refreshState();
+      route();
+    } else {
+      location.hash = `#/runs/${run.id}`;
+      void refreshState();
+    }
   } catch (e) {
     toast(e?.message || `Could not start ${action}`, true);
     if (button && button.isConnected) {
@@ -3380,6 +3389,93 @@ function splitJobTitle(raw) {
   return { title: m[1].trim() || text, task: m[2].trim() };
 }
 
+function fixSeriesItems(job, jobRuns = [], activeRun = null) {
+  const history = Array.isArray(job?.debug_history) ? job.debug_history.filter((h) => h && typeof h === "object") : [];
+  const debugRuns = (Array.isArray(jobRuns) ? jobRuns : [])
+    .filter((r) => r && r.action === "debug")
+    .slice()
+    .sort((a, b) => Number(a.started || 0) - Number(b.started || 0));
+  const items = history.map((h, idx) => {
+    const run = debugRuns[idx] || null;
+    const res = h.result;
+    let status = "failed", label = "Fix failed", detail = String(h.hypothesis || h.action || "").trim();
+    if (res === "pending" || (run && run.running)) {
+      status = "running";
+      label = "Fixing…";
+    } else if (res && typeof res === "object") {
+      if (res.build_ok && res.tests_ok) {
+        status = "succeeded";
+        label = "Fix succeeded";
+      } else if (res.build_ok || res.tests_ok) {
+        status = "partial";
+        label = "Partially succeeded";
+        detail = res.build_ok ? "Build passes · tests still failing" : "Tests pass · build failing";
+      } else {
+        status = "failed";
+        label = "Fix failed";
+      }
+    }
+    return {
+      num: Number(h.iteration) || (idx + 1),
+      status,
+      label,
+      detail: detail.length > 72 ? `${detail.slice(0, 69).trimEnd()}…` : detail,
+      runId: run?.id || "",
+    };
+  });
+  // Include any extra debug runs that started or failed before writing to debug_history.
+  for (let i = history.length; i < debugRuns.length; i += 1) {
+    const run = debugRuns[i];
+    const running = Boolean(run.running || (activeRun && activeRun.id === run.id && activeRun.running));
+    const failed = !running && (run.status === "failed" || (run.exit_code != null && run.exit_code !== 0));
+    const status = running ? "running" : failed ? "failed" : "succeeded";
+    const label = running ? "Fixing…" : failed ? "Fix failed" : "Fix succeeded";
+    const rawDetail = String(run.headline || run.error_summary || "").trim();
+    items.push({
+      num: items.length + 1,
+      status,
+      label,
+      detail: rawDetail.length > 72 ? `${rawDetail.slice(0, 69).trimEnd()}…` : rawDetail,
+      runId: run.id || "",
+    });
+  }
+  if (activeRun && activeRun.action === "debug" && activeRun.running && !items.some((x) => x.runId === activeRun.id)) {
+    items.push({
+      num: items.length + 1,
+      status: "running",
+      label: "Fixing…",
+      detail: String(activeRun.progress?.step || activeRun.last_line || "").trim().slice(0, 72),
+      runId: activeRun.id || "",
+    });
+  }
+  return items;
+}
+
+function fixSeriesHtml(job, jobRuns = [], activeRun = null) {
+  const items = fixSeriesItems(job, jobRuns, activeRun);
+  if (!items.length) return "";
+  const cards = items.map((it, idx) => {
+    const icon = it.status === "running" ? runningMark
+      : it.status === "succeeded" ? "✓"
+      : it.status === "partial" ? "◐"
+      : "!";
+    const logLink = it.runId ? `<a class="job-fix-log" href="#/runs/${encodeURIComponent(it.runId)}" title="Open full log">Log ↗</a>` : "";
+    const arrow = idx < items.length - 1 ? `<div class="job-fix-arrow is-${it.status}" aria-hidden="true"></div>` : "";
+    return `<div class="job-fix-node is-${it.status}">
+      <div class="job-fix-head">
+        <span class="job-fix-dot" aria-hidden="true">${icon}</span>
+        <span class="job-fix-title">Fix #${it.num} · ${esc(it.label)}</span>
+        ${logLink}
+      </div>
+      ${it.detail ? `<div class="job-fix-detail">${esc(it.detail)}</div>` : ""}
+    </div>${arrow}`;
+  }).join("");
+  return `<div class="job-fix-series" id="job-fix-series" aria-label="Fix attempts">
+    <span class="job-fix-series-label">Fix attempts</span>
+    <div class="job-fix-series-track">${cards}</div>
+  </div>`;
+}
+
 function jobItem(j, { withAction = false } = {}) {
   const { title: cleanTitle, task: taskSub } = splitJobTitle(j.title);
   const bits = [taskSub, jobKind(j), j.tasks_total ? `${j.tasks_done}/${j.tasks_total} tasks` : "", ago(j.updated)].filter(Boolean);
@@ -3789,8 +3885,76 @@ async function openAskAi(opts = {}) {
   }
 }
 
+function renderNewJobDiskNotice(element, report) {
+  if (!element?.isConnected) return;
+  element.hidden = !(report.needed_bytes > 0);
+  element.innerHTML = element.hidden ? "" : `<div class="notice warn wrap-anywhere">
+    <strong>Low disk space on this computer</strong>
+    <p>Free at least ${Math.ceil(report.needed_bytes / 1024 ** 3)} GB before building here.</p>
+    <button type="button" class="btn small" data-disk-space>Free up space</button>
+  </div>`;
+}
+
+async function openDiskSpace(jobId = "") {
+  const query = new URLSearchParams();
+  if (jobId) query.set("job", jobId);
+  if (state.you?.role !== "member") query.set("caches", "1");
+  let outcome = "";
+  try {
+    for (;;) {
+      const report = await api(`recovery/disk-space?${query}`);
+      if (report.remote_machine) {
+        await formDialog("Free up disk space", `<p>This job ran on <strong>${esc(report.remote_machine)}</strong>. Open Orchestrator on that computer or use macOS System Settings → General → Storage there.</p>`, "Done", { compact: true });
+        return;
+      }
+      renderNewJobDiskNotice($("#nj-disk-warning"), report);
+      const gb = (bytes) => bytes === null ? "Unknown" : `${(bytes / 1024 ** 3).toFixed(1)} GB`;
+      const needsSpace = report.needed_bytes > 0;
+      const caches = report.caches || [];
+      const body = `<div class="stack gap-12">
+        <p><strong>${esc(gb(report.free_bytes))} free</strong> · ${esc(gb(report.required_bytes))} build target${report.volume ? ` · ${esc(report.volume)}` : ""}</p>
+        ${needsSpace ? `<p class="text-bad">Free at least ${Math.ceil(report.needed_bytes / 1024 ** 3)} GB before retrying.</p>` : ""}
+        ${outcome ? `<p role="status" class="wrap-anywhere">${esc(outcome)}</p>` : ""}
+        ${caches.length ? `<fieldset class="field"><legend>Removable caches</legend>
+          <small>Close the tools whose caches you select. The next launch or build may take longer.</small>
+          ${caches.map(cache => `<label class="check wrap-anywhere"><input type="checkbox" name="cache_${esc(cache.id)}">
+            <span>${esc(cache.tool || "Xcode")} · ${esc(cache.name)}${cache.bytes === null ? "" : ` · ${esc(formatBytes(cache.bytes))}`}</span></label>`).join("")}
+        </fieldset>` : "<p>No supported caches found on the project volume.</p>"}
+        <p class="t-secondary">For downloads, large files, and Trash, open macOS System Settings → General → Storage.</p>
+      </div>`;
+      const answer = formDialog("Free up disk space", body, "Check again");
+      const dialogBody = $("#dialog-body");
+      const controls = new AbortController();
+      dialogBody?.addEventListener("change", () => {
+        $("#dialog-ok").textContent = dialogBody.querySelector("input:checked") ? "Clear selected caches" : "Check again";
+      }, { signal: controls.signal });
+      const selected = await answer;
+      controls.abort();
+      if (!selected) break;
+      const ids = Object.keys(selected).filter(name => name.startsWith("cache_")).map(name => name.slice(6));
+      if (!ids.length) continue;
+      try {
+        const result = await api("recovery/disk-space", { method: "POST", body: { caches: ids, job: jobId } });
+        outcome = [result.removed.length ? `Cleared ${plural(result.removed.length, "cache")}. ${gb(result.free_bytes)} free now.` : "", ...(result.errors || [])].filter(Boolean).join(" ");
+      } catch (e) {
+        outcome = e.message;
+      }
+    }
+    if (location.hash.startsWith("#/jobs/")) void route();
+  } catch (e) {
+    toast(e.message, true);
+  }
+}
+
 document.addEventListener("click", (e) => {
   if (e.target.closest?.("[data-ask-ai]")) openAskAi();
+  const diskButton = e.target.closest?.("[data-disk-space]");
+  if (diskButton) {
+    e.preventDefault();
+    diskButton.disabled = true;
+    void openDiskSpace(diskButton.dataset.job).finally(() => { diskButton.disabled = false; });
+    return;
+  }
   const attemptFix = e.target.closest?.("[data-attempt-fix]");
   if (attemptFix) {
     const jobId = attemptFix.dataset.attemptJob || "";
@@ -5570,7 +5734,7 @@ function jobPlanNotes(groups) {
     <div class="card-b stack">${sections}</div></details>`;
 }
 
-function jobStartBlockers(blockers, canRecheck = true) {
+function jobStartBlockers(blockers, canRecheck = true, jobId = "") {
   if (!blockers?.length) return "";
   const reasons = {
     "low-disk": "Low disk space",
@@ -5590,6 +5754,7 @@ function jobStartBlockers(blockers, canRecheck = true) {
   return `<section class="notice warn mb-16 wrap-anywhere" id="job-startup">
     <strong>This job can't start yet</strong>
     <div class="t-secondary">${esc(summary)}</div>
+    ${blockers.some(b => b.id === "low-disk") ? `<button type="button" class="btn small" data-disk-space data-job="${esc(jobId)}">Free up space</button>` : ""}
     <details class="fold">
       <summary class="linklike">Startup details</summary>
       <ul class="assumptions wrap-anywhere">${details}</ul>
@@ -5932,6 +6097,36 @@ function activeRunCard(r, labelled, timeline) {
 
 // The AI tools' reviews offered on jobs (tool_abilities.py), read once per visit; the AI tools page keeps the scan fresh.
 let aiAbilities = { highlights: [], loaded: false };
+function planBriefItems(markdown, plan = {}) {
+  const sections = new Map();
+  let section = "";
+  for (const line of String(markdown || "").split(/\r?\n/)) {
+    const heading = line.match(/^#{1,6}\s+(.+)$/);
+    if (heading) {
+      section = heading[1].trim().toLowerCase();
+      continue;
+    }
+    const content = line.trim().replace(/^(?:[-*+] |\d+[.)] )/, "").replace(/\*\*|`/g, "");
+    if (!content || content === "---" || /^_|^(?:Issue|Title):/i.test(content)) continue;
+    if (!sections.has(section)) sections.set(section, []);
+    sections.get(section).push(content);
+  }
+  const first = (...names) => names.map((name) => sections.get(name)?.[0]).find(Boolean);
+  const values = (field) => Array.isArray(plan[field]) ? plan[field].map((value) => value?.text || value) : [];
+  const goal = first("instructions", "goal", "scope", "summary", "expected behavior");
+  const criteria = sections.get("acceptance criteria") || sections.get("done when") || values("acceptance_criteria");
+  const constraints = sections.get("constraints") || values("constraints");
+  const fallback = [...sections.values()].flat()[0];
+  const items = [goal || plan.instructions || plan.summary || fallback, ...criteria.slice(0, 2), ...constraints.slice(0, 1)];
+  return [...new Set(items.filter((item) => typeof item === "string")
+    .map((item) => item.replace(/\s+/g, " ").trim()).filter((item) => item && !/^summary$/i.test(item)))]
+    .map((item) => {
+      if (item.length <= 150) return item;
+      const cut = item.lastIndexOf(" ", 149);
+      return `${item.slice(0, cut > 100 ? cut : 149)}…`;
+    });
+}
+
 pages.job = async ([id]) => {
   if (!aiAbilities.loaded) aiAbilities = { ...(await api("ai/abilities").catch(() => ({}))), loaded: true };
   const data = await api(`jobs/${encodeURIComponent(id)}`);
@@ -5978,7 +6173,7 @@ pages.job = async ([id]) => {
   const briefDoc = (docs || []).find((d) => d.name === "brief.md" || (d.title && d.title.toLowerCase() === "brief")) || {
     title: "Brief",
     name: "brief.md",
-    text: (job.plan?.summary || job.description || job.prompt || "No brief created yet."),
+    text: (job.plan?.summary || job.description || job.prompt || ""),
     path: `.orchestrator/output/${s.id}/brief.md`,
     runtime_path: `output/${s.id}/brief.md`,
   };
@@ -6035,12 +6230,13 @@ pages.job = async ([id]) => {
   const nextBtnClass = signInAction ? "btn small" : "btn small primary";
   // Another job building the same files right now: merging this one would race it, so Merge waits (overlapAdviceHtml says why).
   const overlapHold = next?.action === "merge" ? (data.overlaps || []).find((o) => o.running) : null;
-  const showNextAction = next && !(signInAction && next.action === "debug");
+  const diskBlocked = s.state.blocker_kind === "disk_full";
+  const showNextAction = next && !diskBlocked && !(signInAction && next.action === "debug");
   const heroAction = activeRun
     ? (isStoppingActive
       ? `<button class="btn small" data-stop="${esc(activeRun.id)}" data-why="Already stopping." disabled aria-busy="true"><span class="spinner inline-spinner" aria-hidden="true"></span>Stopping…</button>`
       : `<button class="btn small" data-stop="${esc(activeRun.id)}" title="Stops the worker. Resume continues from the next task.">Pause</button>`)
-    : `${signInAction}${showNextAction ? `<button class="${nextBtnClass}" ${act(next.action, { job: s.id, ...(next.params || {}) })}${overlapHold ? ` disabled data-why="Wait for ${esc(overlapHold.title)} to finish building first."` : ""}>${esc(next.label)}</button>` : ""}${showNextAction && job.task_growth && data.undoable_task === job.task_growth.task
+    : `${signInAction}${diskBlocked ? `<button type="button" class="btn small primary" data-disk-space data-job="${esc(id)}">Free up space</button>` : ""}${showNextAction ? `<button class="${nextBtnClass}" ${act(next.action, { job: s.id, ...(next.params || {}) })}${overlapHold ? ` disabled data-why="Wait for ${esc(overlapHold.title)} to finish building first."` : ""}>${esc(next.label)}</button>` : ""}${showNextAction && job.task_growth && data.undoable_task === job.task_growth.task
       ? `<button class="btn small" data-undo-task="${job.task_growth.task}" title="Reverts what that task changed. Then revise the plan to make it smaller.">Undo task ${job.task_growth.task + 1}</button>` : ""}`;
 
   // 5-Phase Agile Lifecycle determination (Plan -> [Build -> Verify -> Document -> Finalize] loop)
@@ -6138,17 +6334,24 @@ pages.job = async ([id]) => {
   };
 
   const nextAction = s.state.next?.action;
-  const planSummary = String(job.plan?.summary || "").trim();
-  // A Quick change skips the planner: its "plan" is the instructions again, with no tasks or test cases. The brief says it.
+  // A Quick change skips the planner and can still show its requested scope.
   const quickNoPlan = job.type === "quick-fix" && !tasksTotal;
-  const showSummary = planSummary && planSummary.toLowerCase() !== "summary" && !quickNoPlan;
+  const briefItems = planBriefItems(briefDoc.text, job.plan || {});
+  const planBriefHtml = `<div class="card-b plan-summary">
+    ${briefItems.length ? `<ul class="assumptions plan-brief-items">${briefItems.map((item) => `<li>${esc(item)}</li>`).join("")}</ul>` : ""}
+    <div class="row wrap gap-8">
+      <button type="button" class="btn small ghost" data-brief-full>Full brief</button>
+      <button type="button" class="btn small ghost" data-brief-edit ${activeRun ? 'disabled title="Pause the worker to edit the brief"' : 'title="Edit the brief"'}>Edit brief</button>
+    </div>
+  </div>`;
+  const briefEndpoint = `jobs/${encodeURIComponent(id)}/brief`;
   const hasBuildWork = allFiles.length > 0 || filesChanged > 0 || isJobComplete || currentPhaseIndex >= 2;
   const prUrl = (links || []).find((l) => l?.url && /pr|pull|merge/i.test(l.label || ""))?.url || job.merge_request_url || job.pr_url || "";
   const builderSummaryDoc = otherDocs.find((d) => d.name === "builder_summary.md" && d.text?.trim()) || null;
   const changeSummaryFull = jobChangeSummary(otherDocs, changes, Infinity); // what the builder did, at the top of Changes (not the status box)
   // Task progress lives in the hero (a bar under Now/Next) only while building; the stepper and hero cover every other stage.
   const showTaskBar = tasksTotal > 0 && currentPhase === "build" && tasksDone > 0;
-  const phaseTargets = [!tasksTotal && !showSummary && hasBuildWork ? "#brief-section" : "#plan-section", tasksTotal ? "#plan-section" : (hasBuildWork ? "#changes-section" : "#plan-section"), "#verify-section", "#document-section", "#job-hero"]; // Finalize: the status box holds the merge decision
+  const phaseTargets = ["#plan-section", tasksTotal ? "#plan-section" : (hasBuildWork ? "#changes-section" : "#plan-section"), "#verify-section", "#document-section", "#job-hero"];
   const heroTone = ["merge", "complete"].includes(nextAction) && s.state.tone !== "failed" ? "done" : (s.state.tone || "");
   const phasesInfo = [planStep, buildStep, verifyStep, docStep, reviewStep];
   ["plan", "build", "verify", "document", "finalize"].forEach((phase, i) => {
@@ -6236,7 +6439,7 @@ pages.job = async ([id]) => {
   const steer = activeRun || s.question || reviewingPlan || signIn ? null
     : isJobComplete ? { mode: "fix", button: "Reopen and change", hint: "Reopens this job with your note and builds it.", required: true }
     : ["merge", "complete"].includes(nextAction) ? { mode: "iterate", button: "Request changes", required: true, hint: "" }
-    : hasBuildWork || ["debugging", "failed"].includes(status) ? { mode: "debug", button: "Run fix", required: false,
+    : hasBuildWork || ["debugging", "failed"].includes(status) ? { mode: "debug", button: nextAction === "debug" ? "Run fix with note" : "Run fix", required: nextAction === "debug",
       hint: "" }
     : ["planned", "designing", "human-needed", "scheduled"].includes(status) ? { mode: "revise", button: "Re-plan", required: true,
       hint: "Re-plans the job with this; you approve the new plan before anything is built." }
@@ -6274,14 +6477,14 @@ pages.job = async ([id]) => {
     : status === "debugging" ? "Fixing"
     : status === "human-needed" && pausedIdx === currentTaskIndex ? "Paused"
     : "Current";
-  const taskRowsHtml = (withDetail) => tasks.map((t, i) => {
+  const taskRowsHtml = tasks.map((t, i) => {
     const title = typeof t === "string" ? t : (t.title || t.name || t.description || `Task ${i + 1}`);
     const detail = typeof t === "object" && t && t.title && t.description ? t.description : "";
     const key = typeof t === "object" && t ? String(t.id ?? i) : String(i);
     const isDone = done.has(key) || done.has(String(i));
     const isCurrent = !isDone && i === currentTaskIndex;
-    const doneWhen = withDetail && typeof t === "object" ? listOf(t.acceptance_criteria) : [];
-    const files = withDetail && typeof t === "object" ? listOf(t.likely_files) : [];
+    const doneWhen = typeof t === "object" ? listOf(t.acceptance_criteria) : [];
+    const files = typeof t === "object" ? listOf(t.likely_files) : [];
     const controls = canEditPlan && !isDone ? `<div class="side task-controls"><details class="more task-more"><summary class="btn small ghost icon-only more-icon-btn" aria-label="Task actions: ${esc(title)}" title="Task actions"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-more"/></svg></summary><div class="more-menu">
         <button class="btn small" data-task-op="edit" data-i="${i}">Edit</button>
         <button class="btn small" data-task-op="up" data-i="${i}" data-why="${i === 0 ? "Already first." : "Can't move above a finished task."}" ${i === 0 || done.has(String(i - 1)) ? "disabled" : ""}>Move up</button>
@@ -6290,12 +6493,13 @@ pages.job = async ([id]) => {
     const undo = data.undoable_task === i && !activeRun ? `<div class="side task-controls"><button class="btn small ghost" data-undo-task="${i}" aria-label="Undo task: ${esc(title)}">Undo</button></div>` : "";
     const marker = `<span class="task-number${isDone ? " is-done" : isCurrent ? " is-current" : ""}" role="img" aria-label="${isDone ? "Done" : isCurrent ? "Current step" : "To do"}">${isDone ? "✓" : i + 1}</span>`;
     const currentBadge = isCurrent ? `<span class="pill working task-current-badge">${esc(currentTaskBadgeText)}</span>` : "";
-    const more = withDetail && (detail || doneWhen.length || files.length);
-    return `<div class="item task-row${isCurrent ? " is-current" : ""}"${isCurrent ? ' aria-current="step"' : ""}>${marker}<div class="main-col"><div class="title">${esc(title)}${currentBadge}</div>${!withDetail && detail ? `<div class="meta">${esc(detail)}</div>` : ""}
+    const more = detail || doneWhen.length || files.length;
+    return `<div class="item task-row${isCurrent ? " is-current" : ""}"${isCurrent ? ' aria-current="step"' : ""}>${marker}<div class="main-col"><div class="title">${esc(title)}${currentBadge}</div>
       ${more ? `<details class="task-detail"><summary class="linklike muted">Details</summary>${detail ? `<div class="meta">${esc(detail)}</div>` : ""}
       ${doneWhen.length ? `<div class="task-done-when"><span class="label">Done when</span><ul>${doneWhen.slice(0, 4).map((c) => `<li>${esc(c)}</li>`).join("")}</ul></div>` : ""}
       ${files.length ? `<div class="task-files">${files.slice(0, 4).map((f) => `<code>${esc(f)}</code>`).join("")}${files.length > 4 ? `<span class="muted">+${files.length - 4} more</span>` : ""}</div>` : ""}</details>` : ""}</div>${controls}${undo}</div>`;
   }).join("") || `<div class="empty">No tasks yet.</div>`;
+  const addTaskHtml = canEditPlan ? `<div class="card-b card-b-split"><button type="button" class="btn small ghost icon-only" data-task-op="add" aria-label="Add a task" title="Add a task"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-plus"/></svg></button></div>` : "";
   // One decision: what it is (a sentence), how big it is, and the one button. The tasks are one line each; the rest is a tap away.
   const size = data.plan_size || { label: "", files: 0, too_large: false, reasons: [], deferred: [] };
   const sliceWarnings = job.plan?.slice_warnings || [];
@@ -6306,12 +6510,12 @@ pages.job = async ([id]) => {
       <div class="card-h"><h2>${size.too_large ? "Too big for one job" : nextAction === "approve" ? "Approve this plan" : "The plan"}</h2>
         <div class="card-actions"><button class="btn small" ${act("revise", { job: s.id })} title="Ask the AI to re-plan with what should change">Revise…</button>${splitInstead
           ? `<button class="btn small primary" ${act("splinter_job", { job: s.id })} title="Each task becomes its own job">Split into ${tasks.length} jobs</button>` : approveBtn(true)}</div></div>
-      ${showSummary ? `<div class="card-b plan-summary">${clamped(planSummary, 160)}</div>` : ""}
+      ${planBriefHtml}
       <div class="plan-verdict${size.too_large ? " bad" : ""}"><span class="plan-size">${esc(sizeLine)}</span>
         ${size.too_large ? `<span>${esc(size.reasons.join(" "))}</span>${splitInstead ? approveBtn(false) : ""}` : ""}
         ${sliceWarnings.length ? `<span class="plan-flag" title="${esc(sliceWarnings.join(" "))}">Tasks look layered, not working slices</span>` : ""}</div>
-      <div class="list">${taskRowsHtml(true)}</div>
-      ${canEditPlan ? `<div class="card-b card-b-split"><button type="button" class="btn small ghost icon-only" data-task-op="add" aria-label="Add a task" title="Add a task"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-plus"/></svg></button></div>` : ""}
+      <div class="list">${taskRowsHtml}</div>
+      ${addTaskHtml}
       ${size.deferred.length ? `<details class="fold plan-notes"><summary class="card-h"><h2>Left for later <span class="count">${size.deferred.length}</span></h2></summary>
         <div class="card-b"><ul class="assumptions">${size.deferred.map((d) => `<li>${esc(d)}</li>`).join("")}</ul></div></details>` : ""}
       ${planNotesHtml}
@@ -6332,7 +6536,7 @@ pages.job = async ([id]) => {
     && rawHeroReason && (rawHeroReason.includes("\n") || rawHeroReason.length > 110);
   const heroReason = architectConcerns ? "The architect raised concerns (below). Answer them, or accept its suggestions and re-plan."
     : reviewingPlan ? `Review <button type="button" class="linklike" data-scroll-to="#plan-section">the plan below</button> (${plural(tasks.length, "task")}) and ${nextAction === "approve" ? "approve or revise." : "start when ready."}`
-    : s.status === "designing" && nextAction === "approve" ? `Review <button type="button" class="linklike" data-scroll-to="#brief-section">the design</button>, then approve or request changes.`
+    : s.status === "designing" && nextAction === "approve" ? `Review <button type="button" class="linklike" data-scroll-to="#plan-section">the design</button>, then approve or request changes.`
     : esc(shortReason);
   const problemHtml = problem?.lines?.length
     ? `<details class="hero-error-details"><summary class="linklike muted">Details (${problem.lines.length})</summary><ul class="hero-problem">${problem.lines.map((l) => `<li>${esc(l)}</li>`).join("")}</ul></details>`
@@ -6352,7 +6556,7 @@ pages.job = async ([id]) => {
     || runRel?.unreported
   );
   const copyFailureBtnHtml = hasJobFailure
-    ? `<button type="button" class="btn small ghost icon-only hero-copy-log-btn" id="copy-job-failure-log" aria-label="Copy failure details and logs" title="Copy failure details and logs"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-log"/></svg></button>`
+    ? `<button type="button" class="btn ghost icon-only hero-copy-log-btn" id="copy-job-failure-log" aria-label="Copy failure details and logs" title="Copy failure details and logs"><svg class="icon" aria-hidden="true"><use href="#i-log"/></svg></button>`
     : "";
   const heroTitleHtml = `<h2 class="job-hero-title">${(activeRun && !activeRun.waiting) || s.state.label === "Building" ? runningMark : ""}${esc(s.state.label || s.status)}</h2>`;
 
@@ -6432,6 +6636,7 @@ pages.job = async ([id]) => {
             ${pos < stepperItems.length - 1 ? `<div class="job-step-arrow ${p.state}" aria-hidden="true"></div>` : ""}
           `).join("")}
         </div>
+        ${typeof fixSeriesHtml === "function" ? fixSeriesHtml(job, jobRuns, activeRun) : ""}
         ${experienceStepperHtml}
       </nav>
 
@@ -6461,7 +6666,7 @@ pages.job = async ([id]) => {
 
       ${unvalidatedTestsHtml}
       ${defectsHtml}
-      ${jobStartBlockers(data.blockers, data.startup_recheck && state.you?.role !== "member")}
+      ${jobStartBlockers(data.blockers, data.startup_recheck && state.you?.role !== "member", id)}
 
       ${s.question ? `<section class="card mb-16 clarify-card" id="clarify"><div class="card-h"><h2>${(job.clarification_history || []).length ? "A follow-up question" : String(job.last_error || "").startsWith("Builder clarification needed") ? "A question during the build" : "A question before planning"}</h2><details class="more"><summary class="btn small ghost icon-only" aria-label="Export chat" title="Export chat"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-download"/></svg></summary><div class="more-menu"><button type="button" class="btn small" data-clarify-export="copy">Copy chat</button><button type="button" class="btn small" data-clarify-export="download">Export chat</button></div></details></div><div class="card-b stack">
         ${clarificationThread(job.clarification_history)}
@@ -6488,22 +6693,13 @@ pages.job = async ([id]) => {
       ${jobContextRail(s, data.context)}
 
       <div class="job-body">
-      <!-- Brief: title and actions in the header, where the file lives in a caption under it, long text folds -->
-      <section class="card mb-16" id="brief-section">
-        <div class="card-h"><h2>Brief</h2>
-          <div class="card-actions">
-            <a class="btn small ghost" href="#/file?path=${encodeURIComponent(briefDoc.runtime_path || `output/${s.id}/brief.md`)}" title="The brief as a plain file">Raw</a>
-            <button class="btn small" data-brief-edit ${activeRun ? 'disabled title="Pause the worker to edit the brief"' : 'title="Edit the brief"'}>Edit</button>
-          </div>
-        </div>
-        <div class="card-caption"><span class="mono brief-path-chip" title="Where this file lives">${esc(briefDoc.path || `.orchestrator/output/${s.id}/brief.md`)}</span></div>
-        <div class="md brief-content" data-expandable="320">${briefDoc.text ? Markdown.render(briefDoc.text) : `<p class="muted">No brief yet.</p>`}</div>
-      </section>
-
-      ${!reviewingPlan && (tasksTotal > 0 || showSummary || !hasBuildWork) ? `<section class="card mb-16" id="plan-section" tabindex="-1">
-        <div class="card-h"><h2>Plan</h2>${job.plan?.fast_tracked ? `<span class="count" title="A Quick change: planned in one pass and started without approval">Fast-tracked</span>` : ""}</div>
-        ${showSummary ? `<div class="card-b"><p>${esc(planSummary)}</p></div>` : ""}
-        <div class="list">${taskRowsHtml(true)}</div>
+      ${!reviewingPlan ? `<section class="card mb-16" id="plan-section" tabindex="-1">
+        <div class="card-h"><h2>${s.status === "designing" ? "Design" : "Plan"}</h2>
+          ${tasksTotal ? `<span class="count">${tasksDone}/${tasksTotal} tasks done</span>` : ""}
+          ${job.plan?.fast_tracked ? `<span class="count" title="A Quick change: planned in one pass and started without approval">Fast-tracked</span>` : ""}</div>
+        ${planBriefHtml}
+        ${tasksTotal ? `<div class="list">${taskRowsHtml}</div>` : ""}
+        ${addTaskHtml}
       </section>` : ""}
 
       <section class="card mb-16" id="verify-section" tabindex="-1"><div class="card-h"><h2>Test cases${testCases.cases.length ? ` <span class="count">${testCases.summary.covered}/${testCases.summary.automated} covered</span>` : ""}</h2>
@@ -6547,9 +6743,6 @@ pages.job = async ([id]) => {
           </div>
         </section>
       ` : ""}
-
-      <!-- Tasks, logs and output: folded on phones so the page isn't one long scroll -->
-      ${tasks.length && !reviewingPlan ? fold("Tasks", `${tasksDone}/${tasks.length}`, `<div class="list">${taskRowsHtml(false)}</div>${canEditPlan ? `<div class="card-b card-b-split"><button type="button" class="btn small ghost icon-only" data-task-op="add" aria-label="Add a task" title="Add a task"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-plus"/></svg></button></div>` : ""}`) : ""}
 
       ${outputs.length ? fold("Output files", outputs.length, `<div class="list">${outputs.map((o) => `<a class="item" href="#/file?path=${encodeURIComponent(o.path)}">
           <div class="main-col"><div class="title mono">${esc(o.path.split("/").slice(2).join("/") || o.path)}</div>
@@ -6652,16 +6845,32 @@ pages.job = async ([id]) => {
           toast("Exported chat.");
         }
       }));
+      view.querySelectorAll("[data-brief-full]").forEach((btn) => btn.addEventListener("click", async () => {
+        try {
+          const { text } = await api(`${briefEndpoint}?full=1`);
+          const download = await formDialog("Full brief", `<pre class="doc">${esc(text)}</pre>`, "Download Markdown");
+          if (download) downloadText(`${s.id}-brief.md`, text);
+        } catch (e) {
+          toast(e.message, true);
+        }
+      }));
       view.querySelectorAll("[data-brief-edit]").forEach((btn) => btn.addEventListener("click", async () => {
         const canRevise = !quickNoPlan && ["planned", "designing", "human-needed", "debugging"].includes(s.status);
+        let fullBrief;
+        try {
+          fullBrief = await api(`${briefEndpoint}?full=1`);
+        } catch (e) {
+          toast(e.message, true);
+          return;
+        }
         const bodyHtml = `
           <div class="stack gap-12">
             <div class="muted t-secondary">
-              File location: <span class="mono">${esc(briefDoc.path || `.orchestrator/output/${id}/brief.md`)}</span>
+              File location: <span class="mono">${esc(fullBrief.path)}</span>
             </div>
             <label class="field">
               <span>Brief Markdown</span>
-              <textarea name="text" rows="18" class="mono code-editor" required>${esc(briefDoc.text || "")}</textarea>
+              <textarea name="text" rows="18" class="mono code-editor" required>${esc(fullBrief.text || "")}</textarea>
             </label>
             ${canRevise ? `<label class="check"><input type="checkbox" name="revise_plan">
               <span>Revise the plan using this brief<small>The planner will use your edits and ask you to approve the revised plan.</small></span>
@@ -6672,7 +6881,7 @@ pages.job = async ([id]) => {
         const values = await formDialog("Edit Brief", bodyHtml, "Save brief");
         if (!values || !values.text || !values.text.trim()) return;
         try {
-          await api(`jobs/${encodeURIComponent(id)}/brief`, {
+          await api(briefEndpoint, {
             method: "POST",
             body: { text: values.text },
           });
@@ -7063,8 +7272,7 @@ pages.new = async (_, query) => {
           ${logPicker()}` };
       }
       case "freestyle":
-        return { picker: null, html: `${field("What do you want?", `<textarea name="summary" required rows="6" maxlength="20000" placeholder="Anything: an idea, a problem, a change. Say it however you like.">${esc(v.summary)}</textarea>`,
-          "The AI works out what kind of work it is. If something important is unclear, it asks a question or two first, and you answer on the job's page.")}` };
+        return { picker: null, html: `${field("What do you want?", `<textarea name="summary" required rows="6" maxlength="20000" placeholder="Anything: an idea, a problem, a change. Say it however you like.">${esc(v.summary)}</textarea>`)}` };
       default:
         return { picker: null, html: `${field("What should change?", `<textarea name="summary" required rows="4" maxlength="20000" placeholder="e.g. Rename Foo to Bar everywhere and update the docs">${esc(v.summary)}</textarea>`)}` };
     }
@@ -7196,6 +7404,7 @@ pages.new = async (_, query) => {
     sub: "",
     html: `
     <form class="card card-b stack" id="new-job">
+      <div id="nj-disk-warning" hidden></div>
       <div class="field"><span>What kind of work?</span>
         <div class="segmented" role="radiogroup" aria-label="Kind of work">${JOB_TYPE_INFO.map(([v, t, d]) =>
           `<label class="job-type-card job-type-${v}" data-type="${v}"><input type="radio" name="type" value="${v}" ${st.type === v ? "checked" : ""}>${t}<small>${d}</small></label>`).join("")}
@@ -7216,6 +7425,8 @@ pages.new = async (_, query) => {
       <div class="row"><span class="spacer"></span><button class="btn primary big" type="submit">Create job</button></div>
     </form>`,
     after: async () => {
+      const diskWarning = view.querySelector("#nj-disk-warning");
+      void api("recovery/disk-space").then(report => renderNewJobDiskNotice(diskWarning, report)).catch(() => {});
       form().querySelectorAll("input[name=type]").forEach((r) => r.addEventListener("change", async () => {
         capture(); st.type = r.value;
         const heading = $("#page-title");
@@ -14604,6 +14815,22 @@ function runDuration(started, ended) {
 }
 
 function runFailureGuidance(r) {
+  let err = (r.error_summary || r.last_line || "").trim();
+  if (/^\[exited(?: with code \d+)?\]$/i.test(err)) err = "";
+  const lower = err.toLowerCase();
+  const fullText = (err + " " + (r.last_line || "") + " " + (r.error_summary || "") + " " + (r.title || "") + " " + (r.saved_log_text || "").slice(-5000)).toLowerCase();
+  const targetJob = r.job || r.result_job;
+
+  if (/no space left on device|\benospc\b|\berrno 28\b|not enough (?:free )?(?:disk )?space|insufficient (?:free )?disk space|low disk space|\bdisk (?:is )?full\b|ran out of (?:free |disk )space|disk space exhausted/i.test(fullText)) {
+    return {
+      recoveryAction: "disk-space",
+      title: "Low disk space",
+      detail: "Free up disk space on the computer running this job, then retry.",
+      action: `<button type="button" class="btn small primary" data-disk-space data-job="${esc(targetJob || "")}">Free up space</button>`,
+      secondary: targetJob ? `<a class="btn small" href="#/jobs/${encodeURIComponent(targetJob)}">Back to job</a>` : "",
+    };
+  }
+
   if (r.action === "package_update" && !r.running && !r.stopped && r.exit_code !== 0) {
     const detail = r.error_summary || r.result?.headline || r.last_line || "The package manager or project checks failed.";
     const summary = `Repair the failed package update: ${r.title || "dependency update"}`;
@@ -14611,12 +14838,6 @@ function runFailureGuidance(r) {
     const href = `#/new?${new URLSearchParams({type: "bug", summary, spec})}`;
     return {title: "Package update needs a fix", detail: "The update or project checks failed. Changes are kept so you can inspect them or ask AI for a focused repair.", action: `<a class="btn small primary" href="${esc(href)}">Fix with AI</a>`, secondary: `<a class="btn small" href="#/git?show=changes">Review changes</a>`};
   }
-  let err = (r.error_summary || r.last_line || "").trim();
-  if (/^\[exited(?: with code \d+)?\]$/i.test(err)) err = "";
-  const lower = err.toLowerCase();
-  const fullText = (err + " " + (r.last_line || "") + " " + (r.error_summary || "") + " " + (r.title || "") + " " + (r.saved_log_text || "").slice(-5000)).toLowerCase();
-  const targetJob = r.job || r.result_job;
-
   const isKeychain = fullText.includes("keychain")
     || fullText.includes("user interaction is not allowed")
     || fullText.includes("errsecinteractionnotallowed")
@@ -14901,26 +15122,6 @@ function runFailureGuidance(r) {
       title: "Branch locked by leftover worktree",
       detail: "A leftover worktree registration is locking this branch.",
       action: `<button type="button" class="btn small primary" data-recover="git-prune-worktrees" data-recover-confirm="Prune leftover worktrees?" data-recover-detail="Clears stale worktree entries for missing folders. Risk: none for committed or active work." ${opAttr}><svg class="icon icon-sm" aria-hidden="true"><use href="#i-refresh"/></svg> Prune worktrees &amp; Rerun</button>`,
-      secondary: backBtn,
-    };
-  }
-
-  const isDiskExhausted = fullText.includes("no space left on device")
-    || fullText.includes("enospc")
-    || fullText.includes("not enough disk space")
-    || (fullText.includes("disk") && fullText.includes("full"));
-
-  if (isDiskExhausted) {
-    const opAction = r.action || (targetJob ? "execute" : "");
-    const opAttr = opAction ? `data-rerun-action="${esc(opAction)}"${targetJob ? ` data-rerun-params='${attrJSON({ job: targetJob })}'` : ""}` : "";
-    const backBtn = targetJob
-      ? `<a class="btn small" href="#/jobs/${encodeURIComponent(targetJob)}">Back to job</a>`
-      : "";
-    return {
-      recoveryAction: "reclaim-space",
-      title: "Disk space exhausted on Mac",
-      detail: "The disk ran out of free space during compilation or artifact creation. Orchestrator can immediately reclaim space by clearing old DerivedData, SPM caches, and unavailable simulator runtimes.",
-      action: `<button type="button" class="btn small primary" data-recover="reclaim-space" ${opAttr}><svg class="icon icon-sm" aria-hidden="true"><use href="#i-trash"/></svg> Reclaim space &amp; Rerun</button>`,
       secondary: backBtn,
     };
   }

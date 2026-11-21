@@ -85,5 +85,5 @@ def blockers(job: dict[str, Any], machines: list[dict[str, Any]], disk_free_gb: 
     if disk_free_gb is not None and local and len(local) == len(usable) and disk_free_gb < min_disk_gb:
         needed = math.ceil(min_disk_gb - disk_free_gb)
         found.append({"id": "low-disk", "text": f"Free at least {needed} GB on this computer. Builds need {min_disk_gb} GB free and this computer has {math.floor(disk_free_gb)} GB.",
-                      "fix": "", "route": ""})
+                      "fix": "Free up space", "route": ""})
     return found

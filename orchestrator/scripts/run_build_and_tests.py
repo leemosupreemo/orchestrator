@@ -26,6 +26,7 @@ from common import (
     extract_destination_from_command,
     timeout_note,
 )
+from orchestrator.disk_space import low_disk_message
 from llm import run_llm
 from model_router import ModelRole
 
@@ -37,6 +38,11 @@ class EnvironmentValidationError(RuntimeError):
 class DiskFullError(RuntimeError):
     """Raised when a build or test still ran out of disk space after cleaning up and retrying. The scheduler reads the
     message (it says "No space left on device") to move the job to another machine."""
+
+
+def require_build_space() -> None:
+    if message := low_disk_message(ROOT, getattr(PROJECT_CONFIG, "runtime_dir", None)):
+        raise DiskFullError(message)
 
 
 def disk_full_message(job: dict, step: str) -> str:

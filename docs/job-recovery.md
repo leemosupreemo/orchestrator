@@ -106,7 +106,9 @@ Guards, so jobs never step on each other's work:
   builder (`worker_run.py`, for one task and for each task of a plan) asks a question, Orchestrator answers it
   (`AUTO_ANSWER`, or `AUTO_CONTINUE` for a should-I-continue) and carries on. Each answer goes into
   `clarification_history` with `auto: true` and who asked; past the limit the job pauses as before. The job page labels
-  them "Answered for you (YOLO)" and says how many in the hero.
+  them "Answered for you (YOLO)" and says how many in the hero. When a YOLO job hits a blocker in build/test logs,
+  `worker_run.py` goes straight into one automated fix attempt (recording `yolo_blocker_fix_attempts` and passing the
+  blocker detail as `debug_feedback`) before falling back to `pause_on_blocker` if it persists.
 - **Out of usage** (`usage_limits.py`, `project_chat.record_out_of_usage`). A usage-limit, quota, credits or rate-limit
   error is checked before auth/unavailability markers so tool output mentioning `"forbidden"` doesn't misclassify a quota
   error as a rejected sign-in. It sets the model's whole family aside (`limit:<family>` in `model_checks.json`) until the
@@ -206,6 +208,22 @@ are stored without credentials from remote URLs.
 **The one limit:** work a computer did after its last upload, while it was cut off, can't reach another computer until it
 reconnects. That's why everything uploads early and often; and when it reconnects, that work is kept on a side branch.
 
+## Low disk space
+
+New Job warns before planning if this computer is below the build's disk-space target. The worker checks again before implementation and before running the build, using the tightest of the project, Orchestrator data, and temporary-file volumes. The build floor defaults to 15 GB and uses the existing `ORCHESTRATOR_MIN_DISK_GB` setting.
+
+Open **Free up space** from a startup warning or a failed run. The dialog shows how much space is available and how much the build needs. Select the caches to clear after closing the tools that use them and letting active jobs finish. Use **Check again** after clearing other files in macOS **System Settings → General → Storage**. An SSH job's dialog names the computer that needs cleanup. Local jobs paused by the disk blocker are eligible to resume when they meet the build floor.
+
+The dialog recognizes these caches on the project volume:
+
+- **Xcode.** DerivedData entries and shared build caches.
+- **Unity.** The ignored `Library` directory in a recognized Unity project. Opening the project again reimports its assets. [Unity asset import guide](https://docs.unity3d.com/cn/2022.3/Manual/ImportingAssets.html)
+- **Android Studio and IntelliJ.** The ignored project-local `.gradle` cache. If the daemon is still running after closing the IDE, stop it with `./gradlew --stop`. [Gradle directory layout](https://docs.gradle.org/current/userguide/directory_layout.html)
+- **Swift Package Manager.** Compiled debug and release products in an ignored `.build` directory. Dependency checkouts are preserved. [Swift build artifact locations](https://docs.swift.org/latest/documentation/swiftlinux/building/)
+- **VS Code and VS Code Insiders.** Browser and compiled-code caches. Settings, local history and unsaved-file backups are preserved. [VS Code profile cache definitions](https://github.com/microsoft/vscode/blob/main/.agents/skills/launch/SKILL.md)
+
+Workspace cache discovery looks at the project root and one level of subprojects. Orchestrator checks Git before offering a project cache and skips directories containing tracked files.
+
 ## Verification helper recovery
 
 Assisted verification is opt-in. The job runner uses an eligible helper for a configured pair of required checks and falls back to the owner when helper infrastructure fails. The [two-Mac implementation plan](superpowers/plans/2026-11-21-two-mac-verification.md) tracks the remaining recovery work and live pilot.
@@ -233,6 +251,7 @@ The helper keeps its reservation journal under `~/.orchestrator/verification-wor
 | Deactivated-model 24h quarantine and pre-flight `pool` health probe | `tests/test_project_chat.py` (`test_probe_pool_health_blocks_deactivated_pool_model_ahead_of_time`) |
 | Task `_task_N.json` status sync on automation error | `tests/test_worker_run.py` (`test_task_automation_error_marks_both_parent_and_task_job_human_needed`) |
 | End-of-job review gate: parsing blockers/unmet criteria, auto-fix pass, and `human-needed` pause | `tests/test_acceptance.py` (`ReviewOutcomeGateTests`), `tests/test_worker_run.py` (`test_review_gate_triggers_autofix_once_then_pauses_human_needed`) |
+| Inline fix-attempts timeline (`Fixing…`, `Fix succeeded`, `Partially succeeded`, `Fix failed`), stay-on-job-page fix flow, and task-title splitting | `tests/test_web_preview.py` (`JobTitleSplitTests`) |
 | A YOLO job whose planner and builder ask, finishing by itself | `tests/e2e/test_pipeline_offline.py` (`YoloAutorespondTests`) |
 | A job blocked mid-run by a held git lock, cleared, resumed by the server, committed and opened as a PR, inside the full offline pipeline | `tests/e2e/test_pipeline_offline.py` (`BlockedJobRecoveryTests`) |
 | Moves recorded by the control plane | `tests/test_control_plane.py` (`MovedJobTests`) |

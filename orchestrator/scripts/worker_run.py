@@ -58,6 +58,7 @@ from common import (
 )
 from open_or_update_pr import open_or_update_pr, push_branch_for_review
 from run_builder import BuilderClarificationNeeded, run_builder
+from run_build_and_tests import DiskFullError, require_build_space
 from llm import extract_json_block
 from orchestrator.project_config import PROJECT_CONFIG
 from orchestrator import blockers, builder_check, model_outcomes, reuse_brief, scope_check, task_growth
@@ -939,6 +940,7 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
         return
 
     try:
+        require_build_space()
         print_phase("git_prep")
         status_bar.render()
         if other := other_job_in_folder(job_path):
@@ -1102,6 +1104,8 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
                             f"Builder needs clarification for {job_label}.\nQuestion: {clarification.question}\nTitle: {job['title']}"
                         )
                         return
+                    except DiskFullError:
+                        raise
                     except Exception as e:
                         # SYSTEM/LLM ERROR: Do not trigger automated debugging
                         print(f"\n❌ Automation error during Task {i+1}: {e}")
@@ -1369,9 +1373,15 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
 
         if not build_ok or not test_ok:
             blocker = blocker_in_logs(job)
-            if blocker:  # the machine, not the code: a fix attempt can't help, so pause on it (Home resumes it once cleared)
-                pause_on_blocker(job_path, job, blocker, issue_number)
-                return
+            if blocker:  # the machine, not the code: normal jobs pause; YOLO tries one fix attempt before pausing
+                yolo_fix_attempts = int(job.get("yolo_blocker_fix_attempts") or 0)
+                if (job.get("yolo") or job.get("is_yolo")) and yolo_fix_attempts < 1 and os.environ.get("AI_DEBUG_CHILD") != "1":
+                    job["yolo_blocker_fix_attempts"] = yolo_fix_attempts + 1
+                    job["debug_feedback"] = f"Blocker reached during build/tests: {blocker.get('title', 'Blocker')} — {blocker.get('detail', '')}".strip()
+                    print(f"\n🤖 YOLO MODE: Blocker detected ({blocker.get('title', blocker.get('kind'))}); attempting an automated fix before pausing...")
+                else:
+                    pause_on_blocker(job_path, job, blocker, issue_number)
+                    return
             # Set job status to debugging to trigger an automatic iteration
             job["status"] = "debugging"
             job["debug_phase"] = "propose"

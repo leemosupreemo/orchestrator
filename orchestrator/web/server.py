@@ -622,8 +622,9 @@ class PtySession:
         """Finds the most specific error line from output when a run fails."""
         if self.running or self.exit_code == 0:
             return ""
-        if self.action == "package_update" and self.result:
-            return str(self.result.get("headline") or "")
+        from orchestrator.disk_space import is_disk_error
+
+        headline = str(self.result.get("headline") or "") if self.action == "package_update" and self.result else ""
         with self._cond:
             tail = bytes(self._buffer[-8000:])
         text = re.sub(rb"\x1b\[[0-9;?]*[A-Za-z]", b"", tail).decode("utf-8", "replace").replace("\r", "\n")
@@ -634,6 +635,10 @@ class PtySession:
             and not re.match(r"^(?:\[\d+/\d+\]\s*)?updating (?:github )?issue\b", l.strip(), re.IGNORECASE)
             and "build failed; skipping simulator launch" not in l.lower()
         ]
+        if disk_error := next((line for line in reversed(lines) if is_disk_error(line)), None):
+            return disk_error[:500]
+        if headline:
+            return headline
         for line in reversed(lines):
             clean = re.sub(r"^(?:❌|⚠️|!+|Error:|error:)\s*", "", line).strip()
             if any(k in clean.lower() for k in ("coverage measurement failed", "failed to calculate", "couldn't tell which language", "this project language is configured", "no source files", "tests failed", "build failed", "cannot create a build", "delivery job targets branch")):
@@ -944,7 +949,8 @@ def job_state(job: dict[str, Any], root: Path | None = None) -> dict[str, Any]:
     if status == "human-needed" and isinstance(blocker, dict) and blocker.get("kind"):
         # Stopped by the machine, not the code (blockers.py): say what blocks it, checked now, not when it stopped.
         from orchestrator import blockers
-        if root is not None and blockers.is_cleared(blocker, root):
+        remote_disk = root is not None and blocker.get("kind") == "disk_full" and assigned_ssh_machine(root, job)
+        if root is not None and not remote_disk and blockers.is_cleared(blocker, root):
             return state("needs_you", "attention", "Blocker cleared",
                          f"{blocker.get('title')}: that's fixed now. Resume carries on from where it stopped.", "resume", "Resume")
         blocked = state("needs_you", "failed", str(blocker.get("title") or "Blocked"), str(blocker.get("detail") or ""), "resume", "Try again")
@@ -2279,18 +2285,24 @@ def preflight_overview(root: Path, refresh: bool = False) -> list[dict[str, str]
     return items
 
 
+def assigned_ssh_machine(root: Path, job: dict[str, Any]) -> str:
+    assigned = job.get("assigned_machine")
+    if not isinstance(assigned, str) or not assigned:
+        return ""
+    machines = read_json_file(runtime_dir(root) / "config" / "machines.json").get("machines", [])
+    return next((assigned for machine in machines if isinstance(machine, dict)
+                 and machine.get("name") == assigned and machine.get("execution_mode") == "ssh"), "")
+
+
 def job_blockers(root: Path, job: dict[str, Any], *, refresh: bool = False) -> list[dict[str, str]]:
-    import shutil
-    from orchestrator import run_check
+    from orchestrator import disk_space, run_check
     if refresh and job.get("status") in run_check.CHECKED_STATUSES:
         from orchestrator.project_setup import refresh_ready_models
         from orchestrator.setup_checklist import invalidate_llm_readiness
         invalidate_llm_readiness()
         refresh_ready_models(root)
-    try:
-        free = shutil.disk_usage(root).free // (1024**3)
-    except OSError:
-        free = None
+    free_bytes = disk_space.status(root, runtime_dir(root))["free_bytes"]
+    free = free_bytes / disk_space.GIB if free_bytes is not None else None
     machines = [m for m in read_json_file(runtime_dir(root) / "config" / "machines.json").get("machines", []) if isinstance(m, dict)]
     found = run_check.blockers(job, machines, free, run_check.MIN_DISK_GB, run_check.model_names_overlap)
     if job.get("status") in run_check.CHECKED_STATUSES and run_check.switches_branches(job) and run_check.runs_from(root):
@@ -7249,6 +7261,7 @@ class UIServer(ThreadingHTTPServer):
         for job_id, path, job in blocked_jobs(root):
             blocker = job["blocker"]
             if job_id in running or job.get("moved_to") or (str(root), job_id) in self._publishing_jobs \
+                    or (blocker.get("kind") == "disk_full" and assigned_ssh_machine(root, job)) \
                     or not blockers.is_cleared(blocker, root) or not (force or blockers.due_for_auto_resume(blocker)):
                 continue
             job["blocker"] = {**blocker, "auto_resumed_at": time.time()}
@@ -8696,7 +8709,8 @@ class UIHandler(BaseHTTPRequestHandler):
                 job["updated_at"] = datetime.now().isoformat()
                 write_json_file(job_path, job)
             else:
-                text = read_limited(brief_file) if brief_file.is_file() else None
+                text = (brief_file.read_text(encoding="utf-8", errors="replace")
+                        if query.get("full") == ["1"] and brief_file.is_file() else read_limited(brief_file))
                 if text is None:
                     text = generate_job_brief(job)
             try:
@@ -9672,6 +9686,19 @@ class UIHandler(BaseHTTPRequestHandler):
             self._switch_project(self._body())
         elif method == "POST" and parts == ["keychain", "unlock"]:
             self._unlock_keychain(root, self._body())
+        elif method == "GET" and parts == ["recovery", "disk-space"]:
+            from orchestrator import disk_space
+
+            job_id = (query.get("job") or [""])[0]
+            if remote := self._disk_recovery_remote(root, job_id):
+                self._json({"remote_machine": remote, "caches": []})
+                return
+            report = disk_space.status(root, runtime_dir(root))
+            report["caches"] = []
+            if query.get("caches") == ["1"]:
+                self._require_owner("list removable build caches")
+                report["caches"] = disk_space.cache_candidates(root)
+            self._json(report)
         elif method == "POST" and len(parts) == 2 and parts[0] == "recovery":
             self._handle_recovery(root, parts[1], self._body())
         elif method == "GET" and parts == ["runs"]:
@@ -10119,6 +10146,8 @@ class UIHandler(BaseHTTPRequestHandler):
             self._git_auth(root, body)
         elif action == "reclaim-space":
             self._reclaim_space(root)
+        elif action == "disk-space":
+            self._clear_selected_disk_caches(root, body)
         else:
             self._error(HTTPStatus.NOT_FOUND, f"Unknown recovery action: {action}")
 
@@ -10359,6 +10388,37 @@ class UIHandler(BaseHTTPRequestHandler):
 
         self._audit("git_prune_worktrees", {"pruned": pruned_dirs})
         self._json({"ok": True, "message": "Pruned orphaned worktrees and cleared stale git locks."})
+
+    def _disk_recovery_remote(self, root: Path, job_id: str) -> str:
+        if not job_id:
+            return ""
+        job = read_json_file(resolve_job_path(root, job_id))
+        return assigned_ssh_machine(root, job)
+
+    def _clear_selected_disk_caches(self, root: Path, body: dict[str, Any]) -> None:
+        from orchestrator import disk_space
+
+        ids = body.get("caches")
+        if not isinstance(ids, list) or not ids or any(not isinstance(key, str) for key in ids):
+            raise UIError("Select the build caches to remove.")
+        if remote := self._disk_recovery_remote(root, _text(body, "job", limit=200)):
+            raise UIError(f"Free up space on {remote}, where the job ran.", HTTPStatus.CONFLICT)
+        with self.server._repository_lock:
+            if folder_lock.holder(root) or any(run["running"] and run["action"] not in SIDE_ACTIONS
+                                              for run in self.server.sessions.list()):
+                raise UIError("Let active jobs finish before clearing caches.", HTTPStatus.CONFLICT)
+            before = disk_space.status(root, runtime_dir(root))
+            try:
+                removed, errors = disk_space.clear_caches(root, ids)
+            except disk_space.CacheBusyError as exc:
+                raise UIError(str(exc), HTTPStatus.CONFLICT) from exc
+            except ValueError as exc:
+                raise UIError(str(exc)) from exc
+            after = disk_space.status(root, runtime_dir(root))
+        self._audit("disk_cache_cleanup")
+        self._json({**after, "removed": removed, "errors": errors,
+                    "reclaimed_bytes": max(0, after["free_bytes"] - before["free_bytes"])
+                    if after["free_bytes"] is not None and before["free_bytes"] is not None else None})
 
     def _reclaim_space(self, root: Path) -> None:
         freed_items: list[str] = []

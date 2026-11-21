@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import codecs
+import functools
 import json
 import os
 import re
@@ -493,6 +494,21 @@ def _claude_edit_mode(role: str | None) -> str:
     return " --permission-mode acceptEdits" if role in (ModelRole.BUILDER, ModelRole.DEBUGGER) else ""
 
 
+@functools.lru_cache(maxsize=1)
+def _codex_exec_auto_flag() -> str:
+    """Return the auto-approve workspace-write flag supported by the installed `codex exec` (`--approve-for-me` in 0.171+, `--full-auto` on older CLIs)."""
+    try:
+        res = subprocess.run(["codex", "exec", "--help"], capture_output=True, text=True, timeout=5)
+        help_text = (res.stdout or "") + "\n" + (res.stderr or "")
+        if "--approve-for-me" in help_text:
+            return "--approve-for-me"
+        if "--full-auto" in help_text:
+            return "--full-auto"
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return "--approve-for-me"
+
+
 def get_llm_command(model: str, prompt_file: str, role: str | None = None, session_id: str | None = None, images: list[Path] | None = None, web: bool = False) -> str:
     # Resolve actual model ID
     m_meta = get_model(model)
@@ -507,14 +523,14 @@ def get_llm_command(model: str, prompt_file: str, role: str | None = None, sessi
     if model_id == "codex":
         cmd_base = "codex exec --skip-git-repo-check"
         if role in [ModelRole.BUILDER, ModelRole.DEBUGGER]:
-            cmd_base += " --full-auto"
+            cmd_base += f" {_codex_exec_auto_flag()}"
     elif model_id.startswith(("gpt-5", "gpt-6")) or (m_meta and m_meta.family == "openai" and "codex" in m_meta.required_clis):
         cmd_base = f"codex exec --model {cli_model_id}"
         if m_meta and m_meta.reasoning_effort:
             cmd_base += f" -c model_reasoning_effort={m_meta.reasoning_effort}"
         cmd_base += " --skip-git-repo-check"
         if role in [ModelRole.BUILDER, ModelRole.DEBUGGER]:
-            cmd_base += " --full-auto"
+            cmd_base += f" {_codex_exec_auto_flag()}"
     elif model_id.startswith("gemini-") or (m_meta and m_meta.family == "gemini"):
         provider_cli = preferred_cli("gemini")
         # Safe Agentic Planning: Allow read/search/docs servers for intelligence, 

@@ -267,7 +267,6 @@ code, pre, .mono { font-family: var(--mono); font-size: var(--type-secondary); }
 .nav-secondary .configuration-menu-trigger { padding-left: var(--space-5); }
 .big-number { font-size: var(--type-display); font-weight: var(--weight-bold); }
 pre.doc { margin: 0; padding: 0 var(--space-4) var(--space-4); white-space: pre-wrap; overflow-wrap: anywhere; font-family: inherit; font-size: var(--type-body); }
-.brief-path-chip { font-size: var(--type-secondary); color: var(--muted); user-select: all; overflow-wrap: anywhere; }
 .brief-content { padding: var(--space-3) var(--space-4) var(--space-4); line-height: 1.6; }
 
 .field-placeholder {
@@ -2533,6 +2532,94 @@ dialog h2 {
   background: var(--border);
 }
 .job-step-arrow.done { background: var(--ok); }
+/* Inline Fix attempts series attached to the job progress timeline (stays on the same Job page). */
+.job-fix-series {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1-5);
+  padding-top: var(--space-2);
+  border-top: 1px dashed var(--border);
+}
+.job-fix-series-label {
+  font-size: var(--type-tag);
+  font-weight: var(--weight-bold);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--github-ink);
+}
+.job-fix-series-track {
+  display: flex;
+  align-items: stretch;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+.job-fix-node {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-0);
+  padding: var(--space-1-5) var(--space-2-5);
+  border-radius: var(--r-md);
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  min-width: 0;
+  max-width: 280px;
+}
+.job-fix-node.is-running { border-color: var(--github-ink); background: var(--accent-soft); }
+.job-fix-node.is-succeeded { border-color: var(--ok); background: var(--ok-soft); }
+.job-fix-node.is-partial { border-color: var(--warn); background: var(--warn-soft); }
+.job-fix-node.is-failed { border-color: var(--bad); background: var(--bad-soft); }
+.job-fix-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1-5);
+  min-width: 0;
+}
+.job-fix-dot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: var(--r-pill);
+  font-size: var(--type-tag);
+  font-weight: var(--weight-bold);
+  flex-shrink: 0;
+}
+.job-fix-node.is-running .job-fix-dot { color: var(--github-ink); }
+.job-fix-node.is-succeeded .job-fix-dot { background: var(--ok); color: var(--ok-solid-ink); }
+.job-fix-node.is-partial .job-fix-dot { background: var(--warn); color: var(--warn-ink); }
+.job-fix-node.is-failed .job-fix-dot { background: var(--bad); color: var(--bad-ink); }
+.job-fix-title {
+  font-size: var(--type-secondary);
+  font-weight: var(--weight-bold);
+  color: var(--text);
+  white-space: nowrap;
+}
+.job-fix-log {
+  margin-left: auto;
+  font-size: var(--type-tag);
+  color: var(--muted);
+  text-decoration: none;
+  white-space: nowrap;
+}
+.job-fix-log:hover { color: var(--text); text-decoration: underline; }
+.job-fix-detail {
+  font-size: var(--type-tag);
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.job-fix-arrow {
+  align-self: center;
+  width: 14px;
+  height: 2px;
+  background: var(--border);
+  flex-shrink: 0;
+}
+.job-fix-arrow.is-succeeded { background: var(--ok); }
+.job-fix-arrow.is-partial { background: var(--warn); }
+.job-fix-arrow.is-failed { background: var(--bad); }
 @container (max-width: 840px) {
   .job-stepper {
     justify-content: flex-start;
@@ -2653,8 +2740,8 @@ dialog h2 {
 .job-hero.tone-working { border-color: var(--accent); background: var(--accent-soft); }
 .job-hero.tone-done { border-color: var(--ok); background: var(--ok-soft); }
 .job-hero.tone-failed { border-color: var(--bad); background: var(--bad-soft); }
-.job-hero-head { flex: 1 0 100%; display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); min-width: 0; }
-.job-hero-main { display: flex; flex-direction: column; align-items: flex-start; gap: var(--space-1); min-width: 0; flex: 1 1 260px; }
+.job-hero-head { flex: 1 0 100%; display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); min-width: 0; }
+.job-hero-main { display: flex; flex-direction: column; align-items: flex-start; gap: var(--space-2); min-width: 0; flex: 1 1 260px; }
 .job-hero-title { margin: 0; font-size: var(--type-body); font-weight: var(--weight-bold); line-height: 1.3; color: var(--text); }
 .job-hero-reason { margin: 0; font-size: var(--type-body); line-height: 1.45; overflow-wrap: anywhere; }
 .job-overlap { display: grid; gap: var(--space-2); }
@@ -4248,6 +4335,7 @@ a.ticket-chip:hover { border-color: var(--accent); color: var(--accent); }
 .plan-review.needs-approval .card-h { background: transparent; border-bottom-color: color-mix(in srgb, var(--warn) 35%, var(--border)); }
 .plan-review.needs-approval .list .item, .plan-review.needs-approval .plan-summary, .plan-review.needs-approval .card-b-split { border-color: color-mix(in srgb, var(--warn) 25%, var(--border)); }
 .plan-summary { font-size: var(--type-body); border-bottom: 1px solid var(--border); }
+.plan-brief-items { overflow-wrap: anywhere; }
 .plan-review.too-large { border-color: var(--bad); background: var(--bad-soft); }
 .plan-review.too-large .card-h { background: transparent; }
 .plan-verdict { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-1) var(--space-3); padding: var(--space-2) var(--space-4);
