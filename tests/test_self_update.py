@@ -106,6 +106,7 @@ const base = {{ version: "0.1.0", install: "git", settings: {{ auto_minor: true,
 console.log(JSON.stringify({{
   breaking: updatesPageHtml({{ ...base, last_check: {{ at: 1, update: "breaking", behind: 3, branch: "web-ui", installed: "abc", breaking_changes: ["New sync"], changes: ["a", "b"] }} }}),
   minor: updatesPageHtml({{ ...base, last_check: {{ at: 1, update: "minor", behind: 2 }} }}),
+  multi: updatesPageHtml({{ ...base, last_check: {{ at: 1, update: "none" }} }}, {{ pairedMachines: [{{ id: "a" }}, {{ id: "b" }}], otherCount: 1, syncAll: true }}),
   current: updatesPageHtml({{ ...base, last_check: {{ at: 1, update: "none" }} }}),
   blocked: updatesPageHtml({{ ...base, last_check: {{ at: 1, update: "minor", blocked: "This copy of Orchestrator has edits of its own" }} }}),
 }}));
@@ -121,3 +122,7 @@ console.log(JSON.stringify({{
         self.assertNotIn(">Update now</button>", out["blocked"])
         self.assertIn('data-update-setting="auto_minor" checked', out["minor"])
         self.assertIn('data-update-setting="auto_breaking">', out["minor"])
+        self.assertIn('data-update-sync-all checked', out["multi"])
+        self.assertIn('data-update-op="apply-all-settings"', out["multi"])
+        self.assertIn('data-update-op="install-all"', out["multi"])
+        self.assertNotIn('data-update-sync-all', out["current"])

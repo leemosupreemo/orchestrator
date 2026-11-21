@@ -12897,8 +12897,54 @@ pages.config = async (args = []) => {
   }
   if (section === "updates") {
     const u = await api("updates").catch(() => null);
-    return { ...result, ...(u ? { html: updatesPageHtml(u) } : {}),
+    let pairedMachines = [];
+    if (typeof Account !== "undefined" && Account.active?.() && typeof cpApi === "function") {
+      try {
+        const res = await cpApi("machines", { signal: AbortSignal.timeout(4000) });
+        pairedMachines = Array.isArray(res?.machines) ? res.machines : [];
+      } catch { pairedMachines = []; }
+    }
+    let currentMachineId = "";
+    try { currentMachineId = localStorage.getItem(Account.MACHINE_KEY) || ""; } catch {}
+    let syncAll = true;
+    try { syncAll = localStorage.getItem("orchestrator_update_all_machines") !== "false"; } catch {}
+    const otherMachines = pairedMachines.filter((m) => m.id && m.id !== currentMachineId);
+    const callPairedMachine = async (machine, path, body) => {
+      const { endpoint, ticket } = await cpApi("machine/ticket", { method: "POST", body: { machine_id: machine.id }, signal: AbortSignal.timeout(8000) });
+      const authRes = await fetch(`${endpoint}/api/auth`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Orchestrator-UI": "1" },
+        body: JSON.stringify({ ticket }),
+        credentials: "omit",
+        signal: AbortSignal.timeout(8000),
+      });
+      const authData = await authRes.json().catch(() => ({}));
+      if (!authRes.ok || !authData.token) throw new Error(authData.error || `Couldn't sign in to ${machine.name}`);
+      const res = await fetch(`${endpoint}/api/${path}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Orchestrator-UI": "1", "Authorization": `Bearer ${authData.token}` },
+        body: JSON.stringify(body),
+        credentials: "omit",
+        signal: AbortSignal.timeout(15000),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      return data;
+    };
+    const pushSettingsToOthers = async (settingsBody) => {
+      const reachable = otherMachines.filter((m) => m.reachable);
+      const offline = otherMachines.length - reachable.length;
+      if (!reachable.length) return { ok: 0, failed: 0, offline };
+      const results = await Promise.allSettled(reachable.map((m) => callPairedMachine(m, "updates", { op: "settings", ...settingsBody })));
+      const ok = results.filter((r) => r.status === "fulfilled").length;
+      return { ok, failed: results.length - ok, offline };
+    };
+    return { ...result, ...(u ? { html: updatesPageHtml(u, { pairedMachines, otherCount: otherMachines.length, syncAll }) } : {}),
       after: () => {
+        const currentSettings = () => ({
+          auto_minor: Boolean(view.querySelector('[data-update-setting="auto_minor"]')?.checked),
+          auto_breaking: Boolean(view.querySelector('[data-update-setting="auto_breaking"]')?.checked),
+        });
         const onClick = async (event) => {
           const button = event.target.closest("[data-config-action], [data-update-op]");
           if (!button) return;
@@ -12908,6 +12954,34 @@ pages.config = async (args = []) => {
           button.disabled = true;
           button.setAttribute("aria-busy", "true");
           try {
+            if (op === "apply-all-settings") {
+              const settings = currentSettings();
+              await api("updates", { method: "POST", body: { op: "settings", ...settings } });
+              const { ok, failed, offline } = await pushSettingsToOthers(settings);
+              const parts = [`Saved on ${plural(1 + ok, "computer")}`];
+              if (offline) parts.push(`${offline} offline`);
+              if (failed) parts.push(`${failed} failed`);
+              toast(parts.join(" · "), failed > 0);
+              button.disabled = false;
+              button.removeAttribute("aria-busy");
+              return;
+            }
+            if (op === "install-all") {
+              const reachable = otherMachines.filter((m) => m.reachable);
+              const offline = otherMachines.length - reachable.length;
+              const remoteResults = await Promise.allSettled(reachable.map(async (m) => {
+                await callPairedMachine(m, "updates", { op: "check" });
+                return callPairedMachine(m, "updates", { op: "install" });
+              }));
+              const localRes = await api("updates", { method: "POST", body: { op: "install" } }).catch((e) => ({ ok: false, message: e.message }));
+              const ok = (localRes?.ok ? 1 : 0) + remoteResults.filter((r) => r.status === "fulfilled" && r.value?.ok).length;
+              const parts = [`Triggered update on ${plural(ok, "computer")}`];
+              if (offline) parts.push(`${offline} offline`);
+              toast(parts.join(" · "));
+              if (localRes?.restart) notify("info", "Orchestrator is restarting with the update…", { id: "self-update", sticky: false });
+              else route();
+              return;
+            }
             const res = await api("updates", { method: "POST", body: { op } });
             if (op === "install") {
               toast(res.message || "Updated");
@@ -12917,10 +12991,27 @@ pages.config = async (args = []) => {
           } catch (err) { toast(err.message, true); button.disabled = false; button.removeAttribute("aria-busy"); }
         };
         const onChange = async (event) => {
+          const syncBox = event.target.closest("[data-update-sync-all]");
+          if (syncBox) {
+            try { localStorage.setItem("orchestrator_update_all_machines", syncBox.checked ? "true" : "false"); } catch {}
+            return;
+          }
           const box = event.target.closest("[data-update-setting]");
           if (!box) return;
-          try { await api("updates", { method: "POST", body: { op: "settings", [box.dataset.updateSetting]: box.checked } }); toast("Saved"); }
-          catch (err) { box.checked = !box.checked; toast(err.message, true); }
+          const settingBody = { [box.dataset.updateSetting]: box.checked };
+          try {
+            await api("updates", { method: "POST", body: { op: "settings", ...settingBody } });
+            const applyAll = Boolean(view.querySelector("[data-update-sync-all]")?.checked);
+            if (applyAll && otherMachines.length) {
+              const { ok, failed, offline } = await pushSettingsToOthers(settingBody);
+              const parts = [`Saved on ${plural(1 + ok, "computer")}`];
+              if (offline) parts.push(`${offline} offline`);
+              if (failed) parts.push(`${failed} failed`);
+              toast(parts.join(" · "), failed > 0);
+            } else {
+              toast("Saved");
+            }
+          } catch (err) { box.checked = !box.checked; toast(err.message, true); }
         };
         view.addEventListener("click", onClick);
         view.addEventListener("change", onChange);
@@ -12933,7 +13024,7 @@ pages.config = async (args = []) => {
 
 // Orchestrator's own updates on this computer (self_update.py): what's installed, what's newer and whether it's minor
 // (installs by itself once no run is going) or breaking (waits for you, unless you allow it), and the two settings.
-function updatesPageHtml(u) {
+function updatesPageHtml(u, { pairedMachines = [], otherCount = 0, syncAll = true } = {}) {
   const c = u.last_check || {};
   const when = (t) => t ? new Date(t * 1000).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "";
   const installLabel = { git: "a git checkout", pip: "pipx", packaged: "the Orchestrator app" }[u.install] || u.install;
@@ -12944,6 +13035,13 @@ function updatesPageHtml(u) {
   const changes = (c.changes || []).length ? `<details class="fold"><summary class="linklike muted">What's new (${c.changes.length})</summary><ul class="muted">${c.changes.map((x) => `<li>${esc(x)}</li>`).join("")}</ul></details>` : "";
   const history = (u.history || []).length ? `<details class="fold"><summary class="linklike muted">Recent updates</summary><ul class="muted">${u.history.slice().reverse().map((h) => `<li>${esc(when(h.at))}: ${esc(h.message)}</li>`).join("")}</ul></details>` : "";
   const canInstall = ["minor", "breaking"].includes(c.update) && !c.blocked;
+  const allMachinesHtml = otherCount > 0 ? `
+        <hr>
+        <label class="check"><input type="checkbox" data-update-sync-all${syncAll ? " checked" : ""}><span><strong>Apply to all online computers</strong><br><span class="muted">Sync these auto-update choices across your ${plural(pairedMachines.length, "paired computer")}.</span></span></label>
+        <div class="row gap-8 wrap">
+          <button type="button" class="btn small" data-update-op="apply-all-settings">Sync settings now</button>
+          <button type="button" class="btn small" data-update-op="install-all">Update all online computers</button>
+        </div>` : "";
   return `<div class="configuration-page">
     <section class="card configuration-card">
       <div class="card-h"><h2>This computer</h2></div>
@@ -12963,8 +13061,9 @@ function updatesPageHtml(u) {
     <section class="card configuration-card">
       <div class="card-h"><h2>Automatic updates</h2></div>
       <div class="card-b stack">
-        <label class="check"><input type="checkbox" data-update-setting="auto_minor"${u.settings.auto_minor ? " checked" : ""}><span><strong>Install minor updates by themselves</strong><br><span class="muted">Fixes and improvements. Checked every half hour, installed once no run is going, then Orchestrator restarts. Jobs carry on where they were.</span></span></label>
+        <label class="check"><input type="checkbox" data-update-setting="auto_minor"${u.settings.auto_minor ? " checked" : ""}><span><strong>Install minor updates by themselves</strong><br><span class="muted">Fixes and improvements. Checked every 5 minutes, installed once no run is going, then Orchestrator restarts. Jobs carry on where they were.</span></span></label>
         <label class="check"><input type="checkbox" data-update-setting="auto_breaking"${u.settings.auto_breaking ? " checked" : ""}><span><strong>Install breaking updates by themselves too</strong><br><span class="muted">Changes your other computers or saved data depend on. Off: they wait here for you to choose Update now.</span></span></label>
+        ${allMachinesHtml}
       </div>
     </section>
     <section class="card configuration-card">

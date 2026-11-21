@@ -23,7 +23,7 @@ from typing import Any
 
 from orchestrator.project_config import PACKAGE_ROOT, user_state_dir
 
-CHECK_SECONDS = 1800
+CHECK_SECONDS = 300
 RELEASE_FILE = "orchestrator/release.json"
 DEFAULTS = {"auto_minor": True, "auto_breaking": False}
 _ENV = {"GIT_TERMINAL_PROMPT": "0", "GCM_INTERACTIVE": "never"}
