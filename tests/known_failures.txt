@@ -14,7 +14,6 @@ test_web_ui.AccessibilityStaticTests.test_design_tokens_hold  # failing at HEAD,
 test_web_ui.AccessibilityStaticTests.test_text_uses_the_type_roles  # failing at HEAD, cause unknown
 test_web_ui.ConnectionsAndModalLayoutConsistencyTests.test_container_padding_design_standard_enforces_consistency  # failing at HEAD, cause unknown
 test_web_ui.PackagesApiTests.test_recommending_is_the_blue_button_only_when_there_are_requirements_to_review  # failing at HEAD, cause unknown
-e2e.test_pipeline_offline.BlockedJobRecoveryTests  # setUpClass times out after 600s on web-ui branch
 test_llm_json_retry.JsonRetryTests.test_shadow_can_recommend_another_model_without_changing_the_live_pick  # pre-existing on web-ui branch: recommends opencode/nemotron-3-ultra-free instead of gpt-6.2-astra
 test_run_progress.RunStatusRenderingTests.test_home_job_row_has_no_status_container_and_running_now_shows_step_and_elapsed  # pre-existing on web-ui branch
 test_run_progress.RunStatusRenderingTests.test_live_panel_details_elapsed_waiting_and_terminal_states  # pre-existing on web-ui branch
