@@ -376,7 +376,9 @@ console.log(JSON.stringify({ emptyHtml, failedItems, failedHtml }));"""
         self.assertIn("Fix #1 · Fix failed", out["failedHtml"])
         self.assertIn("Fix #2 · Fix failed", out["failedHtml"])
         self.assertIn("#/runs/r9", out["failedHtml"])
-        # Starting a fix from the job page stays in place and hero deduplicates Run fix
-        self.assertIn('const stayHere = (stayOnJob || action === "debug")', source)
-        self.assertIn('button: nextAction === "debug" ? "Run fix with note" : "Run fix"', source)
+        # Starting a fix from anywhere routes to the existing job page (never a dedicated fix run page)
+        self.assertIn('const isFixForJob = (stayOnJob || action === "debug" || action === "fix") && Boolean(params?.job);', source)
+        self.assertIn('const targetHash = `#/jobs/${encodeURIComponent(params.job)}`;', source)
+        self.assertIn('primary: nextAction === "debug" && !signIn && !diskBlocked', source)
+        self.assertIn('${heroAction && !steer?.primary ? `<div class="job-hero-action">${heroAction}</div>` : ""}', source)
         self.assertIn('class="btn ghost icon-only hero-copy-log-btn"', source)

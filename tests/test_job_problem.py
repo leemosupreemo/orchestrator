@@ -61,7 +61,7 @@ class DescribeTests(unittest.TestCase):
 
     def test_closing_the_sign_in_dialog_redraws_the_page(self):
         app = (STATIC / "app.js").read_text(encoding="utf-8")
-        self.assertIn("onClose: () => { refreshState().then(() => route()).catch(() => {}); }", app)
+        self.assertIn("if (!retried) refreshState().then(() => route()).catch(() => {});", app)
         connect = (ROOT / "orchestrator" / "scripts" / "ai_connect.py").read_text(encoding="utf-8")
         self.assertIn("job_problem.record_sign_in(args.provider)", connect)
 
@@ -97,13 +97,15 @@ class DescribeTests(unittest.TestCase):
 
 
 class WiringTests(unittest.TestCase):
-    def test_the_job_page_and_the_dialog_show_it(self):
+    def test_the_job_page_shows_the_problem_and_fix_runs_directly(self):
         app = (STATIC / "app.js").read_text()
         self.assertIn('const rawHeroReason = String(problem?.summary || s.state.reason || "").trim();', app)
         self.assertIn("const signIn = problem?.sign_in || s.state.sign_in;", app)
         self.assertIn("Sign in to ${esc(signIn.name)}", app)
-        self.assertIn("<strong>What needs fixing</strong>", app)
-        self.assertIn("(await api(`jobs/${encodeURIComponent(params.job)}`)).problem", app)
+        self.assertNotIn('formDialog("Run fix"', app)
+        self.assertNotIn("async debug(params)", app)
+        self.assertIn('if (action === "debug" && params.logs === undefined && state.project?.remote_logs)', app)
+        self.assertIn('runAction(action, params, { button: el });', app)
         server = Path(glob.glob(str(ROOT / "orchestrator" / "web" / "ser*.py"))[0]).read_text()
         self.assertIn('"problem": job_problem_for(job, out_dir)', server)
 

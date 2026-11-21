@@ -20,13 +20,22 @@ When the build or tests fail, or the worker raises, the job ends up in one of th
 
 | Cause | Recorded as | Job page | Next |
 |---|---|---|---|
-| Build or tests fail (the code) | `status: debugging` | Needs a fix | AI fix attempt (`debug_job.py`), up to 8, paused when stalled |
+| Build or tests fail (the code) | `status: debugging` | Needs a fix | An initial repair may run automatically. Further failed repairs wait for **Run another fix**. |
 | Something outside the code: a git lock, an expired sign-in, a missing tool, a full disk, Xcode or the simulator | `status: human-needed`, `blocker: {...}` (`orchestrator/blockers.py`) | The blocker's title, checked now | Steps to clear it, then **Try again**; resumes by itself once cleared |
 | The AI asks a question | `human_clarification_question` | Question for you | **Answer** |
 | The AI's "question" is really a blocker ("rerun with write access") | `human_clarification_question`, classified by `classify_clarification` | The AI couldn't continue (`orchestrator/blocker_fix.py`) | The one fix that applies, e.g. **Plan again** telling the planner it plans only |
 | The work passed its tests but the commit failed | `passed_uncommitted: {files}` | Tests passed, not committed | **Commit the work**: Resume commits those files without building again, and without checking anything out (a forced checkout would throw the uncommitted work away) |
 | Another job is using the project folder | `waiting_for` (`folder_lock`) | Waiting | Starts by itself |
 | Continued on another computer | `moved_to` | Last worked on <computer> | Opening it automatically brings it to the local machine when the other computer is online and idle; offline copies warn before continuing here |
+
+### How a fix runs
+
+1. **Start.** The web app's **Run fix** button posts the existing `debug` action directly. `build_debug` starts `debug_job.py` with the job file and any feedback or log references. The status box shows the recorded failure, and the inline **Tell the AI what to change** form can add feedback. With device logging configured, a direct click requests `cloud:latest`. The inline form can include or omit it. Design and Tests jobs hand feedback to their specialized worker and skip the separate diagnosis pass.
+2. **Diagnose.** `run_propose` gives the debugger the saved brief, current acceptance criteria, linked references, project requirements, builder summary, failing build or test logs, and the iteration ledger. Log references pull device logs when available. The debugger uses the job's reviewer model as its preferred model and supplies the job's allowed models to the router. Its proposal records a hypothesis, action, and any targeted tests. The prompt and raw response are saved under the job's `output/<job-id>/iter_<number>/` directory.
+3. **Implement and verify.** `run_implement` launches `worker_run.py` with `AI_DEBUG_CHILD=1`. The builder receives the proposed fix. The worker runs the normal build and tests on the job's branch, including configured extra checks when applicable. Build and test results are recorded in `debug_history`. When checks pass, the worker saves the change and follows the job's normal review flow. A passing build alone still leaves the acceptance criteria to verify.
+4. **Stop or continue.** The initial worker can start a repair after build or test failure. If the repair's own worker fails the checks, it keeps the job on its branch and waits for the next request. A repeated hypothesis or unchanged failure signature can pause before the next proposal. The debugger also applies a default safety check at 30 iterations when the history is no longer converging. A model or CLI failure before a proposal restores the iteration count and records the error. A failed commit after passing checks can offer **Commit the work**, which retries saving the files.
+
+The job's **Runs** section shows each attempt's logs and result. The job record keeps `debug_phase`, `debug_history`, `debug_proposal`, `debug_pause_reason`, and the latest error. Use the run log for tool failures and the iteration ledger for repeated repair hypotheses.
 
 ### Blockers
 
@@ -42,7 +51,7 @@ Home's **Blocked** card shows it once with every job it holds up.
   (`iteration_ledger`) so fix loops and fallback models don't re-explore dead ends. Non-overlapping jobs default to 2 concurrent
   worktrees (`parallel_jobs.DEFAULT_AT_ONCE = 2`) behind the scenes unless `max_concurrent_jobs` is set explicitly.
 - **Cleared or not.** `is_cleared` checks the blocker now rather than trusting when it was recorded: the lock file is
-  gone, the person signed in since (`job_problem.signed_in_at`), the tool is on `PATH`, 2 GB is free, the folder is
+  gone, the person signed in since (`job_problem.signed_in_at`), the tool is on `PATH`, the build's disk floor is met, the folder is
   writable. Xcode and simulator problems can't be checked, so they wait for **Try again**.
 - **Resuming by itself.** The server's notifier loop (every 15 seconds, with or without a browser open) resumes each job
   whose blocker is cleared (`UIServer.resume_cleared_jobs`). Home's refresh calls the same method. Each job is resumed at

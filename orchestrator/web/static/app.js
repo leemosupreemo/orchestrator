@@ -507,13 +507,16 @@ async function runAction(action, params = {}, { skipConfirm = false, button = nu
     if (run && Array.isArray(state.runs) && !state.runs.some((r) => r.id === run.id)) {
       state.runs.unshift(run);
     }
-    const stayHere = (stayOnJob || action === "debug")
-      && current.page === "job"
-      && params?.job
-      && String(params.job) === String(current.args?.[0] || "");
-    if (stayHere) {
-      await refreshState();
-      route();
+    const isFixForJob = (stayOnJob || action === "debug" || action === "fix") && Boolean(params?.job);
+    if (isFixForJob) {
+      const targetHash = `#/jobs/${encodeURIComponent(params.job)}`;
+      if (current.page === "job" && String(params.job) === String(current.args?.[0] || "")) {
+        await refreshState();
+        route();
+      } else {
+        location.hash = targetHash;
+        void refreshState();
+      }
     } else {
       location.hash = `#/runs/${run.id}`;
       void refreshState();
@@ -913,23 +916,6 @@ const dialogs = {
       </label>`, "Fix it");
     if (values?.feedback.trim()) runAction("fix", { feedback: values.feedback, job: params.job || "" });
   },
-  async debug(params) {
-    const hasLogs = state.project?.remote_logs;
-    let problem = null;
-    try { problem = (await api(`jobs/${encodeURIComponent(params.job)}`)).problem || null; } catch { /* the dialog still works without it */ }
-    const problemBlock = problem ? `<div class="notice warn debug-problem"><strong>What needs fixing</strong><p>${esc(problem.summary)}</p>
-      ${problem.lines?.length ? `<ul>${problem.lines.map((l) => `<li>${esc(l)}</li>`).join("")}</ul>` : ""}</div>
-      <p class="muted">Run fix asks the AI to work on this and checks the tests again.</p>` : "";
-    const values = await formDialog("Run fix", `
-      ${problemBlock}
-      ${hasLogs ? `<label class="check"><input type="checkbox" name="device_logs" checked>
-        <span>Include newest device logs<small>Pulled fresh from the last app launch on a tester's phone.</small></span></label>` :
-        `<p class="hint-text">Tip: set up Device logs to include what the app logged on your phone.</p>`}
-      <label class="field"><span>What did you see? <span class="muted">(optional)</span></span>
-        <textarea name="feedback" placeholder="e.g. Still shows the empty seat after 40s in the background">${esc(params.feedback || "")}</textarea>
-      </label>`, "Run fix");
-    if (values) runAction("debug", { job: params.job, logs: values.device_logs ? "cloud:latest" : "", feedback: values.feedback });
-  },
   async answer(params) {
     const job = await api(`jobs/${encodeURIComponent(params.job)}`);
     const fix = job.summary?.state?.next;
@@ -1301,6 +1287,7 @@ document.addEventListener("click", (e) => {
   e.preventDefault();
   const action = el.dataset.action;
   const params = el.dataset.params ? JSON.parse(el.dataset.params) : {};
+  if (action === "debug" && params.logs === undefined && state.project?.remote_logs) params.logs = "cloud:latest";
   // A dialog that fails to open (its data didn't load) says so, instead of the button seeming to do nothing.
   if (dialogs[action]) return Promise.resolve().then(() => dialogs[action](params)).catch((err) => toast(err?.message || "That didn't open. Try again.", true));
   runAction(action, params, { button: el });
@@ -2012,6 +1999,7 @@ async function afterProviderSignIn(user, name) {
     : (user?.providerData?.[0]?.providerId === "password") ? "email"
     : "email";
   setLastLoginMethod(provider);
+  if (typeof landOnHome === "function") landOnHome();
   if (Account.active()) return openAccount();
   const backend = getBackendUrl();
   if (!backend && window.location.hostname !== "127.0.0.1" && window.location.hostname !== "localhost") {
@@ -4897,7 +4885,7 @@ function jobHeaderActions(s, links = [], ctx = {}) {
     ["Work on this job", [
       // Run a fix and Revise plan live in the status box's "Tell the AI what to change" box; here only when it is hidden.
       idle && !ctx.steerShown && next !== "debug" && ["review-needed", "completed", "debugging", "failed"].includes(s.status)
-        && ["Run a fix…", act("debug", j), "Describe what you saw, or leave it blank for another automatic attempt"],
+        && ["Run fix", act("debug", j), "Start a fix attempt"],
       idle && !reviewed && s.tasks_total && s.tasks_done < s.tasks_total && next !== "resume" && ["Resume", act("resume", j), "Continue from the next task"],
       idle && s.status === "scheduled" && next !== "execute" && ["Run now", act("execute", j)],
       idle && !ctx.planShown && !ctx.steerShown && ["planned", "designing", "human-needed", "debugging"].includes(s.status)
@@ -6439,17 +6427,17 @@ pages.job = async ([id]) => {
   const steer = activeRun || s.question || reviewingPlan || signIn ? null
     : isJobComplete ? { mode: "fix", button: "Reopen and change", hint: "Reopens this job with your note and builds it.", required: true }
     : ["merge", "complete"].includes(nextAction) ? { mode: "iterate", button: "Request changes", required: true, hint: "" }
-    : hasBuildWork || ["debugging", "failed"].includes(status) ? { mode: "debug", button: nextAction === "debug" ? "Run fix with note" : "Run fix", required: nextAction === "debug",
-      hint: "" }
+    : hasBuildWork || ["debugging", "failed"].includes(status) ? { mode: "debug", button: "Run fix", required: false,
+      primary: nextAction === "debug" && !signIn && !diskBlocked, hint: "" }
     : ["planned", "designing", "human-needed", "scheduled"].includes(status) ? { mode: "revise", button: "Re-plan", required: true,
       hint: "Re-plans the job with this; you approve the new plan before anything is built." }
     : null;
   const steerHtml = steer ? `<form class="job-steer" id="job-steer" data-mode="${steer.mode}">
       <label class="sr-only" for="job-steer-text">Tell the AI what to change</label>
-      <textarea id="job-steer-text" name="text" rows="2"${steer.required ? " required" : ""} placeholder="Tell the AI what to change${steer.required ? "" : ", or what went wrong"}"></textarea>
+      <textarea id="job-steer-text" name="text" rows="2"${steer.required ? " required" : ""} placeholder="Tell the AI what to change${steer.required ? "" : ", or what went wrong (optional)"}"></textarea>
       <div class="job-steer-foot">${steer.hint ? `<small class="muted">${esc(steer.hint)}</small>` : ""}
         ${steer.mode === "debug" && state.project?.remote_logs ? `<label class="check"><input type="checkbox" name="device_logs" checked><span>Include newest device logs</span></label>` : ""}
-        <button type="submit" class="btn small">${esc(steer.button)}</button></div>
+        <button type="submit" class="btn small${steer.primary ? " primary" : ""}">${esc(steer.button)}</button></div>
     </form>` : "";
   const listOf = (v) => (Array.isArray(v) ? v : typeof v === "string" && v.trim().startsWith("[") ? (() => { try { return JSON.parse(v); } catch { return []; } })() : [])
     .filter((x) => typeof x === "string" && x.trim());
@@ -6659,7 +6647,7 @@ pages.job = async ([id]) => {
           ${showTaskBar ? `<div class="tasks-progress-wrap"><div class="progress-bar-container" role="progressbar" aria-label="Tasks built" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${tasksPct}"><div class="progress-bar-fill" style="width: ${tasksPct}%"></div></div><span class="progress-text">${tasksDone}/${tasksTotal}</span></div>` : ""}
           ${uxWarning ? `<p class="job-hero-reason"><button type="button" class="linklike" data-scroll-to="#ux-section">UX and design check: ${plural(uxWarning, "major finding")}. Look before you ${s.state.next?.action === "merge" ? "merge" : "finish"}.</button></p>` : ""}
         </div>
-        <div class="job-hero-action">${heroAction}</div>
+        ${heroAction && !steer?.primary ? `<div class="job-hero-action">${heroAction}</div>` : ""}
         ${reviewContextHtml}
         ${steerHtml}
       </section>`}

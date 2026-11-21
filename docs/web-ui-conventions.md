@@ -46,12 +46,13 @@ the checks that can be automated live in `tests/test_web_ui.py`.
 - A decision shows what it decides. While a plan waits for approval (or to start), it sits right under the job's
   hero as "The plan to approve": summary, assumptions and risks, and each task with what "done" means and the files it
   touches, editable in place, with **Revise…** beside it. Once approved it folds back to Tasks.
-- **Inline fix attempts:** Starting a fix (`action="debug"`) from a job page stays on `#/jobs/<id>` instead of jumping
-  to a separate run page. Fix iterations render as a dedicated **Fix attempts** series under the job's lifecycle stepper
+- **Inline fix attempts:** Starting a fix (`action="debug"` or `action="fix"` with a job) from anywhere—Home's job
+  list, a job page, or a run page—always opens or stays on `#/jobs/<id>` instead of navigating to a dedicated fix run
+  page. Fix iterations render as a dedicated **Fix attempts** series under the job's lifecycle stepper
   (`job-fix-series`) with distinct per-attempt outcomes (**Fixing…**, **Fix succeeded**, **Partially succeeded**, **Fix
-  failed**) and a **Log ↗** link to each run. When the hero's primary button is already **Run fix**, the steer form
-  below it labels its submit button **Run fix with note** (requiring text) so there are never duplicate **Run fix**
-  buttons, and the failure copy-log control (`#copy-job-failure-log`) uses the standard `.btn.ghost.icon-only` size.
+  failed**) and a **Log ↗** link to each run. When the hero's next action is **Run fix**, the hero renders a single
+  primary **Run fix** button directly under the optional note textarea (suppressing the duplicate top-right **Run fix**
+  button), and the failure copy-log control (`#copy-job-failure-log`) uses the standard `.btn.ghost.icon-only` size.
 
 - A More menu groups its items under headings (on a job: **Work on this job**, **Share & export**, **Settings**, **Finish or remove**), one line each with the
   description in the tooltip (`moreMenu(items, { compact: true })`), only what fits the current stage, and ending

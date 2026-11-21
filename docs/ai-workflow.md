@@ -34,6 +34,8 @@ While a planning or replanning run is active, the worker emits structured phase 
    - Once the initial slice reaches `review-needed`, it is recorded as **Version `v0.1` (`Preview ready`)** with its **Time to First Experience (TTFE)** and clickable **Assumed Product Hypotheses**.
    - Submitting user feedback (`orchestrator script job_actions.py refine <job_file> --feedback "..."` or the Job page's **Experience & Refine** workspace) runs the Change-Impact Classifier (`Analyzing feedback impact`), evolves the `LivingFeatureSpec` (`Refining from user feedback` or `Consolidating & refactoring` when file churn $\ge 3$), or safely reverts (`Reverting last iteration`), streaming `[experience]` version and impact updates live to the status container.
 
+For repair runs, see [how a fix runs](job-recovery.md#how-a-fix-runs). It covers the debugger's inputs, the builder handoff, and how verification and iteration history determine the next step.
+
 ### How planning assesses risk
 
 The planner labels each open decision with its confidence, impact, reversibility, and the way it can be resolved. Confidence and impact are high or low. Reversibility is easy or costly. A decision can use a default, call for repository inspection, require a person's answer, or require resolution of conflicting requirements.

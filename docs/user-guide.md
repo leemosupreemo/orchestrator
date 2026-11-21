@@ -510,7 +510,7 @@ stage pills above it scroll to the card for that stage; Finalize scrolls to the 
   |---|---|---|
   | Planned, not built yet | **Re-plan** | Re-plans with your note; you approve the new plan before anything is built |
   | Ready to merge | **Request changes** | Builds the change on the job's branch, runs the tests and updates the pull request; you review again before merging |
-  | Failed or needing a fix | **Run fix** | A fix attempt; say what you saw, or leave it blank for another automatic attempt |
+  | Failed or needing a fix | **Run fix** | Starts a fix attempt. Add any feedback in the job page's **Tell the AI what to change** field when it appears. |
   | Merged | **Reopen and change** | Reopens the job with your note and builds it |
 
   Enter sends, Shift+Enter starts a new line, and a half-written note survives the page refreshing itself. The box is
@@ -535,13 +535,15 @@ description as the brief.
 
 The Build step only counts as done when the builder changed files. If it finishes without changing any, the job stops as **Nothing was built**: it doesn't go on to test unchanged code or start fix attempts. The timeline marks Build with "No files changed", and **Run the build again** retries it. The usual cause is an AI tool that refused to edit files; the message says so when the builder reported it. Claude, when building or fixing, is allowed to edit files in the project (its other roles stay read-only). A fix attempt that changes nothing stops the same way, and an investigation may change nothing.
 
-### When the tests still fail after a run
+### Running a fix
 
-**Blocked jobs.** When a job stops on something outside the code (a leftover git lock, an expired AI sign-in, a tool that isn't installed, a full disk, Xcode or the simulator), it doesn't start fix attempts: no code change can help. The job says what blocks it and how to clear it, and Home's **Blocked** card lists each blocker once with the jobs it holds up (**Clear the lock**, **Sign in**). Once a blocker is cleared, its jobs resume by themselves while Home is open, at most once an hour each, so a blocker that comes straight back pauses them again instead of looping.
+The job page shows what failed and any available context. **Run fix** starts a repair directly. If **Tell the AI what to change** appears on the job page, you can add reproduction steps, what you saw, or what you expect. Leave it blank to use the recorded failure. If device logging is configured, the direct button requests the latest device log. The inline form lets you choose whether to include it.
 
-If the build or tests fail, the job goes into **Needs a fix** (its status is *debugging*). Each fix attempt is its own run, and **nothing retries by itself**. When a run ends this way its page says **Needs your next step** and gives the reason (the failing tests, or "No tests ran" when the test command found nothing to run, which is a test-selection problem rather than a code failure), with one button: **Run another fix**. On the job page, the same thing is the **Run fix** button of the **Tell the AI what to change** box. The job page says **what needs fixing** before you press anything: the most important problem first (for example *your Claude sign-in expired*, *the AI's file edits were blocked*, *No tests ran*, which tests fail, or that the project doesn't build), then a few lines of context such as the last attempt's diagnosis. When the cause is an expired sign-in, the job page has a **Sign in** button for that tool. Add what you saw, or leave it blank for another automatic attempt. The job stays open on its branch, so nothing is lost. After several attempts without progress, automatic fixing pauses and the page says why.
+The debugger reviews the brief, acceptance criteria, logs, and previous attempts. It proposes a change and the builder applies it on the job's existing branch. Orchestrator runs the build and tests again, then follows the job's normal review flow when they pass. An initial build or test failure can start one repair automatically. If that repair still fails, use **Run another fix** or add new evidence on the job page. Repeated hypotheses or unchanged failures can pause the fix process for review.
 
-If a builder reports that its file writes were blocked (the AI tool's permission mode refused them), the job stops with that reason instead of building and testing code that didn't change. A test command that names files that don't exist, or runs no tests, is ignored and the project's own tests run instead.
+For machine problems, follow the action shown on the job. Use **Free up space** for storage and **Sign in** when the AI tool's session expired. A rejected CLI flag such as `unexpected argument '--full-auto'` is an AI tool error. Check the Orchestrator backend and Codex CLI on the computer running the job before retrying. On a job that already passed its checks, use **Request changes** to refine the result or **Revise plan** to change the agreed scope.
+
+See [the full fix workflow](job-recovery.md#how-a-fix-runs) for how attempts, blockers, and recovery are recorded.
 
 ## Running Several Jobs
 

@@ -54,6 +54,7 @@ class WhichSignInsLandOnHomeTests(unittest.TestCase):
     def test_a_provider_sign_in_google_apple_github_email_and_redirects_lands_on_home(self):
         body = function_source("async function afterProviderSignIn(")
         self.assertIn("{ home: true }", body)
+        self.assertLess(body.index("landOnHome()"), body.index("if (Account.active()) return openAccount();"))
 
     def test_opening_a_computer_after_signing_in_lands_on_home_unless_an_idea_is_waiting(self):
         body = function_source("async function enterMachine(")
