@@ -476,6 +476,8 @@ def job_updates(roots: list[Path], repo_by_root: dict[str, str | None] | None = 
         paths = sorted(jobs.glob("*.json"), reverse=True) + [p for p in sorted((jobs / "archive").glob("*.json"), reverse=True)
                                                               if now - p.stat().st_mtime < ARCHIVE_WINDOW]
         for path in paths:
+            if re.search(r"_task_\d+$", path.stem):  # scratch copy the worker makes per task; not a job
+                continue
             try:
                 job = json.loads(path.read_text(encoding="utf-8"))
             except (OSError, ValueError):
@@ -539,6 +541,8 @@ def build_snapshot(root: Path | None = None, live: dict[str, dict[str, Any]] | N
         proj_jobs = []
         if jobs_dir.is_dir():
             for jpath in sorted(jobs_dir.glob("*.json"), reverse=True)[:20]:
+                if re.search(r"_task_\d+$", jpath.stem):  # scratch copy the worker makes per task; not a job
+                    continue
                 try:
                     jdata = json.loads(jpath.read_text(encoding="utf-8"))
                     if isinstance(jdata, dict) and jdata.get("job_id"):

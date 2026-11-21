@@ -17,6 +17,7 @@ answers and plans).
 from __future__ import annotations
 
 import json
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -26,7 +27,8 @@ from orchestrator import account, model_outcomes, state_ref, sync_health
 CHECK_SECONDS = 60
 JOBS_DIR = "jobs/"
 EVENTS = "job-events.json"
-IGNORED_IN_COMPARISON = ("updated_at", "machine", "active_run", "state")   # change by the minute without saying anything new
+IGNORED_IN_COMPARISON = ("updated_at", "machine", "active_run")   # change by the minute without saying anything new
+_TASK_SCRATCH_RE = re.compile(r"_task_\d+$")
 
 
 def _canonical(entry: dict[str, Any]) -> str:
@@ -45,6 +47,8 @@ def local_entries(root: Path, name: str, now: float | None = None) -> dict[str, 
     repo = account.project_repo(Path(root))
     out: dict[str, dict[str, Any]] = {}
     for path in paths:
+        if _TASK_SCRATCH_RE.search(path.stem):  # scratch copy the worker makes per task; not a job
+            continue
         try:
             job = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
@@ -137,7 +141,10 @@ def shared_jobs(root: Path, name: str) -> dict[str, Any]:
     head = state_ref.fetched(root)
     out = []
     for path in state_ref.files(root, head, JOBS_DIR):
-        entry = _remote_entry(root, head, path.removeprefix(JOBS_DIR).removesuffix(".json"))
+        job_id = path.removeprefix(JOBS_DIR).removesuffix(".json")
+        if _TASK_SCRATCH_RE.search(job_id):
+            continue
+        entry = _remote_entry(root, head, job_id)
         if entry and entry.get("machine") and entry.get("machine") != name:
             out.append(entry)
     return {"jobs": out, "synced_at": state_ref.committed_at(root, head)}

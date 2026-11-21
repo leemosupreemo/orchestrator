@@ -148,6 +148,20 @@ class JobSyncTests(TwoComputers):
         tree = git(self.remote, "ls-tree", "-r", "--name-only", state_ref.REF).split()
         self.assertEqual(sorted(tree), ["jobs/job-1.json", "product/prd.md"])  # no archive events yet, so no events file
 
+    def test_task_scratch_files_are_not_shared_and_state_change_from_building_to_paused_pushes(self):
+        from unittest.mock import patch
+        from orchestrator.web import server as web_server
+        self.job("studio", job_id="job-1", status="executing", worker_pid=999999)
+        self.job("studio", job_id="job-1_task_1", status="executing", worker_pid=999999)
+        with patch.object(web_server, "worker_alive", return_value=True):
+            self.assertEqual(self.sync("studio")["outcome"], "pushed")
+            self.assertEqual(self.remote_entry("job-1")["state"]["label"], "Building")
+        tree = git(self.remote, "ls-tree", "-r", "--name-only", state_ref.REF).split()
+        self.assertEqual(tree, ["jobs/job-1.json"])  # _task_1 scratch file is never shared
+        with patch.object(web_server, "worker_alive", return_value=False):
+            self.assertEqual(self.sync("studio")["outcome"], "pushed")
+            self.assertEqual(self.remote_entry("job-1")["state"]["label"], "Paused")
+
 
 class SharedJobsApiTests(ServerTestCase):
     def test_the_web_app_can_ask_for_shared_jobs(self):

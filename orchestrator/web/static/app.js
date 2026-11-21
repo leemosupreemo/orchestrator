@@ -4681,6 +4681,7 @@ pages.home = async (_, query) => {
       if (!item?.snap?.recent_jobs) continue;
       for (const rj of item.snap.recent_jobs) {
         const jid = rj.job_id || rj.id;
+        if (!jid || /_task_\d+$/.test(jid)) continue; // internal per-task scratch copy, not a job
         if (jid && seen.has(jid) && rj.imported_from_machine && rj.imported_from_machine === homeRemoteSnaps.selfName && !rj.moved_to
             && Number(rj.imported_at || 0) > Number(localImportedAt.get(jid) || 0)) continuedOn.set(jid, item.m.name); // its copy is newer
         if (!jid || seen.has(jid)) continue;
