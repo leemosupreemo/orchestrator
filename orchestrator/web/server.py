@@ -543,6 +543,7 @@ class PtySession:
         idle = time.time() - self.last_output if self.running else 0
         with self._cond:
             progress = self._progress.snapshot(running=self.running)
+            task_refs = {job: sorted(ids) for job, ids in self._timeline.task_refs.items()}
         if not progress.get("models"):
             assigned: list[str] = []
             target_job = self.job_id or self.result_job
@@ -601,6 +602,7 @@ class PtySession:
             "waiting": self.running and idle > IDLE_PROMPT_SECONDS and self._looks_like_prompt(),
             "last_line": self._last_line(), "error_summary": self._error_summary(), "idle": int(idle), "result": self.result,
             "progress": progress,
+            "task_refs": task_refs,
         }
 
     def _last_line(self) -> str:
@@ -10571,7 +10573,9 @@ class UIHandler(BaseHTTPRequestHandler):
         runs = job_runs.for_job(runtime_dir(root), job_id, live)
         if not self._is_owner():
             runs = [r for r in runs if r.get("action") not in OWNER_ONLY_ACTIONS]
-        return {"job_runs": runs, "run_relationship": job_runs.relationship(runs, job)}
+        groups = job_runs.task_runs(runtime_dir(root), job_id, job_task_list(job), runs)
+        return {"job_runs": runs, "run_relationship": job_runs.relationship(runs, job),
+                "task_run_ids": [[run["id"] for run in group] for group in groups]}
 
     def _sessions_view(self, job_id: str | None = None) -> list[dict[str, Any]]:
         sessions = self.server.sessions.list(job_id=job_id)

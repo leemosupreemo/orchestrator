@@ -8290,7 +8290,7 @@ after();
 
     def test_a_plan_waiting_for_approval_is_shown_under_the_decision(self):
         self.assertIn('id="plan-section"', self.source)
-        self.assertIn("${reviewingPlan ? planCardHtml : \"\"}", self.job_page)  # in the top section, by the hero
+        self.assertIn('${reviewingPlan ? tasksCardHtml + planCardHtml : ""}', self.job_page)
         self.assertIn('data-scroll-to="#plan-section">the plan below</button>', self.job_page)
         self.assertIn("!ctx.planShown &&", self.source)  # no second Revise plan in More while the card offers it
         self.assertNotIn('fold("Tasks"', self.job_page)
@@ -8352,7 +8352,7 @@ console.log(JSON.stringify({{ fromHyp, fromDoc, bullets, html }}));
         # A Quick change can show its scope without empty task rows.
         self.assertIn('const quickNoPlan = job.type === "quick-fix" && !tasksTotal;', self.job_page)
         self.assertIn("Quick changes skip planning, so no test cases were listed.", self.job_page)
-        self.assertIn('${tasksTotal ? `<div class="list">${taskRowsHtml}</div>` : ""}', self.job_page)
+        self.assertIn('const tasksCardHtml = tasksTotal || (canEditPlan && !quickNoPlan)', self.job_page)
 
     def test_job_changes_offers_downloadable_full_patch_diff(self):
         self.assertIn('id="download-job-diff"', self.job_page)
@@ -8567,6 +8567,7 @@ const activeRunCard = () => '';
 const liveRunCard = () => '';
 const clarificationThread = () => '';
 const jobChangeSummary = () => '';
+const jobRunRow = r => `<a href="#/runs/${r.id}">${r.label}</a>`;
 const Markdown = { render: (t) => t };
 const runningMark = '';
 const PROVIDER_LABEL = {};
@@ -8604,13 +8605,17 @@ eval(source.slice(source.indexOf('function planBriefItems('), pageEnd));
     job: { job_id: 'f1', type: 'feature-plan', status: 'debugging', iteration: 1, debug_phase: 'implement', ai_modified_files: ['src/b.swift', 'docs/guide.md'] },
     outputs: [], runs: [{ id: 'r2', action: 'debug', running: true }],
     job_runs: [{ id: 'r1', action: 'execute', side: false }, { id: 'r2', action: 'debug', side: false }],
+    task_run_ids: [['r2']],
     docs: [], links: [],
     changes: { files: ['src/b.swift', 'docs/guide.md'], local_files: [], summary_line: '2 files changed, 12 insertions(+), 3 deletions(-)', base: 'main' },
     test_summary: {}, pipeline: {}, tasks: ['T1'], completed_tasks: ['0'],
   };
   const r2 = await pages.job(['f1']);
   assert.equal((r2.html.match(/class="item task-row/g) || []).length, 1, 'renders each task once');
-  assert(r2.html.includes('1/1 tasks done'), 'shows task completion in the Plan');
+  const tasksCard = r2.html.slice(r2.html.indexOf('id="tasks-section"'), r2.html.indexOf('id="plan-section"'));
+  assert(tasksCard.includes('1/1 done'), 'shows completion in Tasks above Plan');
+  assert(tasksCard.includes('>1 run</summary>') && tasksCard.includes('#/runs/r2'), 'shows the expandable matched run');
+  assert(!tasksCard.includes('#/runs/r1'), 'omits unrelated runs');
   assert(r2.html.includes('data-iterating="1"'), 'marks stepper as iterating');
   assert(!r2.html.includes('job-iter-badge'), 'omits Iter badge from stepper');
   assert(r2.html.includes('>Document<'), 'keeps Document when feature/docs changed');

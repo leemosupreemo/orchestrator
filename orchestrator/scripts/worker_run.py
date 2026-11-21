@@ -61,7 +61,7 @@ from run_builder import BuilderClarificationNeeded, run_builder
 from run_build_and_tests import DiskFullError, require_build_space
 from llm import extract_json_block
 from orchestrator.project_config import PROJECT_CONFIG
-from orchestrator import blockers, builder_check, model_outcomes, reuse_brief, scope_check, task_growth
+from orchestrator import blockers, builder_check, job_runs, model_outcomes, reuse_brief, scope_check, task_growth
 from model_router import builder_for_task, resolve_builder_model
 
 
@@ -879,6 +879,15 @@ def pause_on_blocker(job_path: Path, job: dict, blocker: dict, issue_number: Opt
     send_notifications(job, f"Job Paused: {blocker['title']}", f"{blocker['detail']}\nTitle: {job['title']}")
 
 
+def link_run_to_tasks(job_path: Path, job: dict, tasks: list, indices: list[int]) -> None:
+    members = [tasks[index] for index in indices if isinstance(tasks[index], dict)]
+    if not members:
+        return
+    if job_runs.ensure_task_ids([task for task in tasks if isinstance(task, dict)]):
+        write_json(job_path, job)
+    print(job_runs.task_marker(job["job_id"], members), flush=True)
+
+
 def execute_job(job_path: Path, resume: bool = False) -> None:
     start_epoch = time.time()
     remove_task_views(job_path)  # left over from a run that was stopped part way
@@ -1064,6 +1073,7 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
                 # Write this temp view to a temporary path to pass to run_builder
                 temp_job_path = job_path.parent / f"{job_path.stem}_task_{i+1}.json"
                 write_json(temp_job_path, task_job)
+                link_run_to_tasks(job_path, job, tasks, active_indices)
                 
                 while True:
                     try:
@@ -1232,6 +1242,9 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
         else:
             # Original single-task execution
             builder_session_count = len(job.get("llm_sessions") or [])
+            if job.get("type") == "quick-fix":
+                quick_tasks = (job.get("plan") or {}).get("tasks") or []
+                link_run_to_tasks(job_path, job, quick_tasks, list(range(len(quick_tasks))))
             while True:
                 try:
                     build_ok, test_ok, _summary_path, task_output = unpack_builder_result(run_builder(job_path, resume=resume))

@@ -909,29 +909,20 @@ console.log(JSON.stringify({{ withIndex, fallback }}));
         with_index = out["withIndex"]
         for expected in (
             'id="document-section"',
+            '<h2>Documentation updated <span class="count">1</span></h2>',
             'href="#/project-docs" aria-label="Open project docs" title="Open project docs">',
-            'Updated by this job:',
             'href="#/docs/file?path=README.md"',
-            'href="#/docs/product"',
-            '4/6 sections written',
-            'API reference',
-            'Mentions AuthClient · docs/api.md',
-            'All project docs',
-            '7 markdown files in the repository',
-            'Feature spec · Auth',
-            'href="#/docs/feature/feat-auth"',
-            'href="#/docs/job/job-1"',
-            'Builder summary',
+            'Project overview',
+            'README.md',
         ):
             self.assertIn(expected, with_index)
-        for unrelated in ('Architecture', 'Agent notes', 'job records'):  # only docs that concern the job
+        for unrelated in ('Product requirements', 'All project docs', 'Feature spec', 'This job record', 'API reference', 'Architecture', 'Agent notes'):
             self.assertNotIn(unrelated, with_index)
         fallback = out["fallback"]
-        self.assertIn('aria-label="Documentation table of contents"', fallback)
-        self.assertIn('Product requirements', fallback)
-        self.assertIn('Repository docs', fallback)
-        self.assertIn('href="#/docs/job/job-2"', fallback)
-        self.assertNotIn('>Project docs</p>', fallback)
+        self.assertIn('<h2>Documentation updated</h2>', fallback)
+        self.assertIn('No documentation files updated by this job yet.', fallback)
+        self.assertNotIn('Product requirements', fallback)
+        self.assertNotIn('Repository docs', fallback)
 
     def test_job_prompts_include_documentation_updates_and_review(self):
         prompts = APP.parents[3] / "orchestrator" / "prompts"
@@ -1036,11 +1027,12 @@ console.log(JSON.stringify({{ withIndex, fallback }}));
     def test_run_action_shows_busy_state_and_navigates_immediately(self):
         app = APP.read_text(encoding="utf-8")
         start = app.index("async function runAction(")
-        block = app[start:start + 1300]
+        block = app[start:start + 1700]
         self.assertIn('button.setAttribute("aria-busy", "true")', block)
         self.assertIn("Starting…", block)
         self.assertIn("state.runs.unshift(run)", block)
-        self.assertLess(block.index("location.hash = `#/runs/${run.id}`;"), block.index("refreshState()"))
+        else_block = block[block.rindex("} else {"):]
+        self.assertLess(else_block.index("location.hash = `#/runs/${run.id}`;"), else_block.index("refreshState()"))
 
     def test_outdated_runner_auto_updates_with_notice(self):
         app = APP.read_text(encoding="utf-8")

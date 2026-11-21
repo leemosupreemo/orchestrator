@@ -90,6 +90,27 @@ class ForJobTests(unittest.TestCase):
         runs = jr.for_job(self.rt, "job-1", [live("1", "execute", 1.0), live("2", "debug", 2.0)])
         self.assertEqual([r["label"] for r in runs], ["Fix attempt", "Build"])
 
+    def test_task_runs_follow_task_identity_across_reorder_and_keep_shared_runs(self):
+        first = {"title": "Earlier title", "run_history_id": "a" * 32}
+        second = {"title": "Second", "run_history_id": "b" * 32}
+        initial = {**live("initial", "execute", 1.0), "task_refs": {"job-1": ["a" * 32, "b" * 32]}}
+        jr.record(self.rt, initial)
+        latest = {**live("retry", "debug", 2.0, running=True), "task_refs": {"job-1": ["a" * 32]}}
+        runs = jr.for_job(self.rt, "job-1", [latest, live("plan", "revise", 1.5)])
+        first["title"] = "Edited title"
+        groups = jr.task_runs(self.rt, "job-1", [second, first, {"title": "Untouched"}], runs)
+        self.assertEqual([[run["id"] for run in group] for group in groups],
+                         [["initial"], ["retry", "initial"], []])
+
+    def test_legacy_logs_match_exact_unique_titles_and_skip_ambiguous_ones(self):
+        jr.record(self.rt, live("historical", "execute", 1.0))
+        log = self.rt / "logs/ui/historical-execute.log"
+        log.write_text("\x1b[96m==== ⚙️ SUB-TASK 1/3: IMPORTANT FIX ====\x1b[0m\r\n"
+                       "==== ⚙️ SUB-TASK 2/3: DUPLICATE ====\n")
+        runs = jr.for_job(self.rt, "job-1", [])
+        groups = jr.task_runs(self.rt, "job-1", ["Duplicate", "Duplicate", "Important fix"], runs)
+        self.assertEqual([[run["id"] for run in group] for group in groups], [[], [], ["historical"]])
+
 
 class RelationshipTests(unittest.TestCase):
     def setUp(self):

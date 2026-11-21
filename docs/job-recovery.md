@@ -260,7 +260,7 @@ The helper keeps its reservation journal under `~/.orchestrator/verification-wor
 | Deactivated-model 24h quarantine and pre-flight `pool` health probe | `tests/test_project_chat.py` (`test_probe_pool_health_blocks_deactivated_pool_model_ahead_of_time`) |
 | Task `_task_N.json` status sync on automation error | `tests/test_worker_run.py` (`test_task_automation_error_marks_both_parent_and_task_job_human_needed`) |
 | End-of-job review gate: parsing blockers/unmet criteria, auto-fix pass, and `human-needed` pause | `tests/test_acceptance.py` (`ReviewOutcomeGateTests`), `tests/test_worker_run.py` (`test_review_gate_triggers_autofix_once_then_pauses_human_needed`) |
-| Inline fix-attempts timeline (`Fixing…`, `Fix succeeded`, `Partially succeeded`, `Fix failed`), stay-on-job-page fix flow, and task-title splitting | `tests/test_web_preview.py` (`JobTitleSplitTests`) |
+| Inline fix routing, hero controls, and task-title splitting | `tests/test_web_preview.py` (`JobTitleSplitTests`) |
 | A YOLO job whose planner and builder ask, finishing by itself | `tests/e2e/test_pipeline_offline.py` (`YoloAutorespondTests`) |
 | A job blocked mid-run by a held git lock, cleared, resumed by the server, committed and opened as a PR, inside the full offline pipeline | `tests/e2e/test_pipeline_offline.py` (`BlockedJobRecoveryTests`) |
 | Moves recorded by the control plane | `tests/test_control_plane.py` (`MovedJobTests`) |

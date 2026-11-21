@@ -46,13 +46,11 @@ the checks that can be automated live in `tests/test_web_ui.py`.
 - A decision shows what it decides. While a plan waits for approval (or to start), it sits right under the job's
   hero as "The plan to approve": summary, assumptions and risks, and each task with what "done" means and the files it
   touches, editable in place, with **Revise…** beside it. Once approved it folds back to Tasks.
-- **Inline fix attempts:** Starting a fix (`action="debug"` or `action="fix"` with a job) from anywhere—Home's job
+- **Inline fix routing:** Starting a fix (`action="debug"` or `action="fix"` with a job) from anywhere—Home's job
   list, a job page, or a run page—always opens or stays on `#/jobs/<id>` instead of navigating to a dedicated fix run
-  page. Fix iterations render as a dedicated **Fix attempts** series under the job's lifecycle stepper
-  (`job-fix-series`) with distinct per-attempt outcomes (**Fixing…**, **Fix succeeded**, **Partially succeeded**, **Fix
-  failed**) and a **Log ↗** link to each run. When the hero's next action is **Run fix**, the hero renders a single
-  primary **Run fix** button directly under the optional note textarea (suppressing the duplicate top-right **Run fix**
-  button), and the failure copy-log control (`#copy-job-failure-log`) uses the standard `.btn.ghost.icon-only` size.
+  page. When the hero's next action is **Run fix**, the hero renders a single primary **Run fix** button directly under
+  the optional note textarea (suppressing the duplicate top-right **Run fix** button), and the failure copy-log control
+  (`#copy-job-failure-log`) uses the standard `.btn.ghost.icon-only` size.
 
 - A More menu groups its items under headings (on a job: **Work on this job**, **Share & export**, **Settings**, **Finish or remove**), one line each with the
   description in the tooltip (`moreMenu(items, { compact: true })`), only what fits the current stage, and ending
@@ -174,10 +172,9 @@ Callout and hero containers (`.job-hero`, `.banner`, `.notice`) frame actionable
   - On Documentation, **Gaps** rows use uniform right-aligned primary **Fix** buttons opening a chooser modal (Use AI, Write manually, or Import file); **Repository docs** places `#i-download` export in its card header; job and feature snapshots live on their respective pages.
   - On AI Tools, provider rows and supported-model trees start collapsed by default, tool abilities scan silently in the background (showing only usage-limit holds), and the "AI models updated" toast advances its baseline on first display so it does not repeat across reloads.
   - The **Progress** card clearly separates task completion count, active/next builder task, remaining tasks, and verification status.
-- **Job Brief**:
-  - Positioned near the top of the Job Detail page immediately following Progress (before Test Cases and technical changes).
-  - Displays the canonical relative file location (`.brief-path-chip`: `.orchestrator/output/<job_id>/brief.md`) with click-to-select and a direct link to the raw file viewer (`Raw file ↗`).
-  - Directly editable via "Edit brief", which opens an in-page modal dialog with full markdown editing and saves to the canonical `.orchestrator/output/<job_id>/brief.md` file.
+- **Job Tasks and Plan**:
+  - Tasks appear above Plan once. Each task shows completion and a run count that expands to the associated runs.
+  - Plan shows a short bullet summary, with **Full brief** for viewing or downloading the Markdown and **Edit brief** for changing it.
 
 ## Home
 

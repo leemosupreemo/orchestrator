@@ -327,58 +327,13 @@ console.log(JSON.stringify([
         self.assertEqual(with_task["task"], "Task 1: Capture the baseline and tune the Camelot Hills flora profile")
         self.assertEqual(plain, {"title": "Plain feature title", "task": ""})
 
-    def test_fix_series_classifies_succeeded_partial_failed_and_running(self):
-        import json as _json, subprocess as _sp
+    def test_fix_routing_and_hero_controls(self):
         source = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
-        fn = source[source.index("function fixSeriesItems"):source.index("function jobItem")]
-        script = "const esc = s => String(s); const runningMark = '*';\n" + fn + """
-const job = {
-  debug_history: [
-    { iteration: 1, hypothesis: "Fix build error", result: { build_ok: true, tests_ok: false } },
-    { iteration: 2, hypothesis: "Fix failing test", result: { build_ok: true, tests_ok: true } },
-  ],
-};
-const runs = [
-  { id: "r1", action: "debug", started: 10, exit_code: 1 },
-  { id: "r2", action: "debug", started: 20, exit_code: 0 },
-  { id: "r3", action: "debug", started: 30, running: true },
-];
-const items = fixSeriesItems(job, runs, runs[2]);
-const html = fixSeriesHtml(job, runs, runs[2]);
-console.log(JSON.stringify({ items, html }));"""
-        out = _json.loads(_sp.run(["node", "-e", script], capture_output=True, text=True, check=True).stdout)
-        self.assertEqual([i["status"] for i in out["items"]], ["partial", "succeeded", "running"])
-        self.assertEqual([i["label"] for i in out["items"]], ["Partially succeeded", "Fix succeeded", "Fixing…"])
-        self.assertIn("job-fix-series", out["html"])
-        self.assertIn("Fix #1 · Partially succeeded", out["html"])
-        self.assertIn("Fix #2 · Fix succeeded", out["html"])
-        self.assertIn("Fix #3 · Fixing…", out["html"])
-
-    def test_fix_series_handles_failed_runs_empty_state_and_stay_on_job_page(self):
-        import json as _json, subprocess as _sp
-        source = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
-        fn = source[source.index("function fixSeriesItems"):source.index("function jobItem")]
-        script = "const esc = s => String(s); const runningMark = '*';\n" + fn + """
-const emptyHtml = fixSeriesHtml({}, [], null);
-const failedRun = { id: "r9", action: "debug", started: 50, status: "failed", exit_code: 1, headline: "CLI flag error" };
-const failedItems = fixSeriesItems({ debug_history: [{ iteration: 1, hypothesis: "Try patch", result: { build_ok: false, tests_ok: false } }] }, [
-  { id: "r8", action: "debug", started: 40, status: "failed", exit_code: 1 },
-  failedRun,
-], null);
-const failedHtml = fixSeriesHtml({ debug_history: [{ iteration: 1, hypothesis: "Try patch", result: { build_ok: false, tests_ok: false } }] }, [
-  { id: "r8", action: "debug", started: 40, status: "failed", exit_code: 1 },
-  failedRun,
-], null);
-console.log(JSON.stringify({ emptyHtml, failedItems, failedHtml }));"""
-        out = _json.loads(_sp.run(["node", "-e", script], capture_output=True, text=True, check=True).stdout)
-        self.assertEqual(out["emptyHtml"], "")
-        self.assertEqual([i["status"] for i in out["failedItems"]], ["failed", "failed"])
-        self.assertIn("Fix #1 · Fix failed", out["failedHtml"])
-        self.assertIn("Fix #2 · Fix failed", out["failedHtml"])
-        self.assertIn("#/runs/r9", out["failedHtml"])
-        # Starting a fix from anywhere routes to the existing job page (never a dedicated fix run page)
+        self.assertNotIn("job-fix-series", source)
         self.assertIn('const isFixForJob = (stayOnJob || action === "debug" || action === "fix") && Boolean(params?.job);', source)
         self.assertIn('const targetHash = `#/jobs/${encodeURIComponent(params.job)}`;', source)
+        self.assertIn('const steer = activeRun || s.question || reviewingPlan || signIn || diskBlocked || s.state.blocker ? null', source)
+        self.assertIn('${reviewingPlan ? "" : diskBlocked ? `<section id="job-hero" tabindex="-1" class="job-hero tone-${esc(heroTone)}">', source)
         self.assertIn('primary: nextAction === "debug" && !signIn && !diskBlocked', source)
         self.assertIn('${heroAction && !steer?.primary ? `<div class="job-hero-action">${heroAction}</div>` : ""}', source)
         self.assertIn('class="btn ghost icon-only hero-copy-log-btn"', source)

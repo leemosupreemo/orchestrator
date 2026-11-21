@@ -16,12 +16,20 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 SIDECAR_DIR = ("logs", "ui")
 MAX_SCAN = 400
+LEGACY_TASK_RUN_LIMIT = 24
+TASK_MARKER = "[task-run] "
+TASK_ID = re.compile(r"[0-9a-f]{32}")
+LEGACY_TASK_HEADER = re.compile(r"^=+\s*[^\w\n]*SUB-TASK\s+\d+(?:-\d+)?/\d+\s*:\s*(.+?)\s*=+\s*$", re.I | re.M)
+ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 
 PHASES = ("plan", "build", "verify", "document", "finalize")
 PHASE_TITLES = {"plan": "Plan", "build": "Build", "verify": "Verify", "document": "Document", "finalize": "Finalize"}
@@ -72,6 +80,8 @@ def record(runtime: Path, run: dict[str, Any]) -> Path | None:
             "started": run.get("started"), "ended": run.get("ended"), "exit_code": run.get("exit_code"), "stopped": bool(run.get("stopped")),
             "headline": result.get("headline", "") if isinstance(result, dict) else "", "tone": result.get("tone", "") if isinstance(result, dict) else "",
             "log": f"{'/'.join(SIDECAR_DIR)}/{run['id']}-{run.get('action', '')}.log"}
+    if run.get("task_refs"):
+        data["task_refs"] = run["task_refs"]
     folder = _dir(runtime)
     try:
         folder.mkdir(parents=True, exist_ok=True)
@@ -119,7 +129,9 @@ def for_job(runtime: Path, job_id: str, live: list[dict[str, Any]], now: float |
     for r in live:
         if job_id in (r.get("job"), r.get("result_job")):
             result = r.get("result") or {}
-            by_id[r["id"]] = {**by_id.get(r["id"], {}), **r, "live": True,
+            previous = by_id.get(r["id"], {})
+            by_id[r["id"]] = {**previous, **r, "live": True,
+                              "task_refs": r.get("task_refs") or previous.get("task_refs", {}),
                               "headline": (result.get("headline") if isinstance(result, dict) else "") or by_id.get(r["id"], {}).get("headline", ""),
                               "tone": (result.get("tone") if isinstance(result, dict) else "") or by_id.get(r["id"], {}).get("tone", "")}
     runs = sorted(by_id.values(), key=lambda r: r.get("started") or 0)
@@ -140,6 +152,97 @@ def for_job(runtime: Path, job_id: str, live: list[dict[str, Any]], now: float |
         out.append({**r, "kind": label, "label": f"{label} {counts[label]}" if numbered else label, "phase": phase,
                     "side": phase is None, "status": status(r), "seconds": seconds, "number": n})
     return list(reversed(out))
+
+
+def ensure_task_ids(tasks: list[dict[str, Any]]) -> bool:
+    """Keep an ID on each task so moving or renaming it preserves run links."""
+    changed = False
+    seen: set[str] = set()
+    for task in tasks:
+        task_id = task.get("run_history_id")
+        if not isinstance(task_id, str) or not TASK_ID.fullmatch(task_id) or task_id in seen:
+            task_id = uuid4().hex
+            task["run_history_id"] = task_id
+            changed = True
+        seen.add(task_id)
+    return changed
+
+
+def task_marker(job_id: str, tasks: list[dict[str, Any]]) -> str:
+    return TASK_MARKER + json.dumps({"job": job_id, "ids": [task["run_history_id"] for task in tasks]})
+
+
+def parse_task_marker(line: str) -> tuple[str, set[str]] | None:
+    if not line.startswith(TASK_MARKER):
+        return None
+    try:
+        payload = json.loads(line[len(TASK_MARKER):])
+    except ValueError:
+        return None
+    if not isinstance(payload, dict) or not isinstance(payload.get("job"), str) or not isinstance(payload.get("ids"), list):
+        return None
+    ids = {value for value in payload["ids"] if isinstance(value, str) and TASK_ID.fullmatch(value)}
+    return (payload["job"], ids) if ids else None
+
+
+def _title(value: str) -> str:
+    return " ".join(value.split()).casefold()
+
+
+@lru_cache(maxsize=400)
+def _legacy_task_titles(path: Path, modified: int, size: int) -> tuple[str, ...]:
+    try:
+        with path.open("rb") as stream:
+            contents = stream.read(512 * 1024)
+            if size > len(contents):
+                stream.seek(max(len(contents), size - 512 * 1024))
+                contents += b"\n" + stream.read(512 * 1024)
+    except OSError:
+        return ()
+    text = ANSI_ESCAPE.sub("", contents.decode("utf-8", errors="replace")).replace("\r", "\n")
+    return tuple(_title(heading) for heading in LEGACY_TASK_HEADER.findall(text))
+
+
+def task_runs(runtime: Path, job_id: str, tasks: list[Any], runs: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
+    """Group runs by durable task ID, with exact title matches for old transcripts."""
+    groups: list[list[dict[str, Any]]] = [[] for _ in tasks]
+    ids = {task["run_history_id"]: index for index, task in enumerate(tasks)
+           if isinstance(task, dict) and isinstance(task.get("run_history_id"), str)}
+    titles: dict[str, list[int]] = {}
+    for index, task in enumerate(tasks):
+        title = task if isinstance(task, str) else (task.get("title") or task.get("name")) if isinstance(task, dict) else ""
+        if isinstance(title, str) and title.strip():
+            titles.setdefault(_title(title), []).append(index)
+    if not groups:
+        return groups
+    legacy_reads = 0
+    for run in runs:
+        refs = run.get("task_refs") or {}
+        matched = set()
+        if isinstance(refs, dict) and refs:
+            references = refs.get(job_id)
+            if isinstance(references, list):
+                matched.update(ids[ref] for ref in references if isinstance(ref, str) and ref in ids)
+        elif (legacy_reads < LEGACY_TASK_RUN_LIMIT and not run.get("running")
+              and run.get("action") in {"approve", "new_job", "schedule", "execute", "resume", "debug"}):
+            run_id, action = run["id"], run["action"]
+            if not isinstance(run_id, str) or not re.fullmatch(r"[\w-]+", run_id):
+                continue
+            path = _dir(runtime) / f"{run_id}-{action}.log"
+            if path.is_symlink():
+                continue
+            try:
+                info = path.stat()
+            except OSError:
+                continue
+            legacy_reads += 1
+            for heading in _legacy_task_titles(path, info.st_mtime_ns, info.st_size):
+                names = [heading] if heading in titles else heading.split(" + ")
+                if all(len(titles.get(name, ())) == 1 for name in names):
+                    matched.update(titles[name][0] for name in names)
+        for index in matched:
+            groups[index].append(run)
+    return groups
 
 
 def relationship(runs: list[dict[str, Any]], job: dict[str, Any]) -> dict[str, Any]:

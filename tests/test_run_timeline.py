@@ -140,6 +140,19 @@ class StepsTests(unittest.TestCase):
 
 
 class LiveTests(unittest.TestCase):
+    def test_task_markers_accumulate_without_adding_terminal_steps(self):
+        from orchestrator.job_runs import task_marker
+
+        timeline = RunTimeline()
+        first, second = ({"run_history_id": char * 32} for char in ("a", "b"))
+        marker = (task_marker("j1", [first, second]) + "\r\n").encode()
+        timeline.feed(marker[:20])
+        timeline.feed(marker[20:])
+        timeline.feed((task_marker("j1", [first]) + "\n").encode())
+        self.assertEqual(timeline.task_refs, {"j1": {"a" * 32, "b" * 32}})
+        self.assertEqual([step["title"] for step in timeline.steps], ["Starting"])
+        self.assertEqual(timeline.current["lines"], 0)
+
     def test_times_and_what_the_running_step_is_doing(self):
         now = [1000.0]
         timeline = RunTimeline(clock=lambda: now[0])
@@ -156,6 +169,23 @@ class LiveTests(unittest.TestCase):
 
 
 class EndpointTests(ServerTestCase):
+    def test_job_run_endpoint_returns_only_links_for_recorded_tasks(self):
+        from orchestrator.job_runs import record
+
+        job_id = "20260922-bug-1"
+        path = ui.resolve_job_path(self.root, job_id)
+        job = ui.read_json_file(path)
+        task_id = "a" * 32
+        job.setdefault("plan", {})["tasks"] = [{"title": "Fix", "run_history_id": task_id}, {"title": "Check"}]
+        ui.write_json_file(path, job)
+        runtime = ui.runtime_dir(self.root)
+        record(runtime, {"id": "linked", "job": job_id, "action": "execute", "task_refs": {job_id: [task_id]}})
+        record(runtime, {"id": "unlinked", "job": job_id, "action": "revise"})
+        response, data = self.request("GET", f"/api/jobs/{job_id}/runs")
+        self.assertEqual(response.status, 200)
+        self.assertEqual(data["task_run_ids"], [["linked"], []])
+        self.assertEqual({run["id"] for run in data["job_runs"]}, {"linked", "unlinked"})
+
     def test_a_live_runs_timeline_and_a_steps_output(self):
         session = self.server.sessions.start("check", "Setup check", [sys.executable, "-c", f"print({LOG!r})"], self.root,
                                              self.server.child_env(), ui.runtime_dir(self.root) / "logs" / "ui")
@@ -261,8 +291,8 @@ class PageTests(unittest.TestCase):
         self.assertIn('toast("Failure details and logs copied")', app)
         self.assertIn(".job-hero-head {", css)
         self.assertIn(".hero-copy-log-btn {", css)
-        self.assertIn("const steer = activeRun || s.question || reviewingPlan || signIn ? null", app)
-        self.assertIn('const showNextAction = next && !(signInAction && next.action === "debug");', app)
+        self.assertIn("const steer = activeRun || s.question || reviewingPlan || signIn || diskBlocked || s.state.blocker ? null", app)
+        self.assertIn('const showNextAction = next && !diskBlocked && !(signInAction && next.action === "debug");', app)
 
 
 if __name__ == "__main__":

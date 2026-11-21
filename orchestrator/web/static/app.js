@@ -3377,93 +3377,6 @@ function splitJobTitle(raw) {
   return { title: m[1].trim() || text, task: m[2].trim() };
 }
 
-function fixSeriesItems(job, jobRuns = [], activeRun = null) {
-  const history = Array.isArray(job?.debug_history) ? job.debug_history.filter((h) => h && typeof h === "object") : [];
-  const debugRuns = (Array.isArray(jobRuns) ? jobRuns : [])
-    .filter((r) => r && r.action === "debug")
-    .slice()
-    .sort((a, b) => Number(a.started || 0) - Number(b.started || 0));
-  const items = history.map((h, idx) => {
-    const run = debugRuns[idx] || null;
-    const res = h.result;
-    let status = "failed", label = "Fix failed", detail = String(h.hypothesis || h.action || "").trim();
-    if (res === "pending" || (run && run.running)) {
-      status = "running";
-      label = "Fixing…";
-    } else if (res && typeof res === "object") {
-      if (res.build_ok && res.tests_ok) {
-        status = "succeeded";
-        label = "Fix succeeded";
-      } else if (res.build_ok || res.tests_ok) {
-        status = "partial";
-        label = "Partially succeeded";
-        detail = res.build_ok ? "Build passes · tests still failing" : "Tests pass · build failing";
-      } else {
-        status = "failed";
-        label = "Fix failed";
-      }
-    }
-    return {
-      num: Number(h.iteration) || (idx + 1),
-      status,
-      label,
-      detail: detail.length > 72 ? `${detail.slice(0, 69).trimEnd()}…` : detail,
-      runId: run?.id || "",
-    };
-  });
-  // Include any extra debug runs that started or failed before writing to debug_history.
-  for (let i = history.length; i < debugRuns.length; i += 1) {
-    const run = debugRuns[i];
-    const running = Boolean(run.running || (activeRun && activeRun.id === run.id && activeRun.running));
-    const failed = !running && (run.status === "failed" || (run.exit_code != null && run.exit_code !== 0));
-    const status = running ? "running" : failed ? "failed" : "succeeded";
-    const label = running ? "Fixing…" : failed ? "Fix failed" : "Fix succeeded";
-    const rawDetail = String(run.headline || run.error_summary || "").trim();
-    items.push({
-      num: items.length + 1,
-      status,
-      label,
-      detail: rawDetail.length > 72 ? `${rawDetail.slice(0, 69).trimEnd()}…` : rawDetail,
-      runId: run.id || "",
-    });
-  }
-  if (activeRun && activeRun.action === "debug" && activeRun.running && !items.some((x) => x.runId === activeRun.id)) {
-    items.push({
-      num: items.length + 1,
-      status: "running",
-      label: "Fixing…",
-      detail: String(activeRun.progress?.step || activeRun.last_line || "").trim().slice(0, 72),
-      runId: activeRun.id || "",
-    });
-  }
-  return items;
-}
-
-function fixSeriesHtml(job, jobRuns = [], activeRun = null) {
-  const items = fixSeriesItems(job, jobRuns, activeRun);
-  if (!items.length) return "";
-  const cards = items.map((it, idx) => {
-    const icon = it.status === "running" ? runningMark
-      : it.status === "succeeded" ? "✓"
-      : it.status === "partial" ? "◐"
-      : "!";
-    const logLink = it.runId ? `<a class="job-fix-log" href="#/runs/${encodeURIComponent(it.runId)}" title="Open full log">Log ↗</a>` : "";
-    const arrow = idx < items.length - 1 ? `<div class="job-fix-arrow is-${it.status}" aria-hidden="true"></div>` : "";
-    return `<div class="job-fix-node is-${it.status}">
-      <div class="job-fix-head">
-        <span class="job-fix-dot" aria-hidden="true">${icon}</span>
-        <span class="job-fix-title">Fix #${it.num} · ${esc(it.label)}</span>
-        ${logLink}
-      </div>
-      ${it.detail ? `<div class="job-fix-detail">${esc(it.detail)}</div>` : ""}
-    </div>${arrow}`;
-  }).join("");
-  return `<div class="job-fix-series" id="job-fix-series" aria-label="Fix attempts">
-    <span class="job-fix-series-label">Fix attempts</span>
-    <div class="job-fix-series-track">${cards}</div>
-  </div>`;
-}
-
 function jobItem(j, { withAction = false } = {}) {
   const { title: cleanTitle, task: taskSub } = splitJobTitle(j.title);
   const bits = [taskSub, jobKind(j), j.tasks_total ? `${j.tasks_done}/${j.tasks_total} tasks` : "", ago(j.updated)].filter(Boolean);
@@ -5869,10 +5782,10 @@ const RUN_STATUS = { running: ["Running", "working"], waiting: ["Waiting for you
   failed: ["Failed", "failed"], stopped: ["Stopped", "neutral"], unknown: ["Ended unseen", "neutral"] };
 const runSeconds = (sec) => sec == null ? "" : sec < 60 ? `${sec}s` : `${Math.floor(sec / 60)}m ${String(sec % 60).padStart(2, "0")}s`;
 
-function jobRunRow(r) {
+function jobRunRow(r, hidden = false) {
   const [label, tone] = RUN_STATUS[r.status] || RUN_STATUS.unknown;
   const meta = [r.started ? ago(r.started) : "", runSeconds(r.seconds), r.status === "running" && r.now ? `Now: ${r.now}` : r.headline || ""].filter(Boolean);
-  return `<a class="item job-run-row${r.side ? " is-side" : ""}" href="#/runs/${encodeURIComponent(r.id)}" data-run-row="${esc(r.id)}">
+  return `<a${hidden ? " hidden" : ""} class="item job-run-row${r.side ? " is-side" : ""}" href="#/runs/${encodeURIComponent(r.id)}" data-run-row="${esc(r.id)}">
     <div class="main-col"><div class="title">${esc(r.label)}${r.side ? ` <span class="muted">(side errand)</span>` : ""}</div>
       <div class="meta">${meta.map(esc).join(" · ")}</div></div>
     <div class="side"><span class="pill ${tone}">${esc(label)}</span></div></a>`;
@@ -5885,7 +5798,7 @@ function jobRunsCard(runs, rel, extraDetailsHtml = "") {
   const metaHtml = (stages.length > 1 ? `<span class="muted">By stage: ${esc(stages.join(" · "))}</span>` : "") + extraDetailsHtml;
   return `<section class="card mb-16" id="job-runs"><details class="fold"><summary class="card-h"><h2>${rel?.single ? "Run" : "Runs"}</h2>${work.length ? `<span class="count">${work.length}</span>` : ""}</summary>
     ${metaHtml ? `<div class="card-b stack">${metaHtml}</div>` : ""}
-    ${runs.length ? `<div class="list" id="job-run-list">${runs.map((r, n) => n < 8 ? jobRunRow(r) : jobRunRow(r).replace('<a class="item', '<a hidden class="item')).join("")}</div>
+    ${runs.length ? `<div class="list" id="job-run-list">${runs.map((r, n) => jobRunRow(r, n >= 8)).join("")}</div>
       ${runs.length > 8 ? `<div class="card-b"><button type="button" class="btn small" data-show-all="job-run-list">Show all ${runs.length}</button></div>` : ""}` : `<div class="empty">Nothing has run for this job yet.</div>`}</details></section>`;
 }
 
@@ -5994,82 +5907,29 @@ function jobChangeSummaryHtml(text) {
   return `<div class="card-b card-b-split t-secondary change-summary"><strong>What changed</strong><ul class="change-summary-list">${bullets.map((b) => `<li>${esc(b)}</li>`).join("")}</ul></div>`;
 }
 
-// Compact table of contents for project documentation, shown inside a job's Documentation card.
-function jobDocsOutlineHtml({ s, featureName, docFilesChanged, otherDocs, docsIndex, relatedDocs = [] }) {
-  const product = docsIndex?.product || null;
-  const prdPath = product?.path || "docs/product/prd.md";
+// Compact table of contents for documentation files updated by this job's runs.
+function jobDocsOutlineHtml({ docFilesChanged = [], docsIndex = null } = {}) {
   const allFiles = Array.isArray(docsIndex?.files) ? docsIndex.files : [];
-  const repoFiles = allFiles.filter((f) => f?.path && f.path !== prdPath);
-  const items = [];
-
-  items.push({
-    href: product ? (product.exists ? "#/docs/product" : "#/product") : "#/docs/product",
-    title: "Product requirements",
-    meta: product
-      ? `${product.exists ? `${product.written || 0}/${product.total || 0} sections written` : "Not created yet"} · ${prdPath}`
-      : `Pitch, users, features, and architecture · ${prdPath}`,
-    side: product ? (product.exists ? `${product.written || 0}/${product.total || 0}` : "Empty") : "",
-  });
-
-  // Only docs that concern this job (it changed them, or they name its files), never the first few in the repository.
-  for (const f of relatedDocs) {
-    items.push({
-      href: `#/docs/file?path=${encodeURIComponent(f.path)}`,
-      title: f.title || f.path,
-      meta: `${f.why} · ${f.path}`,
-    });
-  }
-  if (repoFiles.length) {
-    items.push({
-      href: "#/project-docs",
-      title: relatedDocs.length ? "All project docs" : "Project docs",
-      meta: relatedDocs.length ? `${plural(repoFiles.length, "markdown file")} in the repository`
-        : `None of the ${plural(repoFiles.length, "markdown file")} mention this job's files`,
-      side: String(repoFiles.length),
-    });
-  } else if (!docsIndex) {
-    items.push({
-      href: "#/project-docs",
-      title: "Repository docs",
-      meta: "README, architecture, and markdown guides",
-    });
-  }
-
-  if (s.feature) {
-    items.push({
-      href: `#/docs/feature/${encodeURIComponent(s.feature)}`,
-      title: featureName ? `Feature spec · ${featureName}` : "Feature spec",
-      meta: "Feature overview, scope, and linked jobs",
-    });
-  }
-
-  items.push({
-    href: `#/docs/job/${encodeURIComponent(s.id)}`,
-    title: "This job record",
-    meta: otherDocs.length ? otherDocs.map((d) => d.title || d.name).join(" · ") : "Brief, changes, and verification summary",
-  });
-
-  const changedCaption = docFilesChanged.length
-    ? `<div class="card-caption t-secondary"><strong>Updated by this job:</strong> ${docFilesChanged.map((f) => `<a class="mono" href="#/docs/file?path=${encodeURIComponent(f)}">${esc(f)}</a>`).join(", ")}</div>`
-    : "";
-
-  const rows = items.map((item) => `
-    <a class="item" href="${item.href}">
+  const titlesByPath = new Map(allFiles.filter((f) => f?.path).map((f) => [f.path, f.title || ""]));
+  const changed = [...new Set((Array.isArray(docFilesChanged) ? docFilesChanged : []).filter(Boolean))];
+  const rows = changed.map((path) => {
+    const title = titlesByPath.get(path) || path.split("/").pop() || path;
+    return `
+    <a class="item" href="#/docs/file?path=${encodeURIComponent(path)}">
       <div class="main-col">
-        <div class="title">${esc(item.title)}</div>
-        <div class="meta">${esc(item.meta)}</div>
+        <div class="title">${esc(title)}</div>
+        <div class="meta mono">${esc(path)}</div>
       </div>
-      ${item.side ? `<div class="side"><span class="count">${esc(item.side)}</span></div>` : ""}
-    </a>`).join("");
+    </a>`;
+  }).join("");
 
   return `
     <section class="card mb-16" id="document-section" tabindex="-1">
       <div class="card-h">
-        <h2>Documentation</h2>
+        <h2>Documentation updated${changed.length ? ` <span class="count">${changed.length}</span>` : ""}</h2>
         <div class="card-actions"><a class="btn small ghost icon-only" href="#/project-docs" aria-label="Open project docs" title="Open project docs"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-doc"/></svg></a></div>
       </div>
-      ${changedCaption}
-      <div class="list" aria-label="Documentation table of contents">${rows}</div>
+      ${rows ? `<div class="list" aria-label="Documentation updated by this job">${rows}</div>` : `<div class="empty">No documentation files updated by this job yet.</div>`}
     </section>`;
 }
 
@@ -6339,7 +6199,7 @@ pages.job = async ([id]) => {
   const changeSummaryFull = jobChangeSummary(otherDocs, changes, Infinity); // what the builder did, at the top of Changes (not the status box)
   // Task progress lives in the hero (a bar under Now/Next) only while building; the stepper and hero cover every other stage.
   const showTaskBar = tasksTotal > 0 && currentPhase === "build" && tasksDone > 0;
-  const phaseTargets = ["#plan-section", tasksTotal ? "#plan-section" : (hasBuildWork ? "#changes-section" : "#plan-section"), "#verify-section", "#document-section", "#job-hero"];
+  const phaseTargets = ["#plan-section", tasksTotal ? "#tasks-section" : (hasBuildWork ? "#changes-section" : "#plan-section"), "#verify-section", "#document-section", "#job-hero"];
   const heroTone = ["merge", "complete"].includes(nextAction) && s.state.tone !== "failed" ? "done" : (s.state.tone || "");
   const phasesInfo = [planStep, buildStep, verifyStep, docStep, reviewStep];
   ["plan", "build", "verify", "document", "finalize"].forEach((phase, i) => {
@@ -6424,7 +6284,7 @@ pages.job = async ([id]) => {
   // The one place to tell the AI what to change, in the status box. What it runs follows the stage: re-plan before the
   // build, request changes when it waits to merge, run a fix when it failed, reopen it once merged. Hidden while a run
   // works or the AI waits on an answer (the question card takes the reply), and on plan review (its card has Revise).
-  const steer = activeRun || s.question || reviewingPlan || signIn ? null
+  const steer = activeRun || s.question || reviewingPlan || signIn || diskBlocked || s.state.blocker ? null
     : isJobComplete ? { mode: "fix", button: "Reopen and change", hint: "Reopens this job with your note and builds it.", required: true }
     : ["merge", "complete"].includes(nextAction) ? { mode: "iterate", button: "Request changes", required: true, hint: "" }
     : hasBuildWork || ["debugging", "failed"].includes(status) ? { mode: "debug", button: "Run fix", required: false,
@@ -6465,6 +6325,10 @@ pages.job = async ([id]) => {
     : status === "debugging" ? "Fixing"
     : status === "human-needed" && pausedIdx === currentTaskIndex ? "Paused"
     : "Current";
+  const runsById = new Map((jobRuns || []).map((run) => [run.id, run]));
+  const currentTasksCard = typeof view !== "undefined" ? view.querySelector("#tasks-section") : null;
+  const expandedTaskRuns = new Set(currentTasksCard?.dataset.jobId === id
+    ? [...currentTasksCard.querySelectorAll("[data-task-runs][open]")].map((fold) => fold.dataset.taskRuns) : []);
   const taskRowsHtml = tasks.map((t, i) => {
     const title = typeof t === "string" ? t : (t.title || t.name || t.description || `Task ${i + 1}`);
     const detail = typeof t === "object" && t && t.title && t.description ? t.description : "";
@@ -6482,12 +6346,29 @@ pages.job = async ([id]) => {
     const marker = `<span class="task-number${isDone ? " is-done" : isCurrent ? " is-current" : ""}" role="img" aria-label="${isDone ? "Done" : isCurrent ? "Current step" : "To do"}">${isDone ? "✓" : i + 1}</span>`;
     const currentBadge = isCurrent ? `<span class="pill working task-current-badge">${esc(currentTaskBadgeText)}</span>` : "";
     const more = detail || doneWhen.length || files.length;
+    const taskRuns = (data.task_run_ids?.[i] || []).map((runId) => runsById.get(runId)).filter(Boolean);
+    const runLabel = plural(taskRuns.length, "run");
+    const historyKey = t?.run_history_id || key;
+    const runListId = `task-runs-${i}`;
+    const runList = !data.task_run_ids ? "" : taskRuns.length
+      ? `<details class="task-detail task-run-details" data-task-runs="${esc(historyKey)}"${expandedTaskRuns.has(historyKey) ? " open" : ""}>
+          <summary class="linklike">${esc(runLabel)}</summary>
+          <div class="list" id="${runListId}">${taskRuns.map((run, index) => jobRunRow(run, index >= 5)).join("")}</div>
+          ${taskRuns.length > 5 ? `<button type="button" class="btn small" data-show-all="${runListId}">Show all ${taskRuns.length}</button>` : ""}
+        </details>`
+      : `<span class="muted t-secondary">${esc(runLabel)}</span>`;
     return `<div class="item task-row${isCurrent ? " is-current" : ""}"${isCurrent ? ' aria-current="step"' : ""}>${marker}<div class="main-col"><div class="title">${esc(title)}${currentBadge}</div>
       ${more ? `<details class="task-detail"><summary class="linklike muted">Details</summary>${detail ? `<div class="meta">${esc(detail)}</div>` : ""}
       ${doneWhen.length ? `<div class="task-done-when"><span class="label">Done when</span><ul>${doneWhen.slice(0, 4).map((c) => `<li>${esc(c)}</li>`).join("")}</ul></div>` : ""}
-      ${files.length ? `<div class="task-files">${files.slice(0, 4).map((f) => `<code>${esc(f)}</code>`).join("")}${files.length > 4 ? `<span class="muted">+${files.length - 4} more</span>` : ""}</div>` : ""}</details>` : ""}</div>${controls}${undo}</div>`;
+      ${files.length ? `<div class="task-files">${files.slice(0, 4).map((f) => `<code>${esc(f)}</code>`).join("")}${files.length > 4 ? `<span class="muted">+${files.length - 4} more</span>` : ""}</div>` : ""}</details>` : ""}
+      ${runList}</div>${controls}${undo}</div>`;
   }).join("") || `<div class="empty">No tasks yet.</div>`;
   const addTaskHtml = canEditPlan ? `<div class="card-b card-b-split"><button type="button" class="btn small ghost icon-only" data-task-op="add" aria-label="Add a task" title="Add a task"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-plus"/></svg></button></div>` : "";
+  const tasksCardHtml = tasksTotal || (canEditPlan && !quickNoPlan) ? `<section class="card mb-16" id="tasks-section" data-job-id="${esc(id)}" tabindex="-1">
+    <div class="card-h"><h2>Tasks</h2>${tasksTotal ? `<span class="count">${tasksDone}/${tasksTotal} done</span>` : ""}</div>
+    <div class="list">${taskRowsHtml}</div>
+    ${addTaskHtml}
+  </section>` : "";
   // One decision: what it is (a sentence), how big it is, and the one button. The tasks are one line each; the rest is a tap away.
   const size = data.plan_size || { label: "", files: 0, too_large: false, reasons: [], deferred: [] };
   const sliceWarnings = job.plan?.slice_warnings || [];
@@ -6502,8 +6383,6 @@ pages.job = async ([id]) => {
       <div class="plan-verdict${size.too_large ? " bad" : ""}"><span class="plan-size">${esc(sizeLine)}</span>
         ${size.too_large ? `<span>${esc(size.reasons.join(" "))}</span>${splitInstead ? approveBtn(false) : ""}` : ""}
         ${sliceWarnings.length ? `<span class="plan-flag" title="${esc(sliceWarnings.join(" "))}">Tasks look layered, not working slices</span>` : ""}</div>
-      <div class="list">${taskRowsHtml}</div>
-      ${addTaskHtml}
       ${size.deferred.length ? `<details class="fold plan-notes"><summary class="card-h"><h2>Left for later <span class="count">${size.deferred.length}</span></h2></summary>
         <div class="card-b"><ul class="assumptions">${size.deferred.map((d) => `<li>${esc(d)}</li>`).join("")}</ul></div></details>` : ""}
       ${planNotesHtml}
@@ -6624,11 +6503,17 @@ pages.job = async ([id]) => {
             ${pos < stepperItems.length - 1 ? `<div class="job-step-arrow ${p.state}" aria-hidden="true"></div>` : ""}
           `).join("")}
         </div>
-        ${typeof fixSeriesHtml === "function" ? fixSeriesHtml(job, jobRuns, activeRun) : ""}
         ${experienceStepperHtml}
       </nav>
 
-      ${reviewingPlan ? "" : `<section id="job-hero" tabindex="-1" class="job-hero tone-${esc(heroTone)}${(activeRun && !activeRun.waiting) || s.state.label === "Building" ? " is-running" : ""}">
+      ${reviewingPlan ? "" : diskBlocked ? `<section id="job-hero" tabindex="-1" class="job-hero tone-${esc(heroTone)}">
+        <div class="job-hero-main">
+          ${heroTitleHtml}
+          <p class="job-hero-reason">${heroReason}</p>
+          ${s.state.steps?.length ? `<ol class="job-hero-reason blocker-steps">${s.state.steps.map((step) => `<li>${esc(step)}</li>`).join("")}</ol>` : ""}
+        </div>
+        <div class="job-hero-action">${heroAction}</div>
+      </section>` : `<section id="job-hero" tabindex="-1" class="job-hero tone-${esc(heroTone)}${(activeRun && !activeRun.waiting) || s.state.label === "Building" ? " is-running" : ""}">
         ${copyFailureBtnHtml ? `<div class="job-hero-head">${heroTitleHtml}${copyFailureBtnHtml}</div>` : ""}
         <div class="job-hero-main">
           ${copyFailureBtnHtml ? "" : heroTitleHtml}
@@ -6675,19 +6560,17 @@ pages.job = async ([id]) => {
         <div>This plan looks like a stack of layers, not working slices. Mistakes in an early layer won't show until the last task.</div>
         <ul class="assumptions">${job.plan.slice_warnings.map((t) => `<li>${esc(t)}</li>`).join("")}</ul>
         <div class="muted">It was already sent back once. Use Revise plan in the More menu and ask for working slices.</div></div></section>` : ""}
-      ${reviewingPlan ? planCardHtml : ""}
+      ${reviewingPlan ? tasksCardHtml + planCardHtml : ""}
       </div>
 
       ${jobContextRail(s, data.context)}
 
       <div class="job-body">
+      ${!reviewingPlan ? tasksCardHtml : ""}
       ${!reviewingPlan ? `<section class="card mb-16" id="plan-section" tabindex="-1">
         <div class="card-h"><h2>${s.status === "designing" ? "Design" : "Plan"}</h2>
-          ${tasksTotal ? `<span class="count">${tasksDone}/${tasksTotal} tasks done</span>` : ""}
           ${job.plan?.fast_tracked ? `<span class="count" title="A Quick change: planned in one pass and started without approval">Fast-tracked</span>` : ""}</div>
         ${planBriefHtml}
-        ${tasksTotal ? `<div class="list">${taskRowsHtml}</div>` : ""}
-        ${addTaskHtml}
       </section>` : ""}
 
       <section class="card mb-16" id="verify-section" tabindex="-1"><div class="card-h"><h2>Test cases${testCases.cases.length ? ` <span class="count">${testCases.summary.covered}/${testCases.summary.automated} covered</span>` : ""}</h2>

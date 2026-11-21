@@ -18,6 +18,7 @@ import time
 from collections import deque
 from typing import Any
 
+from orchestrator import job_runs
 from orchestrator.web.run_progress import RunProgress
 
 MAX_STEPS = 200
@@ -61,6 +62,7 @@ class RunTimeline:
         self._calls: list[dict[str, Any]] = []  # model calls waiting for an answer, oldest first
         self._in_runner = False                  # inside a build or test run, whose own [i/n] counters aren't steps
         self._worker = (0, 0)                    # the worker's own [n/total] count, which still counts inside a runner
+        self.task_refs: dict[str, set[str]] = {}
         self._open("Starting", timed=True)
 
     # ------------------------------------------------------------------ steps
@@ -99,6 +101,10 @@ class RunTimeline:
     def line(self, text: str, timed: bool = True) -> None:
         line = text.strip()
         if not line:
+            return
+        if marker := job_runs.parse_task_marker(line):
+            job, ids = marker
+            self.task_refs.setdefault(job, set()).update(ids)
             return
         header = re.fullmatch(r"=+\s*(.*?)\s*=+", line)
         if header:

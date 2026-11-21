@@ -615,8 +615,8 @@ class TaskCheckpointTests(unittest.TestCase):
         cls.project = DummyProject([FREE]).create().fake_models("two_tasks")
         p = cls.project
         plan_job(p)
-        action(p, "approve")
-        cls.output = action(p, "approve").stdout
+        first = action(p, "approve")
+        cls.output = first.stdout + action(p, "approve").stdout
         cls.job = p.job()
 
     @classmethod
@@ -634,6 +634,15 @@ class TaskCheckpointTests(unittest.TestCase):
     def test_the_jobs_changed_files_still_cover_every_task(self):
         files = set(self.job["ai_modified_files"]) | set(self.job["ai_untracked_files"])
         self.assertTrue({"wordgame/scoring.py", "tests/test_scoring.py", "README.md"} <= files, files)
+
+    def test_one_worker_run_records_its_two_tasks(self):
+        from orchestrator.web.run_timeline import RunTimeline
+
+        timeline = RunTimeline()
+        timeline.feed(self.output.encode())
+        ids = {task["run_history_id"] for task in self.job["plan"]["tasks"]}
+        self.assertEqual(len(ids), 2)
+        self.assertEqual(timeline.task_refs[self.job["job_id"]], ids)
 
     def test_the_latest_task_can_be_undone_and_the_earlier_one_stays(self):
         from orchestrator import task_revert
