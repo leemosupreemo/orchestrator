@@ -5748,7 +5748,7 @@ class AccessibilityStaticTests(unittest.TestCase):
 
     def test_job_hero_and_containers_use_design_tokens(self):
         self.assertIn(".job-hero-title { margin: 0; font-size: var(--type-body); font-weight: var(--weight-bold);", self.css)
-        self.assertIn(".job-hero-main { display: flex; flex-direction: column; align-items: flex-start; gap: var(--space-1);", self.css)
+        self.assertIn(".job-hero-main { display: flex; flex-direction: column; align-items: flex-start; gap: var(--space-2);", self.css)
         self.assertIn(".job-hero.tone-attention { border-color: var(--warn); background: var(--warn-soft); }", self.css)
         self.assertIn(".banner { display: flex; align-items: center; gap: var(--space-3) var(--space-4); padding: var(--space-3) var(--space-4); border-radius: var(--radius); border: 1px solid var(--border);", self.css)
         self.assertIn(".notice { padding: var(--space-3) var(--space-4); border-radius: var(--radius); border: 1px solid var(--warn);", self.css)
