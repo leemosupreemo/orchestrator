@@ -167,6 +167,11 @@ class WiringTests(unittest.TestCase):
         self.assertIn("HomeStatus.render({git: homeGit, jobs, runs: state.runs, blockers: homeBlockers?.blockers || []})", app)
         self.assertIn('api("blockers/clear-lock", { method: "POST", body: {} })', app)
 
+    def test_disk_full_steps_report_needed_and_available_space(self):
+        report = {"required_bytes": 15 * blockers.disk_space.GIB, "free_bytes": int(13.3 * blockers.disk_space.GIB), "volume": "Project", "needed_bytes": int(1.7 * blockers.disk_space.GIB)}
+        with mock.patch.object(blockers.disk_space, "status", return_value=report):
+            self.assertEqual(blockers.steps({"kind": "disk_full"}, Path(".")), ["15 GB space needed. 13.3 GB space available."])
+
 
 if __name__ == "__main__":
     unittest.main()

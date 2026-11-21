@@ -35,7 +35,7 @@ def detect(text: str) -> dict[str, Any] | None:
     if not text.strip():
         return None
     if disk_space.is_disk_error(text):
-        return _make("disk_full", "machine", "disk", "Low disk space", "Free up space on the computer running this job.")
+        return _make("disk_full", "machine", "disk", "Low disk space", "You must free up space before running this job.")
     if _GIT_LOCK.search(text):
         return _make("git_lock", "project", "git", "Git is locked in this project",
                      "A git command that didn't finish left .git/index.lock behind, so every git step fails.")
@@ -179,7 +179,12 @@ def steps(blocker: dict[str, Any], root: Path) -> list[str]:
     if kind == "tool":
         return [f"Install {blocker.get('key')}; waiting jobs then resume."]
     if kind == "disk_full":
-        return ["Open Free up space to check the build's storage target and available cleanup."]
+        report = disk_space.status(root)
+        req_gb = f"{report['required_bytes'] / disk_space.GIB:g} GB"
+        if report["free_bytes"] is not None:
+            free_gb = f"{report['free_bytes'] / disk_space.GIB:.1f} GB"
+            return [f"{req_gb} space needed. {free_gb} space available."]
+        return [f"{req_gb} space needed."]
     if kind == "write_access":
         return [f"In Finder, Get Info on {Path(root).name}, and under Sharing & Permissions give your account Read & Write."]
     if kind == "job_work":

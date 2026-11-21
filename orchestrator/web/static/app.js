@@ -3479,7 +3479,7 @@ function elapsed(ts) {
 }
 
 // A running task: status, how long, its newest output line, and open/stop.
-function liveRunCard(r) {
+function liveRunCard(r, { onJobPage = false } = {}) {
   const target = r.action === "plan_epic" && r.result_job ? r.result_job : r.job || r.result_job; // planning removes the epic's waiting job
   const isStopping = stoppingRuns.has(r.id) || Boolean(r.stopping);
   const overlayHtml = isStopping
@@ -3509,8 +3509,8 @@ function liveRunCard(r) {
       ${doing ? `<div class="live-run-doing">${esc(doing)}</div>` : lastLine ? `<div class="last-line mono">${esc(lastLine)}</div>` : ""}
     </a>
     <div class="row">
-      <a class="btn small" href="#/runs/${encodeURIComponent(r.id)}">Details</a>
-      ${target ? `<a class="btn small" href="#/jobs/${encodeURIComponent(target)}">Job</a>` : ""}
+      ${onJobPage ? "" : `<a class="btn small" href="#/runs/${encodeURIComponent(r.id)}">Details</a>`}
+      ${onJobPage || !target ? "" : `<a class="btn small" href="#/jobs/${encodeURIComponent(target)}">Job</a>`}
       <button class="btn small danger" data-stop="${esc(r.id)}" data-why="Already stopping." ${isStopping ? 'disabled aria-busy="true"' : ""}>${isStopping ? "Stopping…" : "Stop"}</button></div></div>`;
 }
 
@@ -3801,9 +3801,50 @@ async function openDiskSpace(jobId = "") {
   if (jobId) query.set("job", jobId);
   if (state.you?.role !== "member") query.set("caches", "1");
   let outcome = "";
+  let outcomeTone = "ok";
+  const dlg = $("#dialog");
+  const showLoading = (label, btnLabel = "Loading…") => {
+    const controller = new AbortController();
+    const onClose = () => controller.abort();
+    if (dlg) {
+      dlg.tabIndex = -1;
+      dlg.classList.remove("dialog-compact");
+      $("#dialog-title").textContent = "Free up disk space";
+      $("#dialog-cancel").hidden = false;
+      $("#dialog-cancel").textContent = "Cancel";
+      $("#dialog-ok").hidden = false;
+      $("#dialog-ok").className = "btn primary";
+      $("#dialog-ok").textContent = btnLabel;
+      $("#dialog-ok").disabled = true;
+      $("#dialog-body").innerHTML = `<div class="stack gap-12" aria-busy="true" aria-label="${esc(label)}">
+        <div class="row align-center gap-8"><span class="run-spin" aria-hidden="true"></span><strong>${esc(label)}</strong></div>
+        <div class="skeleton skeleton-line skeleton-w-70"></div>
+        <div class="skeleton-card skeleton-flush">
+          <div class="skeleton-row"><div class="skeleton-row-main"><div class="skeleton skeleton-line skeleton-w-70"></div><div class="skeleton skeleton-line skeleton-w-30"></div></div></div>
+          <div class="skeleton-row"><div class="skeleton-row-main"><div class="skeleton skeleton-line skeleton-w-90"></div><div class="skeleton skeleton-line skeleton-w-30"></div></div></div>
+          <div class="skeleton-row"><div class="skeleton-row-main"><div class="skeleton skeleton-line skeleton-w-70"></div><div class="skeleton skeleton-line skeleton-w-30"></div></div></div>
+        </div>
+      </div>`;
+      dlg.returnValue = "";
+      if (!dlg.open) dlg.showModal();
+      dlg.addEventListener("close", onClose, { once: true });
+    }
+    return { signal: controller.signal, done: () => dlg?.removeEventListener("close", onClose) };
+  };
   try {
     for (;;) {
-      const report = await api(`recovery/disk-space?${query}`);
+      const loader = showLoading(outcome ? "Rechecking disk space…" : "Checking disk space and caches…", "Checking…");
+      let report;
+      try {
+        report = await api(`recovery/disk-space?${query}`, { signal: loader.signal });
+      } catch (err) {
+        if (err?.name === "AbortError") return;
+        if (dlg?.open) dlg.close("cancel");
+        throw err;
+      } finally {
+        loader.done();
+      }
+      if (dlg && !dlg.open) return;
       if (report.remote_machine) {
         await formDialog("Free up disk space", `<p>This job ran on <strong>${esc(report.remote_machine)}</strong>. Open Orchestrator on that computer or use macOS System Settings → General → Storage there.</p>`, "Done", { compact: true });
         return;
@@ -3813,15 +3854,13 @@ async function openDiskSpace(jobId = "") {
       const needsSpace = report.needed_bytes > 0;
       const caches = report.caches || [];
       const body = `<div class="stack gap-12">
-        <p><strong>${esc(gb(report.free_bytes))} free</strong> · ${esc(gb(report.required_bytes))} build target${report.volume ? ` · ${esc(report.volume)}` : ""}</p>
-        ${needsSpace ? `<p class="text-bad">Free at least ${Math.ceil(report.needed_bytes / 1024 ** 3)} GB before retrying.</p>` : ""}
-        ${outcome ? `<p role="status" class="wrap-anywhere">${esc(outcome)}</p>` : ""}
-        ${caches.length ? `<fieldset class="field"><legend>Removable caches</legend>
-          <small>Close the tools whose caches you select. The next launch or build may take longer.</small>
+        ${needsSpace ? `<p class="text-bad"><strong>Free at least ${Math.ceil(report.needed_bytes / 1024 ** 3)} GB to continue.</strong></p>` : `<p><strong>Enough space is available to continue.</strong> (${esc(gb(report.free_bytes))} free)</p>`}
+        ${outcome ? `<div role="status" class="notice ${outcomeTone === "bad" ? "bad" : "ok"} wrap-anywhere">${esc(outcome)}</div>` : ""}
+        ${caches.length ? `<fieldset class="field"><legend>Removable caches and temp files</legend>
           ${caches.map(cache => `<label class="check wrap-anywhere"><input type="checkbox" name="cache_${esc(cache.id)}">
             <span>${esc(cache.tool || "Xcode")} · ${esc(cache.name)}${cache.bytes === null ? "" : ` · ${esc(formatBytes(cache.bytes))}`}</span></label>`).join("")}
         </fieldset>` : "<p>No supported caches found on the project volume.</p>"}
-        <p class="t-secondary">For downloads, large files, and Trash, open macOS System Settings → General → Storage.</p>
+        <p class="t-secondary">To clear additional space (downloads, large files, and Trash), open macOS System Settings → General → Storage.</p>
       </div>`;
       const answer = formDialog("Free up disk space", body, "Check again");
       const dialogBody = $("#dialog-body");
@@ -3834,11 +3873,20 @@ async function openDiskSpace(jobId = "") {
       if (!selected) break;
       const ids = Object.keys(selected).filter(name => name.startsWith("cache_")).map(name => name.slice(6));
       if (!ids.length) continue;
+      const clearLoader = showLoading("Clearing selected caches…", "Clearing…");
       try {
-        const result = await api("recovery/disk-space", { method: "POST", body: { caches: ids, job: jobId } });
-        outcome = [result.removed.length ? `Cleared ${plural(result.removed.length, "cache")}. ${gb(result.free_bytes)} free now.` : "", ...(result.errors || [])].filter(Boolean).join(" ");
+        const result = await api("recovery/disk-space", { method: "POST", body: { caches: ids, job: jobId }, signal: clearLoader.signal });
+        const hasErrors = Boolean((result.errors || []).length);
+        outcome = [result.removed.length ? `Cleared ${plural(result.removed.length, "cache")}. ${gb(result.free_bytes)} free now.` : "", ...(result.errors || [])].filter(Boolean).join(" ") || "No caches were removed.";
+        outcomeTone = hasErrors || !result.removed.length ? "bad" : "ok";
+        toast(outcome, outcomeTone === "bad");
       } catch (e) {
+        if (e?.name === "AbortError") return;
         outcome = e.message;
+        outcomeTone = "bad";
+        toast(outcome, true);
+      } finally {
+        clearLoader.done();
       }
     }
     if (location.hash.startsWith("#/jobs/")) void route();
@@ -5939,7 +5987,7 @@ function activeRunCard(r, labelled, timeline) {
   const icon = (st) => st.status === "failed" ? "✕" : st.status === "done" || st.status === "ok" ? "✓" : "…";
   return `<section class="card mb-16 job-active-run"><div class="card-h"><h2>${esc(labelled?.label || "Run")} <span class="muted">· run in progress</span></h2>
       <a class="btn small ghost" href="#/runs/${encodeURIComponent(r.id)}">Open live run</a></div>
-    <div class="list">${liveRunCard(r)}</div>
+    <div class="list">${liveRunCard(r, { onJobPage: true })}</div>
     ${steps.length ? `<ol class="job-run-steps" aria-label="Latest steps of this run">${steps.map((st) => `<li class="${esc(st.status || "")}"><span aria-hidden="true">${icon(st)}</span> ${esc(st.title)}${st.seconds != null ? ` <span class="muted">${runSeconds(st.seconds)}</span>` : ""}</li>`).join("")}</ol>` : ""}</section>`;
 }
 
@@ -6509,8 +6557,8 @@ pages.job = async ([id]) => {
       ${reviewingPlan ? "" : diskBlocked ? `<section id="job-hero" tabindex="-1" class="job-hero tone-${esc(heroTone)}">
         <div class="job-hero-main">
           ${heroTitleHtml}
-          <p class="job-hero-reason">${heroReason}</p>
-          ${s.state.steps?.length ? `<ol class="job-hero-reason blocker-steps">${s.state.steps.map((step) => `<li>${esc(step)}</li>`).join("")}</ol>` : ""}
+          <p class="job-hero-reason">You must free up space before running this job.</p>
+          ${s.state.steps?.length ? s.state.steps.map((step) => `<p class="job-hero-reason muted">${esc(step)}</p>`).join("") : ""}
         </div>
         <div class="job-hero-action">${heroAction}</div>
       </section>` : `<section id="job-hero" tabindex="-1" class="job-hero tone-${esc(heroTone)}${(activeRun && !activeRun.waiting) || s.state.label === "Building" ? " is-running" : ""}">
@@ -14696,7 +14744,7 @@ function runFailureGuidance(r) {
     return {
       recoveryAction: "disk-space",
       title: "Low disk space",
-      detail: "Free up disk space on the computer running this job, then retry.",
+      detail: "You must free up space before running this job.",
       action: `<button type="button" class="btn small primary" data-disk-space data-job="${esc(targetJob || "")}">Free up space</button>`,
       secondary: targetJob ? `<a class="btn small" href="#/jobs/${encodeURIComponent(targetJob)}">Back to job</a>` : "",
     };

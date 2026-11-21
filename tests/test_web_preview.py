@@ -337,3 +337,7 @@ console.log(JSON.stringify([
         self.assertIn('primary: nextAction === "debug" && !signIn && !diskBlocked', source)
         self.assertIn('${heroAction && !steer?.primary ? `<div class="job-hero-action">${heroAction}</div>` : ""}', source)
         self.assertIn('class="btn ghost icon-only hero-copy-log-btn"', source)
+        disk_fn = source[source.index("async function openDiskSpace"):source.index("document.addEventListener(\"click\"", source.index("async function openDiskSpace"))]
+        self.assertIn("skeleton skeleton-line", disk_fn)
+        self.assertLess(disk_fn.index("showLoading("), disk_fn.index("api(`recovery/disk-space?"))
+        self.assertIn("liveRunCard(r, { onJobPage: true })", source)
