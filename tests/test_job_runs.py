@@ -93,7 +93,10 @@ class ForJobTests(unittest.TestCase):
     def test_task_runs_follow_task_identity_across_reorder_and_keep_shared_runs(self):
         first = {"title": "Earlier title", "run_history_id": "a" * 32}
         second = {"title": "Second", "run_history_id": "b" * 32}
-        initial = {**live("initial", "execute", 1.0), "task_refs": {"job-1": ["a" * 32, "b" * 32]}}
+        attempts = {"job-1": {"a" * 32: {"status": "passed", "detail": "Changed app.py"},
+                              "b" * 32: {"status": "incomplete", "detail": "Missing planned test"}}}
+        initial = {**live("initial", "execute", 1.0), "task_refs": {"job-1": ["a" * 32, "b" * 32]},
+                   "task_attempts": attempts}
         jr.record(self.rt, initial)
         latest = {**live("retry", "debug", 2.0, running=True), "task_refs": {"job-1": ["a" * 32]}}
         runs = jr.for_job(self.rt, "job-1", [latest, live("plan", "revise", 1.5)])
@@ -101,6 +104,7 @@ class ForJobTests(unittest.TestCase):
         groups = jr.task_runs(self.rt, "job-1", [second, first, {"title": "Untouched"}], runs)
         self.assertEqual([[run["id"] for run in group] for group in groups],
                          [["initial"], ["retry", "initial"], []])
+        self.assertEqual(groups[0][0]["task_attempts"], attempts)
 
     def test_legacy_logs_match_exact_unique_titles_and_skip_ambiguous_ones(self):
         jr.record(self.rt, live("historical", "execute", 1.0))
@@ -110,6 +114,12 @@ class ForJobTests(unittest.TestCase):
         runs = jr.for_job(self.rt, "job-1", [])
         groups = jr.task_runs(self.rt, "job-1", ["Duplicate", "Duplicate", "Important fix"], runs)
         self.assertEqual([[run["id"] for run in group] for group in groups], [[], [], ["historical"]])
+
+    def test_unattributed_work_runs_fall_back_to_current_task_index(self):
+        jr.record(self.rt, live("early-fail", "debug", 1.0, exit_code=1))
+        runs = jr.for_job(self.rt, "job-1", [])
+        groups = jr.task_runs(self.rt, "job-1", [{"title": "Task 1"}, {"title": "Task 2"}], runs, current_task_index=0)
+        self.assertEqual([[run["id"] for run in group] for group in groups], [["early-fail"], []])
 
 
 class RelationshipTests(unittest.TestCase):
@@ -190,7 +200,8 @@ class PageTests(unittest.TestCase):
         self.assertIn("activeRunCard(r, (jobRuns || []).find((x) => x.id === r.id)", self.app)
         self.assertIn("· run in progress", self.app)
         self.assertNotIn("This job ran in one go", self.app)
-        self.assertIn('<section class="card mb-16" id="job-runs"><details class="fold">', self.app)
+        self.assertIn('<section class="card mb-16" id="job-runs">', self.app)
+        self.assertIn('class="job-table-body" id="job-run-list"', self.app)
         self.assertNotIn('fold("Activity & Runs"', self.app)
         self.assertIn('detail.update(self._job_runs_view(root, parts[1], detail["runs"], detail["job"]))', self.server)
 
@@ -212,6 +223,12 @@ class PageTests(unittest.TestCase):
         self.assertIn('sub: runTaskSub ? `<span class="status-line"><span>${esc(runTaskSub)}</span></span>` : "",', self.app[self.app.index("function runHeader"):][:1800])
         self.assertIn("(runHeader.families ||= new Map()).set(run.id, family)", self.app)
         self.assertIn('parts[0] == "jobs" and parts[2] == "runs"', self.server)
+
+    def test_job_runs_card_uses_job_table_with_5_cutoff_and_25_max(self):
+        self.assertIn("const JOB_RUNS_SHOWN = 5;", self.app)
+        self.assertIn("const JOB_RUNS_MAX = 25;", self.app)
+        self.assertIn("Show more (${visibleRuns.length})", self.app)
+        self.assertLess(self.app.index("${jobRunsCard(jobRuns, runRel,"), self.app.index('id="verify-section"'))
 
 
 if __name__ == "__main__":

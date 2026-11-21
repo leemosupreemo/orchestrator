@@ -105,8 +105,8 @@ def _test_problem(job: dict[str, Any], out_dir: Path) -> str:
 
 
 def describe(job: dict[str, Any], out_dir: Path) -> dict[str, Any] | None:
-    """The problem behind a job in "debugging", or None for a job in any other state."""
-    if job.get("status") != "debugging":
+    """The problem behind a job in "debugging" or "failed", or None for a job in any other state."""
+    if job.get("status") not in ("debugging", "failed"):
         return None
     out_dir = Path(out_dir)
     summary, lines, sign_in = "", [], None

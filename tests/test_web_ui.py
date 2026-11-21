@@ -8567,7 +8567,8 @@ const activeRunCard = () => '';
 const liveRunCard = () => '';
 const clarificationThread = () => '';
 const jobChangeSummary = () => '';
-const jobRunRow = r => `<a href="#/runs/${r.id}">${r.label}</a>`;
+const runRowStart = source.indexOf('function jobRunRow(');
+eval(source.slice(source.indexOf('const RUN_STATUS ='), source.indexOf('\n}', runRowStart) + 2));
 const Markdown = { render: (t) => t };
 const runningMark = '';
 const PROVIDER_LABEL = {};
@@ -8604,17 +8605,19 @@ eval(source.slice(source.indexOf('function planBriefItems('), pageEnd));
     summary: { id: 'f1', title: 'Feature', type: 'feature-plan', status: 'debugging', state: { label: 'Building', reason: 'Fixing', tone: 'working', group: 'working', next: null } },
     job: { job_id: 'f1', type: 'feature-plan', status: 'debugging', iteration: 1, debug_phase: 'implement', ai_modified_files: ['src/b.swift', 'docs/guide.md'] },
     outputs: [], runs: [{ id: 'r2', action: 'debug', running: true }],
-    job_runs: [{ id: 'r1', action: 'execute', side: false }, { id: 'r2', action: 'debug', side: false }],
+    job_runs: [{ id: 'r1', action: 'execute', side: false }, { id: 'r2', label: 'Fix', action: 'debug', side: false,
+      task_attempts: { f1: { task1: { status: 'incomplete', detail: 'Missing <planned> test' } } } }],
     task_run_ids: [['r2']],
     docs: [], links: [],
     changes: { files: ['src/b.swift', 'docs/guide.md'], local_files: [], summary_line: '2 files changed, 12 insertions(+), 3 deletions(-)', base: 'main' },
-    test_summary: {}, pipeline: {}, tasks: ['T1'], completed_tasks: ['0'],
+    test_summary: {}, pipeline: {}, tasks: [{ title: 'T1', run_history_id: 'task1' }], completed_tasks: ['0'],
   };
   const r2 = await pages.job(['f1']);
   assert.equal((r2.html.match(/class="item task-row/g) || []).length, 1, 'renders each task once');
   const tasksCard = r2.html.slice(r2.html.indexOf('id="tasks-section"'), r2.html.indexOf('id="plan-section"'));
   assert(tasksCard.includes('1/1 done'), 'shows completion in Tasks above Plan');
   assert(tasksCard.includes('>1 run</summary>') && tasksCard.includes('#/runs/r2'), 'shows the expandable matched run');
+  assert(tasksCard.includes('Needs verification') && tasksCard.includes('Missing &lt;planned&gt; test'), 'renders task evidence safely');
   assert(!tasksCard.includes('#/runs/r1'), 'omits unrelated runs');
   assert(r2.html.includes('data-iterating="1"'), 'marks stepper as iterating');
   assert(!r2.html.includes('job-iter-badge'), 'omits Iter badge from stepper');
@@ -8678,7 +8681,7 @@ eval(source.slice(start, end));
     def test_waiting_epic_has_its_own_page(self):
         # Planning replaces the waiting job with a new one, so the page explains that and hands over to the new job.
         start = self.source.index("function waitingEpicPage")
-        page = self.source[start:self.source.index("pages.job = async", start)]
+        page = self.source[start:self.source.index("\n}", start) + 2]
         self.assertIn('if (s.status === "backlog") return waitingEpicPage(', self.job_page)
         self.assertIn("Ready to plan", page)
         self.assertIn("replaces this page", page)

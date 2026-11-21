@@ -63,6 +63,7 @@ class RunTimeline:
         self._in_runner = False                  # inside a build or test run, whose own [i/n] counters aren't steps
         self._worker = (0, 0)                    # the worker's own [n/total] count, which still counts inside a runner
         self.task_refs: dict[str, set[str]] = {}
+        self.task_attempts: dict[str, dict[str, dict]] = {}
         self._open("Starting", timed=True)
 
     # ------------------------------------------------------------------ steps
@@ -101,6 +102,11 @@ class RunTimeline:
     def line(self, text: str, timed: bool = True) -> None:
         line = text.strip()
         if not line:
+            return
+        if attempt := job_runs.parse_task_attempt(line):
+            job, task_id, outcome = attempt
+            self.task_refs.setdefault(job, set()).add(task_id)
+            self.task_attempts.setdefault(job, {})[task_id] = outcome
             return
         if marker := job_runs.parse_task_marker(line):
             job, ids = marker

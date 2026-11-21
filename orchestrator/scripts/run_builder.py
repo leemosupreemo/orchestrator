@@ -406,6 +406,7 @@ Available Tests (use for selecting test_command):
     
     # Return parsed output dictionary so callers can inspect what was built
     final_parsed = parsed_output if isinstance(parsed_output, dict) else {}
+    final_parsed["_test_execution"] = job.get("_test_execution") or {}
         
     return build_ok, test_ok, summary_file, final_parsed
 

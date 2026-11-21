@@ -27,6 +27,7 @@ SIDECAR_DIR = ("logs", "ui")
 MAX_SCAN = 400
 LEGACY_TASK_RUN_LIMIT = 24
 TASK_MARKER = "[task-run] "
+TASK_ATTEMPT_MARKER = "[task-attempt] "
 TASK_ID = re.compile(r"[0-9a-f]{32}")
 LEGACY_TASK_HEADER = re.compile(r"^=+\s*[^\w\n]*SUB-TASK\s+\d+(?:-\d+)?/\d+\s*:\s*(.+?)\s*=+\s*$", re.I | re.M)
 ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
@@ -82,6 +83,8 @@ def record(runtime: Path, run: dict[str, Any]) -> Path | None:
             "log": f"{'/'.join(SIDECAR_DIR)}/{run['id']}-{run.get('action', '')}.log"}
     if run.get("task_refs"):
         data["task_refs"] = run["task_refs"]
+    if run.get("task_attempts"):
+        data["task_attempts"] = run["task_attempts"]
     folder = _dir(runtime)
     try:
         folder.mkdir(parents=True, exist_ok=True)
@@ -132,6 +135,7 @@ def for_job(runtime: Path, job_id: str, live: list[dict[str, Any]], now: float |
             previous = by_id.get(r["id"], {})
             by_id[r["id"]] = {**previous, **r, "live": True,
                               "task_refs": r.get("task_refs") or previous.get("task_refs", {}),
+                              "task_attempts": r.get("task_attempts") or previous.get("task_attempts", {}),
                               "headline": (result.get("headline") if isinstance(result, dict) else "") or by_id.get(r["id"], {}).get("headline", ""),
                               "tone": (result.get("tone") if isinstance(result, dict) else "") or by_id.get(r["id"], {}).get("tone", "")}
     runs = sorted(by_id.values(), key=lambda r: r.get("started") or 0)
@@ -185,6 +189,28 @@ def parse_task_marker(line: str) -> tuple[str, set[str]] | None:
     return (payload["job"], ids) if ids else None
 
 
+def task_attempt_marker(job_id: str, task: dict, status: str, detail: str) -> str:
+    return TASK_ATTEMPT_MARKER + json.dumps({"job": job_id, "id": task["run_history_id"],
+                                             "status": status, "detail": detail[:500]})
+
+
+def parse_task_attempt(line: str) -> tuple[str, str, dict] | None:
+    if not line.startswith(TASK_ATTEMPT_MARKER):
+        return None
+    try:
+        payload = json.loads(line[len(TASK_ATTEMPT_MARKER):])
+    except ValueError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    job, task_id, status, detail = (payload.get(key) for key in ("job", "id", "status", "detail"))
+    if not all(isinstance(value, str) for value in (job, task_id, status, detail)):
+        return None
+    if not TASK_ID.fullmatch(task_id) or status not in ("running", "passed", "incomplete", "failed", "paused"):
+        return None
+    return job, task_id, {"status": status, "detail": detail[:500]}
+
+
 def _title(value: str) -> str:
     return " ".join(value.split()).casefold()
 
@@ -203,8 +229,9 @@ def _legacy_task_titles(path: Path, modified: int, size: int) -> tuple[str, ...]
     return tuple(_title(heading) for heading in LEGACY_TASK_HEADER.findall(text))
 
 
-def task_runs(runtime: Path, job_id: str, tasks: list[Any], runs: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
-    """Group runs by durable task ID, with exact title matches for old transcripts."""
+def task_runs(runtime: Path, job_id: str, tasks: list[Any], runs: list[dict[str, Any]], *,
+              current_task_index: int | None = None) -> list[list[dict[str, Any]]]:
+    """Group runs by durable task ID, with exact title matches for old transcripts and active-task fallback."""
     groups: list[list[dict[str, Any]]] = [[] for _ in tasks]
     ids = {task["run_history_id"]: index for index, task in enumerate(tasks)
            if isinstance(task, dict) and isinstance(task.get("run_history_id"), str)}
@@ -226,20 +253,22 @@ def task_runs(runtime: Path, job_id: str, tasks: list[Any], runs: list[dict[str,
         elif (legacy_reads < LEGACY_TASK_RUN_LIMIT and not run.get("running")
               and run.get("action") in {"approve", "new_job", "schedule", "execute", "resume", "debug"}):
             run_id, action = run["id"], run["action"]
-            if not isinstance(run_id, str) or not re.fullmatch(r"[\w-]+", run_id):
-                continue
-            path = _dir(runtime) / f"{run_id}-{action}.log"
-            if path.is_symlink():
-                continue
-            try:
-                info = path.stat()
-            except OSError:
-                continue
-            legacy_reads += 1
-            for heading in _legacy_task_titles(path, info.st_mtime_ns, info.st_size):
-                names = [heading] if heading in titles else heading.split(" + ")
-                if all(len(titles.get(name, ())) == 1 for name in names):
-                    matched.update(titles[name][0] for name in names)
+            if isinstance(run_id, str) and re.fullmatch(r"[\w-]+", run_id):
+                path = _dir(runtime) / f"{run_id}-{action}.log"
+                if not path.is_symlink():
+                    try:
+                        info = path.stat()
+                    except OSError:
+                        info = None
+                    if info is not None:
+                        legacy_reads += 1
+                        for heading in _legacy_task_titles(path, info.st_mtime_ns, info.st_size):
+                            names = [heading] if heading in titles else heading.split(" + ")
+                            if all(len(titles.get(name, ())) == 1 for name in names):
+                                matched.update(titles[name][0] for name in names)
+        if (not matched and current_task_index is not None and 0 <= current_task_index < len(groups)
+                and not run.get("side") and run.get("action") in {"schedule", "execute", "resume", "debug"}):
+            matched.add(current_task_index)
         for index in matched:
             groups[index].append(run)
     return groups

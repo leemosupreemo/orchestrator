@@ -5632,6 +5632,7 @@ dialog.ask-ai { width: min(34rem, 100vw); max-width: min(34rem, 100vw); height: 
 .job-run-steps li.failed { color: var(--bad); }
 .job-run-steps li:last-child { font-weight: var(--weight-medium); }
 .job-run-row.is-side .title { color: var(--muted); }
+.task-run-details .job-run-row .meta { white-space: normal; overflow-wrap: anywhere; }
 .run-family { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; min-width: 0; max-width: 100%; white-space: normal; }
 .run-family > span, .run-family > a { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
 .run-unreported { color: var(--bad); }

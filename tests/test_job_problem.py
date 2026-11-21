@@ -95,6 +95,39 @@ class DescribeTests(unittest.TestCase):
     def test_with_nothing_recorded_it_still_says_something(self):
         self.assertEqual(job_problem.describe({"status": "debugging"}, self.out / "missing")["summary"], "The build or tests didn't pass.")
 
+    def test_failed_job_also_describes_its_problem(self):
+        out = job_problem.describe({"status": "failed", "last_error": "Builder timed out after 600s"}, self.out)
+        self.assertIsNotNone(out)
+        self.assertIn("Builder timed out after 600s", out["summary"])
+
+    def test_paused_and_failed_job_state_surface_real_error_and_skip_cleared_disk_blocker(self):
+        from orchestrator.web import server as web_server
+        with patch.object(web_server, "worker_alive", return_value=False):
+            paused_err = web_server.job_state(
+                {"status": "executing", "last_error": "Codex exited with status 1", "plan": {"tasks": ["A", "B"]}},
+            )
+            self.assertEqual(paused_err["label"], "Paused")
+            self.assertEqual(paused_err["tone"], "failed")
+            self.assertIn("Codex exited with status 1", paused_err["reason"])
+
+            paused_no_err = web_server.job_state(
+                {"status": "executing", "plan": {"tasks": ["A", "B"]}},
+            )
+            self.assertEqual(paused_no_err["label"], "Paused")
+            self.assertIn("worker stopped unexpectedly", paused_no_err["reason"])
+
+            with patch("orchestrator.blockers.is_cleared", return_value=True):
+                paused_cleared = web_server.job_state(
+                    {"status": "executing", "last_error": "Not enough disk space on this computer. Free at least 2 GB.", "plan": {"tasks": ["A", "B"]}},
+                    root=self.out,
+                )
+                self.assertNotIn("disk space", paused_cleared["reason"].lower())
+                self.assertIn("worker stopped unexpectedly", paused_cleared["reason"])
+
+        failed = web_server.job_state({"status": "failed", "last_error": "Missing Unity license"})
+        self.assertEqual(failed["label"], "Failed")
+        self.assertIn("Missing Unity license", failed["reason"])
+
 
 class WiringTests(unittest.TestCase):
     def test_the_job_page_shows_the_problem_and_fix_runs_directly(self):

@@ -643,6 +643,10 @@ class TaskCheckpointTests(unittest.TestCase):
         ids = {task["run_history_id"] for task in self.job["plan"]["tasks"]}
         self.assertEqual(len(ids), 2)
         self.assertEqual(timeline.task_refs[self.job["job_id"]], ids)
+        attempts = timeline.task_attempts[self.job["job_id"]]
+        self.assertEqual(set(attempts), ids)
+        self.assertTrue(all(attempt["status"] == "passed" for attempt in attempts.values()))
+        self.assertTrue(all("Changed " in attempt["detail"] for attempt in attempts.values()), attempts)
 
     def test_the_latest_task_can_be_undone_and_the_earlier_one_stays(self):
         from orchestrator import task_revert
@@ -739,7 +743,7 @@ class BuilderTestCommandTests(unittest.TestCase):
 
     def test_running_only_an_unrelated_test_is_still_caught(self):
         project, job = self.run_with("narrow_tests")
-        self.assertIn("the test command was downgraded", self.output)
+        self.assertIn("omitted planned tests", self.output)
         self.assertEqual(job.get("completed_task_indices"), [], "the task was counted as done without its tests being run")
         self.assertFalse(project.gh()["prs"], "a pull request was opened for work that was not verified")
 

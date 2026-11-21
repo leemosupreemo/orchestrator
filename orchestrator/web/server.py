@@ -544,6 +544,7 @@ class PtySession:
         with self._cond:
             progress = self._progress.snapshot(running=self.running)
             task_refs = {job: sorted(ids) for job, ids in self._timeline.task_refs.items()}
+            task_attempts = {job: attempts.copy() for job, attempts in self._timeline.task_attempts.items()}
         if not progress.get("models"):
             assigned: list[str] = []
             target_job = self.job_id or self.result_job
@@ -603,6 +604,7 @@ class PtySession:
             "last_line": self._last_line(), "error_summary": self._error_summary(), "idle": int(idle), "result": self.result,
             "progress": progress,
             "task_refs": task_refs,
+            "task_attempts": task_attempts,
         }
 
     def _last_line(self) -> str:
@@ -614,6 +616,7 @@ class PtySession:
         lines = [
             l.strip() for l in text.splitlines()
             if l.strip()
+            and not l.strip().startswith((job_runs.TASK_MARKER, job_runs.TASK_ATTEMPT_MARKER))
             and not re.match(r"^\[exited(?: with code -?\d+)?\]$", l.strip())
             and not re.match(r"^(?:\[\d+/\d+\]\s*)?updating (?:github )?issue\b", l.strip(), re.IGNORECASE)
             and "build failed; skipping simulator launch" not in l.lower()
@@ -1051,16 +1054,31 @@ def job_state(job: dict[str, Any], root: Path | None = None) -> dict[str, Any]:
         return state("backlog", "idle", "Epic · no plan yet", "Approved, and waiting. Make a plan when you're ready; nothing runs until then.", "plan_epic", "Make a plan")
     if status == "scheduled":
         return state("working", "working", "Queued", "Dispatched and waiting for a worker.", "execute", "Run now")
+    def active_error() -> str:
+        err = str(job.get("last_error") or "").strip()
+        if not err:
+            return ""
+        if root is not None:
+            from orchestrator import blockers
+            detected = blockers.detect(err)
+            if detected and blockers.is_cleared(detected, root):
+                return ""
+        return err
+
     if status in {"executing", "running", "in-progress"} and worker_alive(job) is False:
         done = len(tasks) - remaining if tasks else 0
         progress = f": {done} of {len(tasks)} tasks done" if tasks else ""
-        return state("needs_you", "attention", "Paused", f"Stopped before it finished{progress}.", "resume", "Resume")  # the page says where Resume picks up
+        error = active_error()
+        if error:
+            return state("needs_you", "failed", "Paused", f"Stopped with an error: {error}", "resume", "Resume")
+        return state("needs_you", "attention", "Paused", f"The worker stopped unexpectedly before finishing{progress}.", "resume", "Resume")  # the page says where Resume picks up
     if status in {"executing", "running", "in-progress", "decomposed"}:
         return state("working", "working", "Building", "A worker is implementing this.")
     if status == "completed":
         return state("done", "done", "Completed", "Merged and archived." if pr else "Finished.")
     if status == "failed":
-        return state("needs_you", "failed", "Failed", "Last run failed; try a fix.", "debug", "Run fix")
+        error = active_error()
+        return state("needs_you", "failed", "Failed", f"Last run failed: {error}" if error else "Last run failed; try a fix.", "debug", "Run fix")
     if remaining:
         return state("working", "working", status.replace("-", " ").capitalize(), f"{remaining} task(s) left.", "resume", "Resume")
     return state("working", "working", status.replace("-", " ").capitalize(), "")
@@ -7996,8 +8014,10 @@ class UIHandler(BaseHTTPRequestHandler):
                                                        self._principal.get("email") or "access token", self._client_ip())
             self._json({"ok": True, "kept": kept})
         elif method == "GET" and parts == ["state"]:
+            from orchestrator import disk_space
             visible_runs = self._sessions_view()
-            self._json({"project": project_state(root), "runs": visible_runs,
+            disk_low = bool((disk_space.status(root, runtime_dir(root)).get("needed_bytes") or 0) > 0)
+            self._json({"project": project_state(root), "runs": visible_runs, "disk_low": disk_low,
                         **inbox_state(root, self.server.sessions, runs=visible_runs),
                         "product_notice": prd_doc.Prd(root, runtime_dir(root)).notice(),
                         "models_notice": models_notice(),
@@ -10573,7 +10593,10 @@ class UIHandler(BaseHTTPRequestHandler):
         runs = job_runs.for_job(runtime_dir(root), job_id, live)
         if not self._is_owner():
             runs = [r for r in runs if r.get("action") not in OWNER_ONLY_ACTIONS]
-        groups = job_runs.task_runs(runtime_dir(root), job_id, job_task_list(job), runs)
+        tasks = job_task_list(job)
+        done = {str(i) for i in (job.get("completed_task_indices") or [])}
+        current_idx = next((i for i in range(len(tasks)) if str(i) not in done), len(tasks) - 1 if tasks else None)
+        groups = job_runs.task_runs(runtime_dir(root), job_id, tasks, runs, current_task_index=current_idx)
         return {"job_runs": runs, "run_relationship": job_runs.relationship(runs, job),
                 "task_run_ids": [[run["id"] for run in group] for group in groups]}
 

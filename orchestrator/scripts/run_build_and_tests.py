@@ -212,6 +212,7 @@ def run_build_and_tests(
     job: dict, summary_file: Path, *, job_owned: bool = False, is_current: Callable[[], bool] | None = None,
 ) -> tuple[bool, bool]:
     """Build and run the project's tests: the main `test_command`, then the extra `test_commands` once it passes."""
+    job.pop("_test_execution", None)
     build_ok, test_ok = run_main_build_and_tests(job, summary_file)
     if not (build_ok and test_ok):
         return build_ok, test_ok
@@ -273,6 +274,7 @@ def run_main_build_and_tests(job: dict, summary_file: Path) -> tuple[bool, bool]
     # Determine test command first to see if we should skip build
     test_cmd = raw_test_cmd
     override = job.get("test_command_override")
+    fell_back = False
     
     is_standalone_test = False
     if override:
@@ -289,10 +291,12 @@ def run_main_build_and_tests(job: dict, summary_file: Path) -> tuple[bool, bool]
             # The builder named a test it never wrote (or wrote elsewhere). Running it finds nothing, so run the project's own tests instead.
             print(f"      - Warning: ignoring the builder's test command, {', '.join(missing_targets)} doesn't exist. Running the project's tests instead.")
             test_cmd = raw_test_cmd
+            fell_back = True
         elif source_only_targets and raw_test_cmd and override.strip() != raw_test_cmd.strip():
             # Don't let source-text substring assertions silently replace the repository's configured test suite.
             print(f"      - Warning: ignoring source-text-only test override ({', '.join(source_only_targets)}). Running the project's tests instead.")
             test_cmd = raw_test_cmd
+            fell_back = True
         elif "python3" in override or "pytest" in override or "sh " in override or "./" in override:
             test_cmd = override
             is_standalone_test = True
@@ -307,6 +311,7 @@ def run_main_build_and_tests(job: dict, summary_file: Path) -> tuple[bool, bool]
             # If it's just some random text from the LLM, don't execute it
             print(f"      - Warning: Ignoring malformed test command override: {override}")
             test_cmd = raw_test_cmd
+            fell_back = override.strip() != raw_test_cmd.strip()
 
     # Resolve commands locally on the worker machine
     build_cmd = resolve_command(raw_build_cmd)
@@ -392,6 +397,7 @@ def run_main_build_and_tests(job: dict, summary_file: Path) -> tuple[bool, bool]
     test_ok = False
     from orchestrator import builder_check
     own_test_cmd = resolve_command(raw_test_cmd)
+    full_suite = " ".join(final_test_cmd.split()) == " ".join(own_test_cmd.split())
     for attempt in range(max_retries + 2):  # one extra pass, for the fall back to the project's own tests below
         print(f"      - Running tests: {final_test_cmd} (Attempt {attempt + 1})")
         test_limit = command_timeout("test")
@@ -434,9 +440,14 @@ def run_main_build_and_tests(job: dict, summary_file: Path) -> tuple[bool, bool]
         if builder_check.no_tests_ran(full_test_output) and own_test_cmd and final_test_cmd != own_test_cmd:
             print("      - The builder's test command found no tests. Running the project's own tests instead.")
             final_test_cmd = own_test_cmd
+            fell_back = True
+            full_suite = True
             continue
 
         if test_result.returncode == 0:
+            if not builder_check.no_tests_ran(full_test_output):
+                job["_test_execution"] = {"command": final_test_cmd, "full_suite": full_suite,
+                                          "fell_back": fell_back}
             print("      - Tests passed.")
             return True, True
 

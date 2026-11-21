@@ -141,7 +141,7 @@ class StepsTests(unittest.TestCase):
 
 class LiveTests(unittest.TestCase):
     def test_task_markers_accumulate_without_adding_terminal_steps(self):
-        from orchestrator.job_runs import task_marker
+        from orchestrator.job_runs import task_attempt_marker, task_marker
 
         timeline = RunTimeline()
         first, second = ({"run_history_id": char * 32} for char in ("a", "b"))
@@ -149,7 +149,11 @@ class LiveTests(unittest.TestCase):
         timeline.feed(marker[:20])
         timeline.feed(marker[20:])
         timeline.feed((task_marker("j1", [first]) + "\n").encode())
+        attempt = (task_attempt_marker("j1", first, "passed", "Changed app.py") + "\r\n").encode()
+        timeline.feed(attempt[:31])
+        timeline.feed(attempt[31:])
         self.assertEqual(timeline.task_refs, {"j1": {"a" * 32, "b" * 32}})
+        self.assertEqual(timeline.task_attempts["j1"]["a" * 32], {"status": "passed", "detail": "Changed app.py"})
         self.assertEqual([step["title"] for step in timeline.steps], ["Starting"])
         self.assertEqual(timeline.current["lines"], 0)
 

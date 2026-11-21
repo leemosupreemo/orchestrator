@@ -310,6 +310,53 @@ class WorkerRunTests(unittest.TestCase):
                     self.assertIn(error, job['last_error'])
                 calls['debug'].assert_called_once_with(path)
 
+    def test_batch_keeps_verified_task_and_resumes_only_the_unfinished_one(self):
+        from orchestrator.web.run_timeline import RunTimeline
+
+        feature = self.two_task_job()
+        first, second = feature['plan']['tasks']
+        first.update(complexity='small', tests=['test_first'])
+        second.update(complexity='small', likely_files=['app.py', 'second.py'],
+                      tests=['test_second', 'test_edge'])
+        selected = 'pytest -k "test_first or test_second"'
+        results = [(True, True, Path('summary'), {'test_command': selected,
+                                                 '_test_execution': {'command': selected, 'full_suite': False}}),
+                   (True, True, Path('summary'), {'test_command': 'all tests'})]
+        with self.pipeline(feature, results=results, states=self.EDITED) as (path, calls), \
+             patch.object(worker, 'checkpoint_task'):
+            worker.execute_job(path)
+            job = worker.read_json(path)
+            self.assertEqual(job['completed_task_indices'], [0])
+            self.assertEqual(job['status'], 'human-needed')
+            calls['debug'].assert_not_called()
+            calls['push_branch_for_review'].assert_not_called()
+            timeline = RunTimeline()
+            timeline.feed(self.output.getvalue().encode())
+            first_id, second_id = [task['run_history_id'] for task in job['plan']['tasks']]
+            attempts = timeline.task_attempts['job-1']
+            self.assertEqual(attempts[first_id]['status'], 'passed')
+            self.assertEqual(attempts[second_id]['status'], 'incomplete')
+            self.assertIn('test_edge', attempts[second_id]['detail'])
+
+            states = [{'modified': [], 'untracked': []}, {'modified': ['second.py'], 'untracked': []},
+                      {'modified': [], 'untracked': []}]
+            calls['get_repo_state'].side_effect = states
+            worker.execute_job(path, resume=True)
+            self.assertEqual(calls['run_builder'].call_count, 2)
+            self.assertTrue(calls['run_builder'].call_args.args[0].stem.endswith('_task_2'))
+            self.assertEqual(worker.read_json(path)['completed_task_indices'], [0, 1])
+
+    def test_shared_files_and_a_green_suite_cannot_verify_two_tasks(self):
+        first, second = self.two_task_job()['plan']['tasks']
+        output = {'_test_execution': {'command': 'pytest', 'full_suite': True}}
+        status, detail = worker.task_validation(first, [second], ['app.py'], output, True, True)
+        self.assertEqual(status, 'incomplete')
+        self.assertIn('shared evidence', detail)
+        output['_test_execution']['fell_back'] = True
+        status, detail = worker.task_validation(first, [], ['app.py'], output, True, True)
+        self.assertEqual(status, 'incomplete')
+        self.assertIn('selected tests could not be used', detail)
+
     def test_feature_builder_infers_changes_accepts_named_tests_and_handles_missing_metadata(self):
         for output in ({'test_command': 'pytest test_screen'}, {'action': 'add_logging'}, {}):
             with self.subTest(output=output), \

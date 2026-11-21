@@ -5830,24 +5830,80 @@ const RUN_STATUS = { running: ["Running", "working"], waiting: ["Waiting for you
   failed: ["Failed", "failed"], stopped: ["Stopped", "neutral"], unknown: ["Ended unseen", "neutral"] };
 const runSeconds = (sec) => sec == null ? "" : sec < 60 ? `${sec}s` : `${Math.floor(sec / 60)}m ${String(sec % 60).padStart(2, "0")}s`;
 
-function jobRunRow(r, hidden = false) {
-  const [label, tone] = RUN_STATUS[r.status] || RUN_STATUS.unknown;
-  const meta = [r.started ? ago(r.started) : "", runSeconds(r.seconds), r.status === "running" && r.now ? `Now: ${r.now}` : r.headline || ""].filter(Boolean);
+function jobRunRow(r, hidden = false, attempt = null) {
+  const taskStatus = {
+    running: r.running ? ["Working", "working"] : ["Interrupted", "attention"],
+    passed: ["Task checks passed", "done"],
+    incomplete: ["Needs verification", "attention"],
+    failed: ["Checks failed", "failed"],
+    paused: ["Paused", "attention"],
+  };
+  const [label, tone] = taskStatus[attempt?.status] || RUN_STATUS[r.status] || RUN_STATUS.unknown;
+  const detail = attempt ? attempt.detail : r.status === "running" && r.now ? `Now: ${r.now}` : r.headline || "";
+  const meta = [r.started ? ago(r.started) : "", runSeconds(r.seconds), detail].filter(Boolean);
   return `<a${hidden ? " hidden" : ""} class="item job-run-row${r.side ? " is-side" : ""}" href="#/runs/${encodeURIComponent(r.id)}" data-run-row="${esc(r.id)}">
     <div class="main-col"><div class="title">${esc(r.label)}${r.side ? ` <span class="muted">(side errand)</span>` : ""}</div>
       <div class="meta">${meta.map(esc).join(" · ")}</div></div>
     <div class="side"><span class="pill ${tone}">${esc(label)}</span></div></a>`;
 }
 
+const JOB_RUNS_SHOWN = 5;
+const JOB_RUNS_MAX = 25;
+
+function jobRunTableRow(r, { hidden = false, number = null } = {}) {
+  const [label, tone] = RUN_STATUS[r.status] || RUN_STATUS.unknown;
+  const stage = r.side ? "Side errand"
+    : r.phase ? `${r.phase[0].toUpperCase()}${r.phase.slice(1)}`
+    : r.action ? `${r.action[0].toUpperCase()}${r.action.slice(1).replace(/_/g, " ")}`
+    : "Run";
+  const metaParts = [
+    runSeconds(r.seconds),
+    r.status === "running" && r.now ? `Now: ${r.now}` : (r.headline || ""),
+  ].filter(Boolean);
+  const metaHtml = metaParts.map(esc).join(" · ");
+  const pillHtml = `<span class="pill ${tone}">${esc(label)}</span>`;
+  const typeTag = `<span class="job-type-tag">${esc(stage)}</span>`;
+  return `
+    <a${hidden ? " hidden" : ""} class="job-table-row job-run-row${r.side ? " is-side" : ""}" href="#/runs/${encodeURIComponent(r.id)}" data-run-row="${esc(r.id)}">
+      <div class="col-job${number != null ? " has-num" : ""}">
+        ${number != null ? `<span class="job-row-num" aria-hidden="true">${number}</span>` : ""}
+        <div class="col-job-main">
+          <div class="job-title-row">
+            <div class="job-title">${esc(r.label)}</div>
+          </div>
+          <div class="job-mobile-info">
+            ${typeTag}
+            ${pillHtml}
+          </div>
+          ${metaHtml ? `<div class="job-meta">${metaHtml}</div>` : ""}
+        </div>
+      </div>
+      <div class="col-type">${typeTag}</div>
+      <div class="col-status">${pillHtml}</div>
+      <div class="col-date">${esc(r.started ? ago(r.started) : "")}</div>
+    </a>`;
+}
+
 function jobRunsCard(runs, rel, extraDetailsHtml = "") {
   if (!runs) return "";
   const work = runs.filter((r) => !r.side);
+  const visibleRuns = runs.slice(0, JOB_RUNS_MAX);
   const stages = Object.entries(rel?.per_phase || {}).filter(([, n]) => n).map(([phase, n]) => `${phase[0].toUpperCase()}${phase.slice(1)} ${n}`);
   const metaHtml = (stages.length > 1 ? `<span class="muted">By stage: ${esc(stages.join(" · "))}</span>` : "") + extraDetailsHtml;
-  return `<section class="card mb-16" id="job-runs"><details class="fold"><summary class="card-h"><h2>${rel?.single ? "Run" : "Runs"}</h2>${work.length ? `<span class="count">${work.length}</span>` : ""}</summary>
+  return `<section class="card mb-16" id="job-runs">
+    <div class="card-h"><h2>${rel?.single ? "Run" : "Runs"}</h2>${work.length ? `<span class="count">${work.length}</span>` : ""}</div>
+    ${visibleRuns.length ? `<div class="job-table">
+      <div class="job-table-header">
+        <div class="col-job">Run</div>
+        <div class="col-type">Stage</div>
+        <div class="col-status">Status</div>
+        <div class="col-date"><span class="date-header-long">Started</span><span class="date-header-short">Date</span></div>
+      </div>
+      <div class="job-table-body" id="job-run-list">${visibleRuns.map((r, n) => jobRunTableRow(r, { hidden: n >= JOB_RUNS_SHOWN, number: n + 1 })).join("")}</div>
+      ${visibleRuns.length > JOB_RUNS_SHOWN ? `<div class="card-b"><button type="button" class="btn small" data-show-all="job-run-list">Show more (${visibleRuns.length})</button></div>` : ""}
+    </div>` : `<div class="empty">Nothing has run for this job yet.</div>`}
     ${metaHtml ? `<div class="card-b stack">${metaHtml}</div>` : ""}
-    ${runs.length ? `<div class="list" id="job-run-list">${runs.map((r, n) => jobRunRow(r, n >= 8)).join("")}</div>
-      ${runs.length > 8 ? `<div class="card-b"><button type="button" class="btn small" data-show-all="job-run-list">Show all ${runs.length}</button></div>` : ""}` : `<div class="empty">Nothing has run for this job yet.</div>`}</details></section>`;
+  </section>`;
 }
 
 // Extract a short 1-sentence summary of what a job actually changed, from its diff hypothesis or builder summary.
@@ -6401,7 +6457,8 @@ pages.job = async ([id]) => {
     const runList = !data.task_run_ids ? "" : taskRuns.length
       ? `<details class="task-detail task-run-details" data-task-runs="${esc(historyKey)}"${expandedTaskRuns.has(historyKey) ? " open" : ""}>
           <summary class="linklike">${esc(runLabel)}</summary>
-          <div class="list" id="${runListId}">${taskRuns.map((run, index) => jobRunRow(run, index >= 5)).join("")}</div>
+          <div class="list" id="${runListId}">${taskRuns.map((run, index) =>
+            jobRunRow(run, index >= 5, run.task_attempts?.[id]?.[t?.run_history_id])).join("")}</div>
           ${taskRuns.length > 5 ? `<button type="button" class="btn small" data-show-all="${runListId}">Show all ${taskRuns.length}</button>` : ""}
         </details>`
       : `<span class="muted t-secondary">${esc(runLabel)}</span>`;
@@ -6436,19 +6493,31 @@ pages.job = async ([id]) => {
       ${planNotesHtml}
     </section>`;
   const rawHeroReason = String(problem?.summary || s.state.reason || "").trim();
+  const unreportedHeadline = runRel?.unreported?.headline
+    && !(state?.disk_low === false && /not enough disk space|free up space|no space left on device/i.test(runRel.unreported.headline))
+    ? String(runRel.unreported.headline).replace(/^CRITICAL ERROR during execution:\s*/i, "").trim()
+    : "";
+  const effectiveHeroReason = (!problem?.summary && unreportedHeadline && /^The worker stopped unexpectedly|^Stopped before it finished/i.test(rawHeroReason))
+    ? unreportedHeadline
+    : rawHeroReason;
   const conciseReasonText = (raw) => {
-    let text = raw.replace(/^It stopped with an error:\s*/i, "").replace(/^Paused:\s*/i, "").trim();
+    let text = raw
+      .replace(/^Paused:\s*[^.\n]+\.\s*It stopped with an error:\s*/i, "")
+      .replace(/^(?:It stopped|Stopped) with an error:\s*/i, "")
+      .replace(/^Last run failed:\s*/i, "")
+      .replace(/^Paused:\s*/i, "")
+      .trim();
     const firstLine = (text.split(/\r?\n/)[0] || "").trim();
     const dotIdx = firstLine.indexOf(". ");
     const sentence = dotIdx >= 20 ? firstLine.slice(0, dotIdx + 1) : firstLine;
-    return sentence.length > 110 ? `${sentence.slice(0, 107).trimEnd()}…` : sentence;
+    return sentence.length > 140 ? `${sentence.slice(0, 137).trimEnd()}…` : sentence;
   };
   const architectConcerns = s.question && /architect/i.test(s.question) && /architect/i.test(rawHeroReason);
   const shortReason = problem?.sign_in
     ? `${problem.sign_in.name} sign-in expired. Sign in first, then run fix.`
-    : conciseReasonText(rawHeroReason);
+    : conciseReasonText(effectiveHeroReason);
   const hasMoreReason = !architectConcerns && !reviewingPlan && !(s.status === "designing" && nextAction === "approve")
-    && rawHeroReason && (rawHeroReason.includes("\n") || rawHeroReason.length > 110);
+    && effectiveHeroReason && (effectiveHeroReason.includes("\n") || effectiveHeroReason.length > 140);
   const heroReason = architectConcerns ? "The architect raised concerns (below). Answer them, or accept its suggestions and re-plan."
     : reviewingPlan ? `Review <button type="button" class="linklike" data-scroll-to="#plan-section">the plan below</button> (${plural(tasks.length, "task")}) and ${nextAction === "approve" ? "approve or revise." : "start when ready."}`
     : s.status === "designing" && nextAction === "approve" ? `Review <button type="button" class="linklike" data-scroll-to="#plan-section">the design</button>, then approve or request changes.`
@@ -6457,7 +6526,7 @@ pages.job = async ([id]) => {
     ? `<details class="hero-error-details"><summary class="linklike muted">Details (${problem.lines.length})</summary><ul class="hero-problem">${problem.lines.map((l) => `<li>${esc(l)}</li>`).join("")}</ul></details>`
     : "";
   const heroReasonDetails = job.moved_to ? "" : problem ? problemHtml : hasMoreReason // a copy elsewhere has no error to show
-    ? `<details class="hero-error-details"><summary class="linklike muted">Error details</summary><pre class="hero-error-pre">${esc(rawHeroReason)}</pre></details>`
+    ? `<details class="hero-error-details"><summary class="linklike muted">Error details</summary><pre class="hero-error-pre">${esc(effectiveHeroReason)}</pre></details>`
     : "";
   const latestFailureRun = runRel?.unreported
     || (jobRuns || []).find((r) => !r.side && r.status === "failed")
@@ -6575,7 +6644,7 @@ pages.job = async ([id]) => {
           ${overlapAdviceHtml(data.overlaps, { readyHere: ["merge", "complete"].includes(nextAction), idle: !activeRun })}
           ${typeof meceCoverageHtml === "function" ? meceCoverageHtml(data.mece) : ""}
           ${s.state.blocker ? `<details class="fold"><summary class="linklike muted">What the AI said</summary><p class="muted">${esc(s.state.blocker)}</p></details>` : ""}
-          ${runRel?.unreported ? `<div class="notice warn hero-unreported-notice"><span>Last run (<strong>${esc(runRel.unreported.label)}</strong>) ${runRel.unreported.status === "failed" ? "failed" : "ended without reporting back"} before it could update this job.</span><a class="btn small ghost" href="#/runs/${encodeURIComponent(runRel.unreported.id)}">Details</a></div>` : ""}
+          ${runRel?.unreported ? `<div class="notice warn hero-unreported-notice"><span>Last run (<strong>${esc(runRel.unreported.label)}</strong>) ${runRel.unreported.status === "failed" ? "failed" : "ended without reporting back"} before it could update this job${unreportedHeadline ? `: ${esc(unreportedHeadline)}` : "."}</span><a class="btn small ghost" href="#/runs/${encodeURIComponent(runRel.unreported.id)}">Details</a></div>` : ""}
           ${nextExecutionPreview ? `<div class="job-hero-next-preview">${nextExecutionPreview}</div>` : ""}
           ${showTaskBar ? `<div class="tasks-progress-wrap"><div class="progress-bar-container" role="progressbar" aria-label="Tasks built" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${tasksPct}"><div class="progress-bar-fill" style="width: ${tasksPct}%"></div></div><span class="progress-text">${tasksDone}/${tasksTotal}</span></div>` : ""}
           ${uxWarning ? `<p class="job-hero-reason"><button type="button" class="linklike" data-scroll-to="#ux-section">UX and design check: ${plural(uxWarning, "major finding")}. Look before you ${s.state.next?.action === "merge" ? "merge" : "finish"}.</button></p>` : ""}
@@ -6615,6 +6684,12 @@ pages.job = async ([id]) => {
 
       <div class="job-body">
       ${!reviewingPlan ? tasksCardHtml : ""}
+      ${jobRunsCard(jobRuns, runRel, `<details class="hero-error-details">
+            <summary class="linklike muted">Stage &amp; model details</summary>
+            <div class="progress-foot muted">${phasesInfo.map((p) => `${esc(p.title)}: ${esc(p.subtitle)}`).join(" · ")}</div>
+            ${pipe?.planner || pipe?.builder || pipe?.reviewer ? `<div class="progress-foot muted">Models: ${esc(pipeline.planner === pipeline.builder && pipeline.builder === pipeline.reviewer ? pipeline.planner : `plan ${pipeline.planner} → build ${pipeline.builder} → review ${pipeline.reviewer}`)}</div>` : ""}
+            ${job.auto_assignment ? `<div class="progress-foot muted">Picked by Auto (${esc(job.auto_assignment.complexity || "standard")}): ${esc((job.auto_assignment.reasons || []).join("; "))}.</div>` : ""}
+          </details>`)}
       ${!reviewingPlan ? `<section class="card mb-16" id="plan-section" tabindex="-1">
         <div class="card-h"><h2>${s.status === "designing" ? "Design" : "Plan"}</h2>
           ${job.plan?.fast_tracked ? `<span class="count" title="A Quick change: planned in one pass and started without approval">Fast-tracked</span>` : ""}</div>
@@ -6669,13 +6744,6 @@ pages.job = async ([id]) => {
 
       ${(data.context?.updates || []).length ? fold("Updates sent to linked apps", data.context.updates.length, `<div class="list">${data.context.updates.map((e) => `<div class="item"><span aria-label="${e.ok ? "sent" : "failed"}">${e.ok ? "✅" : "⚠️"}</span><div class="main-col">
           <div class="title">${esc(e.message)}</div><div class="meta">${esc([PROVIDER_LABEL[e.provider] || e.provider, e.ref, String(e.event || "").replace(":", " · ").replace("_", " "), e.t].filter(Boolean).join(" · "))}</div></div></div>`).join("")}</div>`) : ""}
-
-      ${jobRunsCard(jobRuns, runRel, `<details class="hero-error-details">
-            <summary class="linklike muted">Stage &amp; model details</summary>
-            <div class="progress-foot muted">${phasesInfo.map((p) => `${esc(p.title)}: ${esc(p.subtitle)}`).join(" · ")}</div>
-            ${pipe?.planner || pipe?.builder || pipe?.reviewer ? `<div class="progress-foot muted">Models: ${esc(pipeline.planner === pipeline.builder && pipeline.builder === pipeline.reviewer ? pipeline.planner : `plan ${pipeline.planner} → build ${pipeline.builder} → review ${pipeline.reviewer}`)}</div>` : ""}
-            ${job.auto_assignment ? `<div class="progress-foot muted">Picked by Auto (${esc(job.auto_assignment.complexity || "standard")}): ${esc((job.auto_assignment.reasons || []).join("; "))}.</div>` : ""}
-          </details>`)}
 
       <!-- Technical Details -->
       <section class="card"><details class="raw"><summary>Technical details (${esc(s.id)})</summary><pre>${esc(JSON.stringify(job, null, 2))}</pre></details></section>
@@ -14741,6 +14809,15 @@ function runFailureGuidance(r) {
   const targetJob = r.job || r.result_job;
 
   if (/no space left on device|\benospc\b|\berrno 28\b|not enough (?:free )?(?:disk )?space|insufficient (?:free )?disk space|low disk space|\bdisk (?:is )?full\b|ran out of (?:free |disk )space|disk space exhausted/i.test(fullText)) {
+    if (typeof state !== "undefined" && state?.disk_low === false) {
+      return {
+        recoveryAction: "disk-space-cleared",
+        title: "Disk space is now available",
+        detail: "This earlier run stopped due to low disk space, but enough space is available now.",
+        action: targetJob ? `<a class="btn small primary" href="#/jobs/${encodeURIComponent(targetJob)}">Back to job</a>` : "",
+        secondary: "",
+      };
+    }
     return {
       recoveryAction: "disk-space",
       title: "Low disk space",

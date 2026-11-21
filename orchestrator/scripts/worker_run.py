@@ -888,6 +888,64 @@ def link_run_to_tasks(job_path: Path, job: dict, tasks: list, indices: list[int]
     print(job_runs.task_marker(job["job_id"], members), flush=True)
 
 
+def task_validation(task: dict, peers: list[dict], files: list[str], output: dict,
+                    build_ok: bool, test_ok: bool) -> tuple[str, str]:
+    if not build_ok or not test_ok:
+        return "failed", "The build or tests failed. See the run log."
+    action = output.get("action")
+    if action not in ("patch", "add_logging") and (action or not files):
+        return "incomplete", "AI did not write code. The task was not implemented."
+
+    def matches(path: str, planned: str) -> bool:
+        planned = planned.removeprefix("./")
+        return path == planned or path.endswith("/" + planned)
+
+    expected_files = task.get("likely_files") or []
+    matched = [f for f in files if any(matches(f, name) for name in expected_files)]
+    if expected_files and not matched:
+        return "incomplete", "None of the expected files changed."
+
+    expected_tests = task.get("tests") or []
+    requested = " ".join((output.get("test_command") or "").split())
+    execution = output.get("_test_execution")
+    if expected_tests and execution and execution.get("fell_back"):
+        return "incomplete", "The selected tests could not be used. The configured suite ran instead."
+    configured = " ".join((PROJECT_CONFIG.test_command or "").split())
+    command = execution.get("command", "") if execution is not None else requested
+    full_suite = execution.get("full_suite", False) if execution is not None else not requested or requested == configured
+    # A selected test name must stand on its own. Exclusion selectors cannot prove coverage.
+    excluded = re.search(r"\bnot\b|--(?:skip|exclude|ignore)|-skip-testing|[#;&|]", command, re.IGNORECASE)
+
+    def selected(test: str) -> bool:
+        return not excluded and bool(re.search(r"(?<![\w-])" + re.escape(test) + r"(?![\w-])", command))
+
+    missing = [test for test in expected_tests if not full_suite and not selected(test)]
+    if missing:
+        return "incomplete", "The run used unrelated tests or omitted planned tests: " + ", ".join(missing)
+
+    if peers:
+        peer_files = [name for peer in peers for name in (peer.get("likely_files") or [])]
+        peer_tests = {test for peer in peers for test in (peer.get("tests") or [])}
+        own_files = [f for f in matched if not any(matches(f, name) for name in peer_files)]
+        own_test = any(test not in peer_tests and selected(test) for test in expected_tests)
+        if not own_files and not own_test:
+            return "incomplete", "The batch produced shared evidence only. Verify this task separately."
+        if own_files:
+            matched = own_files
+
+    evidence = "Configured tests passed" if full_suite else "Selected tests passed" if command else "Build passed"
+    if matched:
+        evidence += " · Changed " + ", ".join(matched)
+    if command and not full_suite and expected_tests:
+        evidence += " · " + ", ".join(expected_tests)
+    return "passed", evidence
+
+
+def report_task_attempt(job: dict, task: dict, status: str, detail: str) -> None:
+    if task.get("run_history_id"):
+        print(job_runs.task_attempt_marker(job["job_id"], task, status, detail), flush=True)
+
+
 def execute_job(job_path: Path, resume: bool = False) -> None:
     start_epoch = time.time()
     remove_task_views(job_path)  # left over from a run that was stopped part way
@@ -920,6 +978,7 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
     job["worker_pid"] = os.getpid()
     job["worker_host"] = socket.gethostname()  # a process id only means something on the machine that wrote it
     job["updated_at"] = now_iso()
+    job.pop("last_error", None)  # stale error from a prior run shouldn't mask this run's outcome
     if "completed_task_indices" not in job:
         job["completed_task_indices"] = []
     if job.pop("task_growth", None):
@@ -1024,7 +1083,7 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
             tasks = job.get("plan", {}).get("tasks", [])
             completed = job.get("completed_task_indices", [])
             all_ok = True
-            batch_indices = can_batch_cohesive_tasks(tasks, completed)
+            batch_indices = [] if job.get("retry_tasks_individually") else can_batch_cohesive_tasks(tasks, completed)
             for i, task in enumerate(tasks):
                 if i in completed:
                     print(f"      - Task {i+1} already completed. Skipping.")
@@ -1063,6 +1122,14 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
                 task_job['plan']['summary'] = active_task['description'] # Use task description as summary
                 task_job['plan']['acceptance_criteria'] = active_task['acceptance_criteria']
                 task_job['plan']['likely_files'] = active_task['likely_files']
+                if job.get("retry_tasks_individually"):
+                    planned_tests = ", ".join(active_task.get("tests") or [])
+                    task_job['plan']['summary'] += (
+                        "\nThe last batch left this task without enough evidence. Inspect the existing change, "
+                        "finish any missing work and add or run checks specific to this task. Preserve completed tasks."
+                    )
+                    if planned_tests:
+                        task_job['plan']['summary'] += f"\nPlanned tests: {planned_tests}"
                 # Only this task's (or batch's) test cases (plus untasked ones); `task` is 1-based.
                 due_task_nums = {idx + 1 for idx in active_indices} | {None}
                 task_job['plan']['test_cases'] = [
@@ -1074,6 +1141,10 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
                 temp_job_path = job_path.parent / f"{job_path.stem}_task_{i+1}.json"
                 write_json(temp_job_path, task_job)
                 link_run_to_tasks(job_path, job, tasks, active_indices)
+                for idx in active_indices:
+                    report_task_attempt(job, tasks[idx], "running", "")
+                task_pre_hashes = dirty_file_hashes(ROOT)
+
                 
                 while True:
                     try:
@@ -1108,6 +1179,8 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
                                 write_json(temp_job_path, task_job)
                                 print(f"\n      - Resuming Task {i+1} with your clarification...", flush=True)
                                 continue
+                        for idx in active_indices:
+                            report_task_attempt(job, tasks[idx], "paused", "Waiting for an answer.")
                         send_notifications(
                             job,
                             "Job Paused: Clarification Needed",
@@ -1115,8 +1188,12 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
                         )
                         return
                     except DiskFullError:
+                        for idx in active_indices:
+                            report_task_attempt(job, tasks[idx], "paused", "The machine ran out of disk space.")
                         raise
                     except Exception as e:
+                        for idx in active_indices:
+                            report_task_attempt(job, tasks[idx], "failed", "The worker stopped. See the run log.")
                         # SYSTEM/LLM ERROR: Do not trigger automated debugging
                         print(f"\n❌ Automation error during Task {i+1}: {e}")
                         err_msg = str(e)
@@ -1140,7 +1217,13 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
                 task_post_state = get_repo_state()
                 task_modified = [f for f in task_post_state["modified"] if f not in pre_state["modified"] and not builder_check.is_ignored_tool_path(f)]
                 task_untracked = [f for f in task_post_state["untracked"] if f not in pre_state["untracked"] and not builder_check.is_ignored_tool_path(f)]
-                files_touched = task_modified + task_untracked
+                task_post_hashes = dirty_file_hashes(ROOT)
+                changed_paths = files_changed_between(task_pre_hashes, task_post_hashes)
+                # Leave pre-existing user changes out of job commits.
+                files_touched = sorted(
+                    {f for f in changed_paths if f not in pre_hashes and not builder_check.is_ignored_tool_path(f)}
+                    if task_pre_hashes or task_post_hashes else set(task_modified + task_untracked)
+                )
                 touched_this_run.update(files_touched)
 
                 # run_builder records which model it used on the per-task copy; keep that on the real job.
@@ -1156,54 +1239,43 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
                 except Exception:
                     pass
 
-                # Only the debug prompts ask for an "action". A feature builder reports files and a summary, so with no action
-                # the files on disk decide; an explicit "investigate" still means nothing was changed.
-                action = task_output.get("action")
-                was_implemented = action in ("patch", "add_logging") or (not action and bool(files_touched))
-                
-                likely_files = active_task.get("likely_files", [])
-                actual_likely_touched = any(any(f.endswith(lf) for lf in likely_files) for f in files_touched)
-                
-                # VERIFY: Did the AI run the right tests?
-                # If the builder overrode the test command to something unrelated to the task, flag it.
-                test_command_used = task_output.get("test_command", "")
-                expected_tests = active_task.get("tests", [])
-                # Running the project's whole configured suite (or saying nothing, so the default runs) covers every planned test.
-                # Only a command that names something narrower, and not the planned tests, is a downgrade.
-                configured = " ".join((PROJECT_CONFIG.test_command or "").split())
-                used = " ".join((test_command_used or "").split())
-                runs_whole_suite = not used or (bool(configured) and used == configured)
-                test_command_ok = not expected_tests or runs_whole_suite or any(et in used for et in expected_tests)
-                
-                if build_ok and test_ok and was_implemented:
-                    if likely_files and not actual_likely_touched:
-                         print(f"      - ⚠️  Task {i+1} CLAIMED success, but none of the likely files were touched.")
-                         print(f"      - Files touched: {files_touched}")
-                         print(f"      - Likely files: {likely_files}")
-                         job["status"] = "human-needed"
-                         job["last_error"] = f"Task {i+1} phantom completion: AI claimed success but didn't modify expected files."
-                         write_json(job_path, job)
-                         all_ok = False
-                         break
+                outcomes = {
+                    idx: task_validation(tasks[idx], [tasks[other] for other in active_indices if other != idx],
+                                         files_touched, task_output, build_ok, test_ok)
+                    for idx in active_indices
+                }
+                passed = [idx for idx, (status, _) in outcomes.items() if status == "passed"]
 
-                    if not test_command_ok:
-                         print(f"      - ⚠️  Task {i+1} passed tests, but the test command was downgraded.")
-                         print(f"      - Test command used: {test_command_used}")
-                         print(f"      - Expected tests: {expected_tests}")
-                         job["status"] = "human-needed"
-                         job["last_error"] = f"Task {i+1} phantom completion: AI ran unrelated tests to get a green signal."
-                         write_json(job_path, job)
-                         all_ok = False
-                         break
+                if is_batched and build_ok and test_ok and len(passed) < len(active_indices):
+                    # Preserve the combined patch, including any work still being verified. A partial
+                    # batch has no independently revertible task checkpoint.
+                    if files_touched:
+                        commit_job_files(files_touched, f"feat: {job['title']} (partial task batch)")
+                    job["completed_task_indices"].extend(passed)
+                    job["retry_tasks_individually"] = True
+                    job["ai_modified_files"] = sorted(set(job.get("ai_modified_files") or []) | set(files_touched))
+                    pending = ", ".join(str(idx + 1) for idx in active_indices if idx not in passed)
+                    job.update(status="human-needed", worker_pid=None, updated_at=now_iso(),
+                               last_error=f"Task evidence is incomplete for {pending}. Resume to check the remaining work individually.")
+                    write_json(job_path, job)
+                    print(f"      - {job['last_error']}")
+                    for idx, (status, detail) in outcomes.items():
+                        report_task_attempt(job, tasks[idx], status, detail)
+                    if files_touched:
+                        backup_push(job)
+                    remove_task_views(job_path)
+                    update_issue_status(issue_number, "status:human-needed", ["status:executing"])
+                    return
 
-                    for idx in active_indices:
-                        if idx not in job["completed_task_indices"]:
-                            job["completed_task_indices"].append(idx)
+                if len(passed) == len(active_indices):
+                    job["completed_task_indices"].extend(passed)
                     checkpoint_task(job, i, len(tasks), active_task['title'], files_touched, batch_indices=active_indices if is_batched else None)
                     if new_sessions and files_touched:
                         model_outcomes.record(job, "builder", resolve_builder_model(task_job), new_sessions[-1].get("model"),
                                               "build_checks_passed", tasks=[idx + 1 for idx in active_indices])
                     write_json(job_path, job)
+                    for idx, (status, detail) in outcomes.items():
+                        report_task_attempt(job, tasks[idx], status, detail)
 
                     if is_batched:
                         break
@@ -1223,20 +1295,24 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
                         update_issue_status(issue_number, "status:human-needed", ["status:executing"])
                         send_notifications(job, "Job Paused: a task grew past its plan", f"{said}\nTitle: {job['title']}")
                         return
-                elif build_ok and test_ok and not was_implemented:
-                    print(f"      - Task {i+1} investigation successful, but no code changed. Halting to prevent phantom completion.")
-                    # We mark it as human-needed to break the loop and avoid infinite recursion
+                elif build_ok and test_ok:
                     job["status"] = "human-needed"
-                    job["last_error"] = f"Task {i+1} was not implemented (AI did not write code)."
+                    job["last_error"] = f"Task {i+1}: {outcomes[i][1]}"
+                    print(f"      - {job['last_error']}")
                     write_json(job_path, job)
-                    all_ok = False 
-                    break 
+                    report_task_attempt(job, task, *outcomes[i])
+                    all_ok = False
+                    break
                 else:
+                    for idx, (status, detail) in outcomes.items():
+                        report_task_attempt(job, tasks[idx], status, detail)
                     print(f"!!! Sub-task {i+1} failed validation. Halting feature implementation.")
                     all_ok = False
                     break # Exit the loop on first failure
             
             remove_task_views(job_path)
+            if all_ok:
+                job.pop("retry_tasks_individually", None)
             build_ok = all_ok
             test_ok = all_ok
         else:
@@ -1886,7 +1962,13 @@ def merge_batched_tasks(tasks: list[dict], indices: list[int]) -> dict:
         title = str(t.get("title") or f"Task {idx + 1}").strip()
         titles.append(title)
         desc = str(t.get("description") or title).strip()
+        criteria = "; ".join(t.get("acceptance_criteria") or [])
+        task_tests = ", ".join(t.get("tests") or [])
         desc_lines.append(f"{idx + 1}. **{title}**: {desc}")
+        if criteria:
+            desc_lines.append(f"   Acceptance criteria: {criteria}")
+        if task_tests:
+            desc_lines.append(f"   Planned tests: {task_tests}")
         for item in t.get("acceptance_criteria") or []:
             s = str(item).strip()
             if s and s not in ac:

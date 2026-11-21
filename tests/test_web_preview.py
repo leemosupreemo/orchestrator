@@ -341,3 +341,5 @@ console.log(JSON.stringify([
         self.assertIn("skeleton skeleton-line", disk_fn)
         self.assertLess(disk_fn.index("showLoading("), disk_fn.index("api(`recovery/disk-space?"))
         self.assertIn("liveRunCard(r, { onJobPage: true })", source)
+        self.assertIn('recoveryAction: "disk-space-cleared"', source)
+        self.assertIn('title: "Disk space is now available"', source)
