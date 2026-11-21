@@ -2270,14 +2270,19 @@ def preflight_overview(root: Path, refresh: bool = False) -> list[dict[str, str]
     from orchestrator.code_host import origin_url, resolve_mode
     github = resolve_mode(config.get("code_host"), config.get("git_remote") or origin_url(root)) == "github"
     items = preflight.checks(config, machines, is_apple_app(root, config), free, run, lambda t: shutil.which(t, path=search_path) is not None,
-                             model_clis, github=github)
+                             model_clis, github=github, env=os.environ)
     _PREFLIGHT_CACHE[key] = (time.time(), items)
     return items
 
 
-def job_blockers(root: Path, job: dict[str, Any]) -> list[dict[str, str]]:
+def job_blockers(root: Path, job: dict[str, Any], *, refresh: bool = False) -> list[dict[str, str]]:
     import shutil
     from orchestrator import run_check
+    if refresh and job.get("status") in run_check.CHECKED_STATUSES:
+        from orchestrator.project_setup import refresh_ready_models
+        from orchestrator.setup_checklist import invalidate_llm_readiness
+        invalidate_llm_readiness()
+        refresh_ready_models(root)
     try:
         free = shutil.disk_usage(root).free // (1024**3)
     except OSError:
@@ -2303,7 +2308,7 @@ def job_blockers(root: Path, job: dict[str, Any]) -> list[dict[str, str]]:
                 auth_ok, auth_detail = git_remote_auth_state(root, origin_url)
                 if not auth_ok:
                     found.append({"id": "git_auth", "text": auth_detail, "fix": "Setup check", "route": "#/checkup"})
-        for item in preflight.failures(preflight_overview(root)):
+        for item in preflight.failures(preflight_overview(root, refresh=refresh)):
             if item["id"] != "disk" and item["id"] not in have:  # disk is already said, with this job's numbers
                 hint = "" if item["route"] or not item["fix"] else f" {item['fix']}."
                 found.append({"id": item["id"], "text": f"{item['title']}. {item['detail']}{hint}", "fix": item["fix"] if item["route"] else "", "route": item["route"]})
@@ -2735,6 +2740,7 @@ def job_detail(root: Path, job_id: str) -> dict[str, Any]:
         "parent": job_stub(root, job.get("parent_job_id")),
         "pipeline": pipeline,
         "blockers": job_blockers(root, job),
+        "startup_recheck": True,
         "overlaps": job_overlap.file_overlaps(path.stem, job, all_jobs),
         "mece": parallel_mece.job_mece_summary(path.stem, job, all_jobs, feature_store.load(runtime_dir(root))),
         "tasks": tasks,
@@ -8946,6 +8952,10 @@ class UIHandler(BaseHTTPRequestHandler):
             detail["runs"] = self._sessions_view(job_id=parts[1])
             detail.update(self._job_runs_view(root, parts[1], detail["runs"], detail["job"]))
             self._json(detail)
+        elif method == "POST" and len(parts) == 3 and parts[0] == "jobs" and parts[2] == "startup-check":
+            self._require_owner("refresh this job's startup checks")
+            job = read_json_file(resolve_job_path(root, parts[1]))
+            self._json({"blockers": job_blockers(root, job, refresh=True)})
         elif method == "GET" and len(parts) == 3 and parts[0] == "jobs" and parts[2] == "runs":
             # A job's runs on their own, for the run page: the job it belongs to and its sibling runs.
             job = read_json_file(resolve_job_path(root, parts[1]))

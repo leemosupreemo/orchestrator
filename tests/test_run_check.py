@@ -60,6 +60,9 @@ class RunCheckTests(unittest.TestCase):
         self.assertEqual(self.ids({"allowed_models": ["other-model"]}, [machine()], disk=12),
                          ["model-not-on-machine", "low-disk"])
 
+    def test_low_disk_says_how_much_space_to_free(self):
+        self.assertIn("Free at least 6 GB", check({}, [machine()], disk=9)[0]["text"])
+
     def test_low_disk_is_not_blamed_when_a_remote_machine_could_run_it(self):
         self.assertEqual(self.ids({}, [machine(), machine("box", mode="remote")], disk=2), [])
 
@@ -95,6 +98,7 @@ console.log(JSON.stringify({{ warning: jobStartBlockers(blockers), empty: jobSta
         self.assertIn("&lt;long build command>", details)
         self.assertIn('href="#/checkup">Setup check</a>', details)
         self.assertIn("dotnet test", details)
+        self.assertIn("Check again", details)
 
 
 if __name__ == "__main__":

@@ -133,6 +133,10 @@ def ready_llm_providers(settings: dict[str, Any]) -> list[str]:
     return found
 
 
+def invalidate_llm_readiness() -> None:
+    _cache.pop("llm", None)
+
+
 def has_runnable_machine_model(providers: list[str], models: list[str]) -> bool:
     """True when at least one model switched on in `machines.json` can run with `providers`."""
     if not providers or not models:

@@ -5542,7 +5542,7 @@ function backupNote(job) {
   return `<p class="job-hero-reason text-bad">Not backed up to GitHub: ${[branch, wip].filter(Boolean).join(" and ")}. Another computer can't continue from them yet. <span class="muted">(${esc(String(err).split("\n").pop())})</span> It tries again by itself.</p>`;
 }
 
-function jobStartBlockers(blockers) {
+function jobStartBlockers(blockers, canRecheck = true) {
   if (!blockers?.length) return "";
   const reasons = {
     "low-disk": "Low disk space",
@@ -5559,12 +5559,13 @@ function jobStartBlockers(blockers) {
   };
   const summary = [...new Set(blockers.map(b => reasons[b.id] || "Project setup needs attention"))].join(" · ");
   const details = blockers.map(b => `<li>${esc(b.text)}${b.route ? ` <a href="${esc(b.route)}">${esc(b.fix)}</a>` : ""}</li>`).join("");
-  return `<section class="notice warn mb-16 wrap-anywhere">
+  return `<section class="notice warn mb-16 wrap-anywhere" id="job-startup">
     <strong>This job can't start yet</strong>
     <div class="t-secondary">${esc(summary)}</div>
     <details class="fold">
       <summary class="linklike">Startup details</summary>
       <ul class="assumptions wrap-anywhere">${details}</ul>
+      ${canRecheck ? '<button type="button" class="btn small ghost" id="job-startup-recheck">Check again</button>' : ""}
     </details>
   </section>`;
 }
@@ -6427,7 +6428,7 @@ pages.job = async ([id]) => {
 
       ${unvalidatedTestsHtml}
       ${defectsHtml}
-      ${jobStartBlockers(data.blockers)}
+      ${jobStartBlockers(data.blockers, data.startup_recheck && state.you?.role !== "member")}
 
       ${s.question ? `<section class="card mb-16 clarify-card" id="clarify"><div class="card-h"><h2>${(job.clarification_history || []).length ? "A follow-up question" : String(job.last_error || "").startsWith("Builder clarification needed") ? "A question during the build" : "A question before planning"}</h2><details class="more"><summary class="btn small ghost icon-only" aria-label="Export chat" title="Export chat"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-download"/></svg></summary><div class="more-menu"><button type="button" class="btn small" data-clarify-export="copy">Copy chat</button><button type="button" class="btn small" data-clarify-export="download">Export chat</button></div></details></div><div class="card-b stack">
         ${clarificationThread(job.clarification_history)}
@@ -6540,6 +6541,23 @@ pages.job = async ([id]) => {
     after: () => {
       hydrateAuthImages(); // the UX and design check's screenshots
       wireImagePreviews(view);
+      const recheck = view.querySelector("#job-startup-recheck");
+      recheck?.addEventListener("click", async () => {
+        recheck.disabled = true;
+        recheck.textContent = "Checking…";
+        try {
+          const { blockers } = await api(`jobs/${encodeURIComponent(id)}/startup-check`, { method: "POST", body: {} });
+          if (!recheck.isConnected) return;
+          await route();
+          if (blockers.length) view.querySelector("#job-startup details")?.setAttribute("open", "");
+          else toast("Startup checks passed.");
+        } catch (error) {
+          if (recheck.isConnected) toast(error.message, true);
+        } finally {
+          recheck.disabled = false;
+          recheck.textContent = "Check again";
+        }
+      });
       const steerForm = view.querySelector("#job-steer");
       if (steerForm) { // the page refreshes live: keep a half-written note across redraws
         steerForm.text.value = steerDrafts.get(s.id) || "";

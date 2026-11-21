@@ -37,10 +37,10 @@ class CommandToolsTests(unittest.TestCase):
 
 
 class GenericChecks(unittest.TestCase):
-    def go(self, config=None, machines=None, installed=(), results=None, apple=False, disk=100.0, clis=None, github=True):
+    def go(self, config=None, machines=None, installed=(), results=None, apple=False, disk=100.0, clis=None, github=True, env=None):
         run, which, _ = probes(installed, results)
         return by_id(pf.checks(config or {}, machines if machines is not None else [machine()], apple, disk, run, which,
-                               lambda m: (clis or {}).get(m, []), github=github))
+                               lambda m: (clis or {}).get(m, []), github=github, env=env))
 
     def test_a_missing_build_tool_fails_and_points_at_project_settings(self):
         r = self.go({"build_command": "cargo build", "test_command": "cargo test"}, installed=("gh",))
@@ -52,6 +52,25 @@ class GenericChecks(unittest.TestCase):
     def test_installed_tools_pass(self):
         r = self.go({"build_command": "cargo build"}, installed=("cargo", "gh"))
         self.assertEqual(r["build-tool"]["status"], "ok")
+
+    def test_build_probe_checks_the_unity_override_or_its_literal_default(self):
+        bundled = "/Applications/Unity Editor/Unity"
+        override = "/opt/Unity"
+        config = {"build_command": f'"${{UNITY_PATH:-{bundled}}}" -batchmode'}
+        for value in (None, ""):
+            env = {} if value is None else {"UNITY_PATH": value}
+            self.assertEqual(self.go(config, installed=(bundled,), env=env)["build-tool"]["status"], "ok")
+        self.assertEqual(self.go(config, installed=(override,), env={"UNITY_PATH": override})["build-tool"]["status"], "ok")
+        missing = self.go(config, env={"UNITY_PATH": override})["build-tool"]
+        self.assertEqual(missing["status"], "fail")
+        self.assertIn(override, missing["detail"])
+        self.assertNotIn("${UNITY_PATH", missing["detail"])
+
+    def test_build_probe_defers_shell_substitutions_it_cannot_resolve(self):
+        run, which, calls = probes()
+        items = pf.checks({"build_command": '"$(find-unity)" -batchmode'}, [], False, 100, run, which, github=False, env={})
+        self.assertEqual(by_id(items)["build-tool"]["status"], "warn")
+        self.assertEqual(calls, [])
 
     def test_a_model_whose_cli_is_missing_fails_and_names_the_model(self):
         r = self.go(machines=[machine(models=["opencode/x-free"])], clis={"opencode/x-free": ["opencode"]}, installed=("gh",))

@@ -6,6 +6,7 @@ machine can run, the free-space floor) so the page and the scheduler agree.
 """
 from __future__ import annotations
 
+import math
 import os
 from typing import Any, Callable
 
@@ -82,6 +83,7 @@ def blockers(job: dict[str, Any], machines: list[dict[str, Any]], disk_free_gb: 
 
     local = [m for m in usable if m.get("execution_mode", "local") == "local"]
     if disk_free_gb is not None and local and len(local) == len(usable) and disk_free_gb < min_disk_gb:
-        found.append({"id": "low-disk", "text": f"Only {disk_free_gb:.0f} GB is free on this computer and builds want {min_disk_gb} GB. Free some space, or lower the limit with ORCHESTRATOR_MIN_DISK_GB if this project builds small.",
+        needed = math.ceil(min_disk_gb - disk_free_gb)
+        found.append({"id": "low-disk", "text": f"Free at least {needed} GB on this computer. Builds need {min_disk_gb} GB free and this computer has {math.floor(disk_free_gb)} GB.",
                       "fix": "", "route": ""})
     return found

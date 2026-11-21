@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 import shlex
+from collections.abc import Mapping
 from typing import Any, Callable
 
 from orchestrator.env_issues import detect_simulator_environment_issue
@@ -37,9 +38,20 @@ def command_tools(command: str | None) -> list[str]:
     return tools
 
 
+def _resolve_tool(tool: str, env: Mapping[str, str]) -> str | None:
+    """Resolve simple variables and literal defaults without evaluating shell code."""
+    default = re.fullmatch(r"\$\{([A-Za-z_]\w*):-([^$`{}\\]+)\}", tool)
+    if default:
+        return env.get(default[1]) or default[2]
+    name = re.fullmatch(r"\$([A-Za-z_]\w*)|\$\{([A-Za-z_]\w*)\}", tool)
+    if name:
+        return env.get(name[1] or name[2]) or None
+    return None if "$" in tool or "`" in tool else tool
+
+
 def checks(config: dict[str, Any], machines: list[dict[str, Any]], is_apple_app: bool, disk_free_gb: float | None,
            run: Run, which: Which, model_clis: Callable[[str], list[str]] = lambda m: [],
-           github: bool = True) -> list[dict[str, str]]:
+           github: bool = True, *, env: Mapping[str, str] | None = None) -> list[dict[str, str]]:
     """`github`: the project uses GitHub issues and pull requests (code_host); plain git needs no GitHub check."""
     out: list[dict[str, str]] = []
 
@@ -47,10 +59,15 @@ def checks(config: dict[str, Any], machines: list[dict[str, Any]], is_apple_app:
     for label, command in (("build", config.get("build_command")), ("test", config.get("test_command"))):
         if not command:
             continue
-        missing = [t for t in dict.fromkeys(command_tools(command)) if not t.startswith(("./", "/")) and not which(t)]
+        tools = [_resolve_tool(tool, env or {}) for tool in command_tools(command)]
+        missing = [t for t in dict.fromkeys(tools) if t and not t.startswith(("./", "../")) and not which(t)]
         if missing:
-            out.append(_item(f"{label}-tool", "fail", f"The {label} command can't run", f"`{command}` needs {', '.join(missing)}, which isn't installed or isn't on the PATH.",
-                             f"Install it, or change `{label}_command` in `.orchestrator/project.json`"))
+            out.append(_item(f"{label}-tool", "fail", f"The {label} command can't run",
+                             f"This computer couldn't find an executable for {', '.join(missing)}.",
+                             f"Install the tool or update `{label}_command` in `.orchestrator/project.json`"))
+        elif None in tools:
+            out.append(_item(f"{label}-tool", "warn", f"The {label} command uses a dynamic executable",
+                             "The shell chooses the executable when the command runs."))
         else:
             out.append(_item(f"{label}-tool", "ok", f"The {label} command's tools are installed", f"`{command}`"))
 

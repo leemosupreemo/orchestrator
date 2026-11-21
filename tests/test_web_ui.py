@@ -2824,6 +2824,37 @@ class ReadApiTests(ServerTestCase):
         res, _ = self.request("GET", "/api/jobs/missing")
         self.assertEqual(res.status, 404)
 
+    def test_startup_recheck_refreshes_models_and_build_tool_status(self):
+        runtime = self.root / ".orchestrator"
+        config_dir = runtime / "config"
+        config_dir.mkdir(exist_ok=True)
+        tool = self.root / "Unity Editor"
+        (runtime / "project.json").write_text(json.dumps({
+            "code_host": "git", "build_command": f'"${{UNITY_PATH:-{tool}}}" -batchmode',
+            "test_command": "python3 -m unittest",
+        }))
+        machines = config_dir / "machines.json"
+        machines.write_text(json.dumps({"machines": [
+            {"name": "local", "execution_mode": "local", "models_follow_ready": True, "models": []},
+            {"name": "other", "execution_mode": "remote", "models": ["manually-chosen"]},
+        ]}))
+        job_id = "20260922-recheck"
+        (runtime / "jobs" / f"{job_id}.json").write_text(json.dumps({
+            "job_id": job_id, "status": "planned", "title": "Check startup", "allowed_models": ["test-model"],
+        }))
+        _, before = self.request("GET", f"/api/jobs/{job_id}")
+        self.assertTrue(before["startup_recheck"])
+        self.assertTrue({"model-not-on-machine", "build-tool"} <= {b["id"] for b in before["blockers"]})
+        tool.write_text("A placeholder that preflight must only check for executability.")
+        tool.chmod(0o755)
+        with patch("orchestrator.project_setup.models_ready_here", return_value=["test-model"]) as ready:
+            res, after = self.request("POST", f"/api/jobs/{job_id}/startup-check", body={}, headers=UI_HEADERS)
+        self.assertEqual(res.status, 200)
+        self.assertFalse({"model-not-on-machine", "build-tool"} & {b["id"] for b in after["blockers"]})
+        self.assertEqual(ready.call_count, 1)
+        self.assertEqual([m["models"] for m in json.loads(machines.read_text())["machines"]],
+                         [["test-model"], ["manually-chosen"]])
+
     def test_file_reads_are_confined_to_runtime_dir(self):
         res, data = self.request("GET", "/api/file?path=output/20260922-bug-1/brief.md")
         self.assertEqual((res.status, data["text"]), (200, "# Brief\n"))
