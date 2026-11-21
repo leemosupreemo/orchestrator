@@ -54,6 +54,15 @@ class SyncHealthTests(unittest.TestCase):
         self.assertEqual(channels["product"]["last_ok"], 1000)
         self.assertIsNone(channels["product"]["failing_since"])
 
+    def test_stale_pre_sleep_failure_is_not_reported_until_retried(self):
+        sync_health.record("product", True, now=1000)
+        sync_health.record("product", False, "network error", now=2000)
+        # After an hour of sleep with no recent retry, don't flash a stale failure before a fresh check runs
+        self.assertEqual(sync_health.problems(now=2000 + sync_health.STALE_FAILURE_SECONDS + 60), [])
+        # A freshly retried failure that still fails IS reported
+        sync_health.record("product", False, "network error", now=2000 + sync_health.STALE_FAILURE_SECONDS + 60)
+        self.assertEqual(len(sync_health.problems(now=2000 + sync_health.STALE_FAILURE_SECONDS + 65)), 1)
+
 
 @unittest.skipUnless(shutil.which("node"), "node is required")
 class BannerTests(unittest.TestCase):

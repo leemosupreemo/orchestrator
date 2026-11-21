@@ -17,6 +17,7 @@ from typing import Any
 from orchestrator.project_config import user_state_dir
 
 GRACE_SECONDS = 600  # brief blips (a laptop waking, a Wi-Fi hop) don't nag
+STALE_FAILURE_SECONDS = 900  # if no failure was recorded recently (e.g. laptop slept), wait for a fresh check before warning
 CHANNELS = {
     "account": "Checking in with your account",
     "jobs": "Sending job updates to your account",
@@ -110,6 +111,9 @@ def problems(now: float | None = None) -> list[dict[str, Any]]:
     out = []
     for channel, entry in _load().items():
         since = (entry or {}).get("failing_since")
+        failed_at = (entry or {}).get("failed_at")
+        if failed_at and now - float(failed_at) > STALE_FAILURE_SECONDS:
+            continue
         if channel in CHANNELS and since and now - float(since) >= GRACE_SECONDS:
             error = str(entry.get("error") or "")
             out.append({"channel": channel, "label": CHANNELS[channel], "since": float(since),

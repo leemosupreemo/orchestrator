@@ -7097,10 +7097,13 @@ class UIServer(ThreadingHTTPServer):
         def share() -> None:
             wait = 0.0  # run the first sync round immediately on launch instead of showing stale prior-session state
             while True:
+                t0 = time.time()
                 wake.wait(wait)
                 wake.clear()
                 if self._stopping.is_set():
                     return
+                if wait > 0 and time.time() - t0 > max(wait, 60.0) + 120.0:
+                    sync_health.clear_failures()  # machine slept: drop pre-sleep failures before the fresh wake round
                 try:  # nothing in a round may stop the thread: it has to try again next time
                     roots = product_sync.project_roots(self.root)
                     before = state_ref.local_heads(roots)
@@ -8972,7 +8975,10 @@ class UIHandler(BaseHTTPRequestHandler):
                     _trigger_ui_restart(self.server)
         elif method == "GET" and parts == ["sync-health"]:
             # Is this computer keeping the others up to date? Failures past the grace period, with what to do (Home banner)
-            self._json(sync_health.overview() if account.load_machine() else {"problems": [], "channels": []})
+            ov = sync_health.overview() if account.load_machine() else {"problems": [], "channels": []}
+            if any(c.get("failing_since") for c in ov.get("channels") or []) and getattr(self.server, "wake_state_sync", None):
+                self.server.wake_state_sync()  # re-check now when the user opens Home while a failure is recorded
+            self._json(ov)
         elif method == "POST" and parts == ["jobs", "archive"]:
             ids = self._body().get("ids")
             if not isinstance(ids, list) or not ids or not all(isinstance(i, str) for i in ids) or len(ids) > 500:

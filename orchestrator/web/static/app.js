@@ -4585,8 +4585,9 @@ pages.home = async (_, query) => {
         : c.last_ok ? `working, last ${ago(c.last_ok)}` : "not used yet";
       return `<li><strong>${esc(c.label)}</strong>: ${esc(status)}</li>`;
     }).join("");
+    const computerName = typeof state !== "undefined" ? state.project?.computer?.name : "";
     return `<section class="notice warn mb-16" id="sync-health" role="status">
-      <p><strong>Sync problems on this computer</strong></p>
+      <p><strong>${computerName ? `Sync problems on ${esc(computerName)}` : "Sync problems on this computer"}</strong></p>
       <ul>${failures}</ul>
       ${advice}
       <details class="fold"><summary class="linklike muted">Sync details</summary><ul class="muted">${rows}</ul></details>
