@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import json
+import shutil
+import subprocess
 import unittest
+from pathlib import Path
 
 from orchestrator import run_check
 
@@ -62,6 +66,35 @@ class RunCheckTests(unittest.TestCase):
     def test_only_jobs_about_to_be_scheduled_are_checked(self):
         for status in ("review-needed", "completed", "executing", "human-needed"):
             self.assertEqual(run_check.blockers({"status": status}, [], 1, 15, overlap), [], status)
+
+
+@unittest.skipUnless(shutil.which("node"), "node is required")
+class JobStartWarningTests(unittest.TestCase):
+    def test_startup_reasons_are_short_with_full_wrapping_details(self):
+        app = (Path(__file__).resolve().parents[1] / "orchestrator/web/static/app.js").read_text()
+        start = app.index("function jobStartBlockers(")
+        end = app.index("\nfunction ", start + 1)
+        script = f"""
+const esc = s => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;");
+{app[start:end]}
+const blockers = [
+  {{ id: "low-disk", text: "Only 12 GB free", route: "" }},
+  {{ id: "build-tool", text: "<long build command>", route: "#/checkup", fix: "Setup check" }},
+  {{ id: "test-tool", text: "dotnet test", route: "" }},
+];
+console.log(JSON.stringify({{ warning: jobStartBlockers(blockers), empty: jobStartBlockers([]) }}));
+"""
+        out = json.loads(subprocess.run(["node", "-e", script], capture_output=True, text=True, check=True).stdout)
+        self.assertEqual(out["empty"], "")
+        summary, details = out["warning"].split('<details class="fold">')
+        self.assertEqual(out["warning"].count("This job can't start yet"), 1)
+        self.assertIn("Low disk space · Build command unavailable · Test command unavailable", summary)
+        self.assertNotIn("dotnet test", summary)
+        self.assertIn('class="assumptions wrap-anywhere"', details)
+        self.assertIn("Only 12 GB free", details)
+        self.assertIn("&lt;long build command>", details)
+        self.assertIn('href="#/checkup">Setup check</a>', details)
+        self.assertIn("dotnet test", details)
 
 
 if __name__ == "__main__":

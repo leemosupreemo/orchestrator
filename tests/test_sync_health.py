@@ -55,21 +55,33 @@ const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;");
 const ago = () => "5m ago";
 {grab("syncHealthBanner", "\n  const ")}
 {grab("backupNote", "function strandedNote(")}
-const health = {{ problems: [{{ label: "Checking in with your account", since: 1700000000, last_ok: 1699990000, error: "timed out", advice: "This computer seems to be offline." }}],
-  channels: [{{ label: "Checking in with your account", failing_since: 1700000000, error: "timed out" }}, {{ label: "Sending job updates to your account", last_ok: 1 }}, {{ label: "Backing up unfinished work to GitHub" }}] }};
+const health = {{ problems: [{{ channel: "account", label: "Checking in with your account", since: 1700000000, last_ok: 1699990000, error: "timed out", advice: "This computer seems to be offline." }}],
+  channels: [{{ channel: "account", label: "Checking in with your account", failing_since: 1700000000, error: "timed out" }}, {{ label: "Sending job updates to your account", last_ok: 1 }}, {{ label: "Backing up unfinished work to GitHub" }}] }};
+const shared = {{ problems: [
+  {{ channel: "product", label: "Sharing product requirements", since: 1732123800, last_ok: 1732123740, advice: "It keeps retrying." }},
+  {{ channel: "shared_jobs", label: "Sharing jobs", since: 1732125600, last_ok: 1732125480, advice: "It keeps retrying." }},
+  {{ channel: "branches", label: "Backing up job branches", since: 1732125600 }},
+], channels: [{{ channel: "shared_jobs", label: "Sharing jobs", failing_since: 1732125600, error: "<Git error>" }}] }};
 console.log(JSON.stringify({{
   banner: syncHealthBanner(health), none: syncHealthBanner({{ problems: [] }}),
+  shared: syncHealthBanner(shared),
   job: backupNote({{ status: "human-needed", backup_error: "line one\\nremote: Permission denied", wip_backup: {{ error: "x" }} }}),
   moved: backupNote({{ status: "human-needed", moved_to: "Air", backup_error: "x" }}),
 }}));
 """
-        out = json.loads(subprocess.run(["node", "-e", script], capture_output=True, text=True, check=True).stdout)
-        self.assertIn("Checking in with your account hasn't worked since", out["banner"])
-        self.assertIn("Your other computers see this one's jobs as of", out["banner"])
+        env = {**os.environ, "TZ": "UTC", "LANG": "en_US.UTF-8", "LC_ALL": "en_US.UTF-8"}
+        out = json.loads(subprocess.run(["node", "-e", script], env=env, capture_output=True, text=True, check=True).stdout)
+        self.assertIn("<strong>Checking in with your account</strong> has been failing since", out["banner"])
+        self.assertNotIn("Your other computers see this one's jobs", out["banner"])
         self.assertIn("This computer seems to be offline.", out["banner"])
         self.assertIn("working, last 5m ago", out["banner"])
         self.assertIn("not used yet", out["banner"])
         self.assertEqual(out["none"], "")
+        self.assertIn("<strong>Sharing product requirements</strong> has been failing since Nov 20, 5:30 PM. Last successful check Nov 20, 5:29 PM.", out["shared"])
+        self.assertIn("<strong>Sharing jobs</strong> has been failing since Nov 20, 6:00 PM. Last successful check Nov 20, 5:58 PM.", out["shared"])
+        self.assertIn("Waiting for the first successful check.", out["shared"])
+        self.assertEqual(out["shared"].count("It keeps retrying."), 1)
+        self.assertIn("<strong>Sharing jobs</strong>: &lt;Git error>", out["shared"])
         self.assertIn("Not backed up to GitHub: its latest commits and its unfinished files", out["job"])
         self.assertIn("remote: Permission denied", out["job"])
         self.assertEqual(out["moved"], "")

@@ -2400,6 +2400,7 @@ dialog h2 {
 .job-loop-label { white-space: nowrap; opacity: 0.85; }
 .job-stepper-history {
   flex: 1 0 100%;
+  min-width: 0;
   border-top: 1px solid var(--border);
   padding-top: var(--space-2);
   margin-top: var(--space-1);
@@ -2409,6 +2410,13 @@ dialog h2 {
 }
 .job-version-history-body {
   font-size: var(--type-secondary);
+  overflow-wrap: anywhere;
+}
+.job-version-history-body .btn[data-experience-chip] {
+  min-width: 0;
+  max-width: 100%;
+  white-space: normal;
+  text-align: left;
 }
 .job-step.reset .job-step-dot { border-style: dashed; }
 .job-step {

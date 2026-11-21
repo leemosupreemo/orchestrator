@@ -4445,20 +4445,27 @@ function homeProjectTitle(p) {
 
 let homeRemoteSnaps = { key: null, at: 0, snaps: [] }; // other computers' snapshots as Home last fetched them
 pages.home = async (_, query) => {
-  // This computer can't keep the others up to date (sync_health.py: failing past a grace period). Only it can fix that, and
-  // the others just see older information, so it says so here: since when, what failed, and what to do.
+  // Each sync check covers this computer. Report its own timestamps and keep the error in Sync details.
   function syncHealthBanner(health) {
     const problems = health?.problems || [];
     if (!problems.length) return "";
-    const first = problems[0];
     const when = (t) => new Date(t * 1000).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
-    const rows = (health.channels || []).map((c) => `<li><strong>${esc(c.label)}</strong>: ${c.failing_since
-      ? `failing since ${esc(when(c.failing_since))}${c.error ? ` <span class="muted">(${esc(c.error)})</span>` : ""}`
-      : c.last_ok ? `working, last ${esc(ago(c.last_ok))}` : "not used yet"}</li>`).join("");
+    const failures = problems.map((p) => {
+      const last = p.last_ok ? `Last successful check ${esc(when(p.last_ok))}.` : "Waiting for the first successful check.";
+      return `<li><strong>${esc(p.label)}</strong> has been failing since ${esc(when(p.since))}. ${last}</li>`;
+    }).join("");
+    const advice = [...new Set(problems.map(p => p.advice).filter(Boolean))].map(line => `<p>${esc(line)}</p>`).join("");
+    const displayed = new Set(problems.map(p => p.channel));
+    const rows = (health.channels || []).map((c) => {
+      const status = c.failing_since
+        ? displayed.has(c.channel) ? c.error || "retrying" : `retrying since ${when(c.failing_since)}${c.error ? ` (${c.error})` : ""}`
+        : c.last_ok ? `working, last ${ago(c.last_ok)}` : "not used yet";
+      return `<li><strong>${esc(c.label)}</strong>: ${esc(status)}</li>`;
+    }).join("");
     return `<section class="notice warn mb-16" id="sync-health" role="status">
-      <p><strong>${problems.length === 1 ? esc(first.label) : "Syncing with your other computers"} hasn't worked since ${esc(when(first.since))}.</strong>
-        Your other computers see this one's jobs as of ${first.last_ok ? esc(when(first.last_ok)) : "before then"}.</p>
-      <p>${esc(first.advice)}</p>
+      <p><strong>Sync problems on this computer</strong></p>
+      <ul>${failures}</ul>
+      ${advice}
       <details class="fold"><summary class="linklike muted">Sync details</summary><ul class="muted">${rows}</ul></details>
     </section>`;
   }
@@ -5535,6 +5542,33 @@ function backupNote(job) {
   return `<p class="job-hero-reason text-bad">Not backed up to GitHub: ${[branch, wip].filter(Boolean).join(" and ")}. Another computer can't continue from them yet. <span class="muted">(${esc(String(err).split("\n").pop())})</span> It tries again by itself.</p>`;
 }
 
+function jobStartBlockers(blockers) {
+  if (!blockers?.length) return "";
+  const reasons = {
+    "low-disk": "Low disk space",
+    "build-tool": "Build command unavailable",
+    "test-tool": "Test command unavailable",
+    "no-machine": "No worker set up",
+    "machine-not-allowed": "No eligible worker",
+    "model-not-on-machine": "No compatible model",
+    "no-model": "No model selected",
+    "model-clis": "AI tool unavailable",
+    "build_test_commands": "Build or test setup incomplete",
+    "git_auth": "Git sign-in required",
+    "self_checkout": "Job needs a separate checkout",
+  };
+  const summary = [...new Set(blockers.map(b => reasons[b.id] || "Project setup needs attention"))].join(" · ");
+  const details = blockers.map(b => `<li>${esc(b.text)}${b.route ? ` <a href="${esc(b.route)}">${esc(b.fix)}</a>` : ""}</li>`).join("");
+  return `<section class="notice warn mb-16 wrap-anywhere">
+    <strong>This job can't start yet</strong>
+    <div class="t-secondary">${esc(summary)}</div>
+    <details class="fold">
+      <summary class="linklike">Startup details</summary>
+      <ul class="assumptions wrap-anywhere">${details}</ul>
+    </details>
+  </section>`;
+}
+
 function strandedNote(job) {
   const k = job.stranded;
   if (!k || !(k.branch || k.wip_commit)) return "";
@@ -6249,7 +6283,7 @@ pages.job = async ([id]) => {
       ${size.deferred.length ? `<details class="fold plan-notes"><summary class="card-h"><h2>Left for later <span class="count">${size.deferred.length}</span></h2></summary>
         <div class="card-b"><ul class="assumptions">${size.deferred.map((d) => `<li>${esc(d)}</li>`).join("")}</ul></div></details>` : ""}
       ${notes.length ? `<details class="fold plan-notes"><summary class="card-h"><h2>Assumptions and risks <span class="count">${notes.reduce((n, [, l]) => n + l.length, 0)}</span></h2></summary>
-        <div class="card-b stack">${notes.map(([label, list]) => `<div><div class="label">${label}</div><ul class="assumptions">${list.map((x) => `<li>${esc(x)}</li>`).join("")}</ul></div>`).join("")}</div></details>` : ""}
+        <div class="card-b stack">${notes.map(([label, list]) => `<div><div class="label">${label}</div><ul class="assumptions wrap-anywhere">${list.map((x) => `<li>${esc(x)}</li>`).join("")}</ul></div>`).join("")}</div></details>` : ""}
     </section>`;
   const rawHeroReason = String(problem?.summary || s.state.reason || "").trim();
   const conciseReasonText = (raw) => {
@@ -6310,8 +6344,8 @@ pages.job = async ([id]) => {
   const experienceStepperHtml = expHasFold
     ? `<div class="job-stepper-history">
         ${exp.churn_guardrail?.refactor_recommended ? `<div class="notice warn mb-8"><strong>Architectural refactor guardrail active</strong><div class="muted">${esc(exp.churn_guardrail.directive || "Repeated changes detected; the next iteration will consolidate and refactor cleanly.")}</div></div>` : ""}
-        <details class="fold job-version-history">
-          <summary class="linklike muted">Version history (${expVersions.length} iteration${expVersions.length === 1 ? "" : "s"})${exp.version ? ` · v${esc(exp.version)}` : ""}</summary>
+        ${expVersions.length || expHypotheses.length ? `<details class="fold job-version-history">
+          <summary class="linklike muted">${expVersions.length ? `Version history (${expVersions.length} iteration${expVersions.length === 1 ? "" : "s"})` : "Assumed defaults"}${exp.version ? ` · v${esc(exp.version)}` : ""}</summary>
           <div class="job-version-history-body stack mt-8">
             ${expVersions.length ? `<ul class="assumptions">${expVersions.slice().reverse().map((v) => `<li><strong>v${esc(v.version)}</strong>${v.feedback_type ? ` <span class="pill idle">${esc(v.feedback_type.replace(/_/g, " "))}</span>` : ""}: ${esc(v.feedback || v.summary || "Initial prototype")}${v.commit ? ` <span class="mono muted">(${esc(String(v.commit).slice(0, 7))})</span>` : ""}</li>`).join("")}</ul>` : ""}
             ${expHypotheses.length ? `<div class="stack">
@@ -6320,7 +6354,7 @@ pages.job = async ([id]) => {
             </div>` : ""}
             ${expVersions.length >= 2 && !activeRun ? `<div><button type="button" class="btn small ghost" data-experience-undo="${esc(s.id)}">Undo last iteration</button></div>` : ""}
           </div>
-        </details>
+        </details>` : ""}
       </div>`
     : "";
 
@@ -6393,6 +6427,7 @@ pages.job = async ([id]) => {
 
       ${unvalidatedTestsHtml}
       ${defectsHtml}
+      ${jobStartBlockers(data.blockers)}
 
       ${s.question ? `<section class="card mb-16 clarify-card" id="clarify"><div class="card-h"><h2>${(job.clarification_history || []).length ? "A follow-up question" : String(job.last_error || "").startsWith("Builder clarification needed") ? "A question during the build" : "A question before planning"}</h2><details class="more"><summary class="btn small ghost icon-only" aria-label="Export chat" title="Export chat"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-download"/></svg></summary><div class="more-menu"><button type="button" class="btn small" data-clarify-export="copy">Copy chat</button><button type="button" class="btn small" data-clarify-export="download">Export chat</button></div></details></div><div class="card-b stack">
         ${clarificationThread(job.clarification_history)}
@@ -6406,10 +6441,8 @@ pages.job = async ([id]) => {
             </div>
           </div>
         </form></div></section>`
-        : (job.clarification_history || []).length ? `<section class="card mb-16" id="clarify-history"><details class="fold"${(job.clarification_history || []).some((h) => h.auto) ? " open" : ""}><summary class="card-h"><h2>Questions and answers <span class="count">${job.clarification_history.length}</span></h2></summary>
+        : (job.clarification_history || []).length ? `<section class="card mb-16" id="clarify-history"><details class="fold"><summary class="card-h"><h2>Questions and answers <span class="count">${job.clarification_history.length}</span></h2></summary>
           <div class="card-b stack">${clarificationThread(job.clarification_history)}<div class="row gap-8"><button type="button" class="btn small ghost" data-clarify-export="copy">Copy chat</button><button type="button" class="btn small ghost" data-clarify-export="download"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-download"/></svg> Export chat</button></div></div></details></section>` : ""}
-
-      ${(data.blockers || []).map((b) => `<div class="banner attention"><p><strong>This job can't start yet.</strong> ${esc(b.text)}${b.route ? ` <a class="btn small" href="${esc(b.route)}">${esc(b.fix)}</a>` : ""}</p></div>`).join("")}
 
       ${(job.plan?.slice_warnings || []).length && !reviewingPlan ? `<section class="card mb-16"><div class="card-h"><h2>Plan check</h2></div><div class="card-b stack">
         <div>This plan looks like a stack of layers, not working slices. Mistakes in an early layer won't show until the last task.</div>
@@ -6448,7 +6481,7 @@ pages.job = async ([id]) => {
 </section>
 
       ${assumptions.length && !reviewingPlan ? `<section class="card mb-16"><div class="card-h"><h2>What the AI assumed</h2><span class="count">${assumptions.length}</span></div>
-        <div class="card-b"><ul class="assumptions">${assumptions.map((t) => `<li>${esc(t)}</li>`).join("")}</ul>
+        <div class="card-b"><ul class="assumptions wrap-anywhere">${assumptions.map((t) => `<li>${esc(t)}</li>`).join("")}</ul>
         <div class="muted">Wrong about something? Use Revise plan in the menu.</div></div></section>` : ""}
 
       <section class="card mb-16" id="changes-section">
