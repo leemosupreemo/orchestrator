@@ -140,6 +140,30 @@ def run_builder(job_path: Path, resume: bool = False) -> tuple[bool, bool, Path]
     from orchestrator.job_scope import NONPRODUCTION_TYPES
     if job.get("type") in NONPRODUCTION_TYPES:
         raise RuntimeError("The production builder is disabled for Design and Tests jobs.")
+    assist_options = {}
+    if PROJECT_CONFIG.verification_mode == "assist":
+        import os
+
+        from orchestrator import account, parallel_jobs, verification_candidate
+
+        epoch = account.job_epoch(job)
+
+        def still_owns_job() -> bool:
+            try:
+                current = read_json(job_path)
+            except (OSError, ValueError):
+                return False
+            return bool(current) and not current.get("moved_to") and account.job_epoch(current) == epoch
+
+        job_owned = False
+        worktree = job.get("worktree")
+        if os.environ.get(parallel_jobs.ENV_MAIN) and isinstance(worktree, str) and Path(worktree).resolve() == ROOT.resolve():
+            try:
+                verification_candidate.worktree_candidate(ROOT)
+                job_owned = True
+            except verification_candidate.CandidateError:
+                pass
+        assist_options = {"job_owned": job_owned, "is_current": still_owns_job}
     if "type" not in job:
         if "repro_steps" in job.get("plan", {}):
             job["type"] = "bug-fix"
@@ -150,7 +174,7 @@ def run_builder(job_path: Path, resume: bool = False) -> tuple[bool, bool, Path]
             
     status_bar = StatusBar(job, is_processing=True)
     
-    if resume and inspect_progress(job):
+    if resume and not assist_options and inspect_progress(job):
         summary_file = OUTPUT_DIR / job["job_id"] / "builder_summary.md"
         if summary_file.exists():
             return True, True, summary_file
@@ -313,7 +337,8 @@ Available Tests (use for selecting test_command):
             cwd=ROOT, 
             timeout=1200, 
             allowed_models=job.get("allowed_models"),
-            role=ModelRole.BUILDER
+            role=ModelRole.BUILDER,
+            job_type=job["type"], job_id=job.get("job_id"),
         )
 
         if builder_check.writes_blocked(output) and not builder_check.changed(tree_before, builder_check.tree_fingerprint(ROOT)):
@@ -375,7 +400,7 @@ Available Tests (use for selecting test_command):
     if not resume or not summary_file.exists():
         write_text(summary_file, output)
 
-    build_ok, test_ok = run_build_and_tests(job, summary_file)
+    build_ok, test_ok = run_build_and_tests(job, summary_file, **assist_options)
     
     # Return parsed output dictionary so callers can inspect what was built
     final_parsed = parsed_output if isinstance(parsed_output, dict) else {}

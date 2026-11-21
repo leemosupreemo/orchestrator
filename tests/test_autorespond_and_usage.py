@@ -198,6 +198,49 @@ class SignInFallbackTests(StateDirCase):
 
         self.assertEqual(tried, [OTHER_CLAUDE])
 
+    def test_is_unusable_model_error_handles_deactivated_and_python_forbidden(self):
+        self.assertEqual(llm.is_unusable_model_error("400 Bad Request: Model version qvml0p9 is deactivated"), (True, False))
+        self.assertEqual(llm.is_unusable_model_error("raise ValueError('Linked input paths are forbidden')"), (False, False))
+
+    def test_quota_with_forbidden_output_and_deactivated_pool_rescues_via_ready_provider(self):
+        from orchestrator import project_setup
+
+        free_model = "opencode/nemotron-3-ultra-free"
+        tried = []
+        prompts = []
+
+        def fake_single(model, prompt, cwd, timeout, **_options):
+            tried.append(model)
+            prompts.append(prompt)
+            if model == free_model:
+                raise RuntimeError(
+                    "raise ValueError('Linked input paths are forbidden')\n"
+                    "Error: Free usage limit reached. Connect a provider or subscribe to OpenCode Go to keep going, or switch models."
+                )
+            if model == "pool":
+                raise RuntimeError(
+                    "Unexpected error: 400 Bad Request: Model version qvml0p9 is deactivated. "
+                    "It needs to be activated before running predictions: encountered unexpected error"
+                )
+            return '```json\n{"summary": "rescued via openai"}\n```'
+
+        with patch.object(llm, "_run_llm_single", side_effect=fake_single), \
+             patch.object(llm, "get_prioritized_models", side_effect=lambda role=None, allowed_models=None, preferred_family=None: list(allowed_models) if allowed_models else [free_model, "pool"]), \
+             patch.object(project_setup, "models_ready_here", return_value=[OPENAI]):
+            out, used, _ = llm.run_llm(
+                free_model,
+                "BUILD IT",
+                allowed_models=None,
+                role=ModelRole.BUILDER,
+            )
+
+        self.assertEqual(used, OPENAI)
+        self.assertEqual(tried, [free_model, "pool", OPENAI])
+        self.assertIn("rescued via openai", out)
+        self.assertIn("### HANDOFF ###", prompts[-1])
+        self.assertTrue(project_chat.is_model_blocked("pool"))
+        self.assertFalse(project_chat.is_model_blocked(OPENAI))
+
 
 class AutorespondTests(unittest.TestCase):
     def test_yolo_answers_up_to_three_times_then_waits(self):

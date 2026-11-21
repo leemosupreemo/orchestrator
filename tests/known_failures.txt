@@ -10,7 +10,6 @@ test_job_ownership.BackupPushTests.test_each_task_and_the_final_commit_are_backe
 test_job_problem.DescribeTests.test_closing_the_sign_in_dialog_redraws_the_page  # failing at HEAD, cause unknown
 test_passed_uncommitted.PassedUncommittedTests.test_the_worker_records_the_pass_before_committing_and_resume_skips_the_builder  # asserts UI text 'Next:</span> commit the finished work' that app.js no longer has
 test_previews.PreviewWiringTests.test_previews_are_errands_that_dont_make_the_job_busy  # failing at HEAD, cause unknown
-test_run_progress.RunStatusRenderingTests.test_live_panel_details_elapsed_waiting_and_terminal_states  # failing at HEAD, cause unknown
 test_web_ui.AccessibilityStaticTests.test_design_tokens_hold  # failing at HEAD, cause unknown
 test_web_ui.AccessibilityStaticTests.test_text_uses_the_type_roles  # failing at HEAD, cause unknown
 test_web_ui.ConnectionsAndModalLayoutConsistencyTests.test_container_padding_design_standard_enforces_consistency  # failing at HEAD, cause unknown

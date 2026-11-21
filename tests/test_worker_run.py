@@ -422,6 +422,40 @@ class WorkerRunTests(unittest.TestCase):
                 self.assertIsNone(job['worker_pid'])
                 self.assertEqual(calls['send_notifications'].call_args.args[1], 'Job Complete: FAILED')
 
+    def test_task_automation_error_marks_both_parent_and_task_job_human_needed(self):
+        plan = {'tasks': [{'title': 'Task 1', 'description': 'Do it', 'likely_files': ['App.swift'], 'acceptance_criteria': ['Done']}]}
+        with self.pipeline({'type': 'feature-plan', 'approved': True, 'plan': plan}, results=[RuntimeError('No model could answer')]) as (path, _calls):
+            worker.execute_job(path)
+            job = worker.read_json(path)
+            task_job = worker.read_json(path.parent / f'{path.stem}_task_1.json')
+            self.assertEqual(job['status'], 'human-needed')
+            self.assertEqual(task_job['status'], 'human-needed')
+            self.assertIn('No model could answer', task_job['last_error'])
+
+    def test_review_gate_triggers_autofix_once_then_pauses_human_needed(self):
+        outcome = {
+            'verdict': 'request_changes',
+            'needs_changes': True,
+            'has_blockers': True,
+            'unmet_criteria': ['- Missing X: **Not met**'],
+            'feedback': 'Review blockers:\n- Missing X',
+        }
+        with self.pipeline({'review_outcome': outcome}) as (path, calls):
+            with patch.object(worker, 'trigger_followup_iteration') as follow:
+                worker.execute_job(path)
+            follow.assert_called_once()
+            self.assertIn('Missing X', follow.call_args.args[2])
+            self.assertEqual(worker.read_json(path)['review_fix_attempts'], 1)
+            self.assertEqual(calls['send_notifications'].call_count, 0)
+
+        with self.pipeline({'review_outcome': outcome, 'review_fix_attempts': 1}) as (path, calls):
+            with patch.object(worker, 'trigger_followup_iteration') as follow:
+                worker.execute_job(path)
+            follow.assert_not_called()
+            job = worker.read_json(path)
+            self.assertEqual(job['status'], 'human-needed')
+            self.assertEqual(calls['send_notifications'].call_args.args[1], 'Job Paused: Review Requested Changes')
+
     def test_remaining_tasks_continue_automatically_in_both_worker_modes(self):
         for kind, automatic in (('feature-plan', True), ('feature-plan', False), ('feature', True)):
             with self.subTest(kind=kind, automatic=automatic), \

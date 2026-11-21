@@ -14,6 +14,26 @@ python3 -m compileall -q orchestrator tests
 python3 -m unittest discover -s tests
 ```
 
+For model outcome recording, fallback and shadow comparisons, Git sync, and the offline job pipeline, run:
+
+```bash
+python3 -m unittest tests.test_model_attempts tests.test_model_outcomes tests.test_llm_json_retry tests.test_auth_fallback_order tests.test_job_sync tests.e2e.test_pipeline_offline
+```
+
+For decision risk rules, planning gates, and the job page's Plan notes, run the focused planning suite:
+
+```bash
+python3 -m unittest tests.test_adaptive_planning
+```
+
+For local observation, assisted verification, Git candidate handoff, placement, and helper recovery, run:
+
+```bash
+python3 -m unittest tests.test_verification tests.test_verification_candidate tests.test_verification_placement tests.test_verification_attempts tests.test_verification_worker tests.test_verification_coordinator tests.test_test_commands
+```
+
+The suite uses throwaway Git clones, a local worker subprocess, and mocked SSH transport. It covers overlapping checks, helper loss and local fallback, and rejection of stale or missing evidence. The [implementation plan](superpowers/plans/2026-11-21-two-mac-verification.md) tracks the pending live two-Mac pilot.
+
 ## End-to-end tests (a whole project, start to finish)
 
 `tests/e2e/` builds a throwaway project (git repo with a local remote, passing tests, the product documents, orchestrator config) and drives the real scripts through plan, architect check, approval, build, test, commit, push, draft pull request and review. `gh` is replaced by `tests/e2e/fake_gh.py`, so nothing reaches GitHub.

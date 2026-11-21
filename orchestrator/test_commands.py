@@ -54,6 +54,7 @@ class ExtraTestCommand:
     tier: str = "per-job"
     requires: tuple[str, ...] = ()
     results: str = ""
+    parallel_verify: bool = False
 
 
 def _requirement_error(requirement: str) -> str | None:
@@ -104,6 +105,11 @@ def parse(raw: Any, root: Path | None = None) -> tuple[list[ExtraTestCommand], l
         tier = str(entry.get("tier") or "per-job")
         if tier not in TIERS:
             problems.append(f'tier must be one of {", ".join(TIERS)}')
+        parallel_verify = entry.get("parallel_verify", False)
+        if not isinstance(parallel_verify, bool):
+            problems.append("parallel_verify must be true or false")
+        elif parallel_verify and tier != "per-job":
+            problems.append("parallel_verify requires the per-job tier")
         requires = entry.get("requires") or []
         if not isinstance(requires, list) or not all(isinstance(r, str) for r in requires):
             problems.append("requires must be a list of strings")
@@ -119,7 +125,7 @@ def parse(raw: Any, root: Path | None = None) -> tuple[list[ExtraTestCommand], l
             errors += [f"{label}: {problem}." for problem in problems]
             continue
         names.add(name)
-        commands.append(ExtraTestCommand(name, command, cwd, timeout, retries, tier, tuple(requires), results))
+        commands.append(ExtraTestCommand(name, command, cwd, timeout, retries, tier, tuple(requires), results, parallel_verify))
     return commands, errors
 
 
@@ -133,6 +139,16 @@ def from_config(config: Any) -> tuple[list[ExtraTestCommand], list[str]]:
             errors.append('backend_test_command is also a test_commands entry named "backend"; rename the entry.')
         else:
             commands.append(ExtraTestCommand("backend", backend))
+    mode = getattr(config, "verification_mode", "off")
+    if mode not in ("off", "observe", "assist"):
+        errors.append("verification_mode must be off, observe or assist.")
+    elif mode != "off":
+        per_job = [c for c in commands if c.tier == "per-job"]
+        indices = [i for i, c in enumerate(per_job) if c.parallel_verify]
+        if len(indices) != 2 or indices[1] != indices[0] + 1:
+            errors.append(f"verification_mode {mode} requires two adjacent per-job commands with parallel_verify enabled.")
+        elif any(per_job[i].command == (getattr(config, "test_command", None) or "").strip() for i in indices):
+            errors.append("A parallel_verify command duplicates the main test_command.")
     return commands, errors
 
 
@@ -246,7 +262,8 @@ def run_one(extra: ExtraTestCommand, root: Path, *, run: Callable[[str, Path, in
 
 
 def run_all(commands: list[ExtraTestCommand], root: Path, out_dir: Path, *, tier: str = "per-job",
-            run_command: Callable[..., dict[str, Any]] = run_one) -> list[dict[str, Any]]:
+            run_command: Callable[..., dict[str, Any]] = run_one,
+            finalize: Callable[[list[dict[str, Any]]], None] | None = None) -> list[dict[str, Any]]:
     """Run the commands of one tier in order, write a log per command and `test_commands.json`, and return the
     results. A failure doesn't stop the rest: every command reports."""
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -257,14 +274,16 @@ def run_all(commands: list[ExtraTestCommand], root: Path, out_dir: Path, *, tier
         log.write_text(result["output"] or result.get("reason", ""), encoding="utf-8")
         result["log"] = log.name
         results.append(result)
+    if finalize is not None:
+        finalize(results)
     (out_dir / "test_commands.json").write_text(
         json.dumps([{k: v for k, v in r.items() if k != "output"} for r in results], indent=2), encoding="utf-8")
     return results
 
 
 def passed(results: list[dict[str, Any]]) -> bool:
-    """Blocked commands don't fail a job: they couldn't run here, which is not the code's fault."""
-    return all(r["status"] in ("passed", "blocked") for r in results)
+    """Ordinary blocked checks are advisory. Required checks must pass."""
+    return all(r["status"] == "passed" or (r["status"] == "blocked" and not r.get("required")) for r in results)
 
 
 def summary(results: list[dict[str, Any]]) -> str:
@@ -288,6 +307,8 @@ def failure_report(results: list[dict[str, Any]], tail_lines: int = 200) -> str:
         if r["status"] in ("failed", "timeout"):
             tail = "\n".join((r["output"] or "").splitlines()[-tail_lines:])
             parts.append(f'=== {r["name"]} ({r["status"]}): {r["command"]}\n{tail}')
+        elif r["status"] == "blocked" and r.get("required"):
+            parts.append(f'=== {r["name"]} (required check unavailable)\n{r.get("reason", "")}')
     return "\n\n".join(parts)
 
 
@@ -377,6 +398,8 @@ def with_entry(raw: Any, entry: dict[str, Any], original: str | None, root: Path
     if index is None:
         items.append(entry)
     else:
+        if "parallel_verify" in items[index]:
+            entry = {**entry, "parallel_verify": items[index]["parallel_verify"]}
         items[index] = entry
     return items, parse(items, root)[1]
 

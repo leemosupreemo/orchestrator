@@ -111,6 +111,10 @@ class OfflinePipelineTests(unittest.TestCase):
         self.assertTrue(job["branch"].startswith("ai/issue-"), job["branch"])
         self.assertEqual(job["status"], "review-needed", self.explain())
         self.assertEqual(job["actual_builder_used"], FREE)
+        outcomes = job["model_outcomes"]
+        self.assertIn(("builder", "build_checks_passed"), {(e["role"], e["result"]) for e in outcomes})
+        self.assertIn(("reviewer", "review_generated"), {(e["role"], e["result"]) for e in outcomes})
+        self.assertTrue(all(e["actual_model"] == FREE for e in outcomes))
         self.assertNotEqual(self.project.git("rev-parse", "main"), self.project.git("rev-parse", job["branch"]), "nothing was committed")
         self.assertEqual(self.project.git("log", "--oneline", "main").count("\n"), 0, "main was changed")
 
@@ -139,6 +143,16 @@ class OfflinePipelineTests(unittest.TestCase):
     def test_the_reviewer_is_told_what_the_plan_promised(self):
         prompt = self.calls("reviewer")[0]["prompt"]
         self.assertIn("score('abcdefg') includes 10 extra points", prompt)
+
+    def test_model_attempts_and_shadow_comparisons_are_written_during_the_job(self):
+        log = self.project.root / ".orchestrator" / "logs" / "model-attempts.jsonl"
+        rows = [json.loads(line) for line in log.read_text().splitlines()]
+        accepted = {row["call_id"]: row for row in rows if row.get("result") == "response_accepted"}
+        comparisons = [row for row in rows if row["kind"] == "shadow"]
+        self.assertTrue({"planner", "verifier", "builder", "reviewer"} <= {row["role"] for row in comparisons})
+        for row in comparisons:
+            self.assertEqual(row["actual_model"], accepted[row["call_id"]]["model"])
+            self.assertEqual(row["actual_model"], FREE)
 
 
 class PlainGitPipelineTests(unittest.TestCase):
@@ -270,6 +284,13 @@ class FreestyleTests(unittest.TestCase):
     def test_it_stays_a_freestyle_job_planned_as_a_feature(self):
         self.assertTrue(self.final.get("freestyle"))
         self.assertEqual(self.final["type"], "feature-plan")
+
+    def test_only_the_plan_that_passes_the_gate_records_a_planner_outcome(self):
+        self.assertNotIn("model_outcomes", self.first)
+        self.assertNotIn("model_outcomes", self.second)
+        entry, = self.final["model_outcomes"]
+        self.assertEqual((entry["role"], entry["result"], entry["actual_model"]),
+                         ("planner", "plan_gate_passed", FREE))
 
     def test_every_round_is_told_what_was_already_asked_and_answered(self):
         prompts = [c["prompt"] for c in project_calls(self.project, "planner")]

@@ -3,13 +3,16 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 from common import OUTPUT_DIR, PROMPTS_DIR, ROOT, gh_text, run, write_text
 from llm import run_llm
 from model_router import ModelRole
+from orchestrator import model_outcomes
 
 MAX_DIFF_CHARS = 100_000
 
@@ -95,6 +98,58 @@ def verification_warnings(job: dict, root: Path) -> list[str]:
     return warnings
 
 
+def parse_review_outcome(review: str) -> dict[str, Any]:
+    """Parse structured reviewer markdown (`## Blockers`, `## Acceptance criteria`, `## Verdict`) for gating."""
+    text = str(review or "")
+    sections: dict[str, list[str]] = {}
+    current = ""
+    for line in text.splitlines():
+        heading = re.match(r"^\s*##\s+(.+?)\s*$", line)
+        if heading:
+            current = heading.group(1).strip().lower()
+            sections.setdefault(current, [])
+        elif current:
+            sections[current].append(line)
+
+    blockers_lines = [l.strip() for l in sections.get("blockers", []) if l.strip()]
+    blockers_body = "\n".join(blockers_lines)
+    has_blockers = bool(
+        blockers_body
+        and re.sub(r"[\s.*`_-]+", "", blockers_body).lower() not in ("", "none", "na", "n/a")
+    )
+
+    unmet_criteria = [
+        l.strip()
+        for l in sections.get("acceptance criteria", [])
+        if re.search(r"\bnot\s+met\b", l, re.I)
+    ]
+
+    verdict_text = "\n".join(sections.get("verdict", [])) or text
+    verdict = ""
+    if re.search(r"\brequest\s+changes\b", verdict_text, re.I):
+        verdict = "request_changes"
+    elif re.search(r"\bapprove\s+with\s+changes\b", verdict_text, re.I):
+        verdict = "approve_with_changes"
+    elif re.search(r"\bapprove\b", verdict_text, re.I):
+        verdict = "approve"
+
+    needs_changes = bool(verdict == "request_changes" or has_blockers or unmet_criteria)
+    parts: list[str] = []
+    if has_blockers:
+        parts.append("Review blockers:\n" + blockers_body[:800])
+    if unmet_criteria:
+        parts.append("Unmet acceptance criteria:\n" + "\n".join(unmet_criteria)[:800])
+    if not parts and needs_changes:
+        parts.append("Review requested changes:\n" + text[-1000:])
+    return {
+        "verdict": verdict or "unknown",
+        "has_blockers": has_blockers,
+        "unmet_criteria": unmet_criteria,
+        "needs_changes": needs_changes,
+        "feedback": "\n\n".join(parts).strip(),
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("pr_number", type=int, nargs="?", help="The pull request to review (GitHub)")
@@ -144,7 +199,10 @@ Diff:
 """
             
     try:
-        review, actual_reviewer, session_id = run_llm(args.reviewer, prompt, cwd=ROOT, timeout=300, role=ModelRole.REVIEWER, allowed_models=allowed_models)
+        review, actual_reviewer, session_id = run_llm(
+            args.reviewer, prompt, cwd=ROOT, timeout=300, role=ModelRole.REVIEWER, allowed_models=allowed_models,
+            job_type=(job.get("type") or "generic") if args.job_file else None, job_id=job.get("job_id"),
+        )
         
         # Track session IDs in the job
         if "llm_sessions" not in job:
@@ -155,16 +213,22 @@ Diff:
         print(f"❌ Review failed: {e}")
         sys.exit(1)
 
-    if args.job_file:
-        job = read_json(job_path) # Re-read in case it changed
-        job["actual_reviewer_used"] = actual_reviewer
-        job["updated_at"] = now_iso()
-        write_json(job_path, job)
-
     out_dir = OUTPUT_DIR / (f"pr-{args.pr_number}" if args.pr_number is not None else f"branch-{args.branch.replace('/', '-')}")
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / "review.md"
     write_text(out_path, review)
+
+    outcome = parse_review_outcome(review)
+    if args.job_file:
+        job = read_json(job_path)
+        job["actual_reviewer_used"] = actual_reviewer
+        job["review_outcome"] = {
+            **outcome,
+            "review_file": str(out_path.relative_to(ROOT)) if out_path.is_relative_to(ROOT) else str(out_path),
+        }
+        model_outcomes.record(job, "reviewer", args.reviewer, actual_reviewer, "review_generated")
+        job["updated_at"] = now_iso()
+        write_json(job_path, job)
 
     print(review)
     print(f"\nSaved review to {out_path}")

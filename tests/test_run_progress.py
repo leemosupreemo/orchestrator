@@ -14,6 +14,41 @@ from orchestrator.web.run_progress import RunProgress
 
 
 class RunProgressTests(unittest.TestCase):
+    def test_planning_milestones_advance_before_the_next_numbered_step(self):
+        progress = RunProgress()
+        progress.feed(b"[1/3] Planning feature\n")
+        self.assertEqual(progress.snapshot()["step_fraction"], 0)
+        progress.feed(b'[spec] {"stage":"Pass A: Spec synthesis","label":"Synthesizing feature spec"}\n')
+        progress.feed(b'[spec] {"stage":"Pass A: Risk assessment","label":"Assessing ambiguity & risk"}\n')
+        self.assertEqual(progress.snapshot()["step_fraction"], 0.2)
+        progress.feed(b'[gate] {"state":"Intent gate passed","label":"Evaluating intent gate"}\n')
+        self.assertEqual(progress.snapshot()["step_fraction"], 0.4)
+        progress.feed(b'[spec] {"label":"Planning execution tasks"}\n[gate] {"state":"Plan gate passed"}\n')
+        self.assertEqual(progress.snapshot()["step_fraction"], 0.8)
+        progress.feed(b'[spec] {"label":"Assessing ambiguity & risk"}\n')
+        self.assertEqual(progress.snapshot()["step_fraction"], 0.8)
+        progress.feed(b"[2/3] Creating job\n")
+        self.assertEqual((progress.snapshot()["step"], progress.snapshot()["step_fraction"]), (2, 0))
+
+    def test_build_and_test_phases_advance_only_within_the_current_task(self):
+        progress = RunProgress()
+        progress.feed(b"=== SUB-TASK 1/2: Add login ===\n=== AI THINKING ===\n")
+        self.assertEqual(progress.snapshot()["step_fraction"], 0)
+        progress.feed(b"=== BUILDING ===\n")
+        self.assertEqual(progress.snapshot()["step_fraction"], 0.5)
+        progress.feed(b"=== TESTING ===\n[2/2] Child test progress\n")
+        self.assertEqual((progress.snapshot()["step"], progress.snapshot()["step_fraction"]), (1, 0.75))
+        progress.feed(b"=== SUB-TASK 2/2: Add tests ===\n")
+        self.assertEqual((progress.snapshot()["step"], progress.snapshot()["step_fraction"]), (2, 0))
+
+    def test_a_task_batch_can_show_progress_before_the_build_finishes(self):
+        progress = RunProgress()
+        progress.feed(b"=== SUB-TASK 1-2/3: Build the related changes ===\n=== BUILDING ===\n")
+        status = progress.snapshot()
+        self.assertEqual((status["step"], status["total"], status["step_fraction"]), (1, 3, 0.5))
+        progress.feed(b"=== SKIPPING TESTS ===\n")
+        self.assertEqual(progress.snapshot()["step_fraction"], 0.75)
+
     def test_long_task_headers_use_the_real_terminal_padding(self):
         from orchestrator.scripts.common import print_phase
 
@@ -382,22 +417,43 @@ const run = {id: 'r1', running: true, started: 875, action: 'execute', title: 'B
 const header = runHeader({...run, command: 'orchestrator script ux_review_run.py pass'});
 assert.doesNotMatch(header.sub, /pill|Running/);
 assert.equal(header.sub, '');  // the raw command is not shown; the status container carries what matters
+const namedRun = {...run, job: 'job-18', job_title: 'Camelot Hills ground cover'};
+assert.equal(runHeader(namedRun).title, 'Camelot Hills ground cover');
+assert.equal(runHeader({...run, result_job: 'job-19'}, {job: {id: 'job-19', title: 'New feature'}}).title, 'New feature');
+assert.doesNotMatch(runStatus(namedRun), /<dt>Job<\/dt>/);
+const many = runStatus({...run, progress: {...run.progress,
+  assigned_models: ['model-a', 'model-b', 'model-c', 'model-d', 'model-e'], active_models: [], models: []}});
+assert.match(many, /model-a, model-b, model-c, and 2 more/);
+assert.doesNotMatch(many, /model-d|model-e/);
+const manyCalls = runStatus({...run, progress: {...run.progress,
+  calls: ['model-a', 'model-b', 'model-c', 'model-d'].map(model => ({model, age: 30}))}});
+assert.match(manyCalls, /model-c \(working for 30s\), and 1 more/);
+assert.doesNotMatch(manyCalls, /model-d/);
 let html = runStatus({...run, summary: 'Improve test coverage toward 80%', progress: {...run.progress, machines: ['mac-mini'], suites: ['tests/a.py', 'tests/b.py'], suite: 2}});
 for (const part of ['Improve test coverage toward 80%', 'mac-mini (active)', '2 planned · working on 2 of 2: b.py']) assert(html.includes(part), part);
 assert.match(runStatus(run), /Assigning a machine/);
 html = runStatus(run);
-for (const part of ['Step 2 of 10', 'Implementing changes', 'provider/model-a', '(working)', '2m 5s', 'Add &lt;login&gt;', 'run-status-pct', '10%']) assert(html.includes(part), part);
+for (const part of ['Step 2 of 10', 'Implementing changes', 'provider/model-a', '(working)', '2m 5s', 'run-status-pct', '10%']) assert(html.includes(part), part);
+assert.match(html, /<strong class="run-status-step">Step 2 of 10<\/strong>/);
+assert.doesNotMatch(html, /Add &lt;login&gt;|run-status-task/);
+const first = runStatus({...run, progress: {step: 1, total: 3, step_fraction: 0.4}});
+assert.match(first, /Step 1 of 3/);
+assert.match(first, /value="13" max="100"/);
+assert.match(first, /run-status-pct">13%/);
+const last = runStatus({...run, progress: {step: 100, total: 100, step_fraction: 0.9}});
+assert.match(last, /run-status-pct">99%/);
 const slow = runStatus({...run, progress: {label: 'Waiting for claude-opus-4-7', agents: 1, models: ['gpt-5.4', 'claude-opus-4-7'], active_models: ['claude-opus-4-7'],
   calls: [{model: 'claude-opus-4-7', age: 485, timeout: 1200}],
   failed: [{model: 'gpt-5.4', reason: "Not supported <here>"}, {model: 'o1', reason: "couldn't start (is it installed?)"}]}});
-for (const part of ['Waiting for claude-opus-4-7', 'claude-opus-4-7 (working for 8m)', '2 models couldn&#39;t run', 'Not supported &lt;here&gt;', 'Reasoning models often take 5–10m', 'switches after 20m silent or 60m max']) assert(slow.includes(part) || slow.includes(part.replace('&#39;', "'")), part);
+for (const part of ['Waiting for claude-opus-4-7', 'claude-opus-4-7 (working for 8m)', '2 models couldn&#39;t run', 'Not supported &lt;here&gt;']) assert(slow.includes(part) || slow.includes(part.replace('&#39;', "'")), part);
+assert.doesNotMatch(slow, /data-run-slow-hint|Reasoning models often take/);
 const fresh = runStatus({...run, progress: {label: 'Waiting for m', agents: 1, models: ['m'], active_models: ['m'], calls: [{model: 'm', age: 30, timeout: 600}], failed: []}});
 assert(fresh.includes('m (working for 30s)'));
 assert.doesNotMatch(fresh, /run-slow-hint|Skipped models/);  // nothing to say until it has been quiet a while, or something was skipped
 assert.doesNotMatch(runStatus({...run, running: false, exit_code: 0, progress: {...run.progress, calls: [{model: 'm', age: 500, timeout: 600}]}}), /run-slow-hint/);
 const flagged = runStatus({...run, running: false, exit_code: 0, progress: {label: 'Reading the model\'s answer', models: ['gpt-5.4', 'claude-opus-4-7'], failed: [{model: 'gpt-5.4', reason: 'Not supported'}]},
   result: {headline: '4 test files added with 49 tests, not checked yet', details: ['Location: Tests/'], tone: 'warn', partial: true}});
-for (const part of ['Partially complete', 'Paused: the work is saved',  '4 test files added with 49 tests', 'Location: Tests/', 'claude-opus-4-7']) assert(flagged.includes(part), part);
+for (const part of ['Partially complete', '4 test files added with 49 tests', 'Location: Tests/', 'claude-opus-4-7']) assert(flagged.includes(part), part);
 assert.doesNotMatch(flagged, /Reading the model|<dd>gpt-5.4/);  // not where it was, and not the model that couldn't run
 assert.match(runStatus({...run, running: false, exit_code: 0, progress: {label: 'Scheduling worker'}}), /Job execution complete|Run complete/);  // a finished run is never headlined with where it started
 assert.match(runStatus({...run, waiting: true}), /Waiting for you/);

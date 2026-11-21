@@ -8,7 +8,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from orchestrator import job_sync, state_ref  # noqa: E402
+from orchestrator import account, job_sync, model_outcomes, state_ref  # noqa: E402
 from tests.test_web_ui import ServerTestCase  # noqa: E402
 
 
@@ -57,6 +57,21 @@ class TwoComputers(unittest.TestCase):
 
 
 class JobSyncTests(TwoComputers):
+    def test_outcomes_survive_a_job_move_through_the_repository(self):
+        from orchestrator.web.server import import_remote_job
+
+        job = self.job("studio")
+        model_outcomes.record(job, "planner", "chosen", "fallback", "plan_gate_passed")
+        self.job("studio", **{model_outcomes.FIELD: job[model_outcomes.FIELD]})
+        self.sync("studio")
+        entry = self.remote_entry()
+        account_entry = account._job_entry(job, "job-1", self.root["studio"], None)
+        self.assertNotIn(model_outcomes.FIELD, account_entry)
+        self.assertNotIn(model_outcomes.FIELD, account_entry.get("record") or {})
+        import_remote_job(self.root["laptop"], {"job": entry, "source_machine_name": "Studio"})
+        imported, _ = self.read_job("laptop")
+        self.assertEqual(imported[model_outcomes.FIELD], job[model_outcomes.FIELD])
+
     def test_a_job_is_shared_and_the_other_computer_lists_it_without_taking_it(self):
         self.job("studio")
         self.assertEqual(self.sync("studio")["outcome"], "pushed")

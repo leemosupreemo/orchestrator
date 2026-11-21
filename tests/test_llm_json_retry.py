@@ -53,6 +53,69 @@ class JsonRetryTests(unittest.TestCase):
         (_, _, _), prompts = self.run_llm([PLAN])
         self.assertEqual(len(prompts), 1)
 
+    def test_a_job_logs_format_failure_and_the_actual_fallback(self):
+        fallback = "gpt-6.2-astra"
+        logs = Path(self.tmp.name)
+        with patch.object(llm, "LOGS_DIR", logs), patch.object(llm, "runnable_here", return_value=True), \
+             patch.object(llm, "model_usable", return_value=True), \
+             patch.object(llm, "get_prioritized_models", return_value=[MODEL, fallback]), \
+             patch.object(llm, "_run_llm_single", side_effect=[PROSE, PROSE, PLAN]):
+            _, used, _ = llm.run_llm(MODEL, "PRIVATE BRIEF", allowed_models=[MODEL, fallback],
+                                     role=ModelRole.PLANNER, job_type="feature", job_id="job-1")
+        raw = (logs / "model-attempts.jsonl").read_text()
+        first, second, comparison = map(json.loads, raw.splitlines())
+        self.assertEqual(used, fallback)
+        self.assertEqual((first["model"], first["result"], first["format_retry"]), (MODEL, "invalid_json", True))
+        self.assertEqual((second["model"], second["result"]), (fallback, "response_accepted"))
+        self.assertEqual((comparison["requested_model"], comparison["actual_model"]), (MODEL, fallback))
+        self.assertEqual({first["call_id"], second["call_id"], comparison["call_id"]}, {first["call_id"]})
+        self.assertNotIn("PRIVATE BRIEF", raw)
+        self.assertNotIn(PROSE, raw)
+
+    def test_a_job_logs_provider_and_execution_failures_without_raw_errors(self):
+        cases = (
+            (RuntimeError("401 OAuth access token has expired"), "auth"),
+            (RuntimeError("Claude AI usage limit reached. Try again in 2 hours"), "quota"),
+            (RuntimeError("model not found"), "unavailable"),
+            (llm.LLMTimeoutError(MODEL, 30, 30.0, 100, 0, ""), "timeout"),
+            (RuntimeError("CLI exited unexpectedly"), "execution_error"),
+        )
+        for error, result in cases:
+            with self.subTest(result=result), tempfile.TemporaryDirectory() as tmp:
+                logs = Path(tmp)
+                with patch.object(llm, "LOGS_DIR", logs), patch.object(llm, "runnable_here", return_value=True), \
+                     patch.object(llm, "get_prioritized_models", return_value=[MODEL]), \
+                     patch.object(llm, "_auth_fallback_models", return_value=[]), \
+                     patch.object(llm, "_run_llm_single", side_effect=error):
+                    with self.assertRaisesRegex(RuntimeError, "No model could answer"):
+                        llm.run_llm(MODEL, "PRIVATE BRIEF", allowed_models=[MODEL],
+                                    role=ModelRole.PLANNER, job_type="feature")
+                raw = (logs / "model-attempts.jsonl").read_text()
+                attempt, comparison = map(json.loads, raw.splitlines())
+                self.assertEqual((attempt["model"], attempt["result"]), (MODEL, result))
+                self.assertIsNone(comparison["actual_model"])
+                self.assertNotIn(str(error), raw)
+
+    def test_shadow_can_recommend_another_model_without_changing_the_live_pick(self):
+        fallback = "gpt-6.2-astra"
+        logs = Path(self.tmp.name)
+        path = logs / "model-attempts.jsonl"
+        audit = llm.AttemptAudit(path, ModelRole.PLANNER, "feature", [MODEL, fallback])
+        for _ in range(3):
+            audit.record(MODEL, "invalid_json", 1.0)
+            audit.record(fallback, "response_accepted", 1.0)
+        with patch.object(llm, "LOGS_DIR", logs), patch.object(llm, "runnable_here", return_value=True), \
+             patch.object(llm, "model_usable", return_value=True), \
+             patch.object(llm, "get_prioritized_models", return_value=[MODEL, fallback]), \
+             patch.object(llm, "_run_llm_single", return_value=PLAN) as runner:
+            _, used, _ = llm.run_llm(MODEL, "PLAN IT", allowed_models=[MODEL, fallback],
+                                     role=ModelRole.PLANNER, job_type="feature")
+        comparison = json.loads(path.read_text().splitlines()[-1])
+        self.assertEqual((comparison["recommended_model"], comparison["actual_model"]), (fallback, MODEL))
+        self.assertEqual(used, MODEL)
+        self.assertEqual(runner.call_count, 1)
+        self.assertEqual(runner.call_args.args[0], MODEL)
+
     def test_a_model_that_still_fails_after_the_retry_is_reported_not_looped(self):
         with self.assertRaises(RuntimeError) as ctx:
             self.run_llm([PROSE, PROSE, PROSE])

@@ -6,6 +6,7 @@ import subprocess
 import re
 import shlex
 from pathlib import Path
+from typing import Callable
 
 from common import (
     PROJECT_CONFIG,
@@ -201,27 +202,48 @@ def uses_configured_test_tool(command: str, base_command: str) -> bool:
 NO_TESTS_NEEDED = {"n/a", "none", "no tests", "no specific tests", "skipped", "validated"}
 
 
-def run_build_and_tests(job: dict, summary_file: Path) -> tuple[bool, bool]:
+def run_build_and_tests(
+    job: dict, summary_file: Path, *, job_owned: bool = False, is_current: Callable[[], bool] | None = None,
+) -> tuple[bool, bool]:
     """Build and run the project's tests: the main `test_command`, then the extra `test_commands` once it passes."""
     build_ok, test_ok = run_main_build_and_tests(job, summary_file)
     if not (build_ok and test_ok):
         return build_ok, test_ok
-    if (job.get("test_command_override") or "").strip().lower() in NO_TESTS_NEEDED:
+    if (getattr(PROJECT_CONFIG, "verification_mode", "off") != "assist"
+            and (job.get("test_command_override") or "").strip().lower() in NO_TESTS_NEEDED):
         return build_ok, test_ok  # the job said no tests apply; extra suites are no exception
-    return build_ok, run_extra_test_commands(job)
+    return build_ok, run_extra_test_commands(job, job_owned=job_owned, is_current=is_current)
 
 
-def run_extra_test_commands(job: dict) -> bool:
+def run_extra_test_commands(
+    job: dict, *, job_owned: bool = False, is_current: Callable[[], bool] | None = None,
+) -> bool:
     """Run the per-job `test_commands` (and `backend_test_command`). Blocked ones are reported and don't fail the job."""
     from orchestrator import test_commands
     commands, errors = test_commands.from_config(PROJECT_CONFIG)
     for error in errors:
         print(f"      - Warning: {error}")
+    mode = getattr(PROJECT_CONFIG, "verification_mode", "off")
+    out_dir = OUTPUT_DIR / job["job_id"]
+    if mode == "assist" and errors:
+        write_text(out_dir / "test.log", "\n".join(errors) + "\n")
+        return False
     if not any(c.tier == "per-job" for c in commands):
         return True
-    out_dir = OUTPUT_DIR / job["job_id"]
     print_phase("testing", subtext="extra test commands")
-    results = test_commands.run_all(commands, ROOT, out_dir)
+    if mode == "assist":
+        from orchestrator import verification_assist
+
+        results = verification_assist.run(
+            commands, ROOT, out_dir, PROJECT_CONFIG.runtime_dir, job,
+            job_owned=job_owned, is_current=is_current or (lambda: True),
+        )
+    elif not errors and mode == "observe":
+        from orchestrator import verification
+
+        results = verification.observe(commands, ROOT, out_dir, job["job_id"])
+    else:
+        results = test_commands.run_all(commands, ROOT, out_dir)
     print("      - Extra test commands:\n" + test_commands.summary(results))
     if test_commands.passed(results):
         return True

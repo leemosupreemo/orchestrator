@@ -5542,6 +5542,24 @@ function backupNote(job) {
   return `<p class="job-hero-reason text-bad">Not backed up to GitHub: ${[branch, wip].filter(Boolean).join(" and ")}. Another computer can't continue from them yet. <span class="muted">(${esc(String(err).split("\n").pop())})</span> It tries again by itself.</p>`;
 }
 
+function jobPlanNotes(groups) {
+  if (!groups.length) return "";
+  const count = groups.reduce((total, group) => total + group.items.length, 0);
+  const high = groups.find(group => group.label === "High risk")?.items.length || 0;
+  const sections = groups.map(({ label, items }) => `<div><strong>${esc(label)}</strong>
+    <ul class="assumptions wrap-anywhere">${items.map(({ text, reason }) => {
+      const end = label === "Constraints" ? -1 : text.search(/[.!?]\s+(?=[A-Z])/);
+      const summary = end < 0 ? text : text.slice(0, end + 1);
+      const details = [end < 0 ? "" : text.slice(end + 1).trim(), reason].filter(Boolean);
+      return details.length
+        ? `<li><details class="fold"><summary class="linklike">${esc(summary)}</summary>
+            ${details.map(detail => `<p class="muted t-secondary m-0">${esc(detail)}</p>`).join("")}</details></li>`
+        : `<li>${esc(summary)}</li>`;
+    }).join("")}</ul></div>`).join("");
+  return `<details class="fold plan-notes"><summary class="card-h"><h2>Plan notes <span class="count">${high ? `${high} high risk` : count}</span></h2></summary>
+    <div class="card-b stack">${sections}</div></details>`;
+}
+
 function jobStartBlockers(blockers, canRecheck = true) {
   if (!blockers?.length) return "";
   const reasons = {
@@ -5947,7 +5965,6 @@ pages.job = async ([id]) => {
   const unwrittenCases = testCases.cases.filter((c) => c.due && c.skipped).length;
   let featureName = s.feature_name || "";
   if (s.feature && !featureName) { try { featureName = ((await api("features")).features.find((f) => f.id === s.feature) || {}).name || ""; } catch { /* chip falls back to the id */ } }
-  const assumptions = (Array.isArray(job.plan?.assumptions) ? job.plan.assumptions : []).filter((t) => typeof t === "string" && t.trim());
   const briefDoc = (docs || []).find((d) => d.name === "brief.md" || (d.title && d.title.toLowerCase() === "brief")) || {
     title: "Brief",
     name: "brief.md",
@@ -6223,8 +6240,12 @@ pages.job = async ([id]) => {
     </form>` : "";
   const listOf = (v) => (Array.isArray(v) ? v : typeof v === "string" && v.trim().startsWith("[") ? (() => { try { return JSON.parse(v); } catch { return []; } })() : [])
     .filter((x) => typeof x === "string" && x.trim());
-  const risks = listOf(job.plan?.risks), constraints = listOf(job.plan?.constraints);
-  const notes = [["What the AI assumed", assumptions], ["Risks", risks], ["Constraints", constraints]].filter(([, list]) => list.length);
+  const notes = data.plan_notes ?? [["Unrated risks", job.plan?.risks], ["Assumptions", job.plan?.assumptions], ["Constraints", job.plan?.constraints]]
+    .map(([label, values]) => ({
+      label,
+      items: [...new Set(listOf(values).map(s => s.trim()))].filter(s => !/^\{['"]text['"]\s*:/.test(s)).map(text => ({ text })),
+    })).filter(group => group.items.length);
+  const planNotesHtml = jobPlanNotes(notes);
   const currentTaskActive = !isJobComplete && tasks.length > 0 && (
     Boolean(activeRun)
     || Boolean(job.approved)
@@ -6283,8 +6304,7 @@ pages.job = async ([id]) => {
       ${canEditPlan ? `<div class="card-b card-b-split"><button type="button" class="btn small ghost icon-only" data-task-op="add" aria-label="Add a task" title="Add a task"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-plus"/></svg></button></div>` : ""}
       ${size.deferred.length ? `<details class="fold plan-notes"><summary class="card-h"><h2>Left for later <span class="count">${size.deferred.length}</span></h2></summary>
         <div class="card-b"><ul class="assumptions">${size.deferred.map((d) => `<li>${esc(d)}</li>`).join("")}</ul></div></details>` : ""}
-      ${notes.length ? `<details class="fold plan-notes"><summary class="card-h"><h2>Assumptions and risks <span class="count">${notes.reduce((n, [, l]) => n + l.length, 0)}</span></h2></summary>
-        <div class="card-b stack">${notes.map(([label, list]) => `<div><div class="label">${label}</div><ul class="assumptions wrap-anywhere">${list.map((x) => `<li>${esc(x)}</li>`).join("")}</ul></div>`).join("")}</div></details>` : ""}
+      ${planNotesHtml}
     </section>`;
   const rawHeroReason = String(problem?.summary || s.state.reason || "").trim();
   const conciseReasonText = (raw) => {
@@ -6481,9 +6501,7 @@ pages.job = async ([id]) => {
           : `<div class="empty">No test cases yet. Plans list them for every feature, bug fix and coverage job.</div>`}
 </section>
 
-      ${assumptions.length && !reviewingPlan ? `<section class="card mb-16"><div class="card-h"><h2>What the AI assumed</h2><span class="count">${assumptions.length}</span></div>
-        <div class="card-b"><ul class="assumptions wrap-anywhere">${assumptions.map((t) => `<li>${esc(t)}</li>`).join("")}</ul>
-        <div class="muted">Wrong about something? Use Revise plan in the menu.</div></div></section>` : ""}
+      ${!reviewingPlan && planNotesHtml ? `<section class="card mb-16">${planNotesHtml}</section>` : ""}
 
       <section class="card mb-16" id="changes-section">
         <div class="card-h"><h2>Changes</h2>${changes?.base ? `<span class="count">vs ${esc(changes.base)}</span>` : ""}
@@ -14474,7 +14492,7 @@ function runHeader(r, family = null) {
     ? `<button type="button" class="btn icon-only" ${act(rerunAction, jobId ? { job: jobId } : undefined)} aria-label="${jobId ? "Rerun job" : "Rerun"}" title="${jobId ? "Rerun job" : "Rerun"}"><svg class="icon" aria-hidden="true"><use href="#i-refresh"/></svg></button>`
     : "";
   return {
-    title: me ? `${me.label} run` : r.title,
+    title: r.job_title || family?.job?.title || (me ? `${me.label} run` : r.title),
     sub: "",
     actions: rerunBtn
       + ((typeof state !== "undefined" && state.you?.role === "member") ? "" // logs are private to owners
@@ -15234,7 +15252,7 @@ function runStatus(r, vc = null) {
   const numbered = (Number.isInteger(p.step) && Number.isInteger(p.total) && p.step > 0 && p.step <= p.total) || (done && r.action === "coverage");
   const currentStep = done && numbered ? (p.total || 5) : (p.step || 1);
   const totalSteps = numbered ? (p.total || 5) : 1;
-  const stepPrefix = numbered ? `Step ${currentStep} of ${totalSteps}: ` : "";
+  const stepText = numbered ? `Step ${currentStep} of ${totalSteps}` : "";
   const completionLabel = r.action === "update_local"
     ? (pendingUpdate ? "Orchestrator updated — restarting UI to continue your job…" : "Orchestrator updated — restarting UI…")
     : r.action === "coverage" ? "Coverage measurement complete"
@@ -15252,7 +15270,6 @@ function runStatus(r, vc = null) {
   const headlineLabel = done ? (r.action === "coverage" ? "Coverage measurement complete" : r.action === "plan_epic" ? completionLabel : partial ? "Paused: the work is saved, but the job isn't finished" : doneNext ? "Not finished: the job needs another fix attempt" : flagged ? "Finished, needs your attention" : (p.label && !transientLabel ? p.label : completionLabel))
     : failed ? (p.label ? p.label.replace(/\s+failed$/i, "") : actionName)
     : (p.label || r.title || "Starting run");
-  const headline = `${stepPrefix}${headlineLabel}`;
   const nonAiActions = new Set([
     "coverage", "build", "test", "test_suite", "test_plan",
     "git_pull", "git_push", "git_checkout", "stash_checkout", "git_new_branch",
@@ -15272,11 +15289,16 @@ function runStatus(r, vc = null) {
 
   const calls = r.running && Array.isArray(p.calls) ? p.calls : []; // model calls in flight, with how long each has been going
   const ageText = (secs) => (secs < 60 ? `${secs}s` : `${Math.floor(secs / 60)}m`);
+  const modelList = (entries, format) => {
+    const limit = 3;
+    const shown = entries.slice(0, limit).map(format).join(", ");
+    return entries.length > limit ? `${shown}, and ${entries.length - limit} more` : shown;
+  };
   let modelsText = "";
   if (calls.length) {
-    modelsText = calls.map((c) => `${esc(c.model)} (working for ${ageText(c.age)})`).join(", ");
+    modelsText = modelList(calls, (c) => `${esc(c.model)} (working for ${ageText(c.age)})`);
   } else if (displayModels.length) {
-    const list = displayModels.map(esc).join(", ");
+    const list = modelList([...new Set(displayModels)], esc);
     if (r.running) {
       if (activeCount > 0) {
         modelsText = `${list} (working)`;
@@ -15299,13 +15321,10 @@ function runStatus(r, vc = null) {
   } else {
     modelsText = "None";
   }
-  const showTask = !done && p.task && p.task.toLowerCase() !== (p.label || "").toLowerCase();
-  const progressVal = done && numbered ? totalSteps : (numbered ? p.step - 1 : 0);
-  const progressMax = numbered ? totalSteps : 1;
-  const pct = done ? 100
-    : Number.isFinite(p.pct) ? Math.min(100, Math.max(0, Math.round(p.pct)))
-    : Number.isFinite(p.percent) ? Math.min(100, Math.max(0, Math.round(p.percent)))
-    : progressMax > 0 ? Math.min(100, Math.max(0, Math.round((progressVal / progressMax) * 100))) : 0;
+  const fraction = Number.isFinite(p.step_fraction) ? Math.max(0, Math.min(1, p.step_fraction)) : 0;
+  const reported = Number.isFinite(p.pct) ? p.pct : Number.isFinite(p.percent) ? p.percent : null;
+  const estimated = numbered ? (currentStep - 1 + fraction) / totalSteps * 100 : 0;
+  const pct = done ? 100 : Math.max(0, Math.min(99, Math.round(reported ?? estimated)));
   const duration = runDuration(r.started, r.ended);
   const actionBtn = done ? (r.action === "update_local"
     ? `<button type="button" class="btn small primary" data-update-reconnect>${pendingUpdate ? "Reconnect & continue" : "Reconnect"}</button>`
@@ -15316,13 +15335,9 @@ function runStatus(r, vc = null) {
     : doneNext ? `<button type="button" class="btn small primary" ${act(doneNext.action, doneNext.params || {})}>${esc(doneNext.label)}</button>`
     : "")
     : "";
-  const targetJob = r.action === "plan_epic" && r.result_job ? r.result_job : r.job || r.result_job;
-  const jobItem = targetJob
-    ? `<div><dt>Job</dt><dd><a href="#/jobs/${encodeURIComponent(targetJob)}">${esc((targetJob === r.job && r.job_title) || targetJob)}</a></dd></div>` // its title, not an ID like "job-1"
-    : "";
   const found = !r.running && r.result?.headline ? r.result : null; // what the run found, read from its output
   const showFound = Boolean(found && !guidance?.fromResult && (done || !guidance || found.details?.length)); // failed tests are already in the summary on top // a failure with guidance and nothing more to add would only repeat it
-  const headerText = showFound && found?.headline ? found.headline : headline;
+  const headerText = showFound && found?.headline ? found.headline : headlineLabel;
   const foundBlock = showFound && found?.details?.length ? `<div class="run-status-result ${found.tone === "bad" ? "bad" : found.tone === "warn" ? "warn" : "ok"}">
       <ul>${found.details.map((d) => `<li>${esc(d)}</li>`).join("")}</ul></div>` : "";
   const resultText = showFound ? "" : done ? "Completed (exit 0)" : (failed && r.exit_code != null ? `Failed (exit ${r.exit_code})` : "");
@@ -15342,10 +15357,6 @@ function runStatus(r, vc = null) {
   const skippedItem = skipped.length
     ? `<div><dt>Skipped models</dt><dd data-run-skipped><details><summary>${plural(skipped.length, "model")} couldn't run</summary><ul class="run-status-skipped">${skipped.map((f) => `<li><strong>${esc(f.model)}</strong>: ${esc(f.reason)}</li>`).join("")}</ul></details></dd></div>`
     : "";
-  const slow = calls.find((c) => c.age >= 120);
-  const slowHint = slow
-    ? `Reasoning models often take 5–10m${slow.timeout ? `; switches after ${Math.round(slow.timeout / 60)}m silent or ${Math.round(slow.timeout * 3 / 60)}m max` : ""}.`
-    : "";
   const stateText = r.waiting ? "Waiting for input" : stopping ? "Stopping…" : "";
   const stateItem = stateText ? `<div><dt>State</dt><dd>${esc(stateText)}</dd></div>` : "";
   const specStageText = p.spec_stage ? `${p.spec_stage}${p.planning_depth ? ` (${p.planning_depth} input)` : ""}` : "";
@@ -15355,12 +15366,12 @@ function runStatus(r, vc = null) {
   const fbImpactItem = p.feedback_impact ? `<div><dt>Feedback impact</dt><dd data-run-feedback-impact>${esc(p.feedback_impact)}</dd></div>` : "";
 
   return `<section class="banner ${tone} run-status" aria-label="Run status">
-    <div class="run-status-heading" role="status" aria-live="polite"><span class="pill ${tone}">${esc(status)}</span>
-      <strong title="${esc(headerText)}">${esc(headerText)}</strong></div>
-    ${showTask ? `<div class="run-status-task">${esc(p.task)}</div>` : ""}
+    <div class="run-status-heading" role="status" aria-live="polite">
+      ${stepText ? `<strong class="run-status-step">${esc(stepText)}</strong>` : ""}
+      <span class="pill ${tone}">${esc(status)}</span>
+      <strong class="run-status-stage">${esc(headerText)}</strong></div>
     ${foundBlock}
     <dl class="run-status-details">
-      ${jobItem}
       ${summaryItem}
       ${expVerItem}
       ${specStageItem}
@@ -15374,7 +15385,6 @@ function runStatus(r, vc = null) {
       ${stateItem}
       ${resultItem}
     </dl>
-    ${slowHint ? `<p class="run-status-hint muted" data-run-slow-hint>${esc(slowHint)}</p>` : ""}
     ${done && r.action === "update_local" ? `<p class="run-status-hint" data-update-next-hint hidden></p>` : ""}
     ${caveat ? `<p class="run-status-caveat"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-alert"/></svg> ${esc(caveat)}</p>` : ""}
     ${actionBtn ? `<div class="run-status-actions">${actionBtn}</div>` : ""}
@@ -15389,7 +15399,7 @@ function runStatus(r, vc = null) {
       </div>` : ""}
     ${numbered ? `
       <div class="run-status-progress-wrap">
-        <progress class="run-status-progress" value="${progressVal}" max="${progressMax}" aria-label="Completed steps: ${progressVal} of ${progressMax} (${pct}%)">${progressVal} of ${progressMax}</progress>
+        <progress class="run-status-progress" value="${pct}" max="100" aria-label="Run progress: ${pct}%">${pct}%</progress>
         <span class="run-status-pct">${pct}%</span>
       </div>` : ""}
   </section>`;

@@ -9,6 +9,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -26,6 +27,55 @@ from orchestrator import experience_loop, living_spec, prd, risk_engine  # noqa:
 
 
 class LivingSpecTests(unittest.TestCase):
+    def test_plan_notes_deduplicate_legacy_items_and_use_recorded_risk_levels(self):
+        scope = {"text": "Focus on grass.", "reason": "The user delegated scope."}
+        constraint = {"text": "Keep the existing renderer.", "provenance": "explicit"}
+        job = {
+            "plan": {"assumptions": [repr(scope), "Focus on grass. (The user delegated scope.)", "Keep the current camera."],
+                     "constraints": [repr(constraint), constraint["text"]],
+                     "risks": [{"text": "Device coverage is limited.", "severity": "medium"}, "A reference is missing."]},
+            "spec": {"assumptions": [scope], "constraints": [constraint]},
+            "risk_assessment": {"decisions": [
+                {"impact": "low", "reversibility": "easy", "proposed_default": scope["text"], "action": "proceed"},
+                {"impact": "low", "reversibility": "costly", "question": "Can the saved data format change?", "action": "clarify"},
+            ]},
+        }
+        groups = {g["label"]: g["items"] for g in living_spec.plan_notes(job)}
+        self.assertEqual(list(groups), ["High risk", "Medium risk", "Low risk", "Unrated risks", "Assumptions", "Constraints"])
+        self.assertEqual(groups["Low risk"], [{"text": "Focus on grass.", "reason": "The user delegated scope."}])
+        self.assertEqual(groups["Constraints"], [{"text": constraint["text"]}])
+        self.assertEqual(groups["Assumptions"], [{"text": "Keep the current camera."}])
+
+    def test_merging_notes_into_new_plan_stores_plain_unique_text(self):
+        assumption = {"text": "Focus on grass.", "reason": "The user delegated scope."}
+        constraint = {"text": "Keep the existing renderer."}
+        plan = {"assumptions": [assumption], "constraints": [constraint]}
+        spec = {"assumptions": [assumption], "constraints": [constraint]}
+        living_spec.merge_spec_into_plan(plan, spec, {})
+        self.assertEqual(plan["assumptions"], ["Focus on grass. (The user delegated scope.)"])
+        self.assertEqual(plan["constraints"], ["Keep the existing renderer."])
+
+    def test_transferred_assumptions_keep_their_recorded_low_risk_label(self):
+        job = {"plan": {"assumptions": ["Focus on grass. (High-confidence, low-risk convention)"]}}
+        self.assertEqual(living_spec.plan_notes(job), [{"label": "Low risk", "items": [
+            {"text": "Focus on grass.", "reason": "High-confidence, low-risk convention"},
+        ]}])
+
+    @unittest.skipUnless(shutil.which("node"), "node is required")
+    def test_long_plan_notes_show_a_short_summary_with_expandable_details(self):
+        path = ROOT_DIR / "orchestrator/web/static/app.js"
+        app = path.read_text(encoding="utf-8")
+        fn = app[app.index("function jobPlanNotes("):app.index("function jobStartBlockers(")]
+        groups = [{"label": "High risk", "items": [{"text": "Review the first build. Check the <device> report.", "reason": "Coverage is limited."}]},
+                  {"label": "Constraints", "items": [{"text": "Keep the source. Attach the report."}]}]
+        script = 'const esc = s => String(s).replaceAll("<", "&lt;");\n' + fn
+        html = subprocess.check_output(["node", "-e", script + f"console.log(jobPlanNotes({json.dumps(groups)}));"], text=True)
+        self.assertIn('Plan notes <span class="count">1 high risk</span>', html)
+        self.assertIn(">Review the first build.</summary>", html)
+        self.assertIn("Check the &lt;device> report.", html)
+        self.assertIn("Coverage is limited.", html)
+        self.assertIn("Keep the source. Attach the report.</li>", html)
+
     def test_provenance_tags_are_normalized_from_dicts_and_prefixed_strings(self):
         explicit = living_spec.normalize_item("[explicit] Players can view top 50 scores")
         derived = living_spec.normalize_item({"text": "Uses ScoreStore", "provenance": "code-derived", "source": "Sources/ScoreStore.swift"})
@@ -71,6 +121,28 @@ class LivingSpecTests(unittest.TestCase):
 
 
 class RiskEngineTests(unittest.TestCase):
+    def test_costly_migration_stays_high_risk_in_the_job_notes(self):
+        decision = {
+            "question": "How should this schema migration handle existing records?",
+            "proposed_default": "Keep a copy of the old records during rollout.",
+            "confidence": "low",
+            "impact": "low",
+            "reversibility": "easy",
+            "resolvable_by": "default_assumption",
+        }
+        spec = {"decisions": [decision]}
+        risk = risk_engine.evaluate(spec)
+
+        self.assertFalse(risk["intent_gate_passed"])
+        self.assertEqual(risk["decisions"][0]["reversibility"], "costly")
+        self.assertEqual(risk["decisions"][0]["action"], "clarify")
+        self.assertEqual(living_spec.plan_notes({"spec": spec, "risk_assessment": risk}), [
+            {"label": "High risk", "items": [{
+                "text": decision["question"],
+                "reason": f"Proposed default: {decision['proposed_default']}",
+            }]},
+        ])
+
     def test_low_impact_reversible_decisions_choose_defaults_and_become_assumptions(self):
         spec = living_spec.normalize({
             "pass": "spec",

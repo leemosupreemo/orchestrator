@@ -34,6 +34,16 @@ class RunProgress:
         "REFINING", "REFACTORING", "REVERTING",
     }
     SUITE_PHASES = {"Investigating issue", "Implementing changes", "Working with AI", "Running tests", "Verifying changes"}
+    # A later milestone signals that the work before it finished. These fractions estimate work within a numbered step.
+    PLANNING_MILESTONES = {
+        "Assessing ambiguity & risk": 0.2,
+        "Evaluating intent gate": 0.4,
+        "Planning execution tasks": 0.6,
+        "Validating plan gate": 0.8,
+    }
+    TASK_MILESTONES = {
+        "BUILDING": 0.5, "SKIPPING IOS BUILD": 0.5, "TESTING": 0.75, "SKIPPING TESTS": 0.75, "VERIFICATION": 0.9,
+    }
     # A label from before any real work was announced: once a model call starts, say what is being waited on instead.
     IDLE_LABELS = {"", "Scheduling worker", "Starting execution", "Updating job status", "Preparing git branch", "Working with AI"}
     ANSI = re.compile(rb"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[()][AB0-2]|[78=>cM])")
@@ -44,6 +54,8 @@ class RunProgress:
         self.task = ""
         self.step: int | None = None
         self.total: int | None = None
+        self.step_fraction = 0.0
+        self._step_kind = ""
         self.models: list[str] = []
         self.active: list[str] = []
         self.is_coverage = False
@@ -60,6 +72,17 @@ class RunProgress:
         self.experience_version = ""  # current prototype/experience version (e.g. "v0.1", "v0.2")
         self.feedback_impact = ""     # classified user feedback impact (e.g. "behavior_change · updating spec & code")
 
+    def _start_step(self, step: int, total: int, description: str, kind: str) -> None:
+        if (step, total, kind) != (self.step, self.total, self._step_kind):
+            self.step_fraction = 0.0
+        self.step, self.total, self._step_kind = step, total, kind
+        self.task = description.capitalize()
+        self.label = self.task or "Running step"
+
+    def _advance_planning(self, label: str) -> None:
+        if self._step_kind == "planning":
+            self.step_fraction = max(self.step_fraction, self.PLANNING_MILESTONES.get(label, 0))
+
     def feed(self, chunk: bytes) -> None:
         # PTY reads can split a UTF-8 character or ANSI sequence. Decode complete lines only.
         lines = (self._pending + chunk).replace(b"\r", b"\n").split(b"\n")
@@ -71,17 +94,18 @@ class RunProgress:
                 title = re.sub(r"^[^\w]+", "", header[1]).strip()
                 if "COVERAGE" in title.upper():
                     self.is_coverage = True
-                task = re.fullmatch(r"(?:SUB[- ]TASK|STEP)\s*(\d+)/(\d+)(?::\s*(.*))?", title, re.I)
-                if task and 0 < int(task[1]) <= int(task[2]):
-                    self.step, self.total = int(task[1]), int(task[2])
-                    desc = (task[3] or "").strip()
-                    self.task = desc.capitalize() if desc else ""
-                    self.label = desc.capitalize() if desc else "Running step"
+                task = re.fullmatch(r"(SUB[- ]TASK|STEP)\s*(\d+)(?:-(\d+))?/(\d+)(?::\s*(.*))?", title, re.I)
+                if task and 0 < int(task[2]) <= int(task[3] or task[2]) <= int(task[4]):
+                    kind = "task" if task[1].upper().startswith("SUB") else "step"
+                    self._start_step(int(task[2]), int(task[4]), (task[5] or "").strip(), kind)
                 else:
                     phase, _, detail = title.partition(":")
                     phase = phase.strip().replace("_", " ").upper()
+                    if self._step_kind == "task":
+                        self.step_fraction = max(self.step_fraction, self.TASK_MILESTONES.get(phase, 0))
                     if phase in self.LABELS:
                         self.label = self.LABELS[phase]
+                        self._advance_planning(self.label)
                         if phase == "SPEC SYNTHESIS":
                             self.spec_stage = "Pass A · Spec synthesis"
                         elif phase == "RISK ASSESSMENT":
@@ -104,6 +128,7 @@ class RunProgress:
                             self.spec_stage = "Experience loop · Reverting"
                         if phase not in self.TASK_PHASES:
                             self.step = self.total = None
+                            self._step_kind, self.step_fraction = "", 0.0
                             self.task = detail.strip().capitalize()
             else:
                 in_sub_runner = self.is_coverage or self.label in (
@@ -113,10 +138,9 @@ class RunProgress:
                 )
                 bracket = re.fullmatch(r"\[(\d+)/(\d+)\]\s*(.*)", line)
                 if bracket and not in_sub_runner and 0 < int(bracket[1]) <= int(bracket[2]):
-                    self.step, self.total = int(bracket[1]), int(bracket[2])
                     desc = bracket[3].strip()
-                    self.task = desc.capitalize() if desc else ""
-                    self.label = desc.capitalize() if desc else "Running step"
+                    kind = "planning" if bracket[1] == "1" and desc.startswith(("Planning ", "Fast-tracking a plan")) else "step"
+                    self._start_step(int(bracket[1]), int(bracket[2]), desc, kind)
 
             notice = re.fullmatch(r"\[notice\]\s*(.+)", line)
             if notice:  # a finished run can say it only partly did its job
@@ -133,6 +157,7 @@ class RunProgress:
                             self.planning_depth = str(spec_meta["depth"]).strip()[:40]
                         if spec_meta.get("label"):
                             self.label = str(spec_meta["label"]).strip()[:120]
+                            self._advance_planning(self.label)
                 except ValueError:
                     pass
 
@@ -143,6 +168,10 @@ class RunProgress:
                     if isinstance(gate_meta, dict):
                         if gate_meta.get("state"):
                             self.gate_state = str(gate_meta["state"]).strip()[:120]
+                            if self.gate_state.lower().startswith("plan gate"):
+                                self._advance_planning(self.LABELS["PLAN GATE"])
+                            elif self.gate_state.lower().startswith("intent gate"):
+                                self._advance_planning(self.LABELS["INTENT GATE"])
                         if gate_meta.get("label"):
                             self.label = str(gate_meta["label"]).strip()[:120]
                 except ValueError:
@@ -246,7 +275,7 @@ class RunProgress:
         return {"calls": calls, "failed": list(self.failed), "stall": self.stall if running else 0, **self._base(active)}
 
     def _base(self, active: list[str]) -> dict:
-        out = {"label": self.label, "task": self.task, "step": self.step, "total": self.total,
+        out = {"label": self.label, "task": self.task, "step": self.step, "total": self.total, "step_fraction": self.step_fraction,
                "notice": self.notice, "machines": list(self.machines), "suites": list(self.suites), "suite": self.suite,
                "models": list(self.models), "active_models": list(dict.fromkeys(active)), "agents": len(active)}
         if self.spec_stage:

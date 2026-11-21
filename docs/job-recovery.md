@@ -93,17 +93,33 @@ Guards, so jobs never step on each other's work:
 
 ## Keeping the AI going
 
+- **End-of-job review gate** (`review_ready.parse_review_outcome`, `worker_run.execute_job`). After build and tests pass,
+  `review_ready.py` compares the diff against `brief.md` and `acceptance.block(job)` and records `review_outcome` on the
+  job. When the reviewer reports `## Blockers`, `Not met` acceptance criteria, or `Request changes`, `worker_run.py`
+  triggers one automatic `trigger_followup_iteration` gap-closure pass instead of marking the job complete; if gaps
+  still remain after that pass, the job pauses as `human-needed`.
 - **YOLO autoresponses** (`common.autorespond`, `MAX_AUTO_RESPONSES` = 3). When a YOLO job's planner (`new_job.py`) or
   builder (`worker_run.py`, for one task and for each task of a plan) asks a question, Orchestrator answers it
   (`AUTO_ANSWER`, or `AUTO_CONTINUE` for a should-I-continue) and carries on. Each answer goes into
   `clarification_history` with `auto: true` and who asked; past the limit the job pauses as before. The job page labels
   them "Answered for you (YOLO)" and says how many in the hero.
 - **Out of usage** (`usage_limits.py`, `project_chat.record_out_of_usage`). A usage-limit, quota, credits or rate-limit
-  error sets the model's whole family aside (`limit:<family>` in `model_checks.json`) until the reset time read from the
-  message, or an hour (five minutes for a rate limit). `is_model_blocked` leaves it out of every job's choices until then,
-  so it returns to rotation by itself. Within the same call `run_llm` skips that family's other models and gives the next
-  builder or fix attempt a `HANDOFF` note: the work is started, read `git status`/`git diff` and finish it. Manage AI
-  tools lists the holds (`usage_holds`).
+  error is checked before auth/unavailability markers so tool output mentioning `"forbidden"` doesn't misclassify a quota
+  error as a rejected sign-in. It sets the model's whole family aside (`limit:<family>` in `model_checks.json`) until the
+  reset time read from the message, or an hour (five minutes for a rate limit). `is_model_blocked` leaves it out of every
+  job's choices until then, so it returns to rotation by itself. Within the same call `run_llm` skips that family's other
+  models and gives the next builder or fix attempt a `HANDOFF` note: the work is started, read `git status`/`git diff` and
+  finish it. Manage AI tools lists the holds (`usage_holds`).
+- **Deactivated models and cross-provider rescue** (`llm.is_unusable_model_error`, `llm._auth_fallback_models`,
+  `server._probe_pool_health`). Deactivated or retired model responses (`"is deactivated"`, `"model_deactivated"`) are
+  recorded as unavailable (`record_model_failure`) and quarantined for 24 hours (`KEY_HOLD` in `project_chat.py`) rather
+  than treated as generic 30-minute blips, so subsequent jobs skip them. During model refresh (`server.refresh_models`),
+  opaque CLIs without a model-list command like `pool` are probed once per `CHECK_FRESH` window when signed in so a
+  deactivated remote model is excluded ahead of time before a job tries it. When every configured model in a non-free-only
+  job fails due to provider/account limits (quota, rejected sign-in, or unavailable/deactivated models), `run_llm`
+  automatically expands to other ready, signed-in models on the computer (cheapest adequate first) with `HANDOFF`
+  preserved. If no model can answer and a task aborts with an automation error, `worker_run.py` marks both the parent job
+  and the active `_task_N.json` file `human-needed` so the task does not remain stuck in `executing`.
 
 ## Durability
 
@@ -186,6 +202,18 @@ are stored without credentials from remote URLs.
 **The one limit:** work a computer did after its last upload, while it was cut off, can't reach another computer until it
 reconnects. That's why everything uploads early and often; and when it reconnects, that work is kept on a side branch.
 
+## Verification helper recovery
+
+Assisted verification is opt-in. The job runner uses an eligible helper for a configured pair of required checks and falls back to the owner when helper infrastructure fails. The [two-Mac implementation plan](superpowers/plans/2026-11-21-two-mac-verification.md) tracks the remaining recovery work and live pilot.
+
+- **Preflight unavailable.** Check the project's explicit SSH helper opt-in, the job's allowed computers, and the helper's project checkout and Git access. The helper matches the requested check against its own project configuration and checks prerequisites in a detached checkout of the exact candidate. A toolchain mismatch or unavailable candidate makes that helper ineligible for the check.
+- **Start reply lost.** Query the existing attempt or repeat start with the same identity. The identity binds the attempt to the project, candidate commit, check definition and owner generation. A completed attempt returns its saved result. A network error leaves the outcome unknown until the helper responds.
+- **Lease expires or the attempt is cancelled.** The helper's lease lasts 60 seconds after the last successful renewal. The supervisor stops the running process group when it detects expiry or cancellation. A late result cannot update a terminal attempt. The execution lock is held while the previous check process is still running.
+- **Test fails or the helper cannot start.** A completed failure stays a test failure. If the helper cannot supply required evidence, the job tries the check locally. If that check is also blocked, the job records the missing evidence in its test log.
+- **Owner job resumes.** The builder opens a new verification invocation on a whole-job resume. Within an invocation, the coordinator reconciles a lost reply using the existing attempt. If the candidate changes after a helper returns evidence, the builder discards that evidence and requires verification again.
+
+The helper keeps its reservation journal under `~/.orchestrator/verification-worker` by default. The owner keeps per-check attempt records under the job's `verification/<invocation-id>/` output directory and accepted check results in the job's `test_commands.json`. Candidate commits travel through temporary refs in the project's Git repository.
+
 ## Tests
 
 | Area | Tests |
@@ -197,11 +225,15 @@ reconnects. That's why everything uploads early and often; and when it reconnect
 | Snapshot contents and sending on change | `tests/test_snapshot_sync.py` |
 | Backup push (in throwaway repositories), job ownership, moves from the heartbeat, record restore | `tests/test_job_ownership.py` |
 | Commit the work, end to end in a throwaway repository | `tests/test_passed_uncommitted.py` (`CommitOnlyResumeTests`) |
-| Out-of-usage holds, switching with a handoff, YOLO autoresponses | `tests/test_autorespond_and_usage.py` |
+| Out-of-usage holds, deactivated-model fallback with handoff, YOLO autoresponses | `tests/test_autorespond_and_usage.py` |
+| Deactivated-model 24h quarantine and pre-flight `pool` health probe | `tests/test_project_chat.py` (`test_probe_pool_health_blocks_deactivated_pool_model_ahead_of_time`) |
+| Task `_task_N.json` status sync on automation error | `tests/test_worker_run.py` (`test_task_automation_error_marks_both_parent_and_task_job_human_needed`) |
+| End-of-job review gate: parsing blockers/unmet criteria, auto-fix pass, and `human-needed` pause | `tests/test_acceptance.py` (`ReviewOutcomeGateTests`), `tests/test_worker_run.py` (`test_review_gate_triggers_autofix_once_then_pauses_human_needed`) |
 | A YOLO job whose planner and builder ask, finishing by itself | `tests/e2e/test_pipeline_offline.py` (`YoloAutorespondTests`) |
 | A job blocked mid-run by a held git lock, cleared, resumed by the server, committed and opened as a PR, inside the full offline pipeline | `tests/e2e/test_pipeline_offline.py` (`BlockedJobRecoveryTests`) |
 | Moves recorded by the control plane | `tests/test_control_plane.py` (`MovedJobTests`) |
 | Jobs at once: deciding, worktrees, branch setup, removal, the setting | `tests/test_parallel_jobs.py` |
+| Verification helper leases, reconnect, cancellation and exact checkout | `tests/test_verification_attempts.py`, `tests/test_verification_worker.py`, `tests/test_verification_candidate.py`, `tests/test_verification_coordinator.py` |
 | Worktrees, made in one place for the integration check, both previews and jobs at once | `tests/test_worktrees.py` |
 | Overlap guards: duplicates with typos, shared files, another job's uncommitted work | `tests/test_overlap_guards.py` |
 | A job building alongside another in its own worktree, end to end | `tests/e2e/test_pipeline_offline.py` (`ParallelJobTests`) |

@@ -378,7 +378,7 @@ def is_model_blocked(model_id: str, checks: dict[str, dict[str, Any]] | None = N
     reason = str(entry.get("reason") or "")
     if _is_transient_reason(reason):
         return False
-    hold = KEY_HOLD if reason == KEY_REJECTED else FAIL_HOLD
+    hold = KEY_HOLD if (reason == KEY_REJECTED or "deactivated" in reason.lower()) else FAIL_HOLD
     at = float(entry.get("at") or 0)
     if reason == KEY_REJECTED and cli and _cli_signed_in_at(cli) > at:
         return False

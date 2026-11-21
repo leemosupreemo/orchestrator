@@ -42,7 +42,7 @@ import test_cases as tc
 from orchestrator.project_config import PROJECT_CONFIG
 from orchestrator import architecture, prd, project_docs
 from orchestrator import living_spec, new_job_form, plan_edit, risk_engine
-from orchestrator import plan_size, slice_check
+from orchestrator import model_outcomes, plan_size, slice_check
 
 SCRIPTS_DIR = Path(__file__).resolve().parent
 
@@ -477,7 +477,7 @@ def fast_track_quick_plan(instructions: str, *, planner: str, allowed_models: li
                                       architecture.context_block(ROOT, "planner"), project_docs.context_block(ROOT)]))
     try:
         raw, used, sid = run_llm(planner, f"{template}\n{context}\n\nThe person's request:\n{instructions}\n",
-                                 cwd=ROOT, allowed_models=allowed_models, role=ModelRole.PLANNER)
+                                 cwd=ROOT, allowed_models=allowed_models, role=ModelRole.PLANNER, job_type="quick")
         found = json.loads(extract_json_block(raw), strict=False)
     except Exception as exc:  # no plan is never a reason to stop a Quick change
         return None, "user-prompt", [], f"Fast-track planning failed ({str(exc)[:200]}); building from the instruction alone."
@@ -999,7 +999,7 @@ def main(args_override: list[str] | None = None) -> None:
                 print("[spec] " + json.dumps({"stage": "Pass B · Execution planning", "depth": spec.get("planning_depth", ""), "label": "Planning execution tasks"}), flush=True)
             elif use_two_pass:
                 print("[spec] " + json.dumps({"stage": "Pass A · Spec synthesis", "label": "Synthesizing feature spec"}), flush=True)
-            llm_raw_output, actual_planner, sid = run_llm(planner, llm_input, cwd=ROOT, allowed_models=allowed_models, role=ModelRole.PLANNER)
+            llm_raw_output, actual_planner, sid = run_llm(planner, llm_input, cwd=ROOT, allowed_models=allowed_models, role=ModelRole.PLANNER, job_type=args.job_type)
             llm_sessions.append({"id": sid, "model": actual_planner})
 
             llm_output = extract_json_block(llm_raw_output)
@@ -1108,7 +1108,7 @@ def main(args_override: list[str] | None = None) -> None:
                         active_template = spec_prompt_template if is_pass_a_only else prompt_template
                         recursive_input = f"{active_template}\n\n### ORIGINAL REQUEST ###\n{raw_input_text}\n\n### PREVIOUS PLAN WITH QUESTION ###\n{llm_output}\n\n{clarification_feedback}\nPlease update the plan JSON to address the user's clarification and proceed."
                         try:
-                            new_llm_raw_output, actual_planner, sid = run_llm(planner, recursive_input, cwd=ROOT, allowed_models=allowed_models, role=ModelRole.PLANNER)
+                            new_llm_raw_output, actual_planner, sid = run_llm(planner, recursive_input, cwd=ROOT, allowed_models=allowed_models, role=ModelRole.PLANNER, job_type=args.job_type)
                             llm_sessions.append({"id": sid, "model": actual_planner})
                             llm_output = extract_json_block(new_llm_raw_output)
                             raw_parsed = json.loads(llm_output, strict=False)
@@ -1157,7 +1157,7 @@ def main(args_override: list[str] | None = None) -> None:
                 if clarification_history and not asked_so_far:
                     pass_b_revision += f"\n\n{format_clarification_history(clarification_history)}\n"
                 pass_b_input = f"{pass_b_prompt_template}\n{pass_b_block}\nRaw input:\n{raw_input_text}{extra_input}{pass_b_revision}\n"
-                llm_raw_output, actual_planner, sid = run_llm(planner, pass_b_input, cwd=ROOT, allowed_models=allowed_models, role=ModelRole.PLANNER)
+                llm_raw_output, actual_planner, sid = run_llm(planner, pass_b_input, cwd=ROOT, allowed_models=allowed_models, role=ModelRole.PLANNER, job_type=args.job_type)
                 llm_sessions.append({"id": sid, "model": actual_planner})
                 llm_output = extract_json_block(llm_raw_output)
                 try:
@@ -1221,7 +1221,8 @@ def main(args_override: list[str] | None = None) -> None:
                     )
                     try:
                         retry_raw, actual_planner, retry_sid = run_llm(
-                            planner, retry_input, cwd=ROOT, allowed_models=allowed_models, role=ModelRole.PLANNER
+                            planner, retry_input, cwd=ROOT, allowed_models=allowed_models, role=ModelRole.PLANNER,
+                            job_type=args.job_type,
                         )
                         llm_sessions.append({"id": retry_sid, "model": actual_planner})
                         llm_output = extract_json_block(retry_raw)
@@ -1278,7 +1279,7 @@ def main(args_override: list[str] | None = None) -> None:
                     verifier_input = f"{verifier_prompt}\n\n### ORIGINAL REQUEST ###\n{raw_input_text}\n\n### GENERATED PLAN ###\n{llm_output}"
                 
                     try:
-                        v_raw_output, actual_verifier, sid = run_llm(verifier_model, verifier_input, cwd=ROOT, allowed_models=allowed_models, role=ModelRole.VERIFIER)
+                        v_raw_output, actual_verifier, sid = run_llm(verifier_model, verifier_input, cwd=ROOT, allowed_models=allowed_models, role=ModelRole.VERIFIER, job_type=args.job_type)
                         llm_sessions.append({"id": sid, "model": actual_verifier})
                     
                         v_output = extract_json_block(v_raw_output)
@@ -1310,7 +1311,7 @@ def main(args_override: list[str] | None = None) -> None:
                                 recursive_input += "Please update the plan JSON to address the architect's feedback while fulfilling the original request."
                             
                                 print(f"      - Re-planning with {actual_planner}...", flush=True)
-                                new_llm_raw_output, actual_planner, sid = run_llm(planner, recursive_input, cwd=ROOT, allowed_models=allowed_models, role=ModelRole.PLANNER)
+                                new_llm_raw_output, actual_planner, sid = run_llm(planner, recursive_input, cwd=ROOT, allowed_models=allowed_models, role=ModelRole.PLANNER, job_type=args.job_type)
                                 llm_sessions.append({"id": sid, "model": actual_planner})
                             
                                 try:
@@ -1501,6 +1502,8 @@ def main(args_override: list[str] | None = None) -> None:
                 except Exception:
                     pass
 
+        if not clarification and gate_result.get("plan_gate_passed") and llm_sessions:
+            model_outcomes.record(job, "planner", planner, actual_planner, "plan_gate_passed")
         write_json(paths.job_file, job)
         write_text(paths.brief_file, body)
         try:

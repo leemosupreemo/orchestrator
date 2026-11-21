@@ -10,13 +10,15 @@ import signal
 import subprocess
 import sys
 import tempfile
+import time
 import uuid
 from pathlib import Path
 
-from common import CONFIG_DIR, ROOT, append_log, ProgressIndicator, colorize_diff_line, LoopTroubleDetector
-from model_registry import get_model, ModelTier, get_all_models, preferred_cli, summarize_cli_error, model_usable, model_substitute
+from common import CONFIG_DIR, LOGS_DIR, ROOT, append_log, ProgressIndicator, colorize_diff_line, LoopTroubleDetector
+from model_registry import get_model, ModelTier, get_all_models, preferred_cli, summarize_cli_error, model_usable, model_substitute, runnable_here
 from model_router import get_prioritized_models, ModelRole, ROLE_REQUIREMENTS
 from orchestrator import usage_limits
+from orchestrator.model_attempts import AttemptAudit
 
 class LLMTimeoutError(RuntimeError):
     """Raised when an LLM call exceeds its timeout."""
@@ -158,15 +160,17 @@ def is_unusable_model_error(error_msg: str) -> tuple[bool, bool]:
     low = target.lower()
     norm = low.replace("-", " ").replace("_", " ")
     key_markers = (
-        "invalid api key", "fix external api key", "api key rejected", "missing api key", "unauthorized", "forbidden",
+        "invalid api key", "fix external api key", "api key rejected", "missing api key", "unauthorized",
         "bad credentials", "auth error", "authentication failed", "failed to authenticate", "not logged in", "please run /login",
         "auth source is set", "not signed in", "oauth access token has expired", "token has expired", "re authenticate",
     )
-    if any(m in norm for m in key_markers) or re.search(r"\b(?:401|403)\b", low):
+    has_forbidden = "forbidden" in norm and not re.search(r"\braise\b|\bvalueerror\b", norm)
+    if has_forbidden or any(m in norm for m in key_markers) or re.search(r"\b(?:401|403)\b", low):
         return True, True
     unavailable_markers = (
         "model not found", "unknown model", "may not exist", "does not exist",
         "not have access", "access to it", "not supported", "not available", "providermodelnotfounderror",
+        "is deactivated", "model_deactivated", "deactivated",
     )
     if any(m in norm for m in unavailable_markers) or "model_not_found" in low:
         return True, False
@@ -264,7 +268,7 @@ def _auth_fallback_models(
     return candidates[:max_fallbacks]
 
 
-def run_llm(model: str, prompt: str, cwd: Path | None = None, timeout: int = 300, allowed_models: list[str] | None = None, role: str | None = None, session_id: str | None = None, stream: bool = False, images: list[Path] | None = None, protected_paths: list[Path] | None = None, web: bool = False, raw: bool = False, on_chunk: Callable[[str | None], None] | None = None) -> tuple[str, str, str]:
+def run_llm(model: str, prompt: str, cwd: Path | None = None, timeout: int = 300, allowed_models: list[str] | None = None, role: str | None = None, session_id: str | None = None, stream: bool = False, images: list[Path] | None = None, protected_paths: list[Path] | None = None, web: bool = False, raw: bool = False, on_chunk: Callable[[str | None], None] | None = None, *, job_type: str | None = None, job_id: str | None = None) -> tuple[str, str, str]:
     """`raw` returns the whole answer. Otherwise only its JSON part comes back, which cuts prose and links from a conversational answer."""
     # Resolve actual model ID if it's an alias or generic name
     resolved_model = get_model(model)
@@ -297,6 +301,20 @@ def run_llm(model: str, prompt: str, cwd: Path | None = None, timeout: int = 300
     elif not allowed_models or substituted:
         attempts.insert(0, primary_id)
 
+    audit = None
+    if job_type and role:
+        try:
+            ready = [candidate for candidate in attempts
+                     if (meta := get_model(candidate)) and runnable_here(meta) and not _out_of_usage(candidate)]
+        except Exception:
+            ready = []  # Availability checks for shadow recommendations are advisory.
+        audit = AttemptAudit(LOGS_DIR / "model-attempts.jsonl", role, job_type, ready,
+                             job_id=job_id, requested_model=model)
+
+    def report(result: str) -> None:
+        if audit:
+            audit.record(current_model, result, time.monotonic() - started, format_retry=format_retry)
+
     protection = {"protected_paths": protected_paths} if protected_paths else {}
     last_error = None
     actual_session_id = session_id or str(uuid.uuid4())
@@ -305,20 +323,24 @@ def run_llm(model: str, prompt: str, cwd: Path | None = None, timeout: int = 300
     failed_auth_clis: set[str] = set()
     attempted_models: list[str] = []
     auth_failed_count = 0
+    provider_blocked_count = 0
     expanded_auth_fallback = False
     idx = 0
     while True:
         if idx >= len(attempts):
             if (
                 not expanded_auth_fallback
-                and auth_failed_count > 0
-                and auth_failed_count == len(attempted_models)
+                and provider_blocked_count > 0
+                and provider_blocked_count == len(attempted_models)
                 and not _is_free_only_allowlist(allowed_models)
             ):
                 expanded_auth_fallback = True
                 extras = _auth_fallback_models(role, failed_auth_clis, set(attempts), primary_id)
                 if extras:
-                    print(f"ℹ️  Primary tool sign-in expired or rejected; switching to ready signed-in AI model(s) on this computer: {', '.join(extras[:3])}...")
+                    if auth_failed_count > 0:
+                        print(f"ℹ️  Primary tool sign-in expired or rejected; switching to ready signed-in AI model(s) on this computer: {', '.join(extras[:3])}...")
+                    else:
+                        print(f"ℹ️  Configured models are out of usage or unavailable; switching to ready signed-in AI model(s) on this computer: {', '.join(extras[:3])}...")
                     attempts.extend(extras)
                     continue
             break
@@ -332,6 +354,8 @@ def run_llm(model: str, prompt: str, cwd: Path | None = None, timeout: int = 300
             print(f"⏭️  Skipping {current_model}: {_out_of_usage(current_model).get('reason')}.")
             continue
         attempted_models.append(current_model)
+        started = time.monotonic()
+        format_retry = False
         fallback_note = "Attempting fallback..." if idx < len(attempts) else "No fallback models remain."
         try:
             attempt_prompt = prompt + handoff if handoff and role in (ModelRole.BUILDER, ModelRole.DEBUGGER) else prompt
@@ -342,6 +366,7 @@ def run_llm(model: str, prompt: str, cwd: Path | None = None, timeout: int = 300
                 try:
                     json.loads(extract_json_block(raw_output), strict=False)
                 except json.JSONDecodeError as exc:
+                    format_retry = True
                     # Agentic models often do the work, then write the answer to a file or describe it in prose.
                     # Ask the SAME model once to restate it as plain JSON before moving on to another model;
                     # with only one model allowed (a free-only setup) there is no other to move on to.
@@ -356,6 +381,7 @@ def run_llm(model: str, prompt: str, cwd: Path | None = None, timeout: int = 300
                         # The headline comes first and starts with "Error:", which is the line summarize_cli_error picks. Otherwise
                         # the person is told only "Expecting value: line 1 column 1", with no model and no hint it was the answer's format.
                         last_error = RuntimeError(f"Error: {current_model} produced invalid JSON ({exc2.msg}).\n{raw_output}")
+                        report("invalid_json")
                         if on_chunk:
                             on_chunk(None)
                         continue
@@ -369,8 +395,12 @@ def run_llm(model: str, prompt: str, cwd: Path | None = None, timeout: int = 300
                 pass
 
             # Return the full raw output so callers can see research/thoughts
+            report("response_accepted")
+            if audit:
+                audit.finish(current_model)
             return raw_output, current_model, actual_session_id
         except LLMTimeoutError as exc:
+            report("timeout")
             if on_chunk:
                 on_chunk(None)
             print(f"⚠️  {current_model} timed out. {fallback_note}")
@@ -381,8 +411,9 @@ def run_llm(model: str, prompt: str, cwd: Path | None = None, timeout: int = 300
                 on_chunk(None)
             err_str = str(exc)
             summary = summarize_cli_error(err_str)
-            unusable, key_rejected = is_unusable_model_error(err_str)
-            if not unusable and usage_limits.detect(err_str):
+            if usage_limits.detect(err_str):
+                report("quota")
+                provider_blocked_count += 1
                 # Its allowance is used up: left out (every job, this tool's whole family) until it resets, then back by itself.
                 try:
                     from orchestrator.project_chat import record_out_of_usage
@@ -393,7 +424,9 @@ def run_llm(model: str, prompt: str, cwd: Path | None = None, timeout: int = 300
                 handoff = HANDOFF.format(model=current_model)
                 last_error = exc
                 continue
+            unusable, key_rejected = is_unusable_model_error(err_str)
             if unusable:
+                provider_blocked_count += 1
                 try:
                     from orchestrator.project_chat import record_model_failure
                     record_model_failure(current_model, summary, key_rejected=key_rejected)
@@ -403,16 +436,20 @@ def run_llm(model: str, prompt: str, cwd: Path | None = None, timeout: int = 300
                     auth_failed_count += 1
                     if current_meta:
                         failed_auth_clis.update(current_meta.required_clis)
+            report("auth" if key_rejected else "unavailable" if unusable else "execution_error")
             print(f"⚠️  {current_model} failed ({summary}). {fallback_note}")
             last_error = exc
             continue
         except Exception as exc:
+            report("execution_error")
             if on_chunk:
                 on_chunk(None)
             print(f"⚠️  {current_model} failed ({exc}). {fallback_note}")
             last_error = exc
             continue
 
+    if audit:
+        audit.finish(None)
     tried = ", ".join(attempted_models) or primary_id
     raise RuntimeError(f"No model could answer (tried: {tried}). Last error: {summarize_cli_error(str(last_error))}")
 

@@ -3804,6 +3804,23 @@ class RunApiTests(ServerTestCase):
             self.assertIn("languages", p)
             self.assertIsInstance(p["languages"], list)
 
+    def test_opening_workspace_does_not_scan_inactive_projects(self):
+        inactive = self.root.resolve() / "inactive"
+        inactive.mkdir()
+        ui.remember_project(inactive, "Inactive", active=False)
+        original = ui.project_kind
+
+        def check_kind(path, config):
+            self.assertNotEqual(path, inactive)
+            return original(path, config)
+
+        with patch.object(ui, "project_kind", side_effect=check_kind), \
+             patch.object(ui, "auto_discover_local_projects") as discover:
+            res, data = self.request("GET", "/api/state")
+        self.assertEqual(res.status, 200)
+        self.assertIn(str(inactive), [p["root"] for p in data["project"]["recent"]])
+        discover.assert_not_called()
+
     def test_job_export_zip_endpoint(self):
         res, data = self.request("GET", "/api/jobs/20260922-bug-1/export-zip")
         self.assertEqual(res.status, 200)

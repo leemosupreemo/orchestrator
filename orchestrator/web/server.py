@@ -77,7 +77,7 @@ from orchestrator import folder_lock
 from orchestrator import job_overlap
 from orchestrator import parallel_mece
 from orchestrator import wip_backup
-from orchestrator import job_sync, product_sync, state_ref, sync_health
+from orchestrator import job_sync, model_outcomes, product_sync, state_ref, sync_health
 from orchestrator import self_update
 from orchestrator import plan_run
 from orchestrator import ux_review
@@ -1923,14 +1923,18 @@ def import_remote_job(root: Path, body: dict[str, Any]) -> dict[str, Any]:
             doc["plan"].update({k: v for k, v in record["plan_extra"].items() if k in account.PLAN_FIELDS})
         if body.get("source_machine_name"):
             doc["imported_from_machine"] = str(body["source_machine_name"])
+        outcomes = model_outcomes.merge(raw.get(model_outcomes.FIELD))
         if taking_back:  # history this copy has that the newer one doesn't (a race while it moved) is kept, never dropped
             older = read_json_file(target)
+            outcomes = model_outcomes.merge(older.get(model_outcomes.FIELD), outcomes)
             for key in ("clarification_history", "debug_history"):
                 mine, theirs = older.get(key), doc.get(key)
                 if isinstance(mine, list) and mine:
                     theirs = theirs if isinstance(theirs, list) else []
                     seen = {json.dumps(e, sort_keys=True, default=str) for e in theirs}
                     doc[key] = theirs + [e for e in mine if json.dumps(e, sort_keys=True, default=str) not in seen]
+        if outcomes:
+            doc[model_outcomes.FIELD] = outcomes
         doc["imported_at"] = time.time()  # the newer copy is the job's owner (see mark_job_moved)
         # the ownership number goes up: the account makes this copy the owner and tells the one it came from that it moved
         doc["owner_epoch"] = max(account.job_epoch(raw), account.job_epoch(read_json_file(target)) if taking_back else 0) + 1
@@ -2727,6 +2731,7 @@ def job_detail(root: Path, job_id: str) -> dict[str, Any]:
         "scope": job_scope(root, job, job_id=path.stem, all_jobs=all_jobs),
         "cruft": job_cruft(root, job),
         "plan_size": plan_size.measure(job.get("plan")),
+        "plan_notes": living_spec.plan_notes(job),
         "spec": job.get("spec"),
         "risk_assessment": job.get("risk_assessment"),
         "experience": experience_loop.experience_summary(job),
@@ -4155,7 +4160,6 @@ def auto_discover_local_projects() -> None:
 
 
 def project_state(root: Path) -> dict[str, Any]:
-    auto_discover_local_projects()
     config = _safe_read_json_file(runtime_dir(root) / "project.json")
     status = git(root, "status", "--porcelain", timeout=2.0)
     recent = load_recent_projects().get("projects", [])
@@ -4185,20 +4189,15 @@ def project_state(root: Path) -> dict[str, Any]:
                 "kind": project_kind(root, config),
             })
         else:
-            s_type = p.get("source_type")
-            s_label = p.get("source_label")
-            g_repo = p.get("github_repo")
-            if not s_type and p_r and p_r.is_dir():
-                p_cfg = _safe_read_json_file(runtime_dir(p_r) / "project.json", timeout=0.2)
-                s_type, s_label, g_repo = detect_project_source(p_r, p_cfg, git_timeout=1.0)
+            # The project picker inspects full metadata on demand. Opening the workspace only needs saved entries.
             recent_entries.append({
                 "name": p.get("name"),
                 "root": p.get("root"),
-                "source_type": s_type or "local",
-                "source_label": s_label or "Local",
-                "github_repo": g_repo,
+                "source_type": p.get("source_type") or "local",
+                "source_label": p.get("source_label") or "Local",
+                "github_repo": p.get("github_repo"),
                 "languages": [],
-                "kind": project_kind(p_r, _safe_read_json_file(runtime_dir(p_r) / "project.json", timeout=0.2)) if p_r and p_r.is_dir() else "",
+                "kind": p.get("kind") or "",
             })
 
     prd_text = prd_doc.Prd(root, runtime_dir(root)).read() or ""
@@ -5424,6 +5423,36 @@ def available_models() -> list[dict[str, str]]:
             for m in sorted(usable, key=lambda m: (m.family, int(m.tier), m.id)) if m.family in labels]
 
 
+def _probe_pool_health() -> None:
+    """Probe `pool` once per fresh window when installed and signed in so a deactivated remote model is excluded ahead of time."""
+    from orchestrator import setup_checklist
+    from orchestrator.scripts import llm, model_registry
+    if not shutil.which("pool") or not setup_checklist._cli_ready("pool"):
+        return
+    checks = project_chat.load_checks()
+    entry = checks.get("pool") if isinstance(checks, dict) else None
+    if isinstance(entry, dict) and entry.get("ok") and (time.time() - float(entry.get("at") or 0)) < project_chat.CHECK_FRESH:
+        return
+    if project_chat.is_model_blocked("pool", checks):
+        return
+    try:
+        res = subprocess.run(
+            ["pool", "exec", "--unsafe-auto-allow", "-p", project_chat.PROBE],
+            capture_output=True, text=True, timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return
+    if res.returncode == 0 and (res.stdout or "").strip():
+        project_chat.record_check("pool", True)
+        return
+    err = "\n".join(part for part in (res.stderr, res.stdout) if part).strip()
+    if not err:
+        return
+    unusable, key_rejected = llm.is_unusable_model_error(err)
+    if unusable:
+        project_chat.record_model_failure("pool", model_registry.summarize_cli_error(err), key_rejected=key_rejected)
+
+
 def refresh_models(root: Path) -> dict[str, Any]:
     """Ask each AI service for its current models (using saved API keys as well as the environment) and keep what's found."""
     from orchestrator import ai_providers
@@ -5432,6 +5461,7 @@ def refresh_models(root: Path) -> dict[str, Any]:
     keys = {env: str(settings[setting]) for setting, _label, env in ai_providers.API_KEYS if settings.get(setting)}
     discovery = model_registry.discover_from_sources_with_details(keys)
     model_registry.refresh_provider_models()  # what each installed CLI (Antigravity, OpenCode, Ollama) offers right now
+    _probe_pool_health()
     ok, message = model_registry.sync_models(live_discovery=True, keys=keys)
     return {"ok": ok, "details": discovery.details, "message": message.splitlines()[0] if message else "",
             "models": provider_models(), "synced": model_registry.models_last_synced()}
@@ -10975,6 +11005,7 @@ def _serve(args: argparse.Namespace, root: Path) -> int:
     else:
         print("  Tip: run `orchestrator connect` to sign in to this computer from anywhere with Google.")
     server.start_self_update()
+    threading.Thread(target=auto_discover_local_projects, daemon=True, name="project-discovery").start()
     if not args.no_open:
         open_browser(url)
 

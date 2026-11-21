@@ -413,9 +413,48 @@ class PageTests(unittest.TestCase):
                 project_chat.record_model_failure("single/bad-model", "model not found", key_rejected=False, now=t_now)
                 self.assertTrue(project_chat.is_model_blocked("single/bad-model", now=t_now + 60))
                 self.assertFalse(project_chat.is_model_blocked("single/bad-model", now=t_now + project_chat.FAIL_HOLD + 1))
+                # Deactivated models stay blocked for KEY_HOLD (24h), not just 30m
+                project_chat.record_model_failure("pool", "400 Bad Request: Model version qvml0p9 is deactivated", key_rejected=False, now=t_now)
+                self.assertTrue(project_chat.is_model_blocked("pool", now=t_now + project_chat.FAIL_HOLD + 1))
+                self.assertFalse(project_chat.is_model_blocked("pool", now=t_now + project_chat.KEY_HOLD + 1))
                 # Forgetting the provider re-enables it
                 project_chat.forget_provider("alibaba-token-plan")
                 self.assertFalse(project_chat.is_model_blocked("alibaba-token-plan/deepseek-v4-pro", now=t_now + 1.0))
+
+    def test_probe_pool_health_blocks_deactivated_pool_model_ahead_of_time(self):
+        import subprocess
+        import tempfile
+        from unittest.mock import patch
+        from orchestrator import project_chat, setup_checklist
+        from orchestrator.scripts import model_registry
+        from orchestrator.web import server
+
+        with tempfile.TemporaryDirectory() as tmp:
+            checks = Path(tmp) / "checks.json"
+            deactivated = subprocess.CompletedProcess(
+                args=["pool"], returncode=1, stdout="",
+                stderr="Unexpected error: 400 Bad Request: Model version qvml0p9 is deactivated",
+            )
+            with patch.object(project_chat, "checks_path", return_value=checks), \
+                 patch.object(project_chat, "credentials_file", return_value=Path(tmp) / "missing-auth.json"), \
+                 patch.object(server.shutil, "which", return_value="/usr/local/bin/pool"), \
+                 patch.object(setup_checklist, "_cli_ready", return_value=True), \
+                 patch.object(server.subprocess, "run", return_value=deactivated):
+                server._probe_pool_health()
+                self.assertTrue(project_chat.is_model_blocked("pool"))
+                self.assertFalse(model_registry.model_usable(model_registry.get_model("pool")))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            checks = Path(tmp) / "checks.json"
+            healthy = subprocess.CompletedProcess(args=["pool"], returncode=0, stdout="OK\n", stderr="")
+            with patch.object(project_chat, "checks_path", return_value=checks), \
+                 patch.object(project_chat, "credentials_file", return_value=Path(tmp) / "missing-auth.json"), \
+                 patch.object(server.shutil, "which", return_value="/usr/local/bin/pool"), \
+                 patch.object(setup_checklist, "_cli_ready", return_value=True), \
+                 patch.object(server.subprocess, "run", return_value=healthy):
+                server._probe_pool_health()
+                self.assertFalse(project_chat.is_model_blocked("pool"))
+                self.assertTrue(model_registry.model_usable(model_registry.get_model("pool")))
 
 
 if __name__ == "__main__":

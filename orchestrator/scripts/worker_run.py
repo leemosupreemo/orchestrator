@@ -60,8 +60,8 @@ from open_or_update_pr import open_or_update_pr, push_branch_for_review
 from run_builder import BuilderClarificationNeeded, run_builder
 from llm import extract_json_block
 from orchestrator.project_config import PROJECT_CONFIG
-from orchestrator import blockers, builder_check, reuse_brief, scope_check, task_growth
-from model_router import builder_for_task
+from orchestrator import blockers, builder_check, model_outcomes, reuse_brief, scope_check, task_growth
+from model_router import builder_for_task, resolve_builder_model
 
 
 from typing import List, Optional, Tuple
@@ -999,6 +999,7 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
         pre_hashes = dirty_file_hashes(ROOT)
         pre_config = project_config_hash(ROOT)
         touched_this_run: set[str] = set()  # files the plan's tasks changed in this run, committed or not
+        builder_session_count = None
         # Done and tested last time, only the commit failed (a git lock): commit it now instead of building again, whether
         # the job is one task or a plan of several.
         committing_only = bool(resume and isinstance(job.get("passed_uncommitted"), dict))
@@ -1104,11 +1105,17 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
                     except Exception as e:
                         # SYSTEM/LLM ERROR: Do not trigger automated debugging
                         print(f"\n❌ Automation error during Task {i+1}: {e}")
-                        job["last_error"] = str(e)
+                        err_msg = str(e)
+                        updated = now_iso()
+                        job["last_error"] = err_msg
                         job["status"] = "human-needed"
                         job["worker_pid"] = None
-                        job["updated_at"] = now_iso()
+                        job["updated_at"] = updated
                         write_json(job_path, job)
+                        task_job["last_error"] = err_msg
+                        task_job["status"] = "human-needed"
+                        task_job["updated_at"] = updated
+                        write_json(temp_job_path, task_job)
                         return
                 
                 # IMPORTANT: Only mark task done if code was actually changed (patch)
@@ -1123,6 +1130,7 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
                 touched_this_run.update(files_touched)
 
                 # run_builder records which model it used on the per-task copy; keep that on the real job.
+                new_sessions = []
                 try:
                     built = read_json(temp_job_path)
                     if built.get("actual_builder_used"):
@@ -1178,6 +1186,9 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
                         if idx not in job["completed_task_indices"]:
                             job["completed_task_indices"].append(idx)
                     checkpoint_task(job, i, len(tasks), active_task['title'], files_touched, batch_indices=active_indices if is_batched else None)
+                    if new_sessions and files_touched:
+                        model_outcomes.record(job, "builder", resolve_builder_model(task_job), new_sessions[-1].get("model"),
+                                              "build_checks_passed", tasks=[idx + 1 for idx in active_indices])
                     write_json(job_path, job)
 
                     if is_batched:
@@ -1216,6 +1227,7 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
             test_ok = all_ok
         else:
             # Original single-task execution
+            builder_session_count = len(job.get("llm_sessions") or [])
             while True:
                 try:
                     build_ok, test_ok, _summary_path, task_output = unpack_builder_result(run_builder(job_path, resume=resume))
@@ -1304,6 +1316,11 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
             return
         if changed_now:
             job.pop("build_no_changes", None)
+            if builder_session_count is not None and build_ok and test_ok:
+                sessions = job.get("llm_sessions") or []
+                if len(sessions) > builder_session_count:
+                    model_outcomes.record(job, "builder", resolve_builder_model(job), sessions[-1].get("model"),
+                                          "build_checks_passed")
             # A Quick change builds its whole fast-tracked plan in one pass, so a passing pass completes every task.
             quick_tasks = (job.get("plan") or {}).get("tasks") or [] if job.get("type") == "quick-fix" else []
             if quick_tasks and build_ok and test_ok:
@@ -1519,6 +1536,30 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
             check=True,
             capture=False,
         )
+
+        job = read_json(job_path)
+        review_outcome = job.get("review_outcome") if isinstance(job.get("review_outcome"), dict) else {}
+        if review_outcome.get("needs_changes"):
+            attempts = int(job.get("review_fix_attempts") or 0)
+            if attempts < 1:
+                job["review_fix_attempts"] = attempts + 1
+                write_json(job_path, job)
+                feedback = review_outcome.get("feedback") or "Address the blockers and unmet acceptance criteria in review.md."
+                print("\n⚠️  Reviewer flagged blockers or unmet acceptance criteria. Triggering automated gap-closure fix...")
+                trigger_followup_iteration(job_path, job, feedback)
+                return
+            job["status"] = "human-needed"
+            job["last_error"] = "Review found unmet acceptance criteria or blockers after automatic fix attempt."
+            job["worker_pid"] = None
+            job["updated_at"] = now_iso()
+            write_json(job_path, job)
+            update_issue_status(issue_number, "status:human-needed", ["status:review-needed", "status:executing"])
+            send_notifications(
+                job,
+                "Job Paused: Review Requested Changes",
+                f"Review still found blockers or unmet criteria for {job_label}.\nTitle: {job['title']}",
+            )
+            return
 
         update_product_requirements(job_path)
         print_status_report(job, True, True, pr_number=pr_number, pr_url=pr_url, distributed_status=distributed_status)

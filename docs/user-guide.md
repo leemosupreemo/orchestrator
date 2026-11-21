@@ -289,6 +289,42 @@ Run validation after edits:
 orchestrator check-config
 ```
 
+### Measure verification time on one computer
+
+Set `verification_mode` to `observe` in `.orchestrator/project.json` and add `"parallel_verify": true` to exactly two adjacent per-job entries in `test_commands`. Choose checks that can each run from a clean checkout and depend only on the candidate source and their declared prerequisites. Keep coverage in one place if a check is already part of the main test command.
+
+Run `orchestrator check-config` and then run a job. After the main build and tests pass, the extra checks run in their configured order on the job's computer. Each invocation writes a local JSON record at `.orchestrator/output/<job-id>/verification/<invocation-id>.json` under the default runtime directory. The record gives the pair's elapsed time and each check's duration, status, retry information, and any missing prerequisite. A job that skips testing produces no record.
+
+The default mode is `off`. Observation keeps the existing test verdict rules, including how blocked extra checks are reported.
+
+### Try assisted verification
+
+Set `verification_mode` to `assist` to make both opted-in checks required. They run even if the builder skips its main test command. If a required check cannot run on either computer, the job reports it in the test log and remains unverified.
+
+In the owner's `.orchestrator/config/machines.json`, opt an enabled SSH worker in with `"verification_helper": true`. The runner considers the first opted-in helper allowed by the job. The helper needs Orchestrator on its SSH shell's Python path, access to the same Git origin, at least 1 GiB free on the repository and temporary checkout volumes, and matching opted-in command definitions in its local project configuration. A helper can run checks without any enabled AI models. Run `orchestrator check-config` after changing project settings.
+
+For speed-based placement, put measured samples in the owner's `.orchestrator/config/verification-timings.json`. Use each machine's configured name and replace the example digest keys below with the two digests from the observation records. Values are lists of elapsed seconds. Include a helper `setup` list for the cost of preparing one candidate on that machine.
+
+```json
+{
+  "local": {
+    "first-check-digest": [58, 60, 61],
+    "second-check-digest": [58, 59, 60]
+  },
+  "air": {
+    "first-check-digest": [62, 65, 67],
+    "second-check-digest": [47, 49, 50],
+    "setup": [5, 6, 7]
+  }
+}
+```
+
+Each estimate needs at least three samples. The owner dispatches for speed when the predicted saving exceeds both 10 seconds and 10% of the local pair time. A uniquely capable helper can run a required check without calibration. The run log records the placement and any fallback. A dirty shared checkout uses local checks. Job-owned worktrees can send their uncommitted candidate when they started clean.
+
+To return to observation, set `verification_mode` to `observe` before the next job starts. Use `off` to disable measurements as well.
+
+The Pro-to-Air pilot still needs live validation. See the [two-Mac verification implementation plan](superpowers/plans/2026-11-21-two-mac-verification.md).
+
 ## Configure AI Providers
 
 On **Manage AI tools**, **Connect** shows a guided checklist for Claude, Codex, Poolside and Antigravity. It installs the tool if needed, prepares user-local Node.js/npm for Codex when missing, and shows the browser approval link and any code. Installer terms require your explicit agreement. When it is time to sign in, the checklist steps aside and the dialog shows only what to do: **Open sign-in** (or **Copy link** to sign in on another device), then either enter the approval code it shows, or, when the tool gives you a code back (Claude's does), paste it into the box and press **Submit code**. No terminal is involved. When the installer asks you to agree to terms, the question is shown above **Agree and continue**. Closing the dialog keeps the sign-in running under Running now; its terminal there answers anything else a tool asks.

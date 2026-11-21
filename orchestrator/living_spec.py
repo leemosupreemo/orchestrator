@@ -9,6 +9,7 @@ decomposition (`ready_story` for Pass B task planning, `deferred` for backlog).
 """
 from __future__ import annotations
 
+from ast import literal_eval
 from datetime import datetime
 import json
 import os
@@ -989,29 +990,113 @@ def pass_b_context(spec: dict[str, Any], risk_result: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _note_key(text: str) -> str:
+    return " ".join(text.split()).casefold()
+
+
+def _note_with_reason(note: dict[str, str]) -> str:
+    text, reason = note["text"], note.get("reason", "")
+    return f"{text} ({reason})" if reason and reason not in text else text
+
+
+_LOW_RISK_REASON = r"High-confidence, low-risk convention|Low-impact, reversible default after repo check|Low-impact, reversible choice for '.+'"
+
+
+def _plan_note_items(*sources: Any) -> list[dict[str, str]]:
+    items: list[dict[str, str]] = []
+    for source in sources:
+        entries = source if isinstance(source, list) else [source]
+        for raw in entries:
+            if isinstance(raw, str):
+                text = raw.strip()
+                # Older plans stored an assumption or constraint as Python's dictionary representation.
+                if len(text) <= 4096 and text.startswith(("{'text':", '{"text":')):
+                    try:
+                        raw = literal_eval(text)
+                    except (SyntaxError, ValueError, RecursionError):
+                        pass
+            if isinstance(raw, dict):
+                text = raw.get("text") or raw.get("description") or raw.get("title")
+                reason = raw.get("reason") or raw.get("rationale")
+                level = raw.get("severity") or raw.get("level") or raw.get("impact")
+                note = {"reason": reason.strip()} if isinstance(reason, str) and reason.strip() else {}
+                if isinstance(level, str) and level.lower() in {"high", "medium", "low"}:
+                    note["level"] = level.lower()
+            elif isinstance(raw, str):
+                text, note = raw, {}
+                # Some shared jobs only carry the older, flattened assumption list.
+                match = re.fullmatch(rf"(.+) \(({_LOW_RISK_REASON})\)", text)
+                if match:
+                    text, reason = match.groups()
+                    note["reason"] = reason
+            else:
+                continue
+            if "reason" in note and re.fullmatch(_LOW_RISK_REASON, note["reason"]):
+                note.setdefault("level", "low")
+            if isinstance(text, str) and text.strip():
+                items.append({"text": text.strip(), **note})
+    aliases = {_note_key(_note_with_reason(note)): _note_key(note["text"])
+               for note in items if note.get("reason")}
+    unique: dict[str, dict[str, str]] = {}
+    for note in items:
+        key = _note_key(note["text"])
+        canonical = aliases.get(key, key)
+        if canonical == key:
+            unique.setdefault(key, {}).update(note)
+        else:
+            unique.setdefault(canonical, {})
+    return [note for note in unique.values() if note]
+
+
+def plan_notes(job: dict[str, Any]) -> list[dict[str, Any]]:
+    """Readable, deduplicated job notes ordered by the recorded risk level."""
+    plan, spec, risk = (value if isinstance(value, dict) else {}
+                        for value in (job.get("plan"), job.get("spec"), job.get("risk_assessment")))
+    assumptions = {_note_key(note["text"]): note
+                   for note in _plan_note_items(plan.get("assumptions"), spec.get("assumptions"))}
+    priorities: dict[str, list[dict[str, str]]] = {key: [] for key in ("high", "medium", "low", "unrated")}
+    for note in _plan_note_items(plan.get("risks")):
+        priorities[note.pop("level", "unrated")].append(note)
+    for decision in risk.get("decisions") or spec.get("decisions") or plan.get("decisions") or []:
+        if not isinstance(decision, dict):
+            continue
+        question = str(decision.get("question") or "").strip()
+        default = str(decision.get("proposed_default") or "").strip()
+        level = decision.get("impact")
+        if decision.get("reversibility") == "costly":
+            level = "high"
+        if decision.get("action") == "clarify":
+            note = {"text": question, **({"reason": f"Proposed default: {default}"} if default else {})}
+        else:
+            note = assumptions.pop(_note_key(default), {"text": default or question})
+        if note["text"]:
+            priorities[level if level in ("high", "medium", "low") else "unrated"].append(note)
+    unranked = []
+    for note in assumptions.values():
+        level = note.pop("level", "")
+        if level:
+            priorities[level].append(note)
+        else:
+            unranked.append(note)
+
+    ordered = [(f"{level.capitalize()} risk" if level != "unrated" else "Unrated risks", notes)
+               for level, notes in priorities.items()]
+    seen: set[str] = set()
+    for _, notes in ordered:
+        notes[:] = [note for key, note in {_note_key(note["text"]): note for note in notes}.items() if key not in seen]
+        seen.update(_note_key(note["text"]) for note in notes)
+    ordered.extend([
+        ("Assumptions", [note for note in unranked if _note_key(note["text"]) not in seen]),
+        ("Constraints", _plan_note_items(plan.get("constraints"), spec.get("constraints"))),
+    ])
+    return [{"label": label, "items": notes} for label, notes in ordered if notes]
+
+
 def merge_spec_into_plan(plan: dict[str, Any], spec: dict[str, Any], risk_result: dict[str, Any]) -> dict[str, Any]:
     """Ensure the Pass B plan carries the Living Feature Spec's assumptions, constraints, deferred slices, and metadata."""
-    existing_assumptions = [str(a).strip() for a in (plan.get("assumptions") or []) if str(a).strip()]
-    existing_lower = {a.lower() for a in existing_assumptions}
-    for item in spec.get("assumptions") or []:
-        text = item["text"] if isinstance(item, dict) else str(item)
-        reason = item.get("reason", "") if isinstance(item, dict) else ""
-        formatted = f"{text} ({reason})" if reason and reason not in text else text
-        if text.lower() not in existing_lower and formatted.lower() not in existing_lower:
-            existing_assumptions.append(formatted)
-            existing_lower.add(text.lower())
-    if existing_assumptions:
-        plan["assumptions"] = existing_assumptions
-
-    existing_constraints = [str(c).strip() for c in (plan.get("constraints") or []) if str(c).strip()]
-    c_lower = {c.lower() for c in existing_constraints}
-    for item in spec.get("constraints") or []:
-        text = item["text"] if isinstance(item, dict) else str(item)
-        if text.lower() not in c_lower:
-            existing_constraints.append(text)
-            c_lower.add(text.lower())
-    if existing_constraints:
-        plan["constraints"] = existing_constraints
+    for field in ("assumptions", "constraints"):
+        if notes := _plan_note_items(plan.get(field), spec.get(field)):
+            plan[field] = [_note_with_reason(note) if field == "assumptions" else note["text"] for note in notes]
 
     existing_deferred = [str(d).strip() for d in (plan.get("deferred") or []) if str(d).strip()]
     d_lower = {d.lower() for d in existing_deferred}

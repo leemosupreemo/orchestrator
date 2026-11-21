@@ -21,7 +21,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from orchestrator import account, state_ref, sync_health
+from orchestrator import account, model_outcomes, state_ref, sync_health
 
 CHECK_SECONDS = 60
 JOBS_DIR = "jobs/"
@@ -54,6 +54,9 @@ def local_entries(root: Path, name: str, now: float | None = None) -> dict[str, 
         entry = account._job_entry(job, path.stem, Path(root), repo, None)
         entry.pop("active_run", None)
         entry.update(job_id=path.stem, machine=name)
+        outcomes = model_outcomes.merge(job.get(model_outcomes.FIELD))
+        if outcomes:
+            entry[model_outcomes.FIELD] = outcomes
         out[path.stem] = entry
     return out
 
@@ -102,6 +105,10 @@ def sync_project(root: Path, *, name: str, running: set[str] | None = None) -> d
         moves: dict[str, dict[str, Any]] = {}
         for job_id, entry in mine.items():
             theirs = _remote_entry(root, head, job_id)
+            if theirs is not None:
+                outcomes = model_outcomes.merge(theirs.get(model_outcomes.FIELD), entry.get(model_outcomes.FIELD))
+                if outcomes:
+                    entry[model_outcomes.FIELD] = outcomes
             if theirs is None or (_rank(entry) >= _rank(theirs) and _canonical(entry) != _canonical(theirs)
                                   and (_rank(entry) > _rank(theirs) or theirs.get("machine") == name)):
                 changes[f"{JOBS_DIR}{job_id}.json"] = json.dumps(entry, sort_keys=True, default=str).encode("utf-8")

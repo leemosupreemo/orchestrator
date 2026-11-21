@@ -142,5 +142,30 @@ class CommitOnlyTheJobsFilesTests(unittest.TestCase):
                          "git commit -m 'it'\"'\"'s done' -- 'a b.py' c.py")
 
 
+class ReviewOutcomeGateTests(unittest.TestCase):
+    def test_parse_review_outcome_distinguishes_approve_from_blockers_and_unmet_criteria(self):
+        import review_ready
+
+        clean = review_ready.parse_review_outcome(
+            "## Blockers\nNone\n## Acceptance criteria\n- Criterion 1: **Met** (foo.py:10)\n## Verdict\nApprove. Looks good."
+        )
+        self.assertFalse(clean["needs_changes"])
+        self.assertEqual(clean["verdict"], "approve")
+        self.assertFalse(clean["has_blockers"])
+        self.assertEqual(clean["unmet_criteria"], [])
+
+        blocked = review_ready.parse_review_outcome(
+            "## Blockers\n- Missing validation on empty input\n"
+            "## Acceptance criteria\n- Criterion 1: **Not met** — validation missing\n"
+            "## Verdict\nRequest changes. Fix the missing validation."
+        )
+        self.assertTrue(blocked["needs_changes"])
+        self.assertEqual(blocked["verdict"], "request_changes")
+        self.assertTrue(blocked["has_blockers"])
+        self.assertEqual(len(blocked["unmet_criteria"]), 1)
+        self.assertIn("Missing validation", blocked["feedback"])
+        self.assertIn("Not met", blocked["feedback"])
+
+
 if __name__ == "__main__":
     unittest.main()
