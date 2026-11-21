@@ -39,14 +39,14 @@
   --space-7: 32px;
   --space-8: 40px;
   /* Type roles: every piece of text uses one of these sizes and weights (docs/web-ui-conventions.md). */
-  --type-display: 28px;   /* sign-in and empty-state heroes */
-  --type-page: 22px;      /* the page title */
+  --type-display: 24px;   /* sign-in and empty-state heroes */
+  --type-page: 18px;      /* the page title */
   --type-title: calc(var(--type-page) * 1.1);   /* the title in the top bar: 10% over --type-page (the line under it is not) */
   --type-home: calc(var(--type-title) * 1.1);   /* Home's title, the project's name: 10% over the other top bar titles */
-  --type-section: 18px;   /* card titles */
-  --type-body: 16px;      /* running text, field labels (medium), subsection titles (bold) */
-  --type-secondary: 14px; /* page subtitle, row meta, hints, explanations, timestamps */
-  --type-tag: 12px;       /* small upper-case labels */
+  --type-section: 16px;   /* card titles */
+  --type-body: 14px;      /* running text, field labels (medium), subsection titles (bold) */
+  --type-secondary: 12px; /* page subtitle, row meta, hints, explanations, timestamps */
+  --type-tag: 11px;       /* small upper-case labels */
   --weight-regular: 400;
   --weight-medium: 550;
   --weight-bold: 650;

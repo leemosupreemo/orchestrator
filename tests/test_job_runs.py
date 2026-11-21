@@ -188,7 +188,7 @@ class PageTests(unittest.TestCase):
         family = self.app[self.app.index("function runFamilyHtml"):self.app.index("function runHeader")]
         self.assertNotIn("Previous run:", family)
         self.assertNotIn("Next run:", family)
-        self.assertIn('sub: "",', self.app[self.app.index("function runHeader"):][:1500])
+        self.assertIn('sub: runTaskSub ? `<span class="status-line"><span>${esc(runTaskSub)}</span></span>` : "",', self.app[self.app.index("function runHeader"):][:1800])
         self.assertIn("(runHeader.families ||= new Map()).set(run.id, family)", self.app)
         self.assertIn('parts[0] == "jobs" and parts[2] == "runs"', self.server)
 

@@ -65,6 +65,25 @@ def record(channel: str, ok: bool, error: str = "", now: float | None = None) ->
             pass
 
 
+def clear_failures() -> None:
+    """Drop prior-session failure markers on launch so stale errors don't show before the fresh round runs."""
+    with _lock:
+        data = _load()
+        changed = False
+        for entry in data.values():
+            if isinstance(entry, dict) and any(k in entry for k in ("failing_since", "failed_at", "error")):
+                entry.pop("failing_since", None)
+                entry.pop("failed_at", None)
+                entry.pop("error", None)
+                changed = True
+        if changed:
+            try:
+                _file().parent.mkdir(parents=True, exist_ok=True)
+                _file().write_text(json.dumps(data), encoding="utf-8")
+            except OSError:
+                pass
+
+
 def _clean(error: str) -> str:
     text = re.sub(r"(https?://)[^/@\s]+@", r"\1", str(error or "")).strip()  # never a token from a remote URL
     return text.splitlines()[-1][:300] if text else "Unknown error"

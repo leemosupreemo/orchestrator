@@ -44,6 +44,16 @@ class SyncHealthTests(unittest.TestCase):
         sync_health.record("nope", False, "x", now=1)
         self.assertEqual(sync_health.overview(now=10_000)["problems"], [])
 
+    def test_clear_failures_drops_stale_errors_but_keeps_last_ok(self):
+        sync_health.record("product", True, now=1000)
+        sync_health.record("product", False, "network error", now=2000)
+        self.assertEqual(len(sync_health.problems(now=2000 + sync_health.GRACE_SECONDS)), 1)
+        sync_health.clear_failures()
+        self.assertEqual(sync_health.problems(now=2000 + sync_health.GRACE_SECONDS), [])
+        channels = {c["channel"]: c for c in sync_health.overview(now=3000)["channels"]}
+        self.assertEqual(channels["product"]["last_ok"], 1000)
+        self.assertIsNone(channels["product"]["failing_since"])
+
 
 @unittest.skipUnless(shutil.which("node"), "node is required")
 class BannerTests(unittest.TestCase):

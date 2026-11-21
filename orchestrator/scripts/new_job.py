@@ -512,6 +512,7 @@ def main(args_override: list[str] | None = None) -> None:
     parser.add_argument("--spec-file", help="Path to a file containing the feature/bug/coverage spec")
     parser.add_argument("--stitch", action="store_true", help="Enable Google Stitch AI design phase")
     parser.add_argument("--feedback", help="User feedback for design or plan revision")
+    parser.add_argument("--revision-brief-file", type=Path, help="Saved job brief for a plan revision")
     parser.add_argument("--update", help="Path to an existing job JSON to update/re-plan")
     parser.add_argument("--free", action="store_true", help="Restrict allowed models to free models only (cost_factor == 0.0)")
     parser.add_argument("--feature", help="Put the new job under this feature (its id)")
@@ -523,6 +524,20 @@ def main(args_override: list[str] | None = None) -> None:
     parser.add_argument("--summary", help="Summary or area of focus for the job (skips interactive input prompt if provided)")
     parser.add_argument("--skip-verify", action="store_true", help="Skip the architect's plan verification (used when a person has already accepted the architect's suggestions)")
     args = parser.parse_args(args_override)
+
+    if args.revision_brief_file is not None:
+        if not args.update:
+            parser.error("A revision brief requires an existing job to update.")
+        try:
+            revised_brief = args.revision_brief_file.read_text(encoding="utf-8").strip()
+        except (OSError, UnicodeError):
+            parser.error("Could not read the saved brief for this revision.")
+        if not revised_brief:
+            parser.error("Save the brief before revising the plan.")
+        args.feedback = (
+            "Revise the plan to match the edited job brief below. Use the edited brief as the current "
+            "scope and acceptance criteria where it differs from the previous plan.\n\n" + revised_brief
+        )
 
     existing_job = None
     if args.update:
@@ -1486,6 +1501,8 @@ def main(args_override: list[str] | None = None) -> None:
             job["epic"] = args.epic
         if freestyle:
             job["freestyle"] = True
+        if args.revision_brief_file is not None:
+            job["approved"] = False
         
         # Special override for design-to-feature transition
         if existing_job and args.job_type == "feature":

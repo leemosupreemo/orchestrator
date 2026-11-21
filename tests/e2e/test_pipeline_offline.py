@@ -33,6 +33,26 @@ def action(project: DummyProject, name: str, *args: str):
     return project.orchestrator("script", "job_actions.py", name, str(project.jobs()[-1]), *args)
 
 
+class BriefRevisionTests(unittest.TestCase):
+    def test_saved_brief_reaches_planner_and_requires_fresh_approval(self):
+        project = DummyProject([FREE]).create().fake_models("")
+        self.addCleanup(project.cleanup)
+        result = plan_job(project)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        path = project.jobs()[-1]
+        original = project.job() | {"approved": True}
+        path.write_text(json.dumps(original), encoding="utf-8")
+        brief = path.with_suffix(".md")
+        brief.write_text("# Revised brief\n\nUse the updated boundary case at seven letters.\n", encoding="utf-8")
+        result = action(project, "revise", "--brief-file", str(brief))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        prompt = project_calls(project, "planner")[-1]["prompt"]
+        self.assertIn("Use the updated boundary case at seven letters.", prompt)
+        self.assertEqual(project.job()["status"], "planned")
+        self.assertFalse(project.job()["approved"])
+        self.assertFalse(project_calls(project, "builder"))
+
+
 class OfflinePipelineTests(unittest.TestCase):
     """One project, one run through every stage; the tests below look at different parts of what happened."""
 

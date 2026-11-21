@@ -3373,13 +3373,21 @@ const featureChip = (j, label = "") => {
   return j?.feature && name ? `<span class="feature-chip" title="Feature: ${esc(name)}">${esc(name)}</span>` : "";
 };
 
+function splitJobTitle(raw) {
+  const text = String(raw || "").trim();
+  const m = text.match(/^(.*?)\s*\((Task\s+\d+[^)]*)\)\s*$/i);
+  if (!m) return { title: text, task: "" };
+  return { title: m[1].trim() || text, task: m[2].trim() };
+}
+
 function jobItem(j, { withAction = false } = {}) {
-  const bits = [jobKind(j), j.tasks_total ? `${j.tasks_done}/${j.tasks_total} tasks` : "", ago(j.updated)].filter(Boolean);
-  const meta = withAction && j.state.reason ? j.state.reason : bits.join(" · ");
+  const { title: cleanTitle, task: taskSub } = splitJobTitle(j.title);
+  const bits = [taskSub, jobKind(j), j.tasks_total ? `${j.tasks_done}/${j.tasks_total} tasks` : "", ago(j.updated)].filter(Boolean);
+  const meta = withAction && j.state.reason ? (taskSub ? `${taskSub} · ${j.state.reason}` : j.state.reason) : bits.join(" · ");
   const next = withAction && j.state.next && !j.active_run
     ? `<button class="btn small ${["failed", "attention"].includes(j.state.tone) ? "primary" : ""}" ${act(j.state.next.action, { job: j.id, ...(j.state.next.params || {}) })}>${esc(j.state.next.label)}</button>` : "";
   return `<div class="item${testsClass(j)}">
-    <a class="main-col" href="#/jobs/${encodeURIComponent(j.id)}"><div class="title">${esc(j.title)}</div><div class="meta">${esc(meta)}</div></a>
+    <a class="main-col" href="#/jobs/${encodeURIComponent(j.id)}"><div class="title">${esc(cleanTitle)}</div><div class="meta">${esc(meta)}</div></a>
     <div class="side">${jobPill(j)}${next}</div></div>`;
 }
 
@@ -3416,7 +3424,9 @@ document.addEventListener("click", (e) => {
 });
 
 function jobTableRow(j, { hidden = false, number = null } = {}) {
+  const { title: cleanTitle, task: taskSub } = splitJobTitle(j.title);
   const parts = [
+    taskSub ? esc(taskSub) : "",
     j.remote_machine ? `on ${esc(j.remote_machine.name)}${!j.remote_machine.online && j.synced_at ? ` (offline, synced ${esc(ago(j.synced_at))})` : ""}` : "",
     j.continued_on ? `continued on ${esc(j.continued_on)}` : "", // another computer took this job over (Continue here)
     j.branch ? `<span class="mono">${esc(j.branch)}</span>` : "",
@@ -3444,7 +3454,7 @@ function jobTableRow(j, { hidden = false, number = null } = {}) {
         ${number != null ? `<span class="job-row-num" aria-hidden="true">${number}</span>` : ""}
         <div class="col-job-main">
           <div class="job-title-row">
-            <div class="job-title">${esc(j.title)} ${jiraChip(j)}</div>
+            <div class="job-title">${esc(cleanTitle)} ${jiraChip(j)}</div>
             ${featureChip(j)}
           </div>
           <div class="job-mobile-info">
@@ -6379,9 +6389,12 @@ pages.job = async ([id]) => {
       </div>`
     : "";
 
+  const { title: cleanJobTitle, task: jobTaskSub } = splitJobTitle(s.title);
+  const jobHeaderSubs = jobTaskSub ? [esc(jobTaskSub), ...subParts] : subParts;
+
   return {
-    title: s.title,
-    sub: subParts.length ? `<span class="status-line">${subParts.join('<span class="sep">·</span>')}</span>` : "",
+    title: cleanJobTitle,
+    sub: jobHeaderSubs.length ? `<span class="status-line">${jobHeaderSubs.join('<span class="sep">·</span>')}</span>` : "",
     actions: jobHeaderActions(summary, links, { canSplinter, planShown: reviewingPlan, steerShown: Boolean(steer), hasChanges: allFiles.length > 0,
       abilities: aiAbilities.highlights }),
     html: `<div class="job-layout"><div class="job-top">
@@ -6640,6 +6653,7 @@ pages.job = async ([id]) => {
         }
       }));
       view.querySelectorAll("[data-brief-edit]").forEach((btn) => btn.addEventListener("click", async () => {
+        const canRevise = !quickNoPlan && ["planned", "designing", "human-needed", "debugging"].includes(s.status);
         const bodyHtml = `
           <div class="stack gap-12">
             <div class="muted t-secondary">
@@ -6649,6 +6663,10 @@ pages.job = async ([id]) => {
               <span>Brief Markdown</span>
               <textarea name="text" rows="18" class="mono code-editor" required>${esc(briefDoc.text || "")}</textarea>
             </label>
+            ${canRevise ? `<label class="check"><input type="checkbox" name="revise_plan">
+              <span>Revise the plan using this brief<small>The planner will use your edits and ask you to approve the revised plan.</small></span>
+            </label>` : ""}
+            <p class="hint-text">Saving the brief updates what the reviewer reads. The builder follows the job plan.</p>
           </div>
         `;
         const values = await formDialog("Edit Brief", bodyHtml, "Save brief");
@@ -6658,8 +6676,13 @@ pages.job = async ([id]) => {
             method: "POST",
             body: { text: values.text },
           });
-          toast("Brief updated");
-          route();
+          briefDoc.text = values.text;
+          toast("Brief saved");
+          if (canRevise && values.revise_plan) {
+            await runAction("revise", { job: id, from_brief: true });
+          } else {
+            route();
+          }
         } catch (e) {
           toast(e.message, true);
         }
@@ -14491,9 +14514,12 @@ function runHeader(r, family = null) {
   const rerunBtn = !r.running && rerunAction
     ? `<button type="button" class="btn icon-only" ${act(rerunAction, jobId ? { job: jobId } : undefined)} aria-label="${jobId ? "Rerun job" : "Rerun"}" title="${jobId ? "Rerun job" : "Rerun"}"><svg class="icon" aria-hidden="true"><use href="#i-refresh"/></svg></button>`
     : "";
+  const { title: cleanRunTitle, task: runTaskSub } = splitJobTitle(
+    r.job_title || family?.job?.title || (me ? `${me.label} run` : r.title)
+  );
   return {
-    title: r.job_title || family?.job?.title || (me ? `${me.label} run` : r.title),
-    sub: "",
+    title: cleanRunTitle,
+    sub: runTaskSub ? `<span class="status-line"><span>${esc(runTaskSub)}</span></span>` : "",
     actions: rerunBtn
       + ((typeof state !== "undefined" && state.you?.role === "member") ? "" // logs are private to owners
         : `<details class="more"><summary class="btn icon-only" aria-label="Share log" title="Copy or export log"><svg class="icon" aria-hidden="true"><use href="#i-share"/></svg></summary><div class="more-menu">`

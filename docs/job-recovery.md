@@ -93,6 +93,10 @@ Guards, so jobs never step on each other's work:
 
 ## Keeping the AI going
 
+- **State sync startup refresh** (`sync_health.clear_failures`, `server.UIServer.start_state_sync`). On launch,
+  `start_state_sync` clears prior-session failure markers from `sync_health.json` (preserving `ok_at`) and runs its
+  first `product_sync` / `job_sync` round immediately instead of waiting `CHECK_SECONDS`, so stale errors from an earlier
+  session are never shown on startup.
 - **End-of-job review gate** (`review_ready.parse_review_outcome`, `worker_run.execute_job`). After build and tests pass,
   `review_ready.py` compares the diff against `brief.md` and `acceptance.block(job)` and records `review_outcome` on the
   job. When the reviewer reports `## Blockers`, `Not met` acceptance criteria, or `Request changes`, `worker_run.py`

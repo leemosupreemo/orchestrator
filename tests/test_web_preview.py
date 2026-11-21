@@ -310,3 +310,19 @@ console.log(JSON.stringify([prdStatusPill(s(0, 6)), prdStatusPill(s(3, 6)), prdS
         out = _json.loads(_sp.run(["node", "-e", script], capture_output=True, text=True, check=True).stdout)
         for html, label in zip(out, ["Needs completion", "Partially completed", "Completed", "Needs completion"]):
             self.assertIn(f">{label}</span>", html)
+
+
+class JobTitleSplitTests(unittest.TestCase):
+    def test_split_job_title_moves_task_suffix_to_subtitle(self):
+        import json as _json, subprocess as _sp
+        source = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
+        fn = source[source.index("function splitJobTitle"):source.index("function jobItem")]
+        script = fn + """
+console.log(JSON.stringify([
+  splitJobTitle("[World Vegetation] Fuller, more varied ground cover in Camelot Hills (Task 1: Capture the baseline and tune the Camelot Hills flora profile)"),
+  splitJobTitle("Plain feature title"),
+]));"""
+        [with_task, plain] = _json.loads(_sp.run(["node", "-e", script], capture_output=True, text=True, check=True).stdout)
+        self.assertEqual(with_task["title"], "[World Vegetation] Fuller, more varied ground cover in Camelot Hills")
+        self.assertEqual(with_task["task"], "Task 1: Capture the baseline and tune the Camelot Hills flora profile")
+        self.assertEqual(plain, {"title": "Plain feature title", "task": ""})

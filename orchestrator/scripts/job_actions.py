@@ -189,11 +189,14 @@ def approve(path: Path) -> int:
     return run_script("schedule_job.py", [str(path)])
 
 
-def revise(path: Path, change: str, where: str, done_when: str) -> int:
+def revise(path: Path, change: str, where: str, done_when: str, *, brief_file: Path | None = None) -> int:
     """The console's Revise Plan (handle_tweak_revise) without the prompts."""
     job = read_json(path)
-    args = [replan_type(job), "--no-dispatch", "--update", str(path),
-            "--feedback", revision_feedback(change, where, done_when)]
+    args = [replan_type(job), "--no-dispatch", "--update", str(path)]
+    if brief_file is not None:
+        args += ["--revision-brief-file", str(brief_file)]
+    else:
+        args += ["--feedback", revision_feedback(change, where, done_when)]
     # Keep the job's own choices, so re-planning never stops to ask for models, machines or a branch mode.
     if job.get("allowed_models"):
         args += ["--allowed-models", ",".join(job["allowed_models"])]
@@ -613,7 +616,9 @@ def main(argv: list[str] | None = None) -> int:
     answer_p.add_argument("--answer", required=True)
     revise_p = sub.add_parser("revise", help="Re-plan a job with requested changes")
     revise_p.add_argument("job_file")
-    revise_p.add_argument("--change", required=True)
+    revision_input = revise_p.add_mutually_exclusive_group(required=True)
+    revision_input.add_argument("--change")
+    revision_input.add_argument("--brief-file", type=Path)
     revise_p.add_argument("--where", default="")
     revise_p.add_argument("--done-when", default="")
     refine_p = sub.add_parser("refine", help="Refine a working preview from user experience feedback")
@@ -670,7 +675,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.action in ("discard", "delete"):
         return discard(path, keep_changes=bool(getattr(args, "keep_changes", False)))
     if args.action == "revise":
-        return revise(path, args.change.strip(), args.where.strip(), args.done_when.strip())
+        return revise(path, (args.change or "").strip(), args.where.strip(), args.done_when.strip(),
+                      brief_file=args.brief_file)
     if args.action == "refine":
         return refine(path, args.feedback.strip())
     return answer(path, args.answer.strip())

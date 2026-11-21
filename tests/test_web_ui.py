@@ -3163,6 +3163,19 @@ class ActionTests(unittest.TestCase):
         with self.assertRaises(ui.UIError):
             ui.ACTIONS["test_suite"].build({"name": "x; rm -rf /"}, self.root)
 
+    def test_revise_can_use_the_saved_brief(self):
+        job = "20260922-bug-1"
+        brief = self.root / ".orchestrator" / "output" / job / "brief.md"
+        updated = "# Updated scope\n" + ("Include a regression check.\n" * 200)
+        brief.write_text(updated)
+        argv = ui.build_revise({"job": job, "from_brief": True}, self.root)
+        self.assertIn("--brief-file", argv)
+        self.assertEqual(Path(argv[argv.index("--brief-file") + 1]), brief)
+        self.assertNotIn(updated, argv)
+        brief.unlink()
+        with self.assertRaisesRegex(ui.UIError, "Save the brief"):
+            ui.build_revise({"job": job, "from_brief": True}, self.root)
+
 
 class WorktreeBranchTests(unittest.TestCase):
     """A branch checked out in another worktree can't be switched to here; say where it is instead of git's fatal."""
@@ -8665,6 +8678,8 @@ eval(source.slice(start, end));
         self.assertIn('.brief-content {', css)
         self.assertIn('>Raw</a>', self.job_page)
         self.assertIn('data-expandable="320"', self.job_page)  # long briefs fold behind Show more, not a scroll box
+        self.assertIn('name="revise_plan"', self.job_page)
+        self.assertIn('runAction("revise", { job: id, from_brief: true })', self.job_page)
 
     def test_add_existing_project_modal_is_tabbed_with_mobile_exit_controls(self):
         static = PACKAGE_ROOT / "orchestrator" / "web" / "static"

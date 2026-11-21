@@ -4970,10 +4970,16 @@ def build_answer(params: dict[str, Any], root: Path) -> list[str]:
 
 
 def build_revise(params: dict[str, Any], root: Path) -> list[str]:
-    return orchestrator_argv("script", "job_actions.py", "revise", _job_path(params, root),
-                             "--change", _text(params, "change", required=True, limit=4000),
-                             "--where", _text(params, "where", limit=1000),
-                             "--done-when", _text(params, "done_when", limit=1000))
+    job_path = _job_path(params, root)
+    argv = orchestrator_argv("script", "job_actions.py", "revise", job_path)
+    if params.get("from_brief") is True:
+        brief = runtime_dir(root) / "output" / Path(job_path).stem / "brief.md"
+        if not brief.is_file():
+            raise UIError("Save the brief before revising the plan.")
+        return argv + ["--brief-file", str(brief)]
+    return argv + ["--change", _text(params, "change", required=True, limit=4000),
+                   "--where", _text(params, "where", limit=1000),
+                   "--done-when", _text(params, "done_when", limit=1000)]
 
 
 def _name(params: dict[str, Any], key: str) -> str:
@@ -7052,11 +7058,12 @@ class UIServer(ThreadingHTTPServer):
     def start_state_sync(self) -> threading.Thread:
         """Share each project's product requirements with the other computers working on it, through the project's own
         repository (orchestrator/product_sync.py). Paired or not: it needs only the project's remote and the person's yes."""
+        sync_health.clear_failures()
         wake = threading.Event()
         self.wake_state_sync = wake.set  # the heartbeat calls it when the account knows a newer shared commit
 
         def share() -> None:
-            wait = product_sync.CHECK_SECONDS
+            wait = 0.0  # run the first sync round immediately on launch instead of showing stale prior-session state
             while True:
                 wake.wait(wait)
                 wake.clear()
