@@ -4103,7 +4103,11 @@ async function openDiskSpace(jobId = "") {
       renderNewJobDiskNotice($("#nj-disk-warning"), report);
       const gb = (bytes) => bytes === null ? "Unknown" : `${(bytes / 1024 ** 3).toFixed(1)} GB`;
       const needsSpace = report.needed_bytes > 0;
-      const caches = report.caches || [];
+      const caches = (report.caches || []).filter((c) => c.bytes == null || c.bytes >= 1024 * 1024);
+      const verySafe = caches.filter((c) => c.safety !== "usually_safe");
+      const usuallySafe = caches.filter((c) => c.safety === "usually_safe");
+      const renderCacheRow = (cache) => `<label class="check wrap-anywhere"><input type="checkbox" name="cache_${esc(cache.id)}">
+            <span>${esc(cache.tool || "Xcode")} · ${esc(cache.name)}${cache.bytes === null ? "" : ` · ${esc(formatBytes(cache.bytes))}`}</span></label>`;
       const osTag = String(report.os || state?.project?.computer?.os || (typeof navigator !== "undefined" ? (navigator.userAgentData?.platform || navigator.platform || "") : "")).toLowerCase();
       const extraSpaceHint = osTag.includes("darwin") || osTag.includes("mac")
         ? "To clear additional space (downloads, large files, and Trash), open macOS System Settings → General → Storage."
@@ -4116,28 +4120,31 @@ async function openDiskSpace(jobId = "") {
       const body = `<div class="stack gap-12">
         ${needsSpace ? `<p class="text-bad"><strong>Free at least ${esc(neededGb)} GB to continue.</strong></p>` : `<p><strong>Enough space is available to continue.</strong> (${esc(gb(report.free_bytes))} free)</p>`}
         ${outcome ? `<div role="status" class="notice ${outcomeTone === "bad" ? "bad" : "ok"} wrap-anywhere">${esc(outcome)}</div>` : ""}
-        ${caches.length ? `<fieldset class="field"><legend>Removable caches and temp files</legend>
-          ${caches.map(cache => `<label class="check wrap-anywhere"><input type="checkbox" name="cache_${esc(cache.id)}">
-            <span>${esc(cache.tool || "Xcode")} · ${esc(cache.name)}${cache.bytes === null ? "" : ` · ${esc(formatBytes(cache.bytes))}`}</span></label>`).join("")}
-        </fieldset>` : "<p>No supported caches found on the project volume.</p>"}
+        ${verySafe.length ? `<fieldset class="field"><legend>Very safe to clean</legend>
+          ${verySafe.map(renderCacheRow).join("")}
+        </fieldset>` : ""}
+        ${usuallySafe.length ? `<fieldset class="field"><legend>Usually safe <span class="muted">(slower to rebuild)</span></legend>
+          ${usuallySafe.map(renderCacheRow).join("")}
+        </fieldset>` : ""}
+        ${!caches.length ? "<p>No removable temporary files (≥1 MB) found on the project volume.</p>" : ""}
         <p class="t-secondary">${esc(extraSpaceHint)}</p>
       </div>`;
       const answer = formDialog("Free up disk space", body, "Check again");
       const dialogBody = $("#dialog-body");
       const controls = new AbortController();
       dialogBody?.addEventListener("change", () => {
-        $("#dialog-ok").textContent = dialogBody.querySelector("input:checked") ? "Clear selected caches" : "Check again";
+        $("#dialog-ok").textContent = dialogBody.querySelector("input:checked") ? "Clean" : "Check again";
       }, { signal: controls.signal });
       const selected = await answer;
       controls.abort();
       if (!selected) break;
       const ids = Object.keys(selected).filter(name => name.startsWith("cache_")).map(name => name.slice(6));
       if (!ids.length) continue;
-      const clearLoader = showLoading("Clearing selected caches…", "Clearing…");
+      const clearLoader = showLoading("Cleaning selected items…", "Cleaning…");
       try {
         const result = await api("recovery/disk-space", { method: "POST", body: { caches: ids, job: jobId }, signal: clearLoader.signal });
         const hasErrors = Boolean((result.errors || []).length);
-        outcome = [result.removed.length ? `Cleared ${plural(result.removed.length, "cache")}. ${gb(result.free_bytes)} free now.` : "", ...(result.errors || [])].filter(Boolean).join(" ") || "No caches were removed.";
+        outcome = [result.removed.length ? `Cleaned ${plural(result.removed.length, "item")}. ${gb(result.free_bytes)} free now.` : "", ...(result.errors || [])].filter(Boolean).join(" ") || "Nothing was removed.";
         outcomeTone = hasErrors || !result.removed.length ? "bad" : "ok";
         toast(outcome, outcomeTone === "bad");
       } catch (e) {

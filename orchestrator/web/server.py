@@ -9795,7 +9795,7 @@ class UIHandler(BaseHTTPRequestHandler):
             report["caches"] = []
             if query.get("caches") == ["1"]:
                 self._require_owner("list removable build caches")
-                report["caches"] = disk_space.cache_candidates(root)
+                report["caches"] = disk_space.cache_candidates(root, min_bytes=disk_space.MIB)
             self._json(report)
         elif method == "POST" and len(parts) == 2 and parts[0] == "recovery":
             self._handle_recovery(root, parts[1], self._body())

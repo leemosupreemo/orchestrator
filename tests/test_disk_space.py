@@ -116,3 +116,22 @@ class DiskSpaceTests(unittest.TestCase):
                 removed, errors = disk_space.clear_caches(root, [item["id"] for item in candidates])
             self.assertFalse(errors)
             self.assertEqual(set(removed), {"npm cache", "Homebrew downloads", "pip cache"})
+
+    def test_separates_very_safe_from_usually_safe_and_filters_small_entries(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / ".npm" / "_cacache").mkdir(parents=True)
+            (root / ".gradle" / "caches").mkdir(parents=True)
+            (root / ".nuget" / "packages").mkdir(parents=True)
+            (root / ".npm" / "_cacache" / "blob").write_bytes(b"x" * (2 * disk_space.MIB))
+            (root / ".gradle" / "caches" / "tiny").write_bytes(b"x" * 1024)
+            (root / ".nuget" / "packages" / "pkg").write_bytes(b"x" * (2 * disk_space.MIB))
+            with patch.object(Path, "home", return_value=root), \
+                 patch.object(disk_space, "derived_data_root", return_value=root / "missing"):
+                all_items = disk_space.cache_candidates(root)
+                by_name = {item["name"]: item["safety"] for item in all_items}
+                self.assertEqual(by_name["npm cache"], "very_safe")
+                self.assertEqual(by_name["Gradle global cache"], "usually_safe")
+                self.assertEqual(by_name["NuGet packages cache"], "usually_safe")
+                filtered = disk_space.cache_candidates(root, min_bytes=disk_space.MIB)
+                self.assertEqual({item["name"] for item in filtered}, {"npm cache", "NuGet packages cache"})

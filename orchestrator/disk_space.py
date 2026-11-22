@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from itertools import chain
 from pathlib import Path
 
+MIB = 1024 ** 2
 GIB = 1024 ** 3
 _DISK_ERROR = re.compile(
     r"no space left on device|\benospc\b|\berrno 28\b|not enough (?:free )?(?:disk )?space|"
@@ -66,6 +67,7 @@ class Cache:
     path: Path
     name: str
     tool: str
+    safety: str = "very_safe"
 
 
 class CacheBusyError(RuntimeError):
@@ -85,27 +87,48 @@ def _xcode_caches() -> Iterator[Cache]:
     if directory.is_symlink():
         return
     for entry in _directories(directory):
-        if entry.name in {"ModuleCache.noindex", "SDKStatCaches.noindex", "CompilationCache.noindex", "Index.noindex"} or (entry / "info.plist").is_file():
-            yield Cache(entry, entry.name, "Xcode")
+        if entry.name in {"ModuleCache.noindex", "SDKStatCaches.noindex", "CompilationCache.noindex"}:
+            yield Cache(entry, entry.name, "Xcode", "very_safe")
+        elif entry.name == "Index.noindex" or (entry / "info.plist").is_file():
+            yield Cache(entry, entry.name, "Xcode", "usually_safe")
 
 
 def _dev_tool_caches() -> Iterator[Cache]:
     home = Path.home()
     known = (
-        (home / ".npm" / "_cacache", "npm cache", "npm"),
-        (home / ".npm" / "_npx", "npx cache", "npm"),
-        (home / ".cache" / "pip", "pip cache", "pip"),
-        (home / ".cache" / "uv", "uv cache", "Python"),
-        (home / ".cache" / "huggingface", "Hugging Face cache", "AI models"),
-        (home / "Library" / "Caches" / "Homebrew", "Homebrew downloads", "Homebrew"),
-        (home / "Library" / "Caches" / "pip", "pip cache (Library)", "pip"),
-        (home / "Library" / "Caches" / "CocoaPods", "CocoaPods cache", "CocoaPods"),
-        (home / "Library" / "Caches" / "org.swift.swiftpm", "SwiftPM cache", "SwiftPM"),
-        (home / "Library" / "Developer" / "CoreSimulator" / "Caches", "iOS Simulator caches", "Xcode"),
+        # Very safe: pure download / temp caches that regenerate quickly
+        (home / ".npm" / "_cacache", "npm cache", "npm", "very_safe"),
+        (home / ".npm" / "_npx", "npx cache", "npm", "very_safe"),
+        (home / ".cache" / "pip", "pip cache", "pip", "very_safe"),
+        (home / "Library" / "Caches" / "pip", "pip cache (Library)", "pip", "very_safe"),
+        (home / ".cache" / "uv", "uv cache", "Python", "very_safe"),
+        (home / "Library" / "Caches" / "Homebrew", "Homebrew downloads", "Homebrew", "very_safe"),
+        (home / "Library" / "Caches" / "CocoaPods", "CocoaPods cache", "CocoaPods", "very_safe"),
+        (home / "Library" / "Caches" / "org.swift.swiftpm", "SwiftPM cache", "SwiftPM", "very_safe"),
+        (home / "Library" / "Caches" / "com.apple.dt.Xcode", "Xcode app cache", "Xcode", "very_safe"),
+        (home / "Library" / "Developer" / "CoreSimulator" / "Caches", "iOS Simulator caches", "Xcode", "very_safe"),
+        (home / "Library" / "Caches" / "Yarn", "Yarn cache", "Yarn", "very_safe"),
+        (home / ".cache" / "yarn", "Yarn cache", "Yarn", "very_safe"),
+        (home / "Library" / "pnpm" / "store", "pnpm store", "pnpm", "very_safe"),
+        (home / ".local" / "share" / "pnpm" / "store", "pnpm store", "pnpm", "very_safe"),
+        (home / ".bun" / "install" / "cache", "Bun cache", "Bun", "very_safe"),
+        (home / ".local" / "share" / "NuGet" / "http-cache", "NuGet HTTP cache", ".NET", "very_safe"),
+        (home / "Library" / "Caches" / "go-build", "Go build cache", "Go", "very_safe"),
+        (home / ".cache" / "go-build", "Go build cache", "Go", "very_safe"),
+        (home / ".cargo" / "registry" / "cache", "Cargo registry cache", "Rust", "very_safe"),
+        # Usually safe: regenerable, but slower to rebuild or re-download
+        (home / "Library" / "Unity" / "cache", "Unity package cache", "Unity", "usually_safe"),
+        (home / "Library" / "Caches" / "com.unity3d.UnityEditor", "Unity Editor cache", "Unity", "usually_safe"),
+        (home / ".gradle" / "caches", "Gradle global cache", "Gradle", "usually_safe"),
+        (home / ".nuget" / "packages", "NuGet packages cache", ".NET", "usually_safe"),
+        (home / "Library" / "Caches" / "ms-playwright", "Playwright browsers", "Playwright", "usually_safe"),
+        (home / ".cache" / "ms-playwright", "Playwright browsers", "Playwright", "usually_safe"),
+        (home / ".cache" / "puppeteer", "Puppeteer browsers", "Puppeteer", "usually_safe"),
+        (home / ".cache" / "huggingface", "Hugging Face cache", "AI models", "usually_safe"),
     )
-    for path, name, tool in known:
+    for path, name, tool, safety in known:
         if not path.is_symlink() and path.is_dir():
-            yield Cache(path, name, tool)
+            yield Cache(path, name, tool, safety)
 
 
 def _vscode_caches() -> Iterator[Cache]:
@@ -154,7 +177,7 @@ def _workspace_caches(root: Path) -> Iterator[Cache]:
                               for path in (build, *targets) for configuration in ("debug", "release"))
         for path, tool in candidates:
             if not path.is_symlink() and path.is_dir() and _git_generated(root, path):
-                yield Cache(path, str(path.relative_to(root)), tool)
+                yield Cache(path, str(path.relative_to(root)), tool, "usually_safe")
 
 
 def _caches(root: Path) -> dict[str, Cache]:
@@ -176,7 +199,7 @@ def _caches(root: Path) -> dict[str, Cache]:
     return candidates
 
 
-def cache_candidates(root: Path) -> list[dict]:
+def cache_candidates(root: Path, *, min_bytes: int = 0) -> list[dict]:
     candidates = _caches(root)
     if not candidates:
         return []
@@ -190,8 +213,12 @@ def cache_candidates(root: Path) -> list[dict]:
                 sizes[path] = int(size) * 1024
     except (OSError, subprocess.SubprocessError):
         pass
-    return sorted(({"id": key, "name": cache.name, "tool": cache.tool, "bytes": sizes.get(str(cache.path))}
-                   for key, cache in candidates.items()), key=lambda item: -(item["bytes"] or 0))
+    items = (
+        {"id": key, "name": cache.name, "tool": cache.tool, "safety": cache.safety, "bytes": sizes.get(str(cache.path))}
+        for key, cache in candidates.items()
+    )
+    filtered = [item for item in items if not min_bytes or item["bytes"] is None or item["bytes"] >= min_bytes]
+    return sorted(filtered, key=lambda item: (item["safety"] != "very_safe", -(item["bytes"] or 0)))
 
 
 def clear_caches(root: Path, ids: list[str]) -> tuple[list[str], list[str]]:
