@@ -74,6 +74,50 @@ INVESTIGABLE_PATTERNS = re.compile(
     re.IGNORECASE,
 )
 
+DOC_LABEL_SOURCE_RE = re.compile(r"(?:^|/)(?:readme(?:\.[a-z0-9]+)?|changelog(?:\.[a-z0-9]+)?|notes(?:\.[a-z0-9]+)?)$|\b(?:readme|doc label|comment)\b", re.IGNORECASE)
+CODE_OR_MANIFEST_SOURCE_RE = re.compile(
+    r"\.(?:json|asset|prefab|mat|meta|cs|swift|py|ts|tsx|js|jsx|go|rs|kt|java|rb|cpp|c|h|hpp|shader|hlsl|glsl|yaml|yml|toml|xml|plist|xcodeproj|pbxproj)$",
+    re.IGNORECASE,
+)
+SELF_RESOLVED_CONFLICT_RE = re.compile(
+    r"^(?:use|prefer|follow|trust|ground\s+in|rely\s+on|target)\s+(?:the\s+)?(?:verified|actual|existing|shipped|canonical|manifest|asset|code)\b",
+    re.IGNORECASE,
+)
+AUTHORITATIVE_CONFLICT_SOURCES = {"prd.md#not this", "docs/architecture.json", "user_request#constraint"}
+
+
+def _auto_resolve_repo_conflict(conflict: dict[str, Any]) -> tuple[bool, str, str]:
+    """Return `(resolved, assumption_text, winning_source)` when a reported conflict is actually a doc/README label vs. verified code/manifest."""
+    if not isinstance(conflict, dict):
+        return False, "", ""
+    src_a = str(conflict.get("source_a") or "").strip()
+    src_b = str(conflict.get("source_b") or "").strip()
+    desc = " ".join(str(conflict.get("description") or "").split()).strip()
+    if src_a.lower() in AUTHORITATIVE_CONFLICT_SOURCES or src_b.lower() in AUTHORITATIVE_CONFLICT_SOURCES:
+        return False, "", ""
+
+    a_is_doc = bool(DOC_LABEL_SOURCE_RE.search(src_a))
+    b_is_doc = bool(DOC_LABEL_SOURCE_RE.search(src_b))
+    a_is_code = bool(CODE_OR_MANIFEST_SOURCE_RE.search(src_a)) and not a_is_doc
+    b_is_code = bool(CODE_OR_MANIFEST_SOURCE_RE.search(src_b)) and not b_is_doc
+
+    if (a_is_doc and b_is_code) or (b_is_doc and a_is_code):
+        code_src = src_b if b_is_code else src_a
+        doc_src = src_a if a_is_doc else src_b
+        clean_desc = desc.rstrip(". ")
+        text = (
+            clean_desc
+            if SELF_RESOLVED_CONFLICT_RE.search(clean_desc)
+            else f"Use verified repository source `{code_src}` over `{doc_src}` ({clean_desc})"
+        )
+        return True, text, code_src
+
+    if SELF_RESOLVED_CONFLICT_RE.search(desc):
+        winner = src_b if b_is_code else (src_a if a_is_code else (src_b or src_a or "repository"))
+        return True, desc.rstrip(". "), winner
+
+    return False, "", ""
+
 
 def classify_decision_risk(decision: dict[str, Any]) -> dict[str, Any]:
     """Apply deterministic guardrails to a decision's qualitative risk labels."""
@@ -168,7 +212,24 @@ def evaluate(spec: dict[str, Any], *, root: Path | None = None, prototype_first:
     loss, or costly schema/protocol changes) still pause at the Intent Gate.
     """
     use_prototype_first = bool(prototype_first or spec.get("prototype_first"))
-    conflicts = list(spec.get("conflicts") or [])
+    raw_conflicts = list(spec.get("conflicts") or [])
+    conflicts: list[dict[str, Any]] = []
+    resolved_conflicts: list[dict[str, Any]] = []
+    for c in raw_conflicts:
+        is_resolved, assumption_text, winner_src = _auto_resolve_repo_conflict(c)
+        if is_resolved:
+            _add_assumption(
+                spec,
+                assumption_text,
+                f"Verified repository code/manifest ({winner_src}) takes precedence over doc/README labels.",
+                source=winner_src or "repo_inspection",
+            )
+            resolved_conflicts.append({**c, "resolved_by": winner_src, "assumption": assumption_text})
+        else:
+            conflicts.append(c)
+    spec["conflicts"] = conflicts
+    if resolved_conflicts:
+        spec["resolved_conflicts"] = resolved_conflicts
     raw_decisions = list(spec.get("decisions") or [])
 
     evaluated_decisions: list[dict[str, Any]] = []
@@ -255,9 +316,10 @@ def evaluate(spec: dict[str, Any], *, root: Path | None = None, prototype_first:
     question_lines: list[str] = []
     if conflicts:
         for idx, c in enumerate(conflicts, start=1):
+            clean_desc = str(c.get("description") or "").strip().rstrip(".!?")
             question_lines.append(
                 f"{idx}. Conflicting requirements between {c.get('source_a', 'request')} and {c.get('source_b', 'PRD')}: "
-                f"{c.get('description')}. Which requirement should take precedence?"
+                f"{clean_desc}. Which requirement should take precedence?"
             )
     offset = len(question_lines)
     for idx, d in enumerate(clarifications_needed, start=1):

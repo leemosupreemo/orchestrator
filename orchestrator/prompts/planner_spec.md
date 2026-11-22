@@ -8,6 +8,7 @@ Use your tools (`read_file`, `grep_search`, `glob`) to quickly inspect the relev
 1. Verify referenced files, existing models/services/views, and conventions.
 2. Flag if the request or spec references outdated, renamed, or missing files.
 3. Check whether any part of the request contradicts the Product Context (`Not this` / non-goals) or Approved Architecture.
+4. **Hierarchy of Truth (Code & Manifests > README / Comments)**: Verified repository files, manifests (`zone-manifest.json`, `package.json`, schemas, `.asset` files), and code ALWAYS take precedence over stale labels or summaries in `README.md` or comments. If a `README.md` label disagrees with a verified manifest or asset folder, use the verified repository file, record it in `assumptions`, and do NOT put it in `conflicts` or ask the user which takes precedence. Reserve `conflicts` strictly for genuine product/requirement contradictions (e.g., the user's prompt asks for something forbidden by `prd.md#Not this`, contradicts the Approved Architecture, or contradicts itself).
 
 ### PROVENANCE RULES
 Every requirement, acceptance criterion, constraint, and non-goal MUST carry a `provenance` tag:

@@ -591,6 +591,27 @@ class PlannerBenchmarkEvaluationTests(unittest.TestCase):
         self.assertFalse(res["intent_gate_passed"])
         self.assertEqual(res["behavior"], "stop_conflict")
         self.assertIn("prd.md#Not this", res["clarification_question"])
+        self.assertNotIn("..", res["clarification_question"])
+
+    def test_readme_vs_verified_manifest_conflict_auto_resolves_to_assumption_without_blocking(self):
+        spec = living_spec.normalize({
+            "pass": "spec",
+            "title": "[World] CamelotHills foliage tuning",
+            "intent": "Tune CamelotHills foliage density",
+            "conflicts": [{
+                "requirement_a": "README lists zone 0 under another label",
+                "source_a": "README.md",
+                "requirement_b": "Manifest defines CamelotHills as region 1, zone 0",
+                "source_b": "DaocUnity/Assets/Resources/AssetPack/World/CamelotHills/zone-manifest.json",
+                "description": "Use the verified CamelotHills asset folder and manifest identity for tuning and validation. The README label could direct work to the wrong zone.",
+            }],
+        }, raw_input="Tune CamelotHills foliage density")
+        res = risk_engine.evaluate(spec)
+        self.assertTrue(res["intent_gate_passed"])
+        self.assertEqual(res["conflicts"], [])
+        self.assertEqual(res["clarification_question"], "")
+        self.assertEqual(len(spec.get("resolved_conflicts") or []), 1)
+        self.assertTrue(any("CamelotHills" in a["text"] for a in spec["assumptions"]))
 
     def test_scenario_5_outdated_input_flags_stale_paths_and_records_real_candidates(self):
         with tempfile.TemporaryDirectory() as tmp:
