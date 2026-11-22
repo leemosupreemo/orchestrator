@@ -962,7 +962,7 @@ def job_state(job: dict[str, Any], root: Path | None = None) -> dict[str, Any]:
         remote_disk = root is not None and blocker.get("kind") == "disk_full" and assigned_ssh_machine(root, job)
         if root is not None and not remote_disk and blockers.is_cleared(blocker, root):
             return state("needs_you", "attention", "Blocker cleared",
-                         f"{blocker.get('title')}: that's fixed now. Resume carries on from where it stopped.", "resume", "Resume")
+                         f"{blocker.get('title')} has been addressed. Resume carries on from where it stopped.", "resume", "Resume")
         blocked = state("needs_you", "failed", str(blocker.get("title") or "Blocked"), str(blocker.get("detail") or ""), "resume", "Try again")
         sign_in = {"provider": blocker.get("provider"), "name": blocker.get("name")} if blocker.get("kind") == "sign_in" and blocker.get("provider") != "ai" else None
         return {**blocked, "steps": blockers.steps(blocker, root or Path(".")), "sign_in": sign_in, "blocker_kind": blocker.get("kind")}
@@ -1002,7 +1002,7 @@ def job_state(job: dict[str, Any], root: Path | None = None) -> dict[str, Any]:
                 remote_disk = root is not None and assigned_ssh_machine(root, job)
                 if root is not None and not remote_disk and blockers.is_cleared(disk_blocker, root):
                     return state("needs_you", "attention", "Blocker cleared",
-                                 "Low disk space: that's fixed now. Resume carries on from where it stopped.", "resume", "Resume")
+                                 "Low disk space has been addressed. Resume carries on from where it stopped.", "resume", "Resume")
                 blocked = state("needs_you", "failed", "Low disk space", error, "resume", "Try again")
                 return {**blocked, "steps": blockers.steps(disk_blocker, root or Path(".")), "blocker_kind": "disk_full"}
         if job.get("build_no_changes"):  # the builder changed no files (worker_run.no_change_stop): the build isn't done
