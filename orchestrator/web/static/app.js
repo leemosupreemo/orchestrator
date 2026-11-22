@@ -4112,8 +4112,9 @@ async function openDiskSpace(jobId = "") {
           : osTag.includes("linux")
             ? "To clear additional space (downloads, large files, and Trash), check your system's storage settings or Disk Usage Analyzer."
             : "To clear additional space, remove unused downloads, large files, or empty the Trash on this computer.";
+      const neededGb = (Math.ceil((report.needed_bytes / 1024 ** 3) * 10) / 10).toFixed(1).replace(/\.0$/, "");
       const body = `<div class="stack gap-12">
-        ${needsSpace ? `<p class="text-bad"><strong>Free at least ${Math.ceil(report.needed_bytes / 1024 ** 3)} GB to continue.</strong></p>` : `<p><strong>Enough space is available to continue.</strong> (${esc(gb(report.free_bytes))} free)</p>`}
+        ${needsSpace ? `<p class="text-bad"><strong>Free at least ${esc(neededGb)} GB to continue.</strong></p>` : `<p><strong>Enough space is available to continue.</strong> (${esc(gb(report.free_bytes))} free)</p>`}
         ${outcome ? `<div role="status" class="notice ${outcomeTone === "bad" ? "bad" : "ok"} wrap-anywhere">${esc(outcome)}</div>` : ""}
         ${caches.length ? `<fieldset class="field"><legend>Removable caches and temp files</legend>
           ${caches.map(cache => `<label class="check wrap-anywhere"><input type="checkbox" name="cache_${esc(cache.id)}">
