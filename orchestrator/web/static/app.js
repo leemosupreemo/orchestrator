@@ -11449,10 +11449,11 @@ function epicsSection(initial, { onPrdChanged }) {
 
   const jiraCard = () => {
     const j = ov.jira || {};
-    if (!j.connected) return `<section class="card mb-16"><div class="card-h"><h2>Jira</h2></div><div class="card-b stack">
+    const jiraHeading = `<h2>${providerIcon("jira")} Jira</h2>`;
+    if (!j.connected) return `<section class="card mb-16"><div class="card-h">${jiraHeading}</div><div class="card-b stack">
       <span class="muted">Connect Jira to create these epics there, or to bring epics you already have in Jira in as jobs.</span>
-      <div class="row"><a class="btn" href="#/connections?connect=jira">Connect Jira</a></div></div></section>`;
-    if (!owner) return `<section class="card mb-16"><div class="card-h"><h2>Jira</h2></div><div class="card-b"><span class="muted">Connected to ${esc(j.site)}. The owner of this computer sends and imports epics.</span></div></section>`;
+      <div class="row"><a class="btn" href="#/connections?connect=jira">${providerIcon("jira")} Connect Jira</a></div></div></section>`;
+    if (!owner) return `<section class="card mb-16"><div class="card-h">${jiraHeading}</div><div class="card-b"><span class="muted">Connected to ${esc(j.site)}. The owner of this computer sends and imports epics.</span></div></section>`;
     const body = !j.project
       ? `<form class="row gap-12 end wrap" id="epic-jira-project"><label class="field"><span>Jira project key</span><input name="project" placeholder="ABC" maxlength="10" autocomplete="off" required></label>
           <button type="submit" class="btn primary">Save</button></form>
@@ -11461,7 +11462,7 @@ function epicsSection(initial, { onPrdChanged }) {
           <button type="button" class="btn" id="epic-jira-load">Import epics from Jira</button></div>
          <span class="muted">Epics are created in ${esc(j.project)} on ${esc(j.site)}, and each approved epic then shows its Jira key. Nothing is sent until you press the button.</span>
          <div id="epic-jira-panel">${jiraList ? FeaturePlan.renderJiraImport(jiraList, j.project) : ""}</div>`;
-    return `<section class="card mb-16" id="epic-jira"><div class="card-h"><h2>Jira</h2><span class="muted">${esc(j.site)}</span></div><div class="card-b stack">${body}</div></section>`;
+    return `<section class="card mb-16" id="epic-jira"><div class="card-h">${jiraHeading}<span class="muted">${esc(j.site)}</span></div><div class="card-b stack">${body}</div></section>`;
   };
 
   const body = () => `${breakdownCard()}${ov.prd_filled ? FeaturePlan.renderQuestions(ov.breakdown) : ""}${FeaturePlan.renderSuggested(ov.epics, ov.breakdown)}

@@ -3008,6 +3008,7 @@ dialog h2 {
 .conn-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: var(--space-4); }
 .conn-name { font-size: var(--type-section); margin-right: auto; display: inline-flex; align-items: center; gap: var(--space-2); }
 .brand-icon { width: 14px; height: 14px; flex-shrink: 0; display: inline-block; vertical-align: -1px; object-fit: contain; }
+.card-h h2 .brand-icon { vertical-align: -2px; margin-right: 4px; }
 .brand-icon-mask { --brand-mask: none; background-color: currentColor; -webkit-mask: var(--brand-mask) center / contain no-repeat; mask: var(--brand-mask) center / contain no-repeat; }
 .conn-name .brand-icon { width: 18px; height: 18px; }
 .conn-summary { font-size: var(--type-secondary); color: var(--muted); word-break: break-all; }
