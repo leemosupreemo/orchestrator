@@ -9965,7 +9965,7 @@ pages.checkup = async () => {
   };
 };
 
-pages.help = async () => {
+pages.help = async (_args, query) => {
   const config = await api("config").catch(() => null);
   const guides = (config?.docs || []).filter((g) => g.section === "Orchestrator docs"); // how Orchestrator itself works
   return {
@@ -9996,6 +9996,12 @@ pages.help = async () => {
       <dt>KPI</dt><dd>How you will judge a feature: an event that is tracked, with a target. You log results and decide to keep, iterate or drop.</dd>
       <dt>Pause</dt><dd>Stops the worker. The job keeps its work; Resume continues from the next task.</dd>
     </dl></div></section>
+    <section class="card mb-16" id="help-breakdown-techniques" tabindex="-1"><div class="card-h"><h2>Breakdown techniques</h2></div><div class="card-b"><dl class="help-terms">
+      <dt>Let Orchestrator choose</dt><dd>Automatically picks the technique that best fits your PRD — a story map for user-facing flows, a work breakdown for technical deliverables, or a short list when requirements are still brief.</dd>
+      <dt>Story map: the flows people follow</dt><dd>Organizes epics along the end-to-end user journey and groups them into release slices (<strong>MVP</strong>, <strong>Next</strong>, <strong>Later</strong>) so the smallest working version ships first.</dd>
+      <dt>Work breakdown: top-down deliverables</dt><dd>Splits the product into structural components and dependency layers (Layer 1, Layer 2, …) — best for technical platforms, engines, APIs, or multi-part systems.</dd>
+      <dt>Short list</dt><dd>Produces a concise, flat set of high-level epics without extra slicing — best for early ideas, small prototypes, or sparse PRDs.</dd>
+    </dl></div></section>
     <section class="card"><div class="card-h"><h2>Common questions</h2></div><div class="card-b help-faq">
       <details><summary>A job won't run</summary><p>Jobs need a Git repository, a machine, a model and a ready AI provider. GitHub workflows also need GitHub sign-in. The <a href="#/checkup">Onboarding checklist</a> shows what's missing and where to fix it.</p></details>
       <details><summary>How do I get better plans?</summary><p>Fill in the <a href="#/product">product requirements</a>: what you're building, who it's for, the core features, how it should look and feel, and what it should not be. Every plan is written against it. All of it is optional, and “not sure yet” is a fine answer. Draft it from your project, or import a PRD you already have. It keeps itself up to date as jobs finish, and you can see and undo every change.</p></details>
@@ -10023,6 +10029,13 @@ pages.help = async () => {
       </div>
     </div></section>`,
   after: () => {
+    if (query?.get("section") === "breakdown-techniques") {
+      const target = $("#help-breakdown-techniques");
+      if (target) {
+        target.scrollIntoView({ behavior: "smooth", block: "start" });
+        target.focus?.({ preventScroll: true });
+      }
+    }
     view.querySelectorAll("[data-guide]").forEach((b) => b.addEventListener("click", async () => {
       b.disabled = true;
       try {

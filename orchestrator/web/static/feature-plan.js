@@ -34,8 +34,8 @@
   };
 
   function techniqueSelect(selected) {
-    return `<label class="field epic-technique"><span>Technique</span><select id="epic-technique">${TECHNIQUES.map(([value, label]) =>
-      `<option value="${value}" ${value === (selected || "") ? "selected" : ""}>${escapeHtml(label)}</option>`).join("")}</select></label>`;
+    return `<div class="field epic-technique"><div class="row align-center gap-6"><label for="epic-technique">Technique</label><a class="btn small ghost icon-only epic-technique-help" href="#/help?section=breakdown-techniques" aria-label="Breakdown technique documentation" title="Learn the difference between breakdown techniques"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-doc"/></svg></a></div><select id="epic-technique">${TECHNIQUES.map(([value, label]) =>
+      `<option value="${value}" ${value === (selected || "") ? "selected" : ""}>${escapeHtml(label)}</option>`).join("")}</select></div>`;
   }
 
   // How the breakdown was made: the technique and why, how much detail, and what is still unanswered.
