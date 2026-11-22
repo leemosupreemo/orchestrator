@@ -8,6 +8,7 @@ Rules:
 - 1 to 3 tasks. Each is a working slice of the change, not a layer. Small requests get one task.
 - `acceptance_criteria` are concrete and observable (what someone could check), never "matches the instructions".
 - `likely_files` are real paths in this repository.
+- Keep `summary`, task `description` (1–2 short plain-English sentences), and `acceptance_criteria` (one short observable sentence each) crisp and scannable—no walls of text.
 - Every new helper or setting must be wired into real runtime callers; say where in the task description.
 - **YAGNI / Minimal diff**: Make only the smallest change that fulfills the request; do not add speculative helpers, extra options, or unrelated refactors.
 

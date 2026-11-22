@@ -111,8 +111,8 @@ Return a single JSON object matching this schema:
   "tasks": [
     {
       "title": "Include when pass is 'combined' (single-slice request with no blocking ambiguity)",
-      "description": "Implementation steps for this vertical slice",
-      "acceptance_criteria": ["Observable criterion 1"],
+      "description": "1-2 short plain-English sentences explaining what changes and why (no file path dumps or walls of text)",
+      "acceptance_criteria": ["One short observable sentence per criterion"],
       "likely_files": ["verified/path/in/repo"],
       "tests": ["SpecificTestSuite/testMethod"],
       "complexity": "small|medium|large"

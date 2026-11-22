@@ -1027,7 +1027,7 @@ console.log(JSON.stringify({{ withIndex, fallback }}));
     def test_run_action_shows_busy_state_and_navigates_immediately(self):
         app = APP.read_text(encoding="utf-8")
         start = app.index("async function runAction(")
-        block = app[start:start + 1700]
+        block = app[start:start + 1900]
         self.assertIn('button.setAttribute("aria-busy", "true")', block)
         self.assertIn("Starting…", block)
         self.assertIn("state.runs.unshift(run)", block)

@@ -584,6 +584,16 @@ async function handoffJobToMachine(peer, { jobId, job, summary, action = "resume
   route();
 }
 
+async function tryAutoFailoverAction(action, params) {
+  if (!isAutoFailoverEnabled() || state?.disk_low !== true || !["schedule", "execute", "resume", "debug"].includes(action) || !params?.job) return false;
+  const peer = await findReadyFailoverMachine(state.project).catch(() => null);
+  if (!peer) return false;
+  toast(`Low disk space here — handing off to ${peer.machine.name}…`, "info");
+  const detail = await api(`jobs/${encodeURIComponent(params.job)}`);
+  await handoffJobToMachine(peer, { jobId: params.job, job: detail.job, summary: detail.summary, action });
+  return true;
+}
+
 async function runAction(action, params = {}, { skipConfirm = false, button = null, stayOnJob = false } = {}) {
   const meta = state.actions[action] || {};
   if (action === "test" && !(await projectHasTests())) {
@@ -598,15 +608,7 @@ async function runAction(action, params = {}, { skipConfirm = false, button = nu
     button.innerHTML = `<svg class="icon icon-sm spin" aria-hidden="true"><use href="#i-refresh"/></svg> Starting…`;
   }
   try {
-    if (isAutoFailoverEnabled() && state?.disk_low === true && ["schedule", "execute", "resume", "debug"].includes(action) && params?.job) {
-      const peer = await findReadyFailoverMachine(state.project).catch(() => null);
-      if (peer) {
-        toast(`Low disk space here — handing off to ${peer.machine.name}…`, "info");
-        const detail = await api(`jobs/${encodeURIComponent(params.job)}`);
-        await handoffJobToMachine(peer, { jobId: params.job, job: detail.job, summary: detail.summary, action });
-        return;
-      }
-    }
+    if (await tryAutoFailoverAction(action, params)) return;
     const { run } = await api("runs", { method: "POST", body: { action, params, ...terminalSize() } });
     trackWebEvent("web_action_triggered", { action });
     if (run && Array.isArray(state.runs) && !state.runs.some((r) => r.id === run.id)) {
@@ -6763,10 +6765,20 @@ pages.job = async ([id]) => {
           ${taskRuns.length > 5 ? `<button type="button" class="btn small" data-show-all="${runListId}">Show all ${taskRuns.length}</button>` : ""}
         </details>`
       : `<span class="muted t-secondary">${esc(runLabel)}</span>`;
+    const formatTaskDetail = (text) => {
+      const clean = String(text || "").replace(/\s+/g, " ").trim();
+      if (!clean) return "";
+      const sentences = clean.split(/(?<=[.!?])\s+(?=[A-Z0-9])/).map((s) => s.trim()).filter(Boolean);
+      if (sentences.length <= 1 || clean.length <= 140) return `<div class="meta">${esc(clean)}</div>`;
+      const shown = sentences.slice(0, 3);
+      const rest = sentences.slice(3);
+      return `<ul class="assumptions task-detail-steps">${shown.map((s) => `<li>${esc(s)}</li>`).join("")}</ul>`
+        + (rest.length ? `<details class="fold mt-4"><summary class="linklike muted">More (${rest.length})</summary><ul class="assumptions task-detail-steps">${rest.map((s) => `<li>${esc(s)}</li>`).join("")}</ul></details>` : "");
+    };
     return `<div class="item task-row${isCurrent ? " is-current" : ""}"${isCurrent ? ' aria-current="step"' : ""}>${marker}<div class="main-col"><div class="title">${esc(title)}${currentBadge}</div>
-      ${more ? `<details class="task-detail"><summary class="linklike muted">Details</summary>${detail ? `<div class="meta">${esc(detail)}</div>` : ""}
+      ${more ? `<details class="task-detail"><summary class="linklike muted">Details</summary>${formatTaskDetail(detail)}
       ${doneWhen.length ? `<div class="task-done-when"><span class="label">Done when</span><ul>${doneWhen.slice(0, 4).map((c) => `<li>${esc(c)}</li>`).join("")}</ul></div>` : ""}
-      ${files.length ? `<div class="task-files">${files.slice(0, 4).map((f) => `<code>${esc(f)}</code>`).join("")}${files.length > 4 ? `<span class="muted">+${files.length - 4} more</span>` : ""}</div>` : ""}</details>` : ""}
+      ${files.length ? `<div class="task-files">${files.slice(0, 4).map((f) => `<code title="${esc(f)}">${esc(f.split("/").pop() || f)}</code>`).join("")}${files.length > 4 ? `<span class="muted">+${files.length - 4} more</span>` : ""}</div>` : ""}</details>` : ""}
       ${runList}</div>${controls}${undo}</div>`;
   }).join("") || `<div class="empty">No tasks yet.</div>`;
   const addTaskHtml = canEditPlan ? `<div class="card-b card-b-split"><button type="button" class="btn small ghost icon-only" data-task-op="add" aria-label="Add a task" title="Add a task"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-plus"/></svg></button></div>` : "";
