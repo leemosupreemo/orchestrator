@@ -1975,7 +1975,7 @@ process.stdout.write(JSON.stringify({ids, menu: pages.renderMenu('member'), acce
 """)
         for entry_id in ("ai-instructions", "fleet", "access", "email", "firebase", "updates"):
             self.assertNotIn(entry_id, result["ids"])
-        for entry_id in ("ai", "xcode-cloud"):
+        for entry_id in ("ai", "git"):
             self.assertIn(entry_id, result["ids"])
         self.assertNotIn("Who can sign in", result["menu"])
         self.assertNotIn("models", result["ids"])  # models are part of the shared AI destination
@@ -4851,11 +4851,11 @@ class AccessibilityStaticTests(unittest.TestCase):
 
         sidebar = SidebarParser()
         sidebar.feed(self.html)
-        for href in ("#/", "#/activity", "#/product", "#/tests", "#/delivery", "#/git", "#/devlogs", "#/ux-review",
+        for href in ("#/", "#/activity", "#/product", "#/tests", "#/delivery", "#/config/xcode-cloud", "#/devlogs", "#/ux-review",
                      "#/measure", "#/help"):
             self.assertIn(href, sidebar.links)
         self.assertNotIn("#/docs", sidebar.links)  # no Docs item: the guides are on Help
-        for href in ("#/connections", "#/projects", "#/checkup"):  # set once: under Settings (Configuration), not the sidebar
+        for href in ("#/connections", "#/projects", "#/checkup", "#/git"):  # set once: under Settings (Configuration), not the sidebar
             self.assertNotIn(href, sidebar.links)
         for control in ("project-select", "search-btn", "configuration-menu-trigger", "notify-btn", "signout-btn"):
             self.assertIn(control, sidebar.controls)

@@ -8161,6 +8161,7 @@ pages.delivery = async (args, query) => {
   return {
     title: "App delivery",
     sub: web ? "Publish preview links and track releases." : "",
+    actions: `<a class="btn small ghost" href="#/config/firebase" data-owner-only>Tester build setup</a>`,
     html: `${prereqHtml}${branchCard}<section class="card mb-16" id="server-card" hidden></section><details class="fold mb-16" id="advanced-delivery"><summary class="card-h"><h2>Advanced delivery settings</h2><span class="muted t-secondary">platform, signing and every option</span></summary>${targetCard}</details>${releaseCard}${buildsCard}${pipelineCard}`,
     after: () => {
       const branchSelect = view.querySelector("#delivery-branch-select");
@@ -16997,11 +16998,11 @@ function resolveRoute() {
   if (parts[0] === "jobs") return { page: "home", args: [], nav: "home", query }; // Jobs list lives on Home
   if (parts[0] === "config") {
     const section = ConfigurationPages.resolve(parts[1]);
-    return { page: "config", args: section ? [section.id] : [], nav: "config", query };
+    return { page: "config", args: section ? [section.id] : [], nav: section?.id === "xcode-cloud" ? "xcode-cloud" : "config", query };
   }
   if (parts[0] === "connect" || parts[0] === "computers") return { page: parts[0], args: [], nav: null, query };
   if (parts[0] === "new-project") return { page: "new-project", args: [], nav: "config", query };
-  if (["connections", "projects"].includes(parts[0])) return { page: parts[0], args: [], nav: "config", query }; // under Settings
+  if (["connections", "projects", "git"].includes(parts[0])) return { page: parts[0], args: [], nav: "config", query }; // under Settings
   if (parts[0] === "product") return { page: "product", args: [], nav: "product", query };
   if (parts[0] === "architecture") return { page: "product", args: [], nav: "product", query: new URLSearchParams("section=architecture") }; // lives on Product
   if (parts[0] === "docs") return { page: "docs", args: parts.slice(1), nav: "docs", query };

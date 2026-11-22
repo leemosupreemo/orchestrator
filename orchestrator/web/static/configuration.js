@@ -20,8 +20,9 @@
       id: "project",
       label: "This project",
       entries: [
+        {id: "git", label: "Git setup", description: "Repository remote, branch settings, and GitHub connection.", route: "#/git", enabled: true, status: null},
         {id: "firebase", label: "Tester build setup", description: "Configure Firebase App Distribution, signing, and tester groups. Send and track builds in App delivery.", route: "#/config/firebase", enabled: true, ownerOnly: true, status: null},
-        {id: "xcode-cloud", label: "Xcode Cloud", description: "Cloud builds and CI workflows.", route: "#/config/xcode-cloud", enabled: true, status: null},
+        {id: "xcode-cloud", label: "Xcode Cloud", description: "Cloud builds and CI workflows.", route: "#/config/xcode-cloud", enabled: true, listed: false, status: null},
       ],
     },
     {
