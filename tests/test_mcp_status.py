@@ -105,8 +105,9 @@ class ConnectionsPageTests(unittest.TestCase):
         self.assertIn('href="#/connections?connect=jira">${providerIcon("jira")} Connect Jira</a>', self.app)
 
     def test_reverse_engineering_checks_rea_is_installed_and_offers_to_install_it(self):
-        self.assertIn('<div id="prd-rea-status" aria-live="polite">', self.app)
-        self.assertIn('api("mcp/install", { method: "POST", body: { server: "rea", tool: b.dataset.reaInstall } })', self.app)
+        self.assertIn('<div id="prd-rea-model-slot" aria-live="polite">', self.app)
+        self.assertIn('href="#/connections?section=mcp">Setup REA</a>', self.app)
+        self.assertNotIn("REA is installed in", self.app)
         self.assertIn('useIn: { href: "#/product?reverse=1", label: "Use on Product" }', self.app)  # the grid row links to it
 
     def test_trello_explains_the_api_key_instead_of_a_dead_button(self):

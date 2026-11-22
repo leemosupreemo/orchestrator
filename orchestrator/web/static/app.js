@@ -11239,39 +11239,46 @@ pages.product = async (_, query) => {
           <label class="field"><span>Target binary path, package name, or REA analysis notes</span>
             <textarea id="prd-reverse-target" rows="3" placeholder="e.g. /path/to/binary, package name, or paste REA decompilation notes…" aria-label="Target or notes for REA reverse engineering"></textarea>
           </label>
-          ${prdModelField(p, "prd-reverse-model")}
-          <div id="prd-rea-status" aria-live="polite"><small class="muted">Checking which AI tools have REA…</small></div>
+          <div id="prd-rea-model-slot" aria-live="polite"><small class="muted">Checking supported AI models…</small></div>
           <div class="row gap-12">
             <button type="button" class="btn primary" id="prd-reverse-go" data-why="Choose a file or enter a target first." disabled>Reverse engineer</button>
             <button type="button" class="btn ghost" id="prd-reverse-cancel">Cancel</button>
           </div>
         </div></section>`;
-        // REA has to be installed in the AI tool that does the work: say which have it, and install it where none do.
-        const showReaStatus = async () => {
-          const box = $("#prd-rea-status");
-          if (!box) return;
-          let mcp;
-          try { mcp = await api("mcp/status"); } catch { box.innerHTML = ""; return; }
-          const rea = mcp.servers.find((x) => x.id === "rea");
-          const have = mcp.tools.filter((t) => rea?.installed[t.id]);
-          const owner = state.you?.role !== "member";
-          box.innerHTML = have.length
-            ? `<small class="muted">REA is installed in ${have.map((t) => esc(t.name)).join(", ")}.</small>`
-            : `<div class="notice"><div class="stack"><strong>REA isn't installed in any AI tool yet</strong>
-                <span class="muted">Without it the AI can only go on the notes you give it. Install it in the tool that drafts your requirements.</span>
-                ${owner ? `<div class="row gap-8 wrap">${mcp.tools.map((t) => `<button type="button" class="btn small go" data-rea-install="${esc(t.id)}">Install in ${esc(t.name)}</button>`).join("")}</div>` : ""}</div></div>`;
-          box.querySelectorAll("[data-rea-install]").forEach((b) => b.addEventListener("click", async () => {
-            b.disabled = true; b.innerHTML = `<span class="spinner inline-spinner" aria-hidden="true"></span>Installing…`;
-            try { await api("mcp/install", { method: "POST", body: { server: "rea", tool: b.dataset.reaInstall } }); toast("REA installed. Restart that AI tool if it's open."); showReaStatus(); }
-            catch (e) { toast(e.message, true); b.disabled = false; b.textContent = "Install"; }
-          }));
+        const reaToolForModel = (m) => {
+          const prov = String(m?.provider || "").toLowerCase();
+          const mid = String(m?.id || "").toLowerCase();
+          if (prov === "anthropic" || mid.startsWith("claude")) return "claude";
+          if (prov === "openai" || mid.startsWith("gpt-") || mid.startsWith("codex") || /^o[134]/.test(mid)) return "codex";
+          if (prov === "google" || mid.startsWith("gemini")) return "gemini";
+          if (prov === "opencode" || mid.startsWith("opencode/")) return "opencode";
+          return "";
         };
-        showReaStatus();
+        let hasSupportedReaModel = false;
         const input = $("#prd-reverse-input"), zone = $("#prd-reverse-drop"), goBtn = $("#prd-reverse-go"), textEl = $("#prd-reverse-target");
         let picked = null;
         const sync = () => {
-          goBtn.disabled = !picked && !textEl.value.trim();
+          goBtn.disabled = !hasSupportedReaModel || (!picked && !textEl.value.trim());
+          goBtn.dataset.why = !hasSupportedReaModel ? "Set up REA in an available AI tool first." : "Choose a file or enter a target first.";
         };
+        const showReaModels = async () => {
+          const slot = $("#prd-rea-model-slot");
+          if (!slot) return;
+          let mcp;
+          try { mcp = await api("mcp/status"); } catch { mcp = null; }
+          const rea = mcp?.servers?.find((x) => x.id === "rea");
+          const haveToolIds = new Set((mcp?.tools || []).filter((t) => rea?.installed?.[t.id]).map((t) => t.id));
+          const supported = (p.available_models || []).filter((m) => haveToolIds.has(reaToolForModel(m)));
+          if (supported.length) {
+            hasSupportedReaModel = true;
+            slot.innerHTML = prdModelField({ ...p, available_models: supported }, "prd-reverse-model");
+          } else {
+            hasSupportedReaModel = false;
+            slot.innerHTML = `<div class="row"><a class="btn primary" href="#/connections?section=mcp">Setup REA</a></div>`;
+          }
+          sync();
+        };
+        showReaModels();
         const setFile = (f) => {
           if (!f) return;
           picked = f;
