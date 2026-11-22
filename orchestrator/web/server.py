@@ -9791,6 +9791,7 @@ class UIHandler(BaseHTTPRequestHandler):
                 self._json({"remote_machine": remote, "caches": []})
                 return
             report = disk_space.status(root, runtime_dir(root))
+            report["os"] = sys.platform
             report["caches"] = []
             if query.get("caches") == ["1"]:
                 self._require_owner("list removable build caches")

@@ -4097,13 +4097,21 @@ async function openDiskSpace(jobId = "") {
       }
       if (dlg && !dlg.open) return;
       if (report.remote_machine) {
-        await formDialog("Free up disk space", `<p>This job ran on <strong>${esc(report.remote_machine)}</strong>. Open Orchestrator on that computer or use macOS System Settings → General → Storage there.</p>`, "Done", { compact: true });
+        await formDialog("Free up disk space", `<p>This job ran on <strong>${esc(report.remote_machine)}</strong>. Open Orchestrator on that computer or clear space in its system storage settings.</p>`, "Done", { compact: true });
         return;
       }
       renderNewJobDiskNotice($("#nj-disk-warning"), report);
       const gb = (bytes) => bytes === null ? "Unknown" : `${(bytes / 1024 ** 3).toFixed(1)} GB`;
       const needsSpace = report.needed_bytes > 0;
       const caches = report.caches || [];
+      const osTag = String(report.os || state?.project?.computer?.os || (typeof navigator !== "undefined" ? (navigator.userAgentData?.platform || navigator.platform || "") : "")).toLowerCase();
+      const extraSpaceHint = osTag.includes("darwin") || osTag.includes("mac")
+        ? "To clear additional space (downloads, large files, and Trash), open macOS System Settings → General → Storage."
+        : osTag.includes("win")
+          ? "To clear additional space (downloads, large files, and Recycle Bin), open Windows Settings → System → Storage."
+          : osTag.includes("linux")
+            ? "To clear additional space (downloads, large files, and Trash), check your system's storage settings or Disk Usage Analyzer."
+            : "To clear additional space, remove unused downloads, large files, or empty the Trash on this computer.";
       const body = `<div class="stack gap-12">
         ${needsSpace ? `<p class="text-bad"><strong>Free at least ${Math.ceil(report.needed_bytes / 1024 ** 3)} GB to continue.</strong></p>` : `<p><strong>Enough space is available to continue.</strong> (${esc(gb(report.free_bytes))} free)</p>`}
         ${outcome ? `<div role="status" class="notice ${outcomeTone === "bad" ? "bad" : "ok"} wrap-anywhere">${esc(outcome)}</div>` : ""}
@@ -4111,7 +4119,7 @@ async function openDiskSpace(jobId = "") {
           ${caches.map(cache => `<label class="check wrap-anywhere"><input type="checkbox" name="cache_${esc(cache.id)}">
             <span>${esc(cache.tool || "Xcode")} · ${esc(cache.name)}${cache.bytes === null ? "" : ` · ${esc(formatBytes(cache.bytes))}`}</span></label>`).join("")}
         </fieldset>` : "<p>No supported caches found on the project volume.</p>"}
-        <p class="t-secondary">To clear additional space (downloads, large files, and Trash), open macOS System Settings → General → Storage.</p>
+        <p class="t-secondary">${esc(extraSpaceHint)}</p>
       </div>`;
       const answer = formDialog("Free up disk space", body, "Check again");
       const dialogBody = $("#dialog-body");
