@@ -717,7 +717,7 @@
   function renderUpdates(state) {
     return {
       title: "Updates",
-      sub: "Keep Swift Orchestrator up to date across your local machine and fleet.",
+      sub: "",
       html: `<div class="configuration-page">
         <section class="card configuration-card">
           <div class="card-h"><h2>Orchestrator Software Updates</h2></div>
