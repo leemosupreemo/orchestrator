@@ -7004,13 +7004,13 @@ pages.job = async ([id]) => {
       <p class="question">${esc(q.question)}</p>
       ${q.note ? `<p class="muted t-secondary">${esc(q.note)}</p>` : ""}
     </div>`).join("");
+  const hasClarifyFlags = Boolean(questionHeaderFlagHtml || (job.clarification_history || []).some((h) => h.auto));
   const clarifyCardHtml = totalQuestionsCount ? `<section class="card mb-16 clarify-card" id="${s.question ? "clarify" : "clarify-history"}">
     <details class="fold"${unansweredQuestions.length ? " open" : ""}>
       <summary class="card-h">
         <h2>Questions <span class="count">${totalQuestionsCount}</span></h2>
-        ${questionHeaderFlagHtml}
-        ${autoresponseNote(job)}
         <details class="more clarify-export-more"><summary class="btn small ghost icon-only" aria-label="Export chat" title="Export chat"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-download"/></svg></summary><div class="more-menu"><button type="button" class="btn small" data-clarify-export="copy">Copy chat</button><button type="button" class="btn small" data-clarify-export="download">Export chat</button></div></details>
+        ${hasClarifyFlags ? `<div class="clarify-header-flags">${questionHeaderFlagHtml}${autoresponseNote(job)}</div>` : ""}
       </summary>
       <div class="card-b stack">
         ${unansweredQuestions.length ? `
