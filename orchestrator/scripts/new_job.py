@@ -1420,9 +1420,13 @@ def main(args_override: list[str] | None = None) -> None:
             previous = (existing_job or {}).get("plan", {}).get("test_cases") or []
             try:
                 plan["test_cases"] = tc.normalize_cases(plan["test_cases"], issue_number or job_ref, job_id, existing=previous)
+                if plan["test_cases"]:
+                    tc.write_cases(ROOT, plan["test_cases"])
             except tc.TestCaseError as e:
                 plan.setdefault("test_case_problems", []).append(f"`test_cases` is malformed: {e}.")
                 plan["test_cases"] = []
+            except OSError as e:
+                print(f"      - Note: could not write test cases to library: {e}")
             section = tc.issue_section(plan["test_cases"])
             if plan.get("test_case_problems"):
                 section += ["", "> ⚠️ **Test cases need attention:** " + " ".join(p.splitlines()[0] for p in plan["test_case_problems"])]

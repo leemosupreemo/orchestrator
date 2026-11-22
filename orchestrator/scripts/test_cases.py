@@ -469,8 +469,23 @@ def cases_by_test(cases: list[dict[str, Any]], cov: dict[str, dict[str, Any]]) -
 
 
 def job_cases(job: dict[str, Any]) -> list[dict[str, Any]]:
-    return [dict(c, type=normalize_type(c.get("type")))
-            for c in (job.get("plan") or {}).get("test_cases") or [] if isinstance(c, dict) and c.get("id")]
+    source_job = job.get("job_id")
+    out: list[dict[str, Any]] = []
+    for c in (job.get("plan") or {}).get("test_cases") or []:
+        if isinstance(c, dict) and c.get("id") and _text(c.get("title")) and _text(c.get("expected")):
+            entry = dict(c, type=normalize_type(c.get("type")), area=_text(c.get("area")) or "General")
+            if source_job and not entry.get("source_job"):
+                entry["source_job"] = source_job
+            out.append(entry)
+    return out
+
+
+def sync_job_cases(root: Path, job: dict[str, Any]) -> list[Path]:
+    """Write a job's valid normalized test cases into the repository's test case library (`docs/test-cases/`)."""
+    cases = job_cases(job)
+    if not cases:
+        return []
+    return write_cases(root, cases)
 
 
 def due_cases(job: dict[str, Any]) -> list[dict[str, Any]]:

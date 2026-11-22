@@ -1444,6 +1444,18 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
 
         # Commit changes if any
         if build_ok and test_ok and (ai_modified or ai_untracked):
+            if (ROOT / ".git").exists():
+                try:
+                    import test_cases as tc
+                    for tc_path in tc.sync_job_cases(ROOT, job):
+                        try:
+                            rel_tc = tc_path.relative_to(ROOT).as_posix()
+                            if rel_tc not in ai_modified and rel_tc not in ai_untracked:
+                                ai_untracked.append(rel_tc)
+                        except ValueError:
+                            pass
+                except Exception:
+                    pass
             # Say it passed before committing: if the commit fails, the job shows "Tests passed, not committed" and Resume
             # commits it, rather than "debug failing tests" from the previous attempt.
             job["passed_uncommitted"] = {"files": sorted(set(ai_modified) | set(ai_untracked)), "at": now_iso()}

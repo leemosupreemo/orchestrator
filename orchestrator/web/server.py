@@ -8709,10 +8709,14 @@ class UIHandler(BaseHTTPRequestHandler):
             try:
                 if op == "add":
                     plan_edit.add_case(job, body, issue_number=issue_num)
+                    test_case_lib.sync_job_cases(root, job)
                 elif op == "edit":
                     plan_edit.edit_case(job, str(body.get("id") or ""), body)
+                    test_case_lib.sync_job_cases(root, job)
                 else:
-                    plan_edit.remove_case(job, str(body.get("id") or ""))
+                    removed = plan_edit.remove_case(job, str(body.get("id") or ""))
+                    if removed and removed.get("id"):
+                        test_case_lib.delete_library_case(root, str(removed["id"]))
             except plan_edit.PlanEditError as exc:
                 raise UIError(str(exc))
             write_json_file(job_path, job)

@@ -204,6 +204,31 @@ class TestCaseLibraryTests(unittest.TestCase):
                 code_fixed = tc.main(["check", str(job_file)])
                 self.assertEqual(code_fixed, 0)
 
+    def test_sync_job_cases_writes_job_test_cases_to_compendium(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            job = {
+                "job_id": "20261122-feature-42",
+                "type": "feature-plan",
+                "plan": {
+                    "test_cases": tc.normalize_cases([
+                        {
+                            "area": "Leaderboard",
+                            "title": "Rank updates on new high score",
+                            "type": "functionality",
+                            "expected": "Player moves up in leaderboard",
+                            "tests": ["LeaderboardTests/test_rank_updates"],
+                        }
+                    ], 42, "20261122-feature-42")
+                },
+            }
+            written = tc.sync_job_cases(root, job)
+            self.assertTrue(any(p.name == "TC-42-01.json" for p in written))
+            loaded = tc.load_library(root)
+            self.assertEqual(len(loaded), 1)
+            self.assertEqual(loaded[0]["id"], "TC-42-01")
+            self.assertEqual(loaded[0]["source_job"], "20261122-feature-42")
+
 
 if __name__ == "__main__":
     unittest.main()
