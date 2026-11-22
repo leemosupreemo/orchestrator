@@ -17054,8 +17054,8 @@ function runStepHtml(step, open, lines, { entering = false, extending = false } 
     <span class="run-step-icon" aria-hidden="true">${step.status === "failed" ? `<svg class="icon"><use href="#i-alert"/></svg>` : `<svg class="icon"><use href="#${icon}"/></svg>`}</span>
     <div class="run-step-main">
       <button type="button" class="run-step-head" data-step-toggle="${step.id}" aria-expanded="${open}" data-why="No output for this step."${step.lines ? "" : " disabled"}>
-        <span class="run-step-title">${esc(step.title)}${step.of ? ` <span class="run-step-of">${esc(step.of)}</span>` : ""}</span>
-        <span class="run-step-meta">${step.errors ? `<span class="run-step-errors">${plural(step.errors, "error")}</span>` : ""}${running ? runningMark : ""}${step.seconds != null ? `<span>${secondsText(step.seconds)}</span>` : ""}${step.lines ? `<svg class="icon run-step-chevron" aria-hidden="true"><use href="#i-chevron"/></svg>` : ""}</span>
+        <span class="run-step-title">${esc(step.title)}${step.of ? ` <span class="run-step-of">${esc(step.of)}</span>` : ""}${step.lines ? `<svg class="icon run-step-chevron" aria-hidden="true"><use href="#i-chevron"/></svg>` : ""}</span>
+        <span class="run-step-meta">${step.errors ? `<span class="run-step-errors">${plural(step.errors, "error")}</span>` : ""}${running ? runningMark : ""}${step.seconds != null ? `<span>${secondsText(step.seconds)}</span>` : ""}</span>
       </button>
       ${step.events.map(runStepEvent).join("")}
       ${running && !open ? (step.recent?.length > 1
@@ -17073,11 +17073,18 @@ function wireRunTimeline(id, { saved = false } = {}) {
   const open = new Set();
   const outputs = new Map();
   const seenSteps = new Set();
+  const scrollToLatest = new Set();
   let data = null, stopped = false, timer = null, autoOpened = false, initialized = false;
   const draw = () => {
     if (!data) return;
     const steps = data.steps || [];
     const nearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
+    const prevScroll = new Map();
+    box.querySelectorAll(".run-step[data-step] .run-step-output").forEach((pre) => {
+      const sid = Number(pre.closest(".run-step")?.dataset.step);
+      const atBottom = pre.scrollHeight - pre.scrollTop - pre.clientHeight < 24;
+      prevScroll.set(sid, { atBottom, top: pre.scrollTop });
+    });
     const enteringIds = initialized ? new Set(steps.filter((s) => !seenSteps.has(s.id)).map((s) => s.id)) : new Set();
     box.innerHTML = steps.length ? `<ol class="run-steps">${steps.map((s, idx) => {
         const next = steps[idx + 1];
@@ -17086,6 +17093,16 @@ function wireRunTimeline(id, { saved = false } = {}) {
         return runStepHtml(s, open.has(s.id), outputs.get(s.id), { entering, extending });
       }).join("")}</ol>`
       : `<div class="empty">${data.running ? "Starting…" : "This run printed nothing."}</div>`;
+    box.querySelectorAll(".run-step[data-step] .run-step-output").forEach((pre) => {
+      const sid = Number(pre.closest(".run-step")?.dataset.step);
+      const savedPos = prevScroll.get(sid);
+      if (scrollToLatest.has(sid) || !savedPos || savedPos.atBottom) {
+        pre.scrollTop = pre.scrollHeight;
+        if (outputs.has(sid)) scrollToLatest.delete(sid);
+      } else {
+        pre.scrollTop = savedPos.top;
+      }
+    });
     for (const s of steps) seenSteps.add(s.id);
     initialized = true;
     if (data.running && nearBottom) box.scrollTop = box.scrollHeight;
@@ -17117,8 +17134,8 @@ function wireRunTimeline(id, { saved = false } = {}) {
     const head = e.target.closest("[data-step-toggle]");
     if (!head) return;
     const stepId = Number(head.dataset.stepToggle);
-    if (open.has(stepId)) open.delete(stepId);
-    else { open.add(stepId); draw(); await loadLines(stepId); }
+    if (open.has(stepId)) { open.delete(stepId); scrollToLatest.delete(stepId); }
+    else { open.add(stepId); scrollToLatest.add(stepId); draw(); await loadLines(stepId); }
     draw();
   });
   cleanup.push(() => { stopped = true; clearTimeout(timer); });
