@@ -6941,6 +6941,8 @@ class UIServer(ThreadingHTTPServer):
         result = self_update.apply()
         print(f"  Update: {result['message']}", flush=True)
         if result.get("ok") and result.get("restart"):
+            if any(run.get("running") for run in self.sessions.list()):
+                return status  # a run started while the update applied: don't kill it with SIGTERM (-15)
             _trigger_ui_restart(self)
         return status
 

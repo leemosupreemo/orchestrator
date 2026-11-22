@@ -820,6 +820,80 @@ def unpack_builder_result(result):
 # Job types whose whole point is to change code. An investigation may rightly change nothing.
 NO_CHANGE_EXEMPT_TYPES = {"bug-investigate"}
 BLOCKED_EDIT_WORDS = ("permission", "blocked", "not allowed", "denied", "read-only", "read only")
+ALREADY_COVERED_WORDS = ("already in place", "already implemented", "already covered", "already exists", "no changes needed", "unchanged")
+
+
+def _job_target_files(job: dict, task: Optional[dict] = None) -> set[str]:
+    files: set[str] = set()
+    if isinstance(task, dict):
+        for f in task.get("likely_files") or []:
+            if isinstance(f, str) and f.strip():
+                files.add(f.strip().removeprefix("./"))
+    plan = job.get("plan") if isinstance(job.get("plan"), dict) else {}
+    for f in plan.get("likely_files") or []:
+        if isinstance(f, str) and f.strip():
+            files.add(f.strip().removeprefix("./"))
+    for t in plan.get("tasks") or []:
+        if isinstance(t, dict):
+            for f in t.get("likely_files") or []:
+                if isinstance(f, str) and f.strip():
+                    files.add(f.strip().removeprefix("./"))
+    return files
+
+
+def overlapping_completed_job_question(job: dict, job_path: Optional[Path] = None, task: Optional[dict] = None) -> str:
+    """When a build changes no files and another completed job already touched the same target files (or the builder
+    explicitly reports the change is already in place), return a clear stopping clarification question for the user."""
+    target_files = _job_target_files(job, task)
+    my_id = str(job.get("job_id") or (job_path.stem if job_path else ""))
+    model_used = str(job.get("actual_builder_used") or job.get("builder") or "The builder")
+    summary = " ".join(str(job.get("builder_summary") or "").split())
+    short_summary = (summary[:220] + "…") if len(summary) > 220 else summary
+
+    if job_path and job_path.parent.is_dir() and target_files:
+        folders = [job_path.parent, job_path.parent / "archive"]
+        candidates: list[Path] = []
+        for folder in folders:
+            if folder.is_dir():
+                candidates.extend(sorted(folder.glob("*.json"), reverse=True))
+        for other_path in candidates:
+            if other_path.stem == my_id or re.search(r"_task_\d+$", other_path.stem):
+                continue
+            try:
+                other = read_json(other_path)
+            except Exception:
+                continue
+            if not isinstance(other, dict) or other.get("status") != "completed":
+                continue
+            other_files = {
+                str(f).strip().removeprefix("./")
+                for f in (
+                    *(other.get("ai_modified_files") or []),
+                    *(other.get("ai_untracked_files") or []),
+                    *_job_target_files(other),
+                )
+                if isinstance(f, str) and f.strip()
+            }
+            shared = sorted(
+                tf for tf in target_files
+                if any(tf == of or tf.endswith("/" + of) or of.endswith("/" + tf) for of in other_files)
+            )
+            if shared:
+                other_title = str(other.get("title") or other.get("job_id") or other_path.stem)
+                files_list = ", ".join(shared[:3]) + (f" (+{len(shared) - 3} more)" if len(shared) > 3 else "")
+                note = f' Builder note: "{short_summary}"' if short_summary else ""
+                return (
+                    f'Completed job "{other_title}" ({other.get("job_id") or other_path.stem}) already modified {files_list}, '
+                    f"and {model_used} made no file changes in this run.{note} "
+                    "Does that completed job already cover this requirement (so this job can be closed), or what specific changes still need to be built?"
+                )
+
+    if summary and any(w in summary.lower() for w in ALREADY_COVERED_WORDS) and not any(w in summary.lower() for w in BLOCKED_EDIT_WORDS):
+        return (
+            f'{model_used} made no file changes and reported that the work may already be in place: "{short_summary}". '
+            "Should this job be closed as already covered, or what specific changes still need to be made?"
+        )
+    return ""
 
 
 def no_change_stop(job: dict, changed_now: list[str], *, debug_attempt: bool = False) -> str:
@@ -832,12 +906,15 @@ def no_change_stop(job: dict, changed_now: list[str], *, debug_attempt: bool = F
     ever_changed = bool(job.get("ai_modified_files") or job.get("ai_untracked_files") or job.get("completed_task_indices"))
     if ever_changed and not debug_attempt:
         return ""
-    summary = str(job.get("builder_summary") or "")
+    summary = " ".join(str(job.get("builder_summary") or "").split())
     blocked = any(w in summary.lower() for w in BLOCKED_EDIT_WORDS)
     what = "The fix attempt" if debug_attempt and ever_changed else "The build"
+    model_used = str(job.get("actual_builder_used") or "").strip()
+    model_note = f" ({model_used})" if model_used else ""
+    summary_note = f' Builder reported: "{summary[:180]}".' if summary and not blocked and summary != "Implemented it." else ""
     reason = (" The AI said its file edits were blocked, so check that its tool may edit files, then run the job again."
-              if blocked else " If the change was already in place, close the job; otherwise run it again, or describe the change more specifically.")
-    return f"{what} finished without changing any files, so nothing was built.{reason}"
+              if blocked else f"{summary_note} If the change was already in place, close the job; otherwise run it again, or describe the change more specifically.")
+    return f"{what}{model_note} finished without changing any files, so nothing was built.{reason}"
 
 
 def blocker_in_logs(job: dict) -> Optional[dict]:
@@ -1318,8 +1395,24 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
                         send_notifications(job, "Job Paused: a task grew past its plan", f"{said}\nTitle: {job['title']}")
                         return
                 elif build_ok and test_ok:
+                    if not files_touched:
+                        if task_output and isinstance(task_output, dict) and task_output.get("summary"):
+                            job["builder_summary"] = task_output["summary"]
+                        overlap_q = overlapping_completed_job_question(job, job_path, active_task)
+                        if overlap_q:
+                            mark_human_needed(job_path, job, overlap_q, task_index=i)
+                            job["last_error"] = f"Task {i+1} paused for clarification: overlapping completed work detected."
+                            write_json(job_path, job)
+                            report_task_attempt(job, task, "paused", "Waiting for clarification on overlapping completed work.")
+                            remove_task_views(job_path)
+                            update_issue_status(issue_number, "status:human-needed", ["status:executing"])
+                            send_notifications(job, "Job Paused: Clarification Needed", f"{overlap_q}\nTitle: {job['title']}")
+                            return
+                    model_tag = f" ({job['actual_builder_used']})" if job.get("actual_builder_used") else ""
+                    note_raw = " ".join(str((task_output or {}).get("summary") or (task_output or {}).get("risks") or "").split())
+                    note_tag = f' — "{note_raw[:160]}"' if note_raw else ""
                     job["status"] = "human-needed"
-                    job["last_error"] = f"Task {i+1}: {outcomes[i][1]}"
+                    job["last_error"] = f"Task {i+1}{model_tag}: {outcomes[i][1]}{note_tag}"
                     print(f"      - {job['last_error']}")
                     write_json(job_path, job)
                     report_task_attempt(job, task, *outcomes[i])
@@ -1415,6 +1508,18 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
             changed_now = sorted({*changed_now, PROJECT_CONFIG_FILE})
         # The task loop may already have stopped the job with a more specific reason (phantom completion, unrelated tests).
         already_stopped = job.get("type") == "feature-plan" and job.get("status") == "human-needed"
+        if not already_stopped and not changed_now and job.get("type") not in NO_CHANGE_EXEMPT_TYPES:
+            overlap_q = overlapping_completed_job_question(job, job_path)
+            if overlap_q:
+                print(f"\n⏸️  {overlap_q}")
+                mark_human_needed(job_path, job, overlap_q)
+                job["last_error"] = "Paused for clarification: another completed job or existing commit may already cover this change."
+                job["worker_pid"] = None
+                job["updated_at"] = now_iso()
+                write_json(job_path, job)
+                update_issue_status(issue_number, "status:human-needed", ["status:executing"])
+                send_notifications(job, "Job Paused: Clarification Needed", f"{overlap_q}\nTitle: {job['title']}")
+                return
         stop = "" if already_stopped else no_change_stop(job, changed_now, debug_attempt=os.environ.get("AI_DEBUG_CHILD") == "1")
         if stop:
             print(f"\n⚠️ {stop}")

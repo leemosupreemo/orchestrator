@@ -64,6 +64,40 @@ class NoChangeRuleTests(unittest.TestCase):
     def test_an_investigation_may_change_nothing(self):
         self.assertEqual(worker.no_change_stop({"type": "bug-investigate"}, []), "")
 
+    def test_overlapping_completed_job_produces_stopping_clarification_question(self):
+        import json
+        with tempfile.TemporaryDirectory() as tmp:
+            jobs = Path(tmp) / "jobs"
+            jobs.mkdir()
+            (jobs / "done-1.json").write_text(json.dumps({
+                "job_id": "done-1",
+                "title": "Quick: Realistic vegetation",
+                "status": "completed",
+                "ai_modified_files": ["Assets/EnvironmentLook.asset"],
+            }))
+            curr_path = jobs / "curr-2.json"
+            curr = {
+                "job_id": "curr-2",
+                "title": "Denser vegetation",
+                "type": "feature-plan",
+                "actual_builder_used": "gpt-6.2-astra",
+                "builder_summary": "The baseline profile already has the 1.35 density.",
+                "plan": {"likely_files": ["Assets/EnvironmentLook.asset"]},
+            }
+            q = worker.overlapping_completed_job_question(curr, curr_path)
+            self.assertIn("Quick: Realistic vegetation", q)
+            self.assertIn("Assets/EnvironmentLook.asset", q)
+            self.assertIn("gpt-6.2-astra", q)
+
+    def test_no_change_stop_names_actual_model_and_builder_summary(self):
+        said = worker.no_change_stop({
+            "type": "quick-fix",
+            "actual_builder_used": "deepseek",
+            "builder_summary": "Verified existing flora settings without modifying assets.",
+        }, [])
+        self.assertIn("The build (deepseek) finished without changing any files", said)
+        self.assertIn("Verified existing flora settings without modifying assets.", said)
+
 
 class SnapshotTests(unittest.TestCase):
     def test_edits_to_files_that_were_already_uncommitted_are_seen(self):
@@ -137,7 +171,12 @@ def hashlib_sha(text: str) -> str:
 
 class WorkerStopTests(unittest.TestCase):
     """The real worker, with the builder and git faked by the shared harness."""
-    setUp = harness.WorkerRunTests.setUp
+    def setUp(self):
+        harness.WorkerRunTests.setUp(self)
+        patcher = patch.object(worker, "require_build_space", return_value=None)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     pipeline = harness.WorkerRunTests.pipeline
 
     def test_a_build_with_no_changes_stops_instead_of_verifying_or_fixing(self):

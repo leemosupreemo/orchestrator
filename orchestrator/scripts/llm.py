@@ -222,12 +222,15 @@ def _cheapest_adequate_first(candidates: list[str], role: str | None, primary_id
     if not tiers:
         return candidates
     bar = min(tiers)  # a smaller tier number is a stronger model
+    primary_family = failed.family if failed else ""
+    demote_free_local = primary_family not in {"", "opencode", "ollama", "qwen"}
 
-    def key(mid: str) -> tuple[bool, float]:
+    def key(mid: str) -> tuple[bool, bool, float]:
         meta = get_model(mid)
         if not meta or int(meta.tier) > bar:
-            return (True, 0.0)
-        return (False, meta.cost_factor)
+            return (True, True, 0.0)
+        is_free_local = demote_free_local and meta.family in {"opencode", "ollama", "qwen"}
+        return (False, is_free_local, meta.cost_factor)
 
     return sorted(candidates, key=key)  # stable: ties and the weaker models keep the router's order
 
@@ -255,6 +258,8 @@ def _auth_fallback_models(
         m = get_model(mid)
         if not m or not model_usable(m):
             continue
+        if role in (ModelRole.BUILDER, ModelRole.DEBUGGER) and m.family in {"ollama", "qwen"}:
+            continue  # text-only local CLIs have no file-editing tools and cannot modify the repository
         if set(m.required_clis) & failed_clis:
             continue
         candidates.append(mid)
@@ -411,7 +416,7 @@ def run_llm(model: str, prompt: str, cwd: Path | None = None, timeout: int = 300
             if on_chunk:
                 on_chunk(None)
             err_str = str(exc)
-            summary = summarize_cli_error(err_str)
+            summary = summarize_cli_error(err_str) or "provider returned no output"
             if usage_limits.detect(err_str):
                 report("quota")
                 provider_blocked_count += 1
