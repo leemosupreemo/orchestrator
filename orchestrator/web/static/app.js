@@ -3796,6 +3796,148 @@ function renderNewJobDiskNotice(element, report) {
   </div>`;
 }
 
+async function openOllamaModelsModal() {
+  const dlg = $("#dialog");
+  if (!dlg) return;
+  const fmtGb = (bytes) => {
+    if (!bytes || bytes <= 0) return "—";
+    const gb = bytes / 1e9;
+    return gb >= 10 ? `${gb.toFixed(1)} GB` : `${gb.toFixed(1)} GB`;
+  };
+  let sizeFilter = "all";
+  let cat = null;
+
+  const showShell = (bodyHtml) => {
+    dlg.tabIndex = -1;
+    dlg.classList.remove("dialog-compact");
+    $("#dialog-title").textContent = "Ollama local models";
+    $("#dialog-cancel").hidden = false;
+    $("#dialog-cancel").textContent = "Close";
+    $("#dialog-ok").hidden = true;
+    $("#dialog-body").innerHTML = bodyHtml;
+    if (!dlg.open) dlg.showModal();
+  };
+
+  const renderCatalog = () => {
+    if (!cat) return;
+    const freeText = cat.free_bytes != null ? `${(cat.free_bytes / 1e9).toFixed(1)} GB free on this computer` : "";
+    const installedRows = (cat.installed || []).map((m) => `
+      <div class="item">
+        <div class="main-col">
+          <div class="title mono">${esc(m.tag)}</div>
+          <div class="meta">${esc(fmtGb(m.size_bytes))}</div>
+        </div>
+        <div class="side"><button type="button" class="btn small ghost" data-ollama-rm="${esc(m.tag)}">Remove</button></div>
+      </div>`).join("");
+    const matchesFilter = (m) => {
+      const gb = (m.size_bytes || 0) / 1e9;
+      if (sizeFilter === "lt5") return gb > 0 && gb < 5;
+      if (sizeFilter === "lt10") return gb > 0 && gb < 10;
+      if (sizeFilter === "ge10") return gb >= 10;
+      return true;
+    };
+    const availableRows = (cat.available || []).filter(matchesFilter).map((m) => {
+      const tooBig = cat.free_bytes != null && m.size_bytes && m.size_bytes > cat.free_bytes;
+      return `<div class="item">
+        <div class="main-col">
+          <div class="title"><span class="mono">${esc(m.tag)}</span> ${m.installed ? `<span class="pill done">Installed</span>` : ""}</div>
+          <div class="meta">${esc(m.summary)} · ${esc(fmtGb(m.size_bytes))}${m.size_source === "estimate" ? " (est.)" : ""}${tooBig ? ' · <span class="text-bad">Not enough free space</span>' : ""}</div>
+        </div>
+        <div class="side">${m.installed ? "" : `<button type="button" class="btn small primary" data-ollama-pull="${esc(m.tag)}"${tooBig ? " disabled" : ""}>Download</button>`}</div>
+      </div>`;
+    }).join("");
+    showShell(`
+      <div class="stack gap-12" id="ollama-modal-root">
+        <div id="ollama-modal-progress" hidden role="status" aria-live="polite"></div>
+        ${freeText ? `<p class="muted m-0">${esc(freeText)} · <a href="https://ollama.com/library" target="_blank" rel="noopener">Browse Ollama library ↗</a></p>` : ""}
+        <div class="stack gap-6">
+          <div class="row between align-center gap-8 wrap">
+            <strong>Download local model</strong>
+            <select id="ollama-size-filter" class="inline-select" aria-label="Filter by download size">
+              <option value="all"${sizeFilter === "all" ? " selected" : ""}>All sizes</option>
+              <option value="lt5"${sizeFilter === "lt5" ? " selected" : ""}>Under 5 GB</option>
+              <option value="lt10"${sizeFilter === "lt10" ? " selected" : ""}>Under 10 GB</option>
+              <option value="ge10"${sizeFilter === "ge10" ? " selected" : ""}>10+ GB</option>
+            </select>
+          </div>
+          <div class="list">${availableRows || `<div class="empty">No models match this size filter.</div>`}</div>
+          <div class="row gap-8 align-center">
+            <input type="text" id="ollama-custom-tag" placeholder="Custom tag (e.g. qwen2.5-coder:14b)" autocomplete="off" autocapitalize="off" spellcheck="false" style="flex:1">
+            <button type="button" class="btn small" id="ollama-custom-pull">Download tag</button>
+          </div>
+        </div>
+        <div class="stack gap-6">
+          <strong>Installed (${(cat.installed || []).length})</strong>
+          <div class="list">${installedRows || `<div class="empty">No local Ollama models installed yet.</div>`}</div>
+        </div>
+      </div>`);
+    const root = $("#ollama-modal-root");
+    const setBusy = (msg) => {
+      const el = $("#ollama-modal-progress");
+      if (!el) return;
+      if (!msg) { el.hidden = true; el.innerHTML = ""; return; }
+      el.hidden = false;
+      el.innerHTML = `<div class="notice"><span class="spinner inline-spinner" aria-hidden="true"></span>${esc(msg)}</div>`;
+    };
+    const doPull = async (tag, btn) => {
+      const clean = String(tag || "").trim();
+      if (!clean) return;
+      const orig = btn ? btn.innerHTML : "";
+      if (btn) { btn.disabled = true; btn.innerHTML = `<span class="spinner inline-spinner" aria-hidden="true"></span>Downloading…`; }
+      setBusy(`Downloading ${clean}… (large models can take a few minutes)`);
+      try {
+        const started = await api("ollama/pull", { method: "POST", body: { tag: clean } });
+        await waitForTask(started, { timeoutMs: 30 * 60 * 1000 });
+        toast(`Downloaded ${clean}`);
+        cat = await api("ollama/models");
+        renderCatalog();
+        if (current.page === "config") route();
+      } catch (err) {
+        toast(err.message, true);
+        setBusy("");
+        if (btn && btn.isConnected) { btn.disabled = false; btn.innerHTML = orig; }
+      }
+    };
+    root?.querySelector("#ollama-size-filter")?.addEventListener("change", (e) => {
+      sizeFilter = e.target.value;
+      renderCatalog();
+    });
+    root?.querySelector("#ollama-custom-pull")?.addEventListener("click", (e) => {
+      const tag = root.querySelector("#ollama-custom-tag")?.value || "";
+      doPull(tag, e.currentTarget);
+    });
+    root?.addEventListener("click", async (e) => {
+      const pullBtn = e.target.closest("[data-ollama-pull]");
+      if (pullBtn) return doPull(pullBtn.dataset.ollamaPull, pullBtn);
+      const rmBtn = e.target.closest("[data-ollama-rm]");
+      if (!rmBtn) return;
+      const tag = rmBtn.dataset.ollamaRm;
+      rmBtn.disabled = true;
+      rmBtn.textContent = "Removing…";
+      setBusy(`Removing ${tag}…`);
+      try {
+        await api("ollama/delete", { method: "POST", body: { tag } });
+        toast(`Removed ${tag}`);
+        cat = await api("ollama/models");
+        renderCatalog();
+        if (current.page === "config") route();
+      } catch (err) {
+        toast(err.message, true);
+        setBusy("");
+        if (rmBtn.isConnected) { rmBtn.disabled = false; rmBtn.textContent = "Remove"; }
+      }
+    });
+  };
+
+  showShell(`<div class="notice"><span class="spinner inline-spinner" aria-hidden="true"></span>Loading installed models and registry sizes…</div>`);
+  try {
+    cat = await api("ollama/models");
+    if (dlg.open) renderCatalog();
+  } catch (err) {
+    showShell(`<div class="notice warn">${esc(err.message)}</div>`);
+  }
+}
+
 async function openDiskSpace(jobId = "") {
   const query = new URLSearchParams();
   if (jobId) query.set("job", jobId);
@@ -12641,6 +12783,7 @@ pages.config = async (args = []) => {
           // Connect: install if needed, then the tool's own sign-in, in a run's terminal (scripts/ai_connect.py)
           const onConnect = (event) => {
             if (event.target.closest("[data-free-ai]")) { setUpFreeAi(); return; }
+            if (event.target.closest("[data-ollama-models]")) { openOllamaModelsModal(); return; }
             const button = event.target.closest("[data-ai-connect]");
             if (!button || button.disabled) return;
             ToolConnect.open(button.dataset.aiConnect, button.dataset.aiName, {

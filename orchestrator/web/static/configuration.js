@@ -379,6 +379,7 @@
             : p.can_connect && owner ? `<p class="muted">${p.installed ? "Sign in" : "Installs it, then signs you in"} through your browser. No terminal needed.</p><div><button type="button" class="btn small primary" data-ai-connect="${escapeHtml(p.id)}" data-ai-name="${escapeHtml(p.name)}">Connect</button></div>`
             : !p.installed ? owner ? `<p class="muted">Install this tool on the computer running Orchestrator.</p><div><button type="button" class="btn small primary ai-install-button" data-ai-install="${escapeHtml(p.id)}" data-ai-name="${escapeHtml(p.name)}">Install here</button></div>` : `<p class="muted">Ask the owner to install this tool on the computer running Orchestrator.</p>`
             : p.deprecated ? "" : `<p class="muted">${escapeHtml(p.sign_in)}</p>`}
+          ${p.id === "ollama" && p.installed && owner ? `<div><button type="button" class="btn small primary" data-ollama-models>Download &amp; manage local models</button></div>` : ""}
           ${keyOf(p) ? apiKeyRow(keyOf(p), state) : ""}
           <div class="row between align-center"><a href="${escapeHtml(p.link)}" target="_blank" rel="noopener">Official instructions ↗</a>${owner && p.installed ? `<button type="button" class="btn small danger" data-ai-uninstall="${escapeHtml(p.id)}" data-ai-name="${escapeHtml(p.name)}">Uninstall</button>` : ""}</div>
           ${modelTreeHtml(p.id, false, ai.models?.[p.id], newIds)}

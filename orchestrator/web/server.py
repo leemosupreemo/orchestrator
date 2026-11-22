@@ -8828,6 +8828,47 @@ class UIHandler(BaseHTTPRequestHandler):
             # The short version for Home: style mix, version, and whether the requirements have moved on since approval.
             self._json({**architecture.summary(root, prd_doc.Prd(root, runtime_dir(root)).read() or ""),
                         "proposal_waiting": architecture.load_proposal(runtime_dir(root)) is not None})
+        elif method == "GET" and parts == ["ollama", "models"]:
+            from orchestrator import ollama_models
+            settings = load_settings(root)
+            self._json(ollama_models.catalog(host=settings.get("ollama_host") or None, disk_root=root))
+        elif method == "POST" and parts == ["ollama", "pull"]:
+            self._require_owner("download a local Ollama model")
+            body = self._body()
+            from orchestrator import ollama_models
+            try:
+                tag = ollama_models.validate_tag(body.get("tag") or "")
+            except ValueError as exc:
+                raise UIError(str(exc)) from None
+
+            def _do_pull() -> dict[str, Any]:
+                res = ollama_models.pull_model(tag)
+                try:
+                    model_registry.refresh_provider_models()
+                except Exception:
+                    pass
+                return res
+
+            self._json({"task": self.server.tasks.start(_do_pull)}, HTTPStatus.ACCEPTED)
+            self._audit("ollama_model_pull_started", tag=tag)
+        elif method == "POST" and parts == ["ollama", "delete"]:
+            self._require_owner("remove a local Ollama model")
+            body = self._body()
+            from orchestrator import ollama_models
+            try:
+                tag = ollama_models.validate_tag(body.get("tag") or "")
+            except ValueError as exc:
+                raise UIError(str(exc)) from None
+            try:
+                res = ollama_models.delete_model(tag)
+            except RuntimeError as exc:
+                raise UIError(str(exc)) from None
+            try:
+                model_registry.refresh_provider_models()
+            except Exception:
+                pass
+            self._json(res)
+            self._audit("ollama_model_deleted", tag=tag)
         elif parts == ["ai", "abilities"] or parts == ["ai", "abilities", "scan"]:
             # What each AI tool can do beyond writing code, scanned on this computer (tool_abilities.py): its slash commands,
             # skills, plugins and subcommands, and the few that are a button on a job. POST .../scan rescans now.
