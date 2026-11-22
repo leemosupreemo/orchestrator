@@ -56,7 +56,7 @@ the checks that can be automated live in `tests/test_web_ui.py`.
   description in the tooltip (`moreMenu(items, { compact: true })`), only what fits the current stage, and ending
   actions (close, archive, delete) last below a divider. It fits without scrolling; on phones it opens as a sheet over
   a dimmed page.
-- **Icon-only & dismissal controls:** Compact add controls use the `+` SVG (`#i-plus`) and overflow menus use the `⋯` SVG (`#i-more`) inside `.btn.icon-only.small` (square hit target, `padding: 0`, `.icon` `16px`, `.icon-sm` `15px`, with `aria-label` and `title`). Dismissing a modal, dialog, or cancellable loading card uses a top-right `✕` (`.dialog-close-btn`) rather than an extra bottom `Cancel` text button.
+- **Icon-only & dismissal controls:** Compact add controls use the `+` SVG (`#i-plus`) and overflow menus use the `⋯` SVG (`#i-more`) inside `.btn.icon-only` / `.btn.icon-only.small` (uniform `--control-md` `40px` square hit target on desktop, `--control-lg` `44px` on mobile, `padding: 0`, `.icon` `20px` / `.small .icon` `18px`, with `aria-label` and `title`). Dismissing a modal, dialog, or cancellable loading card uses a top-right `✕` (`.dialog-close-btn`) rather than an extra bottom `Cancel` text button.
 
 - Nothing the app starts waits at a terminal. Runs from the app carry `ORCHESTRATOR_NONINTERACTIVE=1`
   (`child_env()`); in them, menus take their defaults, "press Enter" pauses don't wait, and a question that needs

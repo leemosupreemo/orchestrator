@@ -423,9 +423,9 @@ body.signin-gate .sidebar > .brand { visibility: hidden; }
 .btn.small .icon, .badge-icon { width: 15px; height: 15px; }
 /* Icon-only buttons sit AFTER .btn.small so padding: 0 is never overridden by .btn.small's horizontal padding. */
 .btn.icon-only { width: var(--control-md); height: var(--control-md); min-height: var(--control-md); padding: 0; line-height: 1; flex: 0 0 auto; }
-.btn.icon-only.small { width: var(--control-sm); height: var(--control-sm); min-height: var(--control-sm); padding: 0; line-height: 1; }
-.btn.icon-only .icon { width: 18px; height: 18px; }
-.btn.icon-only.small .icon { width: 15px; height: 15px; }
+.btn.icon-only.small { width: var(--control-md); height: var(--control-md); min-height: var(--control-md); padding: 0; line-height: 1; }
+.btn.icon-only .icon { width: 20px; height: 20px; }
+.btn.icon-only.small .icon, .btn.icon-only.small .icon-sm { width: 18px; height: 18px; }
 .btn.big { min-height: var(--control-xl); font-size: var(--type-body); padding: var(--space-3) var(--space-5); }
 
 /* Reference imports, job briefs and Git actions */
@@ -582,7 +582,7 @@ a.item:hover { background: var(--panel-2); }
 
 .status-line { display: flex; align-items: center; gap: var(--space-2); color: var(--muted); font-size: var(--type-secondary); flex-wrap: wrap; margin-top: var(--space-1); }
 .status-line .sep { opacity: .5; }
-.status-stats a, .card-h a { display: inline-flex; align-items: center; min-height: var(--control-xs); }
+.status-stats a, .card-h a:not(.icon-only) { display: inline-flex; align-items: center; min-height: var(--control-xs); }
 .topbar-text, .status-line, .status-branch { min-width: 0; max-width: 100%; }
 .status-line .branch-select { min-height: var(--control-md); width: 16rem; max-width: 100%; text-overflow: ellipsis; padding: var(--space-1) var(--space-6) var(--space-1) var(--space-3); font-family: inherit; font-size: var(--type-body); font-weight: var(--weight-medium); }
 
@@ -1005,7 +1005,7 @@ details.raw pre { margin: 0; padding: 0 var(--space-4) var(--space-4); overflow:
 .clarify-reply textarea { min-height: 52px; resize: vertical; box-sizing: border-box; }
 .clarify-buttons { display: flex; align-items: center; gap: var(--space-2); flex: 0 0 auto; margin-bottom: 2px; }
 .clarify-btn { display: inline-flex; align-items: center; justify-content: center; flex: none; width: var(--control-md); height: var(--control-md); min-height: var(--control-md); padding: 0; border-radius: var(--r-md); }
-.clarify-btn .icon { width: 18px; height: 18px; }
+.clarify-btn .icon { width: 20px; height: 20px; }
 .clarify-reply-actions { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); }
 .clarify-reply-actions .btn { flex: 0 0 auto; }
 
@@ -1346,7 +1346,8 @@ dialog h2 {
   /* The header already names the project, so Home doesn't repeat it as a title. */
   body[data-page="home"] #page-title { display: none; }
   .status-line .branch-select { width: min(12rem, calc((100vw - 2 * var(--space-4)) / 2)); }
-  .status-stats a, .card-h a { min-height: var(--control-md); }
+  .status-stats a, .card-h a:not(.icon-only) { min-height: var(--control-md); }
+  .btn.icon-only, .btn.icon-only.small { width: var(--control-lg); height: var(--control-lg); min-height: var(--control-lg); }
   .item .meta { white-space: normal; }
   .item .meta .reason-text { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
   .item:has(.side .btn) { flex-wrap: wrap; row-gap: var(--space-2); }
@@ -3567,7 +3568,7 @@ body[data-page="product"] .topbar-actions .btn:hover {
 .prd-feature-row { display: flex; align-items: center; gap: var(--space-2); }
 .prd-feature-bullet { color: var(--muted); font-size: var(--type-section); line-height: 1; user-select: none; width: 14px; text-align: center; flex-shrink: 0; }
 .prd-feature-input { flex: 1; min-width: 0; }
-.prd-feature-del { flex-shrink: 0; width: var(--control-sm); height: var(--control-sm); min-height: var(--control-sm); padding: 0; color: var(--muted); font-size: var(--type-body); line-height: 1; display: inline-flex; align-items: center; justify-content: center; border-radius: var(--radius); }
+.prd-feature-del { flex-shrink: 0; width: var(--control-md); height: var(--control-md); min-height: var(--control-md); padding: 0; color: var(--muted); font-size: var(--type-body); line-height: 1; display: inline-flex; align-items: center; justify-content: center; border-radius: var(--radius); }
 .prd-feature-del:hover { color: var(--bad); background: var(--bad-soft); }
 .prd-model-picker {
   display: inline-flex;
