@@ -3546,7 +3546,7 @@ body[data-page="product"] .topbar-actions .btn:hover {
 .product-pitch:hover, .card-title-link:hover { text-decoration: underline; }
 /* The pitch is a short block: its fade is shorter than the default, and the icon link sits at the header's right edge. */
 .product-pitch.expandable::after { height: 28px; }
-.fold > summary.card-h .product-open { margin-left: auto; }
+.fold > summary.card-h .product-open, .fold > summary.card-h > .more { margin-left: auto; }
 .card-title-link { color: inherit; text-decoration: none; }
 .prd-notice .row { margin-top: var(--space-2); }
 .prd-designs { display: flex; flex-wrap: wrap; gap: var(--space-3); }

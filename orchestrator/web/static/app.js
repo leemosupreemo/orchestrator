@@ -7012,8 +7012,8 @@ pages.job = async ([id]) => {
             </div>
           </div>
         </form></div></section>`
-        : (job.clarification_history || []).length ? `<section class="card mb-16" id="clarify-history"><details class="fold"><summary class="card-h"><h2>Questions <span class="count">${job.clarification_history.length}</span></h2></summary>
-          <div class="card-b stack">${clarificationThread(job.clarification_history)}<div class="row gap-8"><button type="button" class="btn small ghost" data-clarify-export="copy">Copy chat</button><button type="button" class="btn small ghost" data-clarify-export="download"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-download"/></svg> Export chat</button></div></div></details></section>` : ""}
+        : (job.clarification_history || []).length ? `<section class="card mb-16" id="clarify-history"><details class="fold"><summary class="card-h"><h2>Questions <span class="count">${job.clarification_history.length}</span></h2><details class="more clarify-export-more"><summary class="btn small ghost icon-only" aria-label="Export chat" title="Export chat"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-download"/></svg></summary><div class="more-menu"><button type="button" class="btn small" data-clarify-export="copy">Copy chat</button><button type="button" class="btn small" data-clarify-export="download">Export chat</button></div></details></summary>
+          <div class="card-b stack">${clarificationThread(job.clarification_history)}</div></details></section>` : ""}
 
       ${(job.plan?.slice_warnings || []).length && !reviewingPlan ? `<section class="card mb-16"><div class="card-h"><h2>Plan check</h2></div><div class="card-b stack">
         <div>This plan looks like a stack of layers, not working slices. Mistakes in an early layer won't show until the last task.</div>
@@ -7218,7 +7218,10 @@ pages.job = async ([id]) => {
           });
         }
       });
-      view.querySelectorAll("[data-clarify-export]").forEach((btn) => btn.addEventListener("click", async () => {
+      view.querySelectorAll(".clarify-export-more").forEach((menu) => menu.addEventListener("click", (e) => e.stopPropagation()));
+      view.querySelectorAll("[data-clarify-export]").forEach((btn) => btn.addEventListener("click", async (e) => {
+        e.preventDefault();
+        e.stopPropagation();
         btn.closest("details.more")?.removeAttribute("open");
         const pairs = [...(job.clarification_history || [])];
         if (s.question) pairs.push({ question: s.question, answer: reply?.answer?.value?.trim() || "" });
