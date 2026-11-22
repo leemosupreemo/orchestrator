@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+import os
+import platform
 import re
 import shutil
 import subprocess
@@ -17,20 +19,21 @@ REGISTRY_BASE = "https://registry.ollama.ai/v2"
 MANIFEST_ACCEPT = "application/vnd.docker.distribution.manifest.v2+json, application/vnd.oci.image.manifest.v1+json, application/json"
 TAG_RE = re.compile(r"^[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+){0,2}(?::[A-Za-z0-9._-]+)?$")
 SIZE_CACHE_TTL = 3600.0
+MIN_DISK_HEADROOM_BYTES = 15 * (1024 ** 3)  # keep at least 15 GiB free for builds
 
 # Curated local models for coding and general assistant tasks (fallback_bytes used only if registry lookup fails).
 CURATED_MODELS: list[dict[str, Any]] = [
-    {"tag": "qwen2.5-coder:3b", "summary": "Fast lightweight coding model", "fallback_bytes": int(1.9 * 1e9)},
-    {"tag": "qwen2.5-coder:7b", "summary": "Balanced local coding model", "fallback_bytes": int(4.7 * 1e9)},
-    {"tag": "qwen2.5-coder:14b", "summary": "Strong local coding & debugging", "fallback_bytes": int(9.0 * 1e9)},
-    {"tag": "qwen2.5-coder:32b", "summary": "High-accuracy local coding (needs 24GB+ RAM)", "fallback_bytes": int(20.0 * 1e9)},
-    {"tag": "qwen3:8b", "summary": "General reasoning & coding", "fallback_bytes": int(5.2 * 1e9)},
-    {"tag": "qwen3:14b", "summary": "Stronger general reasoning & coding", "fallback_bytes": int(9.3 * 1e9)},
-    {"tag": "deepseek-r1:8b", "summary": "Local reasoning model", "fallback_bytes": int(4.9 * 1e9)},
-    {"tag": "deepseek-r1:14b", "summary": "Deeper local reasoning model", "fallback_bytes": int(9.0 * 1e9)},
-    {"tag": "gemma3:4b", "summary": "Compact fast general model", "fallback_bytes": int(3.3 * 1e9)},
-    {"tag": "gemma3:12b", "summary": "Capable mid-size general model", "fallback_bytes": int(8.1 * 1e9)},
-    {"tag": "llama3.1:8b", "summary": "Popular 8B general model", "fallback_bytes": int(4.9 * 1e9)},
+    {"tag": "qwen2.5-coder:3b", "summary": "Fast lightweight coding model", "fallback_bytes": int(1.9 * 1e9), "min_ram_gb": 8, "coding": True},
+    {"tag": "qwen2.5-coder:7b", "summary": "Balanced local coding model", "fallback_bytes": int(4.7 * 1e9), "min_ram_gb": 16, "coding": True},
+    {"tag": "qwen2.5-coder:14b", "summary": "Strong local coding & debugging", "fallback_bytes": int(9.0 * 1e9), "min_ram_gb": 24, "coding": True},
+    {"tag": "qwen2.5-coder:32b", "summary": "High-accuracy local coding (needs 48GB+ RAM)", "fallback_bytes": int(20.0 * 1e9), "min_ram_gb": 48, "coding": True},
+    {"tag": "qwen3:8b", "summary": "General reasoning & coding", "fallback_bytes": int(5.2 * 1e9), "min_ram_gb": 16, "coding": True},
+    {"tag": "qwen3:14b", "summary": "Stronger general reasoning & coding", "fallback_bytes": int(9.3 * 1e9), "min_ram_gb": 24, "coding": True},
+    {"tag": "deepseek-r1:8b", "summary": "Local reasoning model", "fallback_bytes": int(4.9 * 1e9), "min_ram_gb": 16, "coding": False},
+    {"tag": "deepseek-r1:14b", "summary": "Deeper local reasoning model", "fallback_bytes": int(9.0 * 1e9), "min_ram_gb": 24, "coding": False},
+    {"tag": "gemma3:4b", "summary": "Compact fast general model", "fallback_bytes": int(3.3 * 1e9), "min_ram_gb": 8, "coding": False},
+    {"tag": "gemma3:12b", "summary": "Capable mid-size general model", "fallback_bytes": int(8.1 * 1e9), "min_ram_gb": 24, "coding": False},
+    {"tag": "llama3.1:8b", "summary": "Popular 8B general model", "fallback_bytes": int(4.9 * 1e9), "min_ram_gb": 16, "coding": False},
 ]
 
 _size_cache: dict[str, tuple[float, int]] = {}
@@ -149,11 +152,84 @@ def catalog(host: str | None = None, *, fetch_sizes: bool = True, disk_root: Pat
     except OSError:
         pass
 
+    specs = machine_specs(disk_root=disk_root)
     return {
         "installed": installed,
         "available": available,
         "free_bytes": free_bytes,
+        "specs": specs,
         "ollama_installed": shutil.which("ollama") is not None,
+    }
+
+
+def machine_specs(disk_root: Path | None = None) -> dict[str, Any]:
+    """Detect total RAM, CPU/chip, and free disk space on this computer."""
+    ram_bytes = None
+    try:
+        if platform.system() == "Darwin":
+            out = subprocess.run(["sysctl", "-n", "hw.memsize"], capture_output=True, text=True, timeout=2, check=False).stdout.strip()
+            if out.isdigit():
+                ram_bytes = int(out)
+        if ram_bytes is None and hasattr(os, "sysconf"):
+            pages = os.sysconf("SC_PHYS_PAGES")
+            page_size = os.sysconf("SC_PAGE_SIZE")
+            if isinstance(pages, int) and isinstance(page_size, int) and pages > 0 and page_size > 0:
+                ram_bytes = pages * page_size
+    except (OSError, ValueError, subprocess.SubprocessError):
+        pass
+    chip = ""
+    try:
+        if platform.system() == "Darwin":
+            chip = subprocess.run(["sysctl", "-n", "machdep.cpu.brand_string"], capture_output=True, text=True, timeout=2, check=False).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        pass
+    free_bytes = None
+    try:
+        free_bytes = shutil.disk_usage(disk_root or Path.home()).free
+    except OSError:
+        pass
+    return {
+        "ram_bytes": ram_bytes,
+        "ram_gb": round(ram_bytes / (1024 ** 3)) if ram_bytes else None,
+        "free_bytes": free_bytes,
+        "chip": chip or platform.machine(),
+    }
+
+
+def recommendations(host: str | None = None, *, disk_root: Path | None = None, limit: int = 2) -> dict[str, Any]:
+    """Recommend free local Ollama models that fit this computer's RAM and leave 15 GiB free for builds."""
+    specs = machine_specs(disk_root=disk_root)
+    ram_gb = specs.get("ram_gb") or 16
+    free_bytes = specs.get("free_bytes")
+    ollama_ok = shutil.which("ollama") is not None
+    installed = installed_models(host) if ollama_ok else []
+    installed_tags = {m["tag"] for m in installed}
+    installed_tags |= {m["tag"].removesuffix(":latest") for m in installed}
+
+    candidates = []
+    for item in CURATED_MODELS:
+        tag = item["tag"]
+        if tag in installed_tags or f"{tag}:latest" in installed_tags:
+            continue
+        size_bytes = (_size_cache.get(tag) or (0, item["fallback_bytes"]))[1]
+        if item["min_ram_gb"] > ram_gb:
+            continue
+        if free_bytes is not None and (free_bytes - size_bytes) < MIN_DISK_HEADROOM_BYTES:
+            continue
+        candidates.append({
+            "tag": tag,
+            "summary": item["summary"],
+            "size_bytes": size_bytes,
+            "min_ram_gb": item["min_ram_gb"],
+            "coding": bool(item.get("coding")),
+        })
+    # Prefer the strongest coding models that comfortably fit this machine's RAM and disk.
+    candidates.sort(key=lambda m: (m["coding"], m["min_ram_gb"], m["size_bytes"]), reverse=True)
+    return {
+        "specs": specs,
+        "ollama_installed": ollama_ok,
+        "installed_count": len(installed),
+        "recommendations": candidates[:limit],
     }
 
 

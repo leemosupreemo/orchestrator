@@ -4745,12 +4745,13 @@ pages.home = async (_, query) => {
     if (download && !finishProjectDownload(download)) return {stale:true};
     return setupPage(setupState);
   }
-  const [{ jobs }, waiting, product, archivedList, homeGit, homePreview, homeBlockers, syncHealth] = await Promise.all([
+  const [{ jobs }, waiting, product, archivedList, homeGit, homePreview, homeBlockers, syncHealth, ollamaRecs] = await Promise.all([
     api("jobs"), api("inbox"), api("product").catch(() => null), api("jobs/archived").catch(() => null),
     api("git").catch(() => ({})), api("preview").catch(() => null),
     // POST also resumes the jobs whose blocker has cleared since; someone who can't start runs just reads the list
     api("blockers", { method: "POST", body: {} }).catch(() => api("blockers").catch(() => null)),
     api("sync-health").catch(() => null),
+    state.you?.role === "member" ? Promise.resolve(null) : api("ollama/recommendations").catch(() => null),
   ]);
   if (homeBlockers?.resumed?.length) toast(`${plural(homeBlockers.resumed.length, "blocked job")} resumed: what stopped ${homeBlockers.resumed.length === 1 ? "it" : "them"} is cleared.`);
   if (!sameProject()) return {stale: true};
@@ -4883,6 +4884,35 @@ pages.home = async (_, query) => {
   const productComplete = Boolean(product?.sections?.length && product.sections.every((x) => x.filled));
   const productCardHtml = product ? productStripHtml(product, jobs, { collapsed: productComplete }) : "";
 
+  let ollamaRecDismissed = false;
+  try { ollamaRecDismissed = localStorage.getItem(`orchestrator_ollama_recs_dismissed:${getBackendUrl() || "local"}`) === "1"; } catch {}
+  const ollamaRecCardHtml = (() => {
+    if (ollamaRecDismissed || !ollamaRecs?.ollama_installed || !(ollamaRecs.recommendations || []).length) return "";
+    const sp = ollamaRecs.specs || {};
+    const specLine = [
+      sp.ram_gb ? `${sp.ram_gb} GB RAM` : "",
+      sp.free_bytes != null ? `${(sp.free_bytes / 1e9).toFixed(1)} GB free` : "",
+    ].filter(Boolean).join(" · ");
+    const rows = ollamaRecs.recommendations.map((m) => `
+      <div class="item">
+        <div class="main-col">
+          <div class="title mono">${esc(m.tag)}</div>
+          <div class="meta">${esc(m.summary)} · ${(m.size_bytes / 1e9).toFixed(1)} GB</div>
+        </div>
+        <div class="side"><button type="button" class="btn small primary" data-home-ollama-pull="${esc(m.tag)}">Download</button></div>
+      </div>`).join("");
+    return `<section class="card mb-16" id="home-ollama-recs">
+      <div class="card-h">
+        <h2>Free local AI models${specLine ? ` <span class="muted t-secondary">${esc(specLine)}</span>` : ""}</h2>
+        <div class="card-actions">
+          <button type="button" class="btn small ghost" id="home-ollama-browse">Browse all</button>
+          <button type="button" class="btn small ghost" id="home-ollama-dismiss" aria-label="Dismiss local model recommendations">Dismiss</button>
+        </div>
+      </div>
+      <div class="list">${rows}</div>
+    </section>`;
+  })();
+
   if (download && !finishProjectDownload(download)) return {stale:true};
   return {
     title: p.name,
@@ -4940,6 +4970,7 @@ pages.home = async (_, query) => {
             <div class="meta"><span class="mono">${esc(j.job_id)}</span> · ${esc(j.status)}${j.corrupt ? " · this archive can't be read" : ""}</div></div>
             <div class="side">${j.corrupt ? "" : `<button type="button" class="btn small" data-restore-job="${esc(j.id)}">Restore</button>`}</div></div>`).join("")}</div></details>
       </section>` : ""}
+      ${ollamaRecCardHtml}
       ${productComplete ? productCardHtml : ""}`,
     after: () => {
       renderProjectSelect($(".home-project-select")); // the title's project list, now that it's on the page
@@ -4967,6 +4998,27 @@ pages.home = async (_, query) => {
         } catch { /* the next refresh redraws it */ }
         glide();
       });
+      $("#home-ollama-browse")?.addEventListener("click", () => openOllamaModelsModal());
+      $("#home-ollama-dismiss")?.addEventListener("click", () => {
+        try { localStorage.setItem(`orchestrator_ollama_recs_dismissed:${getBackendUrl() || "local"}`, "1"); } catch {}
+        $("#home-ollama-recs")?.remove();
+      });
+      view.querySelectorAll("[data-home-ollama-pull]").forEach((btn) => btn.addEventListener("click", async () => {
+        const tag = btn.dataset.homeOllamaPull;
+        if (!tag || btn.disabled) return;
+        const orig = btn.innerHTML;
+        btn.disabled = true;
+        btn.innerHTML = `<span class="spinner inline-spinner" aria-hidden="true"></span>Downloading…`;
+        try {
+          const started = await api("ollama/pull", { method: "POST", body: { tag } });
+          await waitForTask(started, { timeoutMs: 30 * 60 * 1000 });
+          toast(`Downloaded ${tag} — ready for jobs and Ask AI`);
+          route();
+        } catch (err) {
+          toast(err.message, true);
+          if (btn.isConnected) { btn.disabled = false; btn.innerHTML = orig; }
+        }
+      }));
       $("#yolo-all")?.addEventListener("change", (e) => yoloAll(e.currentTarget, inProgress));
       view.querySelectorAll("[data-restore-job]").forEach((b) => b.addEventListener("click", async () => {
         b.disabled = true;

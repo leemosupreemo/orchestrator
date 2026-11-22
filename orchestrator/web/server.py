@@ -8832,6 +8832,10 @@ class UIHandler(BaseHTTPRequestHandler):
             from orchestrator import ollama_models
             settings = load_settings(root)
             self._json(ollama_models.catalog(host=settings.get("ollama_host") or None, disk_root=root))
+        elif method == "GET" and parts == ["ollama", "recommendations"]:
+            from orchestrator import ollama_models
+            settings = load_settings(root)
+            self._json(ollama_models.recommendations(host=settings.get("ollama_host") or None, disk_root=root))
         elif method == "POST" and parts == ["ollama", "pull"]:
             self._require_owner("download a local Ollama model")
             body = self._body()

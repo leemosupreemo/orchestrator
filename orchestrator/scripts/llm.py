@@ -580,6 +580,8 @@ def get_llm_command(model: str, prompt_file: str, role: str | None = None, sessi
             cmd_base += ' --allowedTools "WebSearch,WebFetch"'
     elif model_id == "deepseek":
         cmd_base = _ollama_command("deepseek-coder", prompt_file)
+    elif model_id.startswith("ollama/"):
+        cmd_base = _ollama_command(model_id.removeprefix("ollama/"), prompt_file)
     elif m_meta and ("ollama" in m_meta.required_clis or m_meta.family == "ollama" or m_meta.family == "qwen"):
         cmd_base = _ollama_command(model_id, prompt_file)
     elif model_id == "copilot":
@@ -607,12 +609,13 @@ def _ollama_command(model: str, prompt_file: str) -> str:
     """`ollama run` for a prompt that fits Ollama's default window. A longer one would silently lose its beginning (for Ask AI, the
     whole project), so it goes through the API, which can ask for a bigger window (see orchestrator/ollama_api.py)."""
     from orchestrator import ollama_api
+    model = str(model or "").removeprefix("ollama/")
     try:
         size = os.path.getsize(prompt_file)
     except OSError:
         size = 0
     if size <= ollama_api.RUN_MAX_CHARS:
-        return f"ollama run {model} --nowordwrap"
+        return f"ollama run {shlex.quote(model)} --nowordwrap"
     return f"{shlex.quote(sys.executable)} -P -m orchestrator script ollama_generate.py --model {shlex.quote(model)}"
 
 

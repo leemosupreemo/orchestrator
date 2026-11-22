@@ -52,6 +52,38 @@ class OllamaModelsTests(unittest.TestCase):
         self.assertEqual(by_tag["qwen2.5-coder:7b"]["size_bytes"], 4_683_000_000)
         self.assertEqual(by_tag["qwen2.5-coder:7b"]["size_source"], "registry")
 
+    def test_recommendations_respect_ram_and_15gb_disk_headroom(self):
+        # 16 GB RAM, 22 GB free -> can fit ~4.7 GB (leaves > 15 GiB) but NOT 9 GB or 20 GB
+        specs = {"ram_bytes": 16 * 1024**3, "ram_gb": 16, "free_bytes": 22 * 1024**3, "chip": "Apple M3"}
+        with patch.object(ollama_models, "machine_specs", return_value=specs), \
+             patch.object(ollama_models.shutil, "which", return_value="/usr/local/bin/ollama"), \
+             patch.object(ollama_models, "installed_models", return_value=[]):
+            recs = ollama_models.recommendations(limit=2)
+        self.assertTrue(recs["ollama_installed"])
+        self.assertEqual(len(recs["recommendations"]), 2)
+        for m in recs["recommendations"]:
+            self.assertLessEqual(m["min_ram_gb"], 16)
+            self.assertGreaterEqual(specs["free_bytes"] - m["size_bytes"], ollama_models.MIN_DISK_HEADROOM_BYTES)
+
+    def test_llm_ollama_command_strips_prefix_and_quotes_tag(self):
+        import sys
+        import tempfile
+        from pathlib import Path
+        scripts_dir = str(Path(__file__).resolve().parents[1] / "orchestrator" / "scripts")
+        if scripts_dir not in sys.path:
+            sys.path.insert(0, scripts_dir)
+        import llm
+        with tempfile.NamedTemporaryFile("w", delete=False) as fh:
+            fh.write("hello")
+            prompt_file = fh.name
+        try:
+            cmd = llm._ollama_command("ollama/qwen2.5-coder:7b", prompt_file)
+            self.assertIn("ollama run", cmd)
+            self.assertIn("qwen2.5-coder:7b", cmd)
+            self.assertNotIn("ollama/qwen2.5-coder:7b", cmd)
+        finally:
+            Path(prompt_file).unlink(missing_ok=True)
+
 
 if __name__ == "__main__":
     unittest.main()
