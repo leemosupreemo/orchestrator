@@ -102,7 +102,7 @@ class ConnectionsPageTests(unittest.TestCase):
         self.assertIn("<strong class=\"conn-name\">Repository &amp; branches</strong>${gitPill}", self.app)
 
     def test_connect_jira_opens_the_jira_form(self):
-        self.assertIn('href="#/connections?connect=jira">Connect Jira</a>', self.app)
+        self.assertIn('href="#/connections?connect=jira">${providerIcon("jira")} Connect Jira</a>', self.app)
 
     def test_reverse_engineering_checks_rea_is_installed_and_offers_to_install_it(self):
         self.assertIn('<div id="prd-rea-status" aria-live="polite">', self.app)
@@ -870,7 +870,7 @@ class ProjectDocumentationSectionTests(unittest.TestCase):
     def test_job_documentation_card_renders_table_of_contents_outline(self):
         app = APP.read_text(encoding="utf-8")
         start = app.index("function jobDocsOutlineHtml(")
-        end = app.index("\n// The run working on the job", start)
+        end = app.index("\n// The AI tools' reviews offered on jobs", start)
         fn_source = app[start:end]
         script = f"""
 const esc = (v) => String(v ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
