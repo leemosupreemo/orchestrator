@@ -7066,6 +7066,12 @@ pages.job = async ([id]) => {
 
   const { title: cleanJobTitle, task: jobTaskSub } = splitJobTitle(s.title);
   const jobHeaderSubs = jobTaskSub ? [esc(jobTaskSub), ...subParts] : subParts;
+  const machineDiskFreeGb = typeof state?.disk_free_bytes === "number" && Number.isFinite(state.disk_free_bytes)
+    ? (state.disk_free_bytes / (1024 ** 3)).toFixed(1)
+    : "";
+  const machineDiskLineHtml = machineDiskFreeGb
+    ? `<p class="job-hero-disk${state?.disk_low ? " is-low" : ""}">${esc(state.project?.computer?.name || "This computer")} · ${esc(machineDiskFreeGb)} GB free</p>`
+    : "";
 
   return {
     title: cleanJobTitle,
@@ -7115,6 +7121,7 @@ pages.job = async ([id]) => {
           ${s.state.steps?.length ? s.state.steps.map((step) => `<p class="job-hero-reason muted">${esc(step)}</p>`).join("") : ""}
         </div>
         <div class="job-hero-action">${heroAction}</div>
+        ${machineDiskLineHtml}
       </section>` : `<section id="job-hero" tabindex="-1" class="job-hero tone-${esc(heroTone)}${(activeRun && !activeRun.waiting) || s.state.label === "Building" ? " is-running" : ""}">
         ${copyFailureBtnHtml ? `<div class="job-hero-head">${heroTitleHtml}${copyFailureBtnHtml}</div>` : ""}
         <div class="job-hero-main">
@@ -7137,6 +7144,7 @@ pages.job = async ([id]) => {
         ${decideRoutesHtml}
         ${reviewContextHtml}
         ${steerHtml}
+        ${machineDiskLineHtml}
       </section>`}
 
       ${unvalidatedTestsHtml}
@@ -16367,6 +16375,13 @@ function runStatus(r, vc = null) {
   const expVerItem = p.experience_version ? `<div><dt>Experience version</dt><dd data-run-experience-version>${esc(p.experience_version)}</dd></div>` : "";
   const fbImpactItem = p.feedback_impact ? `<div><dt>Feedback impact</dt><dd data-run-feedback-impact>${esc(p.feedback_impact)}</dd></div>` : "";
 
+  const freeBytes = typeof state !== "undefined" && typeof state?.disk_free_bytes === "number" && Number.isFinite(state.disk_free_bytes)
+    ? state.disk_free_bytes
+    : null;
+  const diskItem = freeBytes != null
+    ? `<div><dt>Disk space</dt><dd data-run-disk class="${state?.disk_low ? "text-bad" : ""}">${esc((freeBytes / (1024 ** 3)).toFixed(1))} GB free</dd></div>`
+    : "";
+
   return `<section class="banner ${tone} run-status" aria-label="Run status">
     <div class="run-status-heading" role="status" aria-live="polite">
       ${stepText ? `<strong class="run-status-step">${esc(stepText)}</strong>` : ""}
@@ -16386,6 +16401,7 @@ function runStatus(r, vc = null) {
       <div><dt>Elapsed</dt><dd data-run-elapsed>${esc(duration)}</dd></div>
       ${stateItem}
       ${resultItem}
+      ${diskItem}
     </dl>
     ${done && r.action === "update_local" ? `<p class="run-status-hint" data-update-next-hint hidden></p>` : ""}
     ${caveat ? `<p class="run-status-caveat"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-alert"/></svg> ${esc(caveat)}</p>` : ""}

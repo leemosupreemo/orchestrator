@@ -8034,8 +8034,10 @@ class UIHandler(BaseHTTPRequestHandler):
         elif method == "GET" and parts == ["state"]:
             from orchestrator import disk_space
             visible_runs = self._sessions_view()
-            disk_low = bool((disk_space.status(root, runtime_dir(root)).get("needed_bytes") or 0) > 0)
+            disk_report = disk_space.status(root, runtime_dir(root))
+            disk_low = bool((disk_report.get("needed_bytes") or 0) > 0)
             self._json({"project": project_state(root), "runs": visible_runs, "disk_low": disk_low,
+                        "disk_free_bytes": disk_report.get("free_bytes"),
                         **inbox_state(root, self.server.sessions, runs=visible_runs),
                         "product_notice": prd_doc.Prd(root, runtime_dir(root)).notice(),
                         "models_notice": models_notice(),
