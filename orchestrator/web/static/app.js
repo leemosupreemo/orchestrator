@@ -13650,7 +13650,7 @@ pages.connections = async (_, query) => {
           const hasLogin = p.id === "trello" || Boolean(sentryOptionA);
           const genericTokenLink = (p.id !== "trello" && p.id !== "jira" && p.id !== "figma" && p.token_url) ? `<p><a class="btn small" href="${esc(p.token_url)}" target="_blank" rel="noopener" aria-label="Log in to ${esc(p.name)} and create a token">Login ↗</a></p>` : "";
           const manualFieldsHtml = allowManual ? `${p.fields.map((f) => `
-            <label class="field"><span>${esc(f.label)}</span>
+            <label class="field"><span class="row justify-between align-center"><span>${esc(f.label)}</span>${f.secret && p.token_url ? `<a class="linklike t-secondary" href="${esc(p.token_url)}" target="_blank" rel="noopener">Get token ↗</a>` : ""}</span>
               <input ${f.secret ? 'type="password"' : 'type="text"'} name="${esc(f.key)}" autocomplete="off" autocapitalize="off" spellcheck="false"${f.required && !p.connected ? ' aria-required="true"' : ""}
                 value="${esc(!f.secret && p.suggest?.[f.key] ? p.suggest[f.key] : "")}"
                 placeholder="${esc(p.connected && f.secret ? "saved: leave blank to keep" : f.placeholder)}">

@@ -89,6 +89,13 @@ class ProviderTests(unittest.TestCase):
         self.assertIn("tap rejoin", ctx.markdown)
         self.assertIn("os=iOS 17", ctx.markdown)
 
+    def test_sentry_auto_detects_organization_slug_when_blank(self):
+        http = fake_http({"/api/0/organizations/": [{"slug": "acme-studio", "name": "Acme Studio"}]})
+        with patch.object(ig, "http_json", http):
+            creds, who = ig.connect("sentry", {"token": "sntrys_secret"})
+        self.assertEqual(who, "Acme Studio")
+        self.assertEqual(creds["org"], "acme-studio")
+
     def test_unity_lists_failed_builds_and_looks_one_up_with_its_log(self):
         builds = [{"build": 12, "buildtargetid": "ios-dev", "buildTargetName": "iOS dev", "buildStatus": "failure",
                    "platform": "ios", "scmBranch": "main"}]

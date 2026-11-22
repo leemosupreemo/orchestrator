@@ -466,7 +466,7 @@ class Sentry(Provider):
     blurb = "Pull a Sentry issue's stack trace, breadcrumbs and tags into a job as logs."
     fields = [
         ("host", "Sentry address", False, "sentry.io", "Leave as sentry.io unless you self-host."),
-        ("org", "Organization slug", False, "my-org", "From your Sentry URL: sentry.io/organizations/<slug>."),
+        ("org", "Organization slug (optional)", False, "my-org", "Auto-detected from your auth token if left blank."),
         ("project", "Project slug (optional)", False, "my-app", "Limits the suggestion list to one project."),
         ("token", "Auth token", True, "", ""),
     ]
@@ -483,11 +483,16 @@ class Sentry(Provider):
         return f"{self.c.get('org', '')}" + (f" / {self.c['project']}" if self.c.get("project") else "")
 
     def test(self) -> str:
-        org = urllib.parse.quote(self.c.get("org", ""), safe="")
-        if not org:
-            raise IntegrationError("Organization slug is required.")
+        raw_org = (self.c.get("org") or "").strip()
+        if not raw_org:
+            orgs = self._get("/api/0/organizations/")
+            if not isinstance(orgs, list) or not orgs or not isinstance(orgs[0], dict) or not orgs[0].get("slug"):
+                raise IntegrationError("No Sentry organizations found for this token. Enter your organization slug manually.")
+            self.c["org"] = str(orgs[0]["slug"]).strip()
+            return str(orgs[0].get("name") or self.c["org"])
+        org = urllib.parse.quote(raw_org, safe="")
         data = self._get(f"/api/0/organizations/{org}/")
-        return data.get("name") or self.c.get("org", "connected")
+        return data.get("name") or raw_org or "connected"
 
     def search(self, query: str) -> list[Item]:
         org = urllib.parse.quote(self.c.get("org", ""), safe="")
