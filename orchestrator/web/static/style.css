@@ -3033,6 +3033,11 @@ dialog h2 {
   font-size: var(--type-secondary);
   color: var(--muted);
 }
+.conn-login-top {
+  padding-bottom: var(--space-4);
+  margin-bottom: var(--space-4);
+  border-bottom: 1px solid var(--border);
+}
 /* Container padding consistency standard:
    Ensures connection cards, configuration cards, and cards on the connections page
    strictly use the canonical --container-pad-x (20px desktop, 16px mobile) and

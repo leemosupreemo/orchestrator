@@ -13648,7 +13648,7 @@ pages.connections = async (_, query) => {
           // Trello and Sentry sign you in with a button; typing a token by hand is the fallback, tucked under Advanced. Figma uses OAuth login only.
           const allowManual = p.id !== "figma";
           const hasLogin = p.id === "trello" || Boolean(sentryOptionA);
-          const genericTokenLink = (p.id !== "trello" && p.id !== "jira" && p.id !== "figma" && p.token_url) ? `<p><a class="btn small" href="${esc(p.token_url)}" target="_blank" rel="noopener" aria-label="Log in to ${esc(p.name)} and create a token">Login ↗</a></p>` : "";
+          const genericTokenLink = (p.id !== "trello" && p.id !== "jira" && p.id !== "figma" && p.token_url) ? `<div class="conn-login-top"><a class="btn small primary" href="${esc(p.token_url)}" target="_blank" rel="noopener" aria-label="Log in to ${esc(p.name)} and create a token">Login ↗</a></div>` : "";
           const manualFieldsHtml = allowManual ? `${p.fields.map((f) => `
             <label class="field"><span class="row justify-between align-center"><span>${esc(f.label)}</span>${f.secret && p.token_url ? `<a class="linklike t-secondary" href="${esc(p.token_url)}" target="_blank" rel="noopener">Get token ↗</a>` : ""}</span>
               <input ${f.secret ? 'type="password"' : 'type="text"'} name="${esc(f.key)}" autocomplete="off" autocapitalize="off" spellcheck="false"${f.required && !p.connected ? ' aria-required="true"' : ""}
