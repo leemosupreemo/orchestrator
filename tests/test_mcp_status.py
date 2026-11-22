@@ -857,9 +857,9 @@ class ProjectDocumentationSectionTests(unittest.TestCase):
             '<details class="fold docs-group"${c.id === "core" ? " open" : ""}>',  # grouped by kind, the core docs open
             '["Documentation", "#/project-docs"',
             'title: "Document"',
-            'title: "Finalize"',
+            'title: "Decide"',
             'const phasesInfo = [planStep, buildStep, verifyStep, docStep, reviewStep];',
-            'phasesInfo.map((p) => `${esc(p.title)}: ${esc(p.subtitle)}`).join(" · ")',
+            'job-decide-routes',
             'jobDocsOutlineHtml(',
         ):
             self.assertIn(snippet, app)

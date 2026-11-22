@@ -8595,7 +8595,7 @@ eval(source.slice(source.indexOf('function planBriefItems('), pageEnd));
   const r1 = await pages.job(['q1']);
   assert(!r1.html.includes('job-iter-badge'), 'omits Iter badge on Iter 1 too');
   assert(!r1.html.includes('>Document<'), 'skips Document on quick-fix without doc changes');
-  assert(r1.html.includes('>Finalize<'), 'keeps Finalize');
+  assert(r1.html.includes('>Decide<'), 'keeps Decide');
   assert(r1.html.includes('+5') && r1.html.includes('-2'), 'shows structured diffstat badges');
   assert(!r1.html.includes('Working tree clean.'), 'hides Working tree clean clutter');
 

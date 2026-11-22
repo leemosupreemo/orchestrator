@@ -6581,8 +6581,8 @@ pages.job = async ([id]) => {
   };
 
   const reviewStep = {
-    title: "Finalize",
-    subtitle: isJobComplete ? "Merged" : status === "review-needed" ? "Ready to merge" : "PR & merge",
+    title: "Decide",
+    subtitle: isJobComplete ? "Released" : status === "review-needed" ? "Choose next step" : "Next action",
     ...getStepState(4),
   };
 
@@ -6668,6 +6668,15 @@ pages.job = async ([id]) => {
     ? `<span class="job-hero-next-label">Now:</span> <strong>${esc(runRel?.active?.now || nextTask || "working")}</strong>${runRel?.active ? ` <span class="muted">(${esc(runRel.active.label)} run)</span>` : ""}`
     : "";
 
+  const decideRoutesHtml = (currentPhase === "review" || ["merge", "complete"].includes(nextAction)) && !activeRun && !isJobComplete && state.you?.role !== "member"
+    ? `<div class="job-decide-routes row wrap gap-8 align-center" aria-label="Redirect next step">
+        <span class="muted t-secondary">Or redirect:</span>
+        <button type="button" class="btn small ghost" data-decide-route="build" title="Fix an implementation issue while keeping the goal">Build again</button>
+        <button type="button" class="btn small ghost" data-decide-route="frame" title="Feedback changes what the feature should do — revise the plan first">Frame again</button>
+        <button type="button" class="btn small ghost" data-decide-route="try" title="Evidence is inconclusive — re-verify this version with no code changes">Try again</button>
+        <button type="button" class="btn small ghost" data-decide-route="close" title="Evidence doesn't justify further investment — pause and archive">Pause / Close</button>
+      </div>`
+    : "";
   const reviewContextHtml = (currentPhase === "review" || ["merge", "complete"].includes(nextAction)) && (allFiles.length || prUrl)
     ? `<div class="job-review-summary">
         <div class="job-review-summary-head">
@@ -6961,6 +6970,7 @@ pages.job = async ([id]) => {
           ${uxWarning ? `<p class="job-hero-reason"><button type="button" class="linklike" data-scroll-to="#ux-section">UX and design check: ${plural(uxWarning, "major finding")}. Look before you ${s.state.next?.action === "merge" ? "merge" : "finish"}.</button></p>` : ""}
         </div>
         ${heroAction && !steer?.primary ? `<div class="job-hero-action">${heroAction}</div>` : ""}
+        ${decideRoutesHtml}
         ${reviewContextHtml}
         ${steerHtml}
       </section>`}
@@ -7113,6 +7123,40 @@ pages.job = async ([id]) => {
         }
       });
       const steerForm = view.querySelector("#job-steer");
+      view.querySelectorAll("[data-decide-route]").forEach((btn) => btn.addEventListener("click", async () => {
+        const dest = btn.dataset.decideRoute;
+        if (dest === "build") {
+          const input = view.querySelector("#job-steer-text");
+          if (input) {
+            input.placeholder = "Describe the implementation issue to fix…";
+            input.focus();
+            input.scrollIntoView({ behavior: "smooth", block: "center" });
+          }
+          return;
+        }
+        if (dest === "frame") {
+          const v = await formDialog("Frame again (revise plan)", `<p class="muted">Feedback changes what this feature should accomplish. Describe the updated goal or slice and Orchestrator will revise the plan before editing code.</p><label class="field"><span>What should change in the goal or slice?</span><textarea name="feedback" rows="3" required placeholder="e.g. Show personal progress alongside global rank"></textarea></label>`, "Revise plan");
+          if (v?.feedback) runAction("revise", { job: s.id, feedback: v.feedback }, { skipConfirm: true });
+          return;
+        }
+        if (dest === "try") {
+          runAction("test", { job: s.id }, { button: btn });
+          return;
+        }
+        if (dest === "close") {
+          if (await formDialog("Pause or close this job?", `<p>Archive <strong>${esc(cleanJobTitle)}</strong> so you can move on to the next item in your backlog. Its branch and history stay saved and you can restore it from Home anytime.</p>`, "Archive job", { compact: true })) {
+            btn.disabled = true;
+            try {
+              await api("jobs/archive", { method: "POST", body: { ids: [s.id] } });
+              toast("Job archived");
+              location.hash = "#/";
+            } catch (err) {
+              toast(err.message, true);
+              btn.disabled = false;
+            }
+          }
+        }
+      }));
       if (steerForm) { // the page refreshes live: keep a half-written note across redraws
         steerForm.text.value = steerDrafts.get(s.id) || "";
         steerForm.text.addEventListener("input", () => steerDrafts.set(s.id, steerForm.text.value));
