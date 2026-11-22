@@ -106,7 +106,12 @@ const base = {{ version: "0.1.0", install: "git", settings: {{ auto_minor: true,
 console.log(JSON.stringify({{
   breaking: updatesPageHtml({{ ...base, last_check: {{ at: 1, update: "breaking", behind: 3, branch: "web-ui", installed: "abc", breaking_changes: ["New sync"], changes: ["a", "b"] }} }}),
   minor: updatesPageHtml({{ ...base, last_check: {{ at: 1, update: "minor", behind: 2 }} }}),
-  multi: updatesPageHtml({{ ...base, last_check: {{ at: 1, update: "none" }} }}, {{ pairedMachines: [{{ id: "a" }}, {{ id: "b" }}], otherCount: 1, syncAll: true }}),
+  multi: updatesPageHtml({{ ...base, last_check: {{ at: 1, update: "none", installed: "aaa111", latest: "aaa111" }} }}, {{
+    pairedMachines: [{{ id: "a", name: "MacBook Pro", reachable: true }}, {{ id: "b", name: "MacBook Air", reachable: true, version: "0.1.0" }}, {{ id: "c", name: "Mini", reachable: false, last_seen: 1 }}],
+    currentMachineId: "a", currentMachineName: "MacBook Pro",
+    remoteUpdates: {{ b: {{ version: "0.1.0", last_check: {{ at: 1, update: "minor", behind: 3, installed: "old999", branch: "web-ui" }} }} }},
+    otherCount: 2, syncAll: true,
+  }}),
   current: updatesPageHtml({{ ...base, last_check: {{ at: 1, update: "none" }} }}),
   blocked: updatesPageHtml({{ ...base, last_check: {{ at: 1, update: "minor", blocked: "This copy of Orchestrator has edits of its own" }} }}),
 }}));
@@ -125,4 +130,10 @@ console.log(JSON.stringify({{
         self.assertIn('data-update-sync-all checked', out["multi"])
         self.assertIn('data-update-op="apply-all-settings"', out["multi"])
         self.assertIn('data-update-op="install-all"', out["multi"])
+        self.assertIn('data-update-op="check-all"', out["multi"])
+        self.assertIn('<span class="pill idle">Local</span>', out["multi"])
+        self.assertIn('MacBook Air', out["multi"])
+        self.assertIn('Outdated (3 behind)', out["multi"])
+        self.assertIn('data-update-machine="b" data-update-machine-op="install"', out["multi"])
+        self.assertIn('Offline', out["multi"])
         self.assertNotIn('data-update-sync-all', out["current"])
