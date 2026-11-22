@@ -12961,6 +12961,26 @@ pages.config = async (args = []) => {
           auto_minor: Boolean(view.querySelector('[data-update-setting="auto_minor"]')?.checked),
           auto_breaking: Boolean(view.querySelector('[data-update-setting="auto_breaking"]')?.checked),
         });
+        const setProgress = (message) => {
+          const el = view.querySelector("#updates-progress");
+          if (!el) return;
+          if (!message) { el.hidden = true; el.innerHTML = ""; return; }
+          el.hidden = false;
+          el.innerHTML = `<div class="notice"><span class="spinner inline-spinner" aria-hidden="true"></span>${esc(message)}</div>`;
+        };
+        const beginBusy = (button, label, progressMsg) => {
+          const orig = button.innerHTML;
+          button.disabled = true;
+          button.setAttribute("aria-busy", "true");
+          button.innerHTML = `<span class="spinner inline-spinner" aria-hidden="true"></span>${esc(label)}`;
+          if (progressMsg) setProgress(progressMsg);
+          return () => {
+            button.disabled = false;
+            button.removeAttribute("aria-busy");
+            button.innerHTML = orig;
+            setProgress("");
+          };
+        };
         const onClick = async (event) => {
           const button = event.target.closest("[data-config-action], [data-update-op], [data-update-machine]");
           if (!button) return;
@@ -12970,8 +12990,11 @@ pages.config = async (args = []) => {
             const machine = otherMachines.find((m) => m.id === machineId);
             const machineOp = button.dataset.updateMachineOp || "check";
             if (!machine) return;
-            button.disabled = true;
-            button.setAttribute("aria-busy", "true");
+            const restore = beginBusy(
+              button,
+              machineOp === "install" ? "Updating…" : "Checking…",
+              machineOp === "install" ? `Updating ${machine.name}…` : `Checking ${machine.name} for updates…`,
+            );
             try {
               if (machineOp === "install") {
                 await callPairedMachine(machine, "updates", { op: "check" });
@@ -12984,28 +13007,19 @@ pages.config = async (args = []) => {
               route();
             } catch (err) {
               toast(`${machine.name}: ${err.message}`, true);
-              button.disabled = false;
-              button.removeAttribute("aria-busy");
+              restore();
             }
             return;
           }
           const op = button.dataset.updateOp;
           if (!op) return;
-          button.disabled = true;
-          button.setAttribute("aria-busy", "true");
+          const busyLabel = op === "install" || op === "install-all" ? "Updating…" : "Checking…";
+          const progressMsg = op === "install-all" ? "Updating all online computers…"
+            : op === "check-all" ? "Checking all online computers for updates…"
+            : op === "install" ? `Updating ${currentMachineName}…`
+            : `Checking ${currentMachineName} for updates…`;
+          const restore = beginBusy(button, busyLabel, progressMsg);
           try {
-            if (op === "apply-all-settings") {
-              const settings = currentSettings();
-              await api("updates", { method: "POST", body: { op: "settings", ...settings } });
-              const { ok, failed, offline } = await pushSettingsToOthers(settings);
-              const parts = [`Saved on ${plural(1 + ok, "computer")}`];
-              if (offline) parts.push(`${offline} offline`);
-              if (failed) parts.push(`${failed} failed`);
-              toast(parts.join(" · "), failed > 0);
-              button.disabled = false;
-              button.removeAttribute("aria-busy");
-              return;
-            }
             if (op === "check-all") {
               const reachable = otherMachines.filter((m) => m.reachable);
               await Promise.allSettled([
@@ -13028,17 +13042,21 @@ pages.config = async (args = []) => {
               const parts = [`Triggered update on ${plural(ok, "computer")}`];
               if (offline) parts.push(`${offline} offline`);
               toast(parts.join(" · "));
-              if (localRes?.restart) notify("info", "Orchestrator is restarting with the update…", { id: "self-update", sticky: false });
-              else route();
+              if (localRes?.restart) {
+                setProgress("Restarting Orchestrator with the update…");
+                notify("info", "Orchestrator is restarting with the update…", { id: "self-update", sticky: false });
+              } else route();
               return;
             }
             const res = await api("updates", { method: "POST", body: { op } });
             if (op === "install") {
               toast(res.message || "Updated");
-              if (res.restart) notify("info", "Orchestrator is restarting with the update…", { id: "self-update", sticky: false });
-              else route();
+              if (res.restart) {
+                setProgress("Restarting Orchestrator with the update…");
+                notify("info", "Orchestrator is restarting with the update…", { id: "self-update", sticky: false });
+              } else route();
             } else route();
-          } catch (err) { toast(err.message, true); button.disabled = false; button.removeAttribute("aria-busy"); }
+          } catch (err) { toast(err.message, true); restore(); }
         };
         const onChange = async (event) => {
           const box = event.target.closest("[data-update-setting]");
@@ -13131,6 +13149,7 @@ function updatesPageHtml(u, { pairedMachines = [], currentMachineId = "", curren
           <button type="button" class="btn small${anyOutdated ? " primary" : ""}" data-update-op="install-all">Update all</button>
         </div>` : ""}
       </div>
+      <div id="updates-progress" class="card-b" hidden role="status" aria-live="polite"></div>
       <div class="list">
         <div class="item">
           <div class="main-col stack">
