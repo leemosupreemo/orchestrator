@@ -10625,20 +10625,6 @@ pages.product = async (_, query) => {
           ? `<button type="button" class="btn small" data-prd-share="true">Share anyway</button><button type="button" class="btn small primary" data-prd-share="false">Keep on this computer</button>`
           : `<button type="button" class="btn small" data-prd-share="false">Keep on this computer</button><button type="button" class="btn small primary" data-prd-share="true">Share</button>`}</div></div></section>`;
   };
-  const sharingLine = () => {
-    const s = sharing();
-    if (s.state === "no_remote") return `<div class="muted" id="prd-sharing">Kept on this computer: this project has no Git remote. <a href="#/git">Add one under Git setup</a> to share it with your other computers.</div>`;
-    const jobs = s.jobs === "ask"
-      ? `<div class="stack gap-8" id="prd-sharing-jobs"><span class="muted">Also share this project's jobs (their plans, your answers and fix history) the same way, so another computer can see and continue them?</span>
-          <div class="row gap-8 wrap"><button type="button" class="btn small" data-prd-share="false" data-prd-share-scope="jobs">Not now</button><button type="button" class="btn small primary" data-prd-share="true" data-prd-share-scope="jobs">Share jobs</button></div></div>`
-      : s.jobs === "on"
-        ? `<div class="row gap-12 align-center wrap" id="prd-sharing-jobs"><span class="muted">Jobs are shared too.</span><button type="button" class="btn small ghost" data-prd-share="false" data-prd-share-scope="jobs">Stop sharing jobs</button></div>`
-        : `<div class="row gap-12 align-center wrap" id="prd-sharing-jobs"><span class="muted">Jobs stay on this computer.</span><button type="button" class="btn small ghost" data-prd-share="true" data-prd-share-scope="jobs">Share jobs too</button></div>`;
-    if (s.state === "on") return `<div class="row gap-12 align-center wrap" id="prd-sharing"><span class="muted">Shared with your other computers through <span class="mono">${esc(s.remote)}</span>${s.default ? " (on by default)" : ""}.</span><button type="button" class="btn small ghost" data-prd-share="false">Stop sharing</button></div>
-      ${s.public ? `<div class="notice warn" id="prd-sharing-public">This repository is public, so anyone can read what is shared: these requirements${s.jobs === "on" ? ", and your jobs' plans, answers and fix history" : ""}. Stop sharing to keep them on this computer.</div>` : ""}${jobs}`;
-    if (s.state === "off") return `<div class="row gap-12 align-center wrap" id="prd-sharing"><span class="muted">Kept on this computer.</span><button type="button" class="btn small ghost" data-prd-share="true">Share through ${esc(s.remote)}</button></div>`;
-    return "";
-  };
   const render = () => `
       <section class="card mb-16"><div class="card-h"><h2>Product requirements</h2>${prdStatusPill(p.sections || [])}</div>
         <div class="card-b stack">
@@ -10672,8 +10658,7 @@ pages.product = async (_, query) => {
             <option value="__manage_llms__">⚙️ Manage LLMs</option>
           </select>
         </div>
-        <div class="muted">AI keeps this up to date as jobs finish, and you can review or undo any change in History.</div>
-        ${sharingLine()}</div></section>
+        <div class="muted">AI keeps this up to date as jobs finish, and you can review or undo any change in History.</div></div></section>
       <section class="card"><div class="card-h"><h2>History</h2><span class="count">${p.history.length}</span></div>
         <div class="list">${p.history.length ? historyRows(p.history) : `<div class="empty">Nothing yet. Every change you or the AI makes will be listed here.</div>`}</div></section>`;
   return {

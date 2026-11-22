@@ -354,9 +354,7 @@ class ProductPageSharingTests(ServerTestCase):
         self.assertIn("This repository is public, so anyone could read them.", page)
         public_buttons = page[page.index("s.public\n          ?"):page.index(":", page.index("s.public\n          ?") + 20)]
         self.assertIn('class="btn small primary" data-prd-share="false">Keep on this computer', public_buttons)  # the safe choice leads
-        for line in ("Stop sharing", "Share through", "this project has no Git remote", 'href="#/git"', "(on by default)",
-                     "This repository is public, so anyone can read what is shared"):
-            self.assertIn(line, page)
+        self.assertNotIn("Stop sharing", page)
 
 
 class ServerWiringTests(ServerTestCase):

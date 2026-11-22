@@ -168,13 +168,11 @@ class SharedJobsApiTests(ServerTestCase):
         res, data = self.request("GET", "/api/shared-jobs")
         self.assertEqual((res.status, data), (200, {"jobs": [], "synced_at": 0}))
 
-    def test_home_reads_shared_jobs_first_and_the_product_page_asks_about_jobs_separately(self):
+    def test_home_reads_shared_jobs_first(self):
         app = (ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
         self.assertIn('const snaps = [...sharedItems, ...homeRemoteSnaps.snaps];', app)
         self.assertIn('await api("shared-jobs")', app)
-        for text in ("Also share this project's jobs (their plans, your answers and fix history)", "Share jobs too", "Stop sharing jobs",
-                     'data-prd-share-scope="jobs"'):
-            self.assertIn(text, app)
+        self.assertNotIn("Stop sharing jobs", app)
 
 
 if __name__ == "__main__":
