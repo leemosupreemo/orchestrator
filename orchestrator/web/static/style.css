@@ -3453,6 +3453,7 @@ textarea.code-editor.tall { min-height: 220px; }
 input[type="file"] { font: inherit; color: var(--muted); max-width: 100%; }
 input[type="file"]::file-selector-button { font: inherit; padding: var(--space-2) var(--space-3); margin-right: var(--space-3); border: 1px solid var(--border); border-radius: var(--r-md); background: var(--panel-2); color: var(--text); cursor: pointer; }
 fieldset.field { border: 0; padding: 0; margin: 0; min-width: 0; display: flex; flex-direction: column; gap: var(--space-2); }
+fieldset.field > legend { padding: 0; margin-bottom: var(--space-2); }
 
 [hidden] { display: none !important; }
 
