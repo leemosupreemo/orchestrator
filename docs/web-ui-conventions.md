@@ -175,7 +175,7 @@ Callout and hero containers (`.job-hero`, `.banner`, `.notice`) frame actionable
   - The **Progress** card clearly separates task completion count, active/next builder task, remaining tasks, and verification status.
 - **Job Tasks and Plan**:
   - Tasks appear above Plan once. The Tasks header displays a dynamic run-breakdown pill (`1 run`, `1 batched run`, `N sequential runs`, or `N runs · M waves (parallel)`) explaining how the job executes. Multi-wave and parallel tasks display `Wave K · Parallel` or `Wave K · After T1` badges, and all active tasks in a running parallel wave display `In progress` simultaneously. Long task descriptions (>140 chars) format into scannable sentence bullets with a `More (N)` fold and basename file chips. Each task shows completion and a run count that expands to the associated runs.
-  - The **Runs** table sits directly below Tasks in `.job-table` format with a 5-run cutoff and **Show more** up to 25 runs (without a stage/model summary footer).
+  - The **Runs** table sits directly above Tasks in `.job-table` format with a 5-run cutoff and **Show more** up to 25 runs (without a stage/model summary footer).
   - Plan shows a short bullet summary, with **Full brief** for viewing or downloading the Markdown and **Edit brief** for changing it.
 - **Modals & dialogs**:
   - All modal titles (`dialog h2` and `.feedback-title`) share one consistent heading style: `var(--type-page)`, `var(--weight-semibold)`, `line-height: 1.3`, `letter-spacing: -0.01em`, `color: var(--text)`.

@@ -7188,8 +7188,8 @@ pages.job = async ([id]) => {
       ${jobContextRail(s, data.context)}
 
       <div class="job-body">
-      ${!reviewingPlan ? tasksCardHtml : ""}
       ${jobRunsCard(jobRuns, runRel, "")}
+      ${!reviewingPlan ? tasksCardHtml : ""}
       ${!reviewingPlan ? `<section class="card mb-16" id="plan-section" tabindex="-1">
         <div class="card-h"><h2>${s.status === "designing" ? "Design" : "Plan"}</h2>
           ${job.plan?.fast_tracked ? `<span class="count" title="A Quick change: planned in one pass and started without approval">Fast-tracked</span>` : ""}</div>
