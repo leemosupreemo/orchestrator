@@ -13041,18 +13041,12 @@ pages.config = async (args = []) => {
           } catch (err) { toast(err.message, true); button.disabled = false; button.removeAttribute("aria-busy"); }
         };
         const onChange = async (event) => {
-          const syncBox = event.target.closest("[data-update-sync-all]");
-          if (syncBox) {
-            try { localStorage.setItem("orchestrator_update_all_machines", syncBox.checked ? "true" : "false"); } catch {}
-            return;
-          }
           const box = event.target.closest("[data-update-setting]");
           if (!box) return;
           const settingBody = { [box.dataset.updateSetting]: box.checked };
           try {
             await api("updates", { method: "POST", body: { op: "settings", ...settingBody } });
-            const applyAll = Boolean(view.querySelector("[data-update-sync-all]")?.checked);
-            if (applyAll && otherMachines.length) {
+            if (otherMachines.length) {
               const { ok, failed, offline } = await pushSettingsToOthers(settingBody);
               const parts = [`Saved on ${plural(1 + ok, "computer")}`];
               if (offline) parts.push(`${offline} offline`);
@@ -13128,12 +13122,6 @@ function updatesPageHtml(u, { pairedMachines = [], currentMachineId = "", curren
     </div>`;
   }).join("");
   const totalMachines = 1 + otherMachines.length;
-  const allMachinesHtml = otherCount > 0 ? `
-        <hr>
-        <label class="check"><input type="checkbox" data-update-sync-all${syncAll ? " checked" : ""}><span><strong>Apply to all online computers</strong><br><span class="muted">Sync these settings across your ${plural(pairedMachines.length, "paired computer")}.</span></span></label>
-        <div class="row gap-8 wrap">
-          <button type="button" class="btn small" data-update-op="apply-all-settings">Sync settings now</button>
-        </div>` : "";
   return `<div class="configuration-page">
     <section class="card configuration-card">
       <div class="card-h">
@@ -13167,7 +13155,6 @@ function updatesPageHtml(u, { pairedMachines = [], currentMachineId = "", curren
       <div class="card-b stack">
         <label class="check"><input type="checkbox" data-update-setting="auto_minor"${u.settings.auto_minor ? " checked" : ""}><span><strong>Auto-install minor updates</strong><br><span class="muted">Fixes and improvements. Checked every 5 min and installed when idle.</span></span></label>
         <label class="check"><input type="checkbox" data-update-setting="auto_breaking"${u.settings.auto_breaking ? " checked" : ""}><span><strong>Auto-install breaking updates</strong><br><span class="muted">Format or sync changes that require all machines to update.</span></span></label>
-        ${allMachinesHtml}
       </div>
     </section>
   </div>`;
