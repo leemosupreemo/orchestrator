@@ -11232,7 +11232,7 @@ pages.product = async (_, query) => {
 
       const reversePanel = () => {
         panel().innerHTML = `<section class="card mb-16" id="prd-reverse-card"><div class="card-h"><h2>Reverse engineering (REA MCP)</h2></div><div class="card-b stack">
-          <p class="muted">Reverse engineer an existing application, compiled binary, APK, IPA, Electron package, or capture using the <strong>REA (Reverse Engineer Anything)</strong> MCP server to reconstruct architecture and product requirements.</p>
+          <p class="muted">Reverse engineer an existing application, compiled binary, APK, IPA, or Electron package to reconstruct architecture and product requirements.</p>
           <div class="prd-drop file-picker" id="prd-reverse-drop" tabindex="0" role="button" aria-label="Choose a binary or package to reverse engineer, or drop one here">
             ${filePickerContent("Pick an application or binary to reverse engineer", "APK, IPA, Electron package, binary, WASM, or archive", false)}</div>
           <input type="file" id="prd-reverse-input" accept=".apk,.ipa,.app,.wasm,.jar,.zip,.tar,.gz,.bin,.exe,.dylib,.so,.har,.json,.txt,.md" hidden>
