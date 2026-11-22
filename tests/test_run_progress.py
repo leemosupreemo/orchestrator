@@ -41,6 +41,27 @@ class RunProgressTests(unittest.TestCase):
         progress.feed(b"=== SUB-TASK 2/2: Add tests ===\n")
         self.assertEqual((progress.snapshot()["step"], progress.snapshot()["step_fraction"]), (2, 0))
 
+    def test_observed_ai_activity_advances_step_fraction_monotonically_within_phase(self):
+        progress = RunProgress()
+        progress.feed(b"=== SUB-TASK 1/2: Tune habitats ===\n=== AI THINKING ===\n")
+        self.assertEqual(progress.snapshot()["step_fraction"], 0)
+        # Spinner noise does not move progress.
+        progress.feed("⠹ Thinking (Active stderr)... (Ctrl-C to cancel, 5m)\n".encode("utf-8"))
+        self.assertEqual(progress.snapshot()["step_fraction"], 0)
+        # Distinct observed activity moves progress smoothly toward 0.45 without crossing BUILDING (0.5).
+        progress.feed(b"[stderr] mcp: codebase-memory-mcp/search_code started\n")
+        first = progress.snapshot()["step_fraction"]
+        self.assertGreater(first, 0)
+        self.assertLess(first, 0.45)
+        for i in range(20):
+            progress.feed(f"[stderr] Importing 'GUID: 000000000000000000000000000000{i:02x} - Path: Assets/Tree{i}.png'\n".encode("utf-8"))
+        after_many = progress.snapshot()["step_fraction"]
+        self.assertGreater(after_many, first)
+        self.assertLessEqual(after_many, 0.45)
+        # Entering BUILDING jumps cleanly to 0.5 and stays monotonic.
+        progress.feed(b"=== BUILDING ===\n")
+        self.assertEqual(progress.snapshot()["step_fraction"], 0.5)
+
     def test_a_task_batch_can_show_progress_before_the_build_finishes(self):
         progress = RunProgress()
         progress.feed(b"=== SUB-TASK 1-2/3: Build the related changes ===\n=== BUILDING ===\n")

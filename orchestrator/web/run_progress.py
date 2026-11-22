@@ -130,10 +130,12 @@ class RunProgress:
         self.experience_version = ""  # current prototype/experience version (e.g. "v0.1", "v0.2")
         self.feedback_impact = ""     # classified user feedback impact (e.g. "behavior_change · updating spec & code")
         self.activity = ""            # latest meaningful agent/tool activity line (never clobbered by spinners)
+        self._activity_ticks = 0      # distinct observed activity updates within the current phase
 
     def _start_step(self, step: int, total: int, description: str, kind: str) -> None:
         if (step, total, kind) != (self.step, self.total, self._step_kind):
             self.step_fraction = 0.0
+            self._activity_ticks = 0
         self.step, self.total, self._step_kind = step, total, kind
         self.task = description.capitalize()
         self.label = self.task or "Running step"
@@ -142,6 +144,14 @@ class RunProgress:
     def _advance_planning(self, label: str) -> None:
         if self._step_kind == "planning":
             self.step_fraction = max(self.step_fraction, self.PLANNING_MILESTONES.get(label, 0))
+
+    def _advance_activity(self) -> None:
+        """Advance within-step progress smoothly on real observed AI/tool activity before BUILDING (0.5)."""
+        if self._step_kind != "task" or self.step_fraction >= 0.45:
+            return
+        self._activity_ticks += 1
+        target = 0.45 * (1.0 - (0.85 ** self._activity_ticks))
+        self.step_fraction = max(self.step_fraction, round(min(0.45, target), 3))
 
     def feed(self, chunk: bytes) -> None:
         # PTY reads can split a UTF-8 character or ANSI sequence. Decode complete lines only.
@@ -162,7 +172,10 @@ class RunProgress:
                     phase, _, detail = title.partition(":")
                     phase = phase.strip().replace("_", " ").upper()
                     if self._step_kind == "task":
-                        self.step_fraction = max(self.step_fraction, self.TASK_MILESTONES.get(phase, 0))
+                        milestone = self.TASK_MILESTONES.get(phase, 0)
+                        if milestone > self.step_fraction:
+                            self.step_fraction = milestone
+                            self._activity_ticks = 0
                     if phase in self.LABELS:
                         self.label = self.LABELS[phase]
                         self.activity = ""
@@ -300,6 +313,8 @@ class RunProgress:
                         self.calls.pop(0)
                 self.stall = 0
                 self.activity = ""
+                if self._step_kind == "task" and self.step_fraction < 0.45:
+                    self.step_fraction = 0.45
                 if self.label.startswith("Waiting for "):
                     self.label = "Reading the model's answer"
             elif "Attempting fallback..." in line:
@@ -319,7 +334,9 @@ class RunProgress:
                 if not header and not notice and not spec_line and not gate_line and not exp_line and not planned:
                     summary = summarize_activity_line(line)
                     if summary:
-                        self.activity = summary
+                        if summary != self.activity:
+                            self.activity = summary
+                            self._advance_activity()
 
     @staticmethod
     def _reason(detail: str, line: str) -> str:
