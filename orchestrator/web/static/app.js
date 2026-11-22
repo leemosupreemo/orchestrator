@@ -6134,8 +6134,8 @@ pages["remote-job"] = async ([machineId, jobId]) => {
     : `${direct ? `<button type="button" class="btn primary" data-take-over="run">${esc(next.label)}</button>` : ""}
        <button type="button" class="btn ${direct ? "" : "primary"}" data-take-over="open">${direct ? "Open it here" : "Work on it here"}</button>`;
   const footnote = busy
-    ? `Switch to ${esc(machineLabel)} to follow this run live, or stop it there to bring its branch, history, and unfinished work here.`
-    : `Its branch, history and unfinished work come with it, and ${esc(machineLabel)} hands it over: one job, never two copies.`;
+    ? `Switch to ${esc(machineLabel)} to follow live, or stop the run to continue here — everything stays completely synced across machines.`
+    : `Everything stays completely synced across machines — switch freely and pick up right where it left off.`;
   return {
     title: rj.title || jobId,
     sub: `${jobId}${rj.branch ? ` · ${rj.branch}` : ""} · last worked on ${machineLabel}${reachTag}`,

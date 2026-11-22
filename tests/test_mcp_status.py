@@ -753,7 +753,7 @@ eval(code.slice(start, end));
   const off = await pages['remote-job'](['m1', 'job-7']);
   assert(off.sub.includes('last worked on Pro, offline'), off.sub);
   assert(off.html.includes('Work on it here'), off.html);
-  assert(off.html.includes('never two copies'), off.html);
+  assert(off.html.includes('completely synced across machines'), off.html);
   assert(!off.html.includes('Remote job on'), off.html);
   assert(!off.html.includes('Open on Pro'), off.html);
   assert(!off.html.includes('href="#/">Back</a>'), off.html);
