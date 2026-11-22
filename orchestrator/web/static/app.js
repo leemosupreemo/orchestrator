@@ -16173,8 +16173,7 @@ function runStatus(r, vc = null) {
       : canResume
         ? `<button type="button" class="btn small primary" ${act(r.action, named)}><svg class="icon icon-sm" aria-hidden="true"><use href="#i-play"/></svg> Resume</button>`
         : "";
-    const open = target ? `<a class="btn small${resume ? "" : " primary"}" href="#/jobs/${encodeURIComponent(target)}">Open job</a>` : "";
-    const actions = resume || open ? `<div class="row gap-8">${resume}${open}</div>` : "";
+    const actions = resume ? `<div class="row gap-8">${resume}</div>` : "";
     return `<div class="banner failed attention run-status"><div class="row align-center justify-between gap-12 wrap"><p>Run was stopped.</p>${actions}</div></div>`;
   }
   const p = r.progress || {};
@@ -16941,8 +16940,7 @@ function nextStep(r) {
       : canResume
         ? `<button type="button" class="btn small primary" ${act(r.action, named)}><svg class="icon icon-sm" aria-hidden="true"><use href="#i-play"/></svg> Resume</button>`
         : "";
-    const open = target ? `<a class="btn small${resume ? "" : " primary"}" href="#/jobs/${encodeURIComponent(target)}">Open job</a>` : "";
-    const actions = resume || open ? `<div class="row gap-8">${resume}${open}</div>` : "";
+    const actions = resume ? `<div class="row gap-8">${resume}</div>` : "";
     return `<div class="banner"><div class="row align-center justify-between gap-12 wrap"><p>Run was stopped.</p>${actions}</div></div>`;
   }
   const failed = r.exit_code !== 0;
