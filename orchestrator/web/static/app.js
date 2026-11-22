@@ -13578,14 +13578,10 @@ pages.config = async (args = []) => {
 // (installs by itself once no run is going) or breaking (waits for you, unless you allow it), and the two settings.
 function updatesPageHtml(u, { pairedMachines = [], currentMachineId = "", currentMachineName = "This computer", remoteUpdates = {}, otherCount = 0 } = {}) {
   const c = u.last_check || {};
-  const when = (t) => t ? new Date(t * 1000).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "";
   const installLabel = { git: "git checkout", pip: "pipx", packaged: "Orchestrator app" }[u.install] || u.install;
   const noticeHtml = c.update === "breaking" ? `<div class="notice warn"><p><strong>A breaking update is ready.</strong> It changes something your other computers or saved data depend on, so it waits for you.</p>${(c.breaking_changes || []).length ? `<ul>${c.breaking_changes.map((x) => `<li>${esc(x)}</li>`).join("")}</ul>` : ""}<p class="muted">Update your other computers too, so they keep working together.</p></div>`
-    : c.update === "minor" ? `<div class="notice"><p><strong>An update is ready</strong> (${plural(c.behind || 1, "change")}). ${u.settings.auto_minor ? "It installs by itself once no run is going." : "Automatic minor updates are off."}</p></div>`
     : c.update === "unknown" ? `<div class="notice warn"><p>Couldn't check for updates: ${esc(c.error || "unknown error")}</p></div>`
     : "";
-  const changes = (c.changes || []).length ? `<details class="fold"><summary class="linklike muted">What's new (${c.changes.length})</summary><ul class="muted">${c.changes.map((x) => `<li>${esc(x)}</li>`).join("")}</ul></details>` : "";
-  const history = (u.history || []).length ? `<details class="fold"><summary class="linklike muted">Recent updates</summary><ul class="muted">${u.history.slice().reverse().map((h) => `<li>${esc(when(h.at))}: ${esc(h.message)}</li>`).join("")}</ul></details>` : "";
   const canInstall = ["minor", "breaking"].includes(c.update) && !c.blocked;
   const localOutdated = ["minor", "breaking"].includes(c.update);
   const localStatusPill = c.update === "breaking" ? `<span class="pill failed">Outdated · breaking</span>`
@@ -13639,7 +13635,7 @@ function updatesPageHtml(u, { pairedMachines = [], currentMachineId = "", curren
   }).join("");
   const totalMachines = 1 + otherMachines.length;
   const localVersionTag = `<span class="job-type-tag mono">${esc(localVer)}</span>`;
-  const detailsFooter = [noticeHtml, c.blocked ? `<p class="text-bad m-0">${esc(c.blocked)}</p>` : "", c.note ? `<p class="muted m-0">${esc(c.note)}</p>` : "", changes, history].filter(Boolean).join("");
+  const detailsFooter = [noticeHtml, c.blocked ? `<p class="text-bad m-0">${esc(c.blocked)}</p>` : "", c.note ? `<p class="muted m-0">${esc(c.note)}</p>` : ""].filter(Boolean).join("");
   return `<div class="configuration-page">
     <section class="card configuration-card">
       <div class="card-h">
