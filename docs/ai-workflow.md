@@ -49,7 +49,9 @@ Open **Plan notes** on the job page to see high, medium, and low risks in that o
 
 ## Model choice within a feature job
 
-Feature plans label each task `small`, `medium`, or `large`. The worker keeps the selected builder for medium and large tasks. For a small, localized task (for example, changing spacing or positioning), it prefers an enabled free or local coding model, then the least-cost enabled coding model. It only considers models allowed for that job; if none qualify, it uses the selected builder. If a cheaper model fails, the normal model fallback can take over.
+Feature plans label each task `small`, `medium`, or `large`. The worker keeps the selected builder for medium and large tasks. For a small, localized task (for example, changing spacing or positioning), it prefers an enabled free or local coding model, then the least-cost enabled coding model. It only considers models allowed for that job; if none qualify, it uses the selected builder. If a cheaper model fails, the normal model fallback can take over. When falling back from a paid primary model on builder or debugger roles, text-only local CLIs (`ollama` / `qwen`, which cannot edit files) are excluded and `opencode` free models are tried only after standard agentic providers.
+
+If a build or task finishes with zero modified files, `worker_run.py` checks completed jobs for overlapping target files (or an "already in place" builder summary) and pauses with a stopping clarification question naming the completed job rather than silently looping or showing a generic no-change error. Otherwise, `no_change_stop()` reports the actual builder model used and its concise summary.
 
 ### Model outcomes and shadow recommendations
 

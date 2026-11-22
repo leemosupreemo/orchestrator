@@ -227,6 +227,29 @@ class WorkerStopTests(unittest.TestCase):
             self.assertIn("The fix attempt finished without changing any files", saved["last_error"])
             self.assertEqual(saved["debug_history"][-1]["result"]["notes"], "The fix attempt changed no files")
 
+    def test_overlapping_completed_job_pauses_with_clarification_question(self):
+        import json
+        job = {
+            "type": "quick-fix",
+            "actual_builder_used": "gpt-6.2-astra",
+            "plan": {"likely_files": ["Assets/EnvironmentLook.asset"]},
+        }
+        with self.pipeline(job, states=[NOTHING] * 4,
+                           results=[(True, True, Path("summary"), {"summary": "The density is already 1.35."})]) as (path, calls):
+            (path.parent / "done-prev.json").write_text(json.dumps({
+                "job_id": "done-prev",
+                "title": "Quick: Realistic vegetation",
+                "status": "completed",
+                "ai_modified_files": ["Assets/EnvironmentLook.asset"],
+            }))
+            worker.execute_job(path)
+            saved = worker.read_json(path)
+            self.assertEqual(saved["status"], "human-needed")
+            self.assertIn("Quick: Realistic vegetation", saved.get("human_clarification_question") or "")
+            self.assertIn("Assets/EnvironmentLook.asset", saved.get("human_clarification_question") or "")
+            self.assertNotIn("build_no_changes", saved)
+            self.assertEqual(calls["send_notifications"].call_args.args[1], "Job Paused: Clarification Needed")
+
 
 class JobPageTests(unittest.TestCase):
     def test_the_server_says_nothing_was_built_and_offers_to_run_the_build_again(self):

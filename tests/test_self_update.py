@@ -88,6 +88,22 @@ class SelfUpdateTests(unittest.TestCase):
         self.assertEqual(status["update"], "unknown")
         self.assertFalse(self_update.should_install(status, self_update.load()))
 
+    def test_self_update_tick_skips_restart_if_a_run_started_during_apply(self):
+        from unittest.mock import MagicMock, patch
+        from orchestrator.web import server as web_server
+
+        fake = MagicMock()
+        # Idle before apply(), then a run starts while apply() is downloading.
+        fake.sessions.list.side_effect = [[], [{"id": "r1", "running": True}]]
+        with patch.object(web_server.self_update, "load", return_value={"auto_minor": True}), \
+             patch.object(web_server.self_update, "due", return_value=True), \
+             patch.object(web_server.self_update, "check", return_value={"update": "minor", "behind": 1}), \
+             patch.object(web_server.self_update, "should_install", return_value=True), \
+             patch.object(web_server.self_update, "apply", return_value={"ok": True, "restart": True, "message": "Updated"}), \
+             patch.object(web_server, "_trigger_ui_restart") as restart:
+            web_server.UIServer.self_update_tick(fake)
+        restart.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

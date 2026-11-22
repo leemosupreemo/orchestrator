@@ -93,6 +93,19 @@ class AuthFallbackOrderTests(unittest.TestCase):
         self.assertEqual(llm._cheapest_adequate_first(ids, "nonsense", "not-a-model"), ids)
         self.assertEqual(llm._cheapest_adequate_first(ids, None, "claude-sonnet-4-6"), ["copilot", "gpt-5.5"])  # no role floor: only "not weaker"
 
+    def test_builder_and_debugger_exclude_text_only_ollama_and_demote_opencode_behind_paid(self):
+        extended = list(REGISTRY) + [
+            entry("deepseek", "ollama", ModelTier.HIGH, 0.0, "ollama"),
+            entry("opencode/iceman-free", "opencode", ModelTier.HIGH, 0.0, "opencode"),
+        ]
+        ready = list(READY) + ["deepseek", "opencode/iceman-free"]
+        with patch.object(model_registry, "_ALL_MODELS_CACHE", extended):
+            for role in (ModelRole.BUILDER, ModelRole.DEBUGGER):
+                order = self.fallbacks(role, "gpt-5.5-medium", {"codex"}, ready=ready)
+                self.assertNotIn("deepseek", order, role)  # text-only ollama CLI cannot edit files
+                self.assertIn("opencode/iceman-free", order, role)
+                self.assertLess(order.index("claude-sonnet-5-5-high"), order.index("opencode/iceman-free"), role)
+
 
 if __name__ == "__main__":
     unittest.main()
