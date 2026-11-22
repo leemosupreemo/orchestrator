@@ -5835,9 +5835,7 @@ document.addEventListener("click", async (e) => {
 function autoresponseNote(job) {
   const auto = (job.clarification_history || []).filter((h) => h.auto);
   if (!auto.length) return "";
-  return `<p class="job-hero-reason autoresponse-note"><span class="pill attention">🤖 Answered for you</span> YOLO answered
-    ${auto.length === 1 ? "1 of the AI's questions" : `${auto.length} of the AI's questions`} to keep it going (${auto.length} of 3; after that it waits for you).
-    <a href="#clarify-history" data-scroll-to="#clarify-history">See what it asked and what was answered</a>.</p>`;
+  return `<span class="pill attention autoresponse-note" title="YOLO answered ${auto.length} of the AI's questions to keep it going (${auto.length} of 3; after that it waits for you)">🤖 Answered for you (${auto.length}/3)</span>`;
 }
 
 // Sentry's device sign-in, inside the Connect Sentry dialog: open Sentry's approval page with the code filled in, show the
@@ -6695,15 +6693,22 @@ pages.job = async ([id]) => {
   // Approving (or starting) a plan: the plan is shown right under the decision, with what each task is done when,
   // the files it touches, and what the AI assumed. GitHub puts Approve beside the changes; this is the same idea.
   const reviewingPlan = ["approve", "schedule"].includes(nextAction) && s.status !== "designing" && !activeRun && tasks.length > 0;
+  const autoStopped = !activeRun && !isJobComplete && (
+    status === "human-needed"
+    || diskBlocked
+    || Boolean(s.state.blocker)
+    || Boolean(s.state.blocker_kind)
+    || nextAction === "resume"
+  );
   // The one place to tell the AI what to change, in the status box. What it runs follows the stage: re-plan before the
   // build, request changes when it waits to merge, run a fix when it failed, reopen it once merged. Hidden while a run
-  // works or the AI waits on an answer (the question card takes the reply), and on plan review (its card has Revise).
-  const steer = activeRun || s.question || reviewingPlan || signIn || diskBlocked || s.state.blocker ? null
+  // works, when automatically stopped/blocked, or when the AI waits on an answer, and on plan review (its card has Revise).
+  const steer = activeRun || s.question || reviewingPlan || signIn || diskBlocked || s.state.blocker || autoStopped ? null
     : isJobComplete ? { mode: "fix", button: "Reopen and change", hint: "Reopens this job with your note and builds it.", required: true }
     : ["merge", "complete"].includes(nextAction) ? { mode: "iterate", button: "Request changes", required: true, hint: "" }
     : hasBuildWork || ["debugging", "failed"].includes(status) ? { mode: "debug", button: "Run fix", required: false,
       primary: nextAction === "debug" && !signIn && !diskBlocked, hint: "" }
-    : ["planned", "designing", "human-needed", "scheduled"].includes(status) ? { mode: "revise", button: "Re-plan", required: true,
+    : ["planned", "designing", "scheduled"].includes(status) ? { mode: "revise", button: "Re-plan", required: true,
       hint: "Re-plans the job with this; you approve the new plan before anything is built." }
     : null;
   const steerHtml = steer ? `<form class="job-steer" id="job-steer" data-mode="${steer.mode}">
@@ -6885,6 +6890,85 @@ pages.job = async ([id]) => {
     : "";
   const heroTitleHtml = `<h2 class="job-hero-title">${(activeRun && !activeRun.waiting) || s.state.label === "Building" ? runningMark : ""}${esc(s.state.label || s.status)}</h2>`;
 
+  const rawClarifyHistory = Array.isArray(job.clarification_history) ? job.clarification_history : [];
+  const answeredClarifications = rawClarifyHistory.filter((h) => h && h.answer && !h.auto);
+  const unansweredQuestions = [];
+  const seenQuestions = new Set();
+  for (const h of rawClarifyHistory) {
+    if (!h?.question) continue;
+    const qKey = String(h.question).trim().toLowerCase();
+    if (h.answer && !h.auto) {
+      seenQuestions.add(qKey);
+      continue;
+    }
+    if (seenQuestions.has(qKey)) continue;
+    seenQuestions.add(qKey);
+    unansweredQuestions.push({
+      question: h.question,
+      who: h.asker === "builder" ? "Builder" : h.asker === "planner" ? "Planner" : "AI",
+      blocking: !h.auto && status === "human-needed",
+      note: h.auto && h.answer ? `🤖 Answered for you (YOLO): ${h.answer}` : "",
+    });
+  }
+  if (s.question) {
+    const qKey = String(s.question).trim().toLowerCase();
+    if (!seenQuestions.has(qKey)) {
+      seenQuestions.add(qKey);
+      unansweredQuestions.push({
+        question: s.question,
+        who: String(job.last_error || "").startsWith("Builder clarification needed") ? "Builder" : "Planner",
+        blocking: true,
+        note: "",
+      });
+    }
+  }
+  const totalQuestionsCount = answeredClarifications.length + unansweredQuestions.length;
+  const blockingQuestionsCount = unansweredQuestions.filter((q) => q.blocking).length;
+  const nonBlockingQuestionsCount = unansweredQuestions.length - blockingQuestionsCount;
+  const questionHeaderFlagHtml = unansweredQuestions.length
+    ? `<span class="pill ${blockingQuestionsCount ? "attention" : "neutral"} clarify-header-flag">${
+        blockingQuestionsCount && nonBlockingQuestionsCount
+          ? `${blockingQuestionsCount} blocking · ${nonBlockingQuestionsCount} non-blocking`
+          : blockingQuestionsCount
+            ? `${blockingQuestionsCount} unanswered · Blocking`
+            : `${nonBlockingQuestionsCount} unanswered · Non-blocking`
+      }</span>`
+    : "";
+  const unansweredThreadHtml = unansweredQuestions.map((q) => `
+    <div class="clarify-msg clarify-ai">
+      <div class="row align-center justify-between gap-8">
+        <span class="clarify-who">${esc(q.who)}</span>
+        <span class="pill ${q.blocking ? "attention" : "neutral"}">${q.blocking ? "Blocking" : "Non-blocking"}</span>
+      </div>
+      <p class="question">${esc(q.question)}</p>
+      ${q.note ? `<p class="muted t-secondary">${esc(q.note)}</p>` : ""}
+    </div>`).join("");
+  const clarifyCardHtml = totalQuestionsCount ? `<section class="card mb-16 clarify-card" id="${s.question ? "clarify" : "clarify-history"}">
+    <details class="fold"${unansweredQuestions.length ? " open" : ""}>
+      <summary class="card-h">
+        <h2>Questions <span class="count">${totalQuestionsCount}</span></h2>
+        ${questionHeaderFlagHtml}
+        ${autoresponseNote(job)}
+        <details class="more clarify-export-more"><summary class="btn small ghost icon-only" aria-label="Export chat" title="Export chat"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-download"/></svg></summary><div class="more-menu"><button type="button" class="btn small" data-clarify-export="copy">Copy chat</button><button type="button" class="btn small" data-clarify-export="download">Export chat</button></div></details>
+      </summary>
+      <div class="card-b stack">
+        ${unansweredQuestions.length ? `
+          ${unansweredThreadHtml}
+          ${s.question ? `<form class="clarify-reply" id="clarify-reply" data-job="${esc(s.id)}">
+            <div class="clarify-input-row">
+              <label class="field clarify-field"><span class="sr-only">Your answer</span><textarea name="answer" rows="2" required placeholder="Your answer (Enter sends, Shift+Enter for a new line)"></textarea></label>
+              <div class="clarify-buttons">
+                <button type="submit" class="btn primary clarify-btn clarify-send-btn" aria-label="Send" title="Send"><svg class="icon" aria-hidden="true"><use href="#i-send"/></svg></button>
+                <button type="button" class="btn primary clarify-btn clarify-start-btn" data-clarify-start aria-label="Start" title="Start"><svg class="icon" aria-hidden="true"><use href="#i-play"/></svg></button>
+              </div>
+            </div>
+          </form>` : ""}
+          ${answeredClarifications.length ? `<details class="fold"><summary class="linklike muted">Answered (${answeredClarifications.length})</summary><div class="stack mt-8">${clarificationThread(answeredClarifications)}</div></details>` : ""}
+        ` : clarificationThread(job.clarification_history)}
+      </div>
+    </details>
+  </section>` : "";
+
   const isAutoImprove = Boolean(s.is_orchestrator_improvement || s.tag === "improve_orchestrator" || job.is_orchestrator_improvement || job.tag === "improve_orchestrator");
 
   const subParts = [
@@ -6977,18 +7061,17 @@ pages.job = async ([id]) => {
           ${copyFailureBtnHtml ? "" : heroTitleHtml}
           <p class="job-hero-reason">${heroReason}</p>
           ${heroReasonDetails}
-          ${autoresponseNote(job)}
-          ${wipRestoreNote(job, !activeRun)}
-          ${strandedNote(job)}
-          ${backupNote(job)}
+          ${autoStopped ? "" : wipRestoreNote(job, !activeRun)}
+          ${autoStopped ? "" : strandedNote(job)}
+          ${autoStopped ? "" : backupNote(job)}
           ${s.state.steps?.length ? `<ol class="job-hero-reason blocker-steps">${s.state.steps.map((step) => `<li>${esc(step)}</li>`).join("")}</ol>` : ""}
-          ${overlapAdviceHtml(data.overlaps, { readyHere: ["merge", "complete"].includes(nextAction), idle: !activeRun })}
-          ${typeof meceCoverageHtml === "function" ? meceCoverageHtml(data.mece) : ""}
+          ${autoStopped ? "" : overlapAdviceHtml(data.overlaps, { readyHere: ["merge", "complete"].includes(nextAction), idle: !activeRun })}
+          ${autoStopped ? "" : (typeof meceCoverageHtml === "function" ? meceCoverageHtml(data.mece) : "")}
           ${s.state.blocker ? `<details class="fold"><summary class="linklike muted">What the AI said</summary><p class="muted">${esc(s.state.blocker)}</p></details>` : ""}
           ${runRel?.unreported ? `<div class="notice warn hero-unreported-notice"><span>Last run (<strong>${esc(runRel.unreported.label)}</strong>) ${runRel.unreported.status === "failed" ? "failed" : "ended without reporting back"} before it could update this job${unreportedHeadline ? `: ${esc(unreportedHeadline)}` : "."}</span><a class="btn small ghost" href="#/runs/${encodeURIComponent(runRel.unreported.id)}">Details</a></div>` : ""}
           ${nextExecutionPreview ? `<div class="job-hero-next-preview">${nextExecutionPreview}</div>` : ""}
           ${showTaskBar ? `<div class="tasks-progress-wrap"><div class="progress-bar-container" role="progressbar" aria-label="Tasks built" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${tasksPct}"><div class="progress-bar-fill" style="width: ${tasksPct}%"></div></div><span class="progress-text">${tasksDone}/${tasksTotal}</span></div>` : ""}
-          ${uxWarning ? `<p class="job-hero-reason"><button type="button" class="linklike" data-scroll-to="#ux-section">UX and design check: ${plural(uxWarning, "major finding")}. Look before you ${s.state.next?.action === "merge" ? "merge" : "finish"}.</button></p>` : ""}
+          ${!autoStopped && uxWarning ? `<p class="job-hero-reason"><button type="button" class="linklike" data-scroll-to="#ux-section">UX and design check: ${plural(uxWarning, "major finding")}. Look before you ${s.state.next?.action === "merge" ? "merge" : "finish"}.</button></p>` : ""}
         </div>
         ${heroAction && !steer?.primary ? `<div class="job-hero-action">${heroAction}</div>` : ""}
         ${decideRoutesHtml}
@@ -7000,20 +7083,7 @@ pages.job = async ([id]) => {
       ${defectsHtml}
       ${jobStartBlockers(data.blockers, data.startup_recheck && state.you?.role !== "member", id)}
 
-      ${s.question ? `<section class="card mb-16 clarify-card" id="clarify"><div class="card-h"><h2>${(job.clarification_history || []).length ? "A follow-up question" : String(job.last_error || "").startsWith("Builder clarification needed") ? "A question during the build" : "A question before planning"}</h2><details class="more"><summary class="btn small ghost icon-only" aria-label="Export chat" title="Export chat"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-download"/></svg></summary><div class="more-menu"><button type="button" class="btn small" data-clarify-export="copy">Copy chat</button><button type="button" class="btn small" data-clarify-export="download">Export chat</button></div></details></div><div class="card-b stack">
-        ${clarificationThread(job.clarification_history)}
-        <div class="clarify-msg clarify-ai"><span class="clarify-who">AI</span><p class="question">${esc(s.question)}</p></div>
-        <form class="clarify-reply" id="clarify-reply" data-job="${esc(s.id)}">
-          <div class="clarify-input-row">
-            <label class="field clarify-field"><span class="sr-only">Your answer</span><textarea name="answer" rows="2" required placeholder="Your answer (Enter sends, Shift+Enter for a new line)"></textarea></label>
-            <div class="clarify-buttons">
-              <button type="submit" class="btn primary clarify-btn clarify-send-btn" aria-label="Send" title="Send"><svg class="icon" aria-hidden="true"><use href="#i-send"/></svg></button>
-              <button type="button" class="btn primary clarify-btn clarify-start-btn" data-clarify-start aria-label="Start" title="Start"><svg class="icon" aria-hidden="true"><use href="#i-play"/></svg></button>
-            </div>
-          </div>
-        </form></div></section>`
-        : (job.clarification_history || []).length ? `<section class="card mb-16" id="clarify-history"><details class="fold"><summary class="card-h"><h2>Questions <span class="count">${job.clarification_history.length}</span></h2><details class="more clarify-export-more"><summary class="btn small ghost icon-only" aria-label="Export chat" title="Export chat"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-download"/></svg></summary><div class="more-menu"><button type="button" class="btn small" data-clarify-export="copy">Copy chat</button><button type="button" class="btn small" data-clarify-export="download">Export chat</button></div></details></summary>
-          <div class="card-b stack">${clarificationThread(job.clarification_history)}</div></details></section>` : ""}
+      ${clarifyCardHtml}
 
       ${(job.plan?.slice_warnings || []).length && !reviewingPlan ? `<section class="card mb-16"><div class="card-h"><h2>Plan check</h2></div><div class="card-b stack">
         <div>This plan looks like a stack of layers, not working slices. Mistakes in an early layer won't show until the last task.</div>
