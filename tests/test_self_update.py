@@ -135,6 +135,7 @@ console.log(JSON.stringify({{
         self.assertIn('MacBook Air', out["multi"])
         self.assertIn('Outdated (3 behind)', out["multi"])
         self.assertIn('data-update-machine="b" data-update-machine-op="install"', out["multi"])
+        self.assertIn('data-failover-setting', out["multi"])
         self.assertIn('Offline', out["multi"])
         self.assertNotIn('data-update-sync-all', out["multi"])
         self.assertNotIn('data-update-sync-all', out["current"])

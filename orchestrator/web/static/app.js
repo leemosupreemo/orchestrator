@@ -488,6 +488,102 @@ async function projectHasTests() {
   }
 }
 
+const AUTO_FAILOVER_KEY = "orchestrator_auto_failover";
+const autoFailoverTried = new Set();
+function isAutoFailoverEnabled() {
+  try { return localStorage.getItem(AUTO_FAILOVER_KEY) === "true"; } catch { return false; }
+}
+function normRepoKey(v) {
+  let s = String(v || "").trim().replace(/\/+$/, "").replace(/\.git$/i, "");
+  if (!s) return "";
+  if (s.includes(":") && s.split(":", 1)[0].includes("@")) s = s.split(":", 2)[1];
+  else if (s.includes("://")) s = s.split("://", 2)[1].split("/").slice(1).join("/");
+  const segs = s.split("/").filter(Boolean);
+  return (segs.length >= 2 ? segs.slice(-2).join("/") : s).toLowerCase();
+}
+async function openPeerSession(machine) {
+  const { endpoint, ticket } = await cpApi("machine/ticket", { method: "POST", body: { machine_id: machine.id }, signal: AbortSignal.timeout(8000) });
+  const authRes = await fetch(`${endpoint}/api/auth`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Orchestrator-UI": "1" },
+    body: JSON.stringify({ ticket }),
+    credentials: "omit",
+    signal: AbortSignal.timeout(8000),
+  });
+  const authData = await authRes.json().catch(() => ({}));
+  if (!authRes.ok || !authData.token) throw new Error(authData.error || `Couldn't sign in to ${machine.name}`);
+  return { machine, endpoint, token: authData.token };
+}
+async function peerApi(session, path, body = null, method = "GET") {
+  const res = await fetch(`${session.endpoint}/api/${path}`, {
+    method,
+    headers: {
+      ...(body != null ? { "Content-Type": "application/json" } : {}),
+      "X-Orchestrator-UI": "1",
+      "Authorization": `Bearer ${session.token}`,
+    },
+    ...(body != null ? { body: JSON.stringify(body) } : {}),
+    credentials: "omit",
+    signal: AbortSignal.timeout(method === "GET" ? 6000 : 15000),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  return data;
+}
+async function findReadyFailoverMachine(project) {
+  if (!project || typeof Account === "undefined" || !Account.active?.() || typeof cpApi !== "function") return null;
+  let currentMachineId = "";
+  try { currentMachineId = localStorage.getItem(Account.MACHINE_KEY) || ""; } catch {}
+  let machines = [];
+  try {
+    const res = await cpApi("machines", { signal: AbortSignal.timeout(4000) });
+    machines = Array.isArray(res?.machines) ? res.machines : [];
+  } catch { return null; }
+  const candidates = machines.filter((m) => m.id && m.id !== currentMachineId && m.reachable);
+  if (!candidates.length) return null;
+  const myRepo = normRepoKey(project.repo || project.github_repo || project.git_remote || "");
+  const myName = String(project.name || "").toLowerCase();
+  const checked = await Promise.allSettled(candidates.map(async (m) => {
+    const session = await openPeerSession(m);
+    const peerState = await peerApi(session, "state", null, "GET");
+    if (peerState?.disk_low === true) return null;
+    const peerProjects = Array.isArray(peerState?.projects) ? peerState.projects : [];
+    const match = peerProjects.find((pp) => {
+      const r = normRepoKey(pp.repo || pp.github_repo || pp.git_remote || "");
+      return (myRepo && r) ? r === myRepo : (myName && String(pp.name || "").toLowerCase() === myName);
+    }) || (peerState?.project && ((myRepo && normRepoKey(peerState.project.repo || peerState.project.github_repo || "") === myRepo) || String(peerState.project.name || "").toLowerCase() === myName) ? peerState.project : null);
+    if (!match?.root) return null;
+    const busy = Array.isArray(peerState?.runs) && peerState.runs.some((r) => r.running);
+    return { ...session, projectRoot: match.root, activeRoot: peerState?.project?.root || "", busy };
+  }));
+  const ready = checked.filter((r) => r.status === "fulfilled" && r.value).map((r) => r.value);
+  ready.sort((a, b) => Number(a.busy) - Number(b.busy));
+  return ready[0] || null;
+}
+async function handoffJobToMachine(peer, { jobId, job, summary, action = "resume" }) {
+  const sourceName = state.project?.computer?.name || "this computer";
+  if (peer.activeRoot !== peer.projectRoot) {
+    await peerApi(peer, "project", { root: peer.projectRoot }, "POST");
+  }
+  const jobEntry = {
+    ...(job || {}),
+    job_id: jobId,
+    title: summary?.title || job?.title || jobId,
+    status: job?.status || summary?.status || "human-needed",
+    type: job?.type || summary?.type || "generic",
+    tasks: Array.isArray(job?.plan?.tasks) ? job.plan.tasks : [],
+    summary: job?.plan?.summary || "",
+    record: job || {},
+  };
+  const imported = await peerApi(peer, "jobs/import-remote", { job: jobEntry, source_machine_name: sourceName }, "POST");
+  const targetId = imported?.id || jobId;
+  await api(`jobs/${encodeURIComponent(jobId)}/moved`, { method: "POST", body: { machine: peer.machine.name } }).catch(() => {});
+  await peerApi(peer, "runs", { action: action === "debug" ? "debug" : "resume", params: { job: targetId } }, "POST");
+  toast(`Handed off to ${peer.machine.name} — running there now`);
+  await refreshState().catch(() => {});
+  route();
+}
+
 async function runAction(action, params = {}, { skipConfirm = false, button = null, stayOnJob = false } = {}) {
   const meta = state.actions[action] || {};
   if (action === "test" && !(await projectHasTests())) {
@@ -502,6 +598,15 @@ async function runAction(action, params = {}, { skipConfirm = false, button = nu
     button.innerHTML = `<svg class="icon icon-sm spin" aria-hidden="true"><use href="#i-refresh"/></svg> Starting…`;
   }
   try {
+    if (isAutoFailoverEnabled() && state?.disk_low === true && ["schedule", "execute", "resume", "debug"].includes(action) && params?.job) {
+      const peer = await findReadyFailoverMachine(state.project).catch(() => null);
+      if (peer) {
+        toast(`Low disk space here — handing off to ${peer.machine.name}…`, "info");
+        const detail = await api(`jobs/${encodeURIComponent(params.job)}`);
+        await handoffJobToMachine(peer, { jobId: params.job, job: detail.job, summary: detail.summary, action });
+        return;
+      }
+    }
     const { run } = await api("runs", { method: "POST", body: { action, params, ...terminalSize() } });
     trackWebEvent("web_action_triggered", { action });
     if (run && Array.isArray(state.runs) && !state.runs.some((r) => r.id === run.id)) {
@@ -6948,6 +7053,43 @@ pages.job = async ([id]) => {
     after: () => {
       hydrateAuthImages(); // the UX and design check's screenshots
       wireImagePreviews(view);
+      // 1-click failover (and opt-in automatic handoff) when this computer hits a machine-local blocker.
+      const machineBlocker = diskBlocked || ["disk_full", "sign_in", "tool", "simulator"].includes(s.state.blocker_kind);
+      if (machineBlocker && !activeRun && !job.moved_to && state.you?.role !== "member" && typeof Account !== "undefined" && Account.active?.()) {
+        const heroActionBox = view.querySelector("#job-hero .job-hero-action");
+        findReadyFailoverMachine(state.project).then(async (peer) => {
+          if (!peer || !heroActionBox?.isConnected) return;
+          if (diskBlocked && isAutoFailoverEnabled() && !autoFailoverTried.has(id)) {
+            autoFailoverTried.add(id);
+            toast(`Low disk space here — handing off to ${peer.machine.name}…`, "info");
+            try {
+              await handoffJobToMachine(peer, { jobId: id, job, summary: s, action: "resume" });
+              return;
+            } catch (err) {
+              toast(`Auto-handoff to ${peer.machine.name} failed: ${err.message}`, true);
+            }
+          }
+          if (heroActionBox.querySelector("[data-failover-run]")) return;
+          const btn = document.createElement("button");
+          btn.type = "button";
+          btn.className = "btn";
+          btn.dataset.failoverRun = peer.machine.id;
+          btn.textContent = `Run on ${peer.machine.name}`;
+          btn.addEventListener("click", async () => {
+            const orig = btn.innerHTML;
+            btn.disabled = true;
+            btn.setAttribute("aria-busy", "true");
+            btn.innerHTML = `<span class="spinner inline-spinner" aria-hidden="true"></span>Moving to ${esc(peer.machine.name)}…`;
+            try {
+              await handoffJobToMachine(peer, { jobId: id, job, summary: s, action: "resume" });
+            } catch (err) {
+              toast(err.message, true);
+              if (btn.isConnected) { btn.disabled = false; btn.removeAttribute("aria-busy"); btn.innerHTML = orig; }
+            }
+          });
+          heroActionBox.appendChild(btn);
+        }).catch(() => {});
+      }
       const recheck = view.querySelector("#job-startup-recheck");
       recheck?.addEventListener("click", async () => {
         recheck.disabled = true;
@@ -13258,6 +13400,12 @@ pages.config = async (args = []) => {
           } catch (err) { toast(err.message, true); restore(); }
         };
         const onChange = async (event) => {
+          const failoverBox = event.target.closest("[data-failover-setting]");
+          if (failoverBox) {
+            try { localStorage.setItem(AUTO_FAILOVER_KEY, failoverBox.checked ? "true" : "false"); } catch {}
+            toast(failoverBox.checked ? "Automatic failover enabled" : "Automatic failover disabled");
+            return;
+          }
           const box = event.target.closest("[data-update-setting]");
           if (!box) return;
           const settingBody = { [box.dataset.updateSetting]: box.checked };
@@ -13389,6 +13537,7 @@ function updatesPageHtml(u, { pairedMachines = [], currentMachineId = "", curren
       <div class="card-b stack">
         <label class="check"><input type="checkbox" data-update-setting="auto_minor"${u.settings.auto_minor ? " checked" : ""}><span><strong>Auto-install minor updates</strong><br><span class="muted">Fixes and improvements. Checked every 5 min and installed when idle.</span></span></label>
         <label class="check"><input type="checkbox" data-update-setting="auto_breaking"${u.settings.auto_breaking ? " checked" : ""}><span><strong>Auto-install breaking updates</strong><br><span class="muted">Format or sync changes that require all machines to update.</span></span></label>
+        ${otherCount > 0 ? `<hr><label class="check"><input type="checkbox" data-failover-setting${typeof isAutoFailoverEnabled === "function" && isAutoFailoverEnabled() ? " checked" : ""}><span><strong>Auto-handoff jobs on low disk space</strong><br><span class="muted">Automatically move and run jobs on another online paired Mac with ≥15 GB free.</span></span></label>` : ""}
       </div>
     </section>
   </div>`;
