@@ -19,7 +19,7 @@ from collections import deque
 from typing import Any
 
 from orchestrator import job_runs
-from orchestrator.web.run_progress import RunProgress
+from orchestrator.web.run_progress import RunProgress, summarize_activity_line
 
 MAX_STEPS = 200
 MAX_LINES_PER_STEP = 400
@@ -78,7 +78,7 @@ class RunTimeline:
             if last["title"] == "Starting" and not self._lines.get(last["id"]):
                 self.steps.pop()  # nothing happened before the first real step
         step = {"id": self._next_id, "title": title, "of": of, "kind": kind_of(title), "status": "running",
-                "started": now, "ended": None, "events": [], "errors": 0, "lines": 0, "last": ""}
+                "started": now, "ended": None, "events": [], "errors": 0, "lines": 0, "last": "", "recent": []}
         self._next_id += 1
         self.steps.append(step)
         self._lines[step["id"]] = deque(maxlen=MAX_LINES_PER_STEP)
@@ -170,8 +170,13 @@ class RunTimeline:
         step["lines"] += 1
         if FAILURE.search(line):
             step["errors"] += 1
-        if not re.search(r"Running LLM|\[output\] Received|^<<<|Attempting fallback", line):
-            step["last"] = re.sub(r"^[-•*]\s+", "", line)[:200]  # what it's doing now, for the step in progress
+        if summary := summarize_activity_line(line):
+            step["last"] = summary
+            recent = step["recent"]
+            if not recent or recent[-1] != summary:
+                recent.append(summary)
+                if len(recent) > 3:
+                    del recent[:-3]
 
     def _header(self, title: str, timed: bool) -> None:
         task = re.fullmatch(r"(?:SUB[- ]TASK|STEP)\s*(\d+)/(\d+)(?::\s*(.*))?", title, re.I)
@@ -245,7 +250,8 @@ class RunTimeline:
                        "seconds": e["seconds"] if e["seconds"] is not None or not e["started"] else round(now - e["started"])}
                       for e in s["events"]]
             steps.append({"id": s["id"], "title": s["title"], "of": s["of"], "kind": s["kind"], "status": s["status"],
-                          "seconds": seconds, "events": events, "lines": s["lines"], "errors": s["errors"], "last": s["last"]})
+                          "seconds": seconds, "events": events, "lines": s["lines"], "errors": s["errors"], "last": s["last"],
+                          "recent": list(s["recent"])})
         return {"steps": steps, "running": running}
 
     def lines(self, step_id: int) -> list[str]:

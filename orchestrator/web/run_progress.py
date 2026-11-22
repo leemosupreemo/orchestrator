@@ -6,6 +6,64 @@ import re
 import time
 
 
+_ACTIVITY_NOISE_RE = re.compile(
+    r"^(?:"
+    r"[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]\s*(?:Thinking|Working|Waiting)|"
+    r"Thinking\s*\(Active stderr\)|"
+    r"\[waiting\]|"
+    r"\[Stall Notice\]|"
+    r"💡\s*\[Duration Notice\]|"
+    r"👉\s*If it appears stuck|"
+    r"hook:\s*(?:PreToolUse|PostToolUse|SessionStart|Stop)\b|"
+    r"Running LLM\b|"
+    r"\[output\]\s*Received\b|"
+    r"<<<|"
+    r"Attempting fallback|"
+    r"exec$|"
+    r"codex$|"
+    r"tokens used$|"
+    r"[\d,]+$|"
+    r"Filesystem\s+Size\s+Used|"
+    r"/dev/disk\S+\s+|"
+    r"\[exited(?:\s+with code -?\d+)?\]$|"
+    r"(?:\[\d+/\d+\]\s*)?updating (?:github )?issue\b"
+    r")",
+    re.I,
+)
+_SHELL_CMD_RE = re.compile(r"^(?:/bin/)?(?:zsh|bash|sh)\s+-\w*c\s+(.+?)(?:\s+in\s+/\S+)?$")
+_UNITY_IMPORTING_RE = re.compile(r"^Importing\s+'GUID:\s*[0-9a-f]+\s*-\s*Path:\s*([^']+)'?", re.I)
+_UNITY_IMPORTED_RE = re.compile(r"^Imported\s+'GUID:\s*[0-9a-f]+'\s*->", re.I)
+_MCP_EVENT_RE = re.compile(r"^mcp:\s*([^/\s]+/)?([^\s(]+)\s+(started|\(completed\))", re.I)
+
+
+def summarize_activity_line(raw_line: str) -> str | None:
+    """Turn a raw worker/agent output line into a short human-readable activity update, or None if it is spinner/noise."""
+    line = raw_line.strip()
+    if not line or "(Ctrl-C to cancel" in line:
+        return None
+    if line.lower().startswith("[stderr]"):
+        line = line[8:].strip()
+    if not line:
+        return None
+    line = re.sub(r"^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]+\s*", "", line).strip()
+    if not line or _ACTIVITY_NOISE_RE.search(line) or _UNITY_IMPORTED_RE.match(line):
+        return None
+    if mcp := _MCP_EVENT_RE.match(line):
+        if "completed" in mcp[3].lower():
+            return None
+        return f"MCP: {mcp[2]}"[:160]
+    if imp := _UNITY_IMPORTING_RE.match(line):
+        return f"Importing {imp[1].strip()}"[:160]
+    if cmd := _SHELL_CMD_RE.match(line):
+        inner = cmd[1].strip().strip('"').strip("'").strip()
+        if inner:
+            return f"Running: {re.sub(r'\s+', ' ', inner)}"[:160]
+    line = re.sub(r"^(?:==>\s*|[-•*]\s+)", "", line).strip()
+    if not line or _ACTIVITY_NOISE_RE.search(line):
+        return None
+    return re.sub(r"\s+", " ", line)[:160]
+
+
 class RunProgress:
     # These are the headers emitted by common.print_phase, not arbitrary model prose.
     LABELS = {
@@ -71,6 +129,7 @@ class RunProgress:
         self.gate_state = ""          # current gate evaluation status (e.g. "Intent gate passed", "Plan gate · auto-passed")
         self.experience_version = ""  # current prototype/experience version (e.g. "v0.1", "v0.2")
         self.feedback_impact = ""     # classified user feedback impact (e.g. "behavior_change · updating spec & code")
+        self.activity = ""            # latest meaningful agent/tool activity line (never clobbered by spinners)
 
     def _start_step(self, step: int, total: int, description: str, kind: str) -> None:
         if (step, total, kind) != (self.step, self.total, self._step_kind):
@@ -78,6 +137,7 @@ class RunProgress:
         self.step, self.total, self._step_kind = step, total, kind
         self.task = description.capitalize()
         self.label = self.task or "Running step"
+        self.activity = ""
 
     def _advance_planning(self, label: str) -> None:
         if self._step_kind == "planning":
@@ -105,6 +165,7 @@ class RunProgress:
                         self.step_fraction = max(self.step_fraction, self.TASK_MILESTONES.get(phase, 0))
                     if phase in self.LABELS:
                         self.label = self.LABELS[phase]
+                        self.activity = ""
                         self._advance_planning(self.label)
                         if phase == "SPEC SYNTHESIS":
                             self.spec_stage = "Pass A · Spec synthesis"
@@ -238,6 +299,7 @@ class RunProgress:
                     if self.calls:
                         self.calls.pop(0)
                 self.stall = 0
+                self.activity = ""
                 if self.label.startswith("Waiting for "):
                     self.label = "Reading the model's answer"
             elif "Attempting fallback..." in line:
@@ -254,6 +316,10 @@ class RunProgress:
                     model = using_match[1].strip()
                     if model and model not in self.models and ("/" in model or "." in model or any(k in model for k in ("gpt", "claude", "gemini", "qwen", "deepseek", "nemotron", "codex", "llama"))):
                         self.models.append(model)
+                if not header and not notice and not spec_line and not gate_line and not exp_line and not planned:
+                    summary = summarize_activity_line(line)
+                    if summary:
+                        self.activity = summary
 
     @staticmethod
     def _reason(detail: str, line: str) -> str:
@@ -288,4 +354,6 @@ class RunProgress:
             out["experience_version"] = self.experience_version
         if self.feedback_impact:
             out["feedback_impact"] = self.feedback_impact
+        if self.activity:
+            out["activity"] = self.activity
         return out

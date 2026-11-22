@@ -6723,8 +6723,9 @@ pages.job = async ([id]) => {
     </div></section>` : "";
 
   // Active-run live status preview for hero
+  const activeActivity = activeRun?.progress?.activity || "";
   const nextExecutionPreview = activeRun
-    ? `<span class="job-hero-next-label">Now:</span> <strong>${esc(runRel?.active?.now || nextTask || "working")}</strong>${runRel?.active ? ` <span class="muted">(${esc(runRel.active.label)} run)</span>` : ""}`
+    ? `<span class="job-hero-next-label">Now:</span> <strong>${esc(runRel?.active?.now || nextTask || "working")}</strong>${runRel?.active ? ` <span class="muted">(${esc(runRel.active.label)} run)</span>` : ""}${activeActivity ? `<div class="job-hero-activity">${esc(activeActivity)}</div>` : ""}`
     : "";
 
   const decideRoutesHtml = (currentPhase === "review" || ["merge", "complete"].includes(nextAction)) && !activeRun && !isJobComplete && state.you?.role !== "member"
@@ -17011,7 +17012,9 @@ function runStepHtml(step, open, lines, { entering = false, extending = false } 
         <span class="run-step-meta">${step.errors ? `<span class="run-step-errors">${plural(step.errors, "error")}</span>` : ""}${running ? runningMark : ""}${step.seconds != null ? `<span>${secondsText(step.seconds)}</span>` : ""}${step.lines ? `<svg class="icon run-step-chevron" aria-hidden="true"><use href="#i-chevron"/></svg>` : ""}</span>
       </button>
       ${step.events.map(runStepEvent).join("")}
-      ${running && step.last && !open ? `<div class="run-step-last">${esc(step.last)}</div>` : ""}
+      ${running && !open ? (step.recent?.length > 1
+        ? `<div class="run-step-recent">${step.recent.map((line, i) => `<div class="run-step-last${i === step.recent.length - 1 ? " is-latest" : ""}">${esc(line)}</div>`).join("")}</div>`
+        : step.last ? `<div class="run-step-last is-latest">${esc(step.last)}</div>` : "") : ""}
       ${open ? `<pre class="run-step-output">${lines == null ? "Loading…" : esc(lines.join("\n")) || "No output."}</pre>` : ""}
     </div>
   </li>`;

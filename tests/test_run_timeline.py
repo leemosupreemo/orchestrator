@@ -295,8 +295,38 @@ class PageTests(unittest.TestCase):
         self.assertIn('toast("Failure details and logs copied")', app)
         self.assertIn(".job-hero-head {", css)
         self.assertIn(".hero-copy-log-btn {", css)
-        self.assertIn("const steer = activeRun || s.question || reviewingPlan || signIn || diskBlocked || s.state.blocker ? null", app)
+        self.assertIn("const steer = activeRun || s.question || reviewingPlan || signIn || diskBlocked || s.state.blocker || autoStopped ? null", app)
         self.assertIn('const showNextAction = next && !diskBlocked && !(signInAction && next.action === "debug");', app)
+
+    def test_spinner_and_hook_noise_do_not_clobber_ai_activity_updates(self):
+        from orchestrator.web.run_progress import RunProgress
+
+        sample = "\n".join([
+            H("🤖 AI THINKING"),
+            "      - Running LLM (gpt-6.2-astra, timeout=1200s)...",
+            "        [stderr] hook: PreToolUse",
+            "        [stderr] mcp: codebase-memory-mcp/search_code started",
+            "        [stderr] mcp: codebase-memory-mcp/search_code (completed)",
+            "        [stderr] ==> Generating the Xcode project",
+            "        [stderr] Importing 'GUID: 86b9e99330e7f49a0a29c4ef344d2426 - Path: Assets/Resources/Tree1.png' with importer",
+            "        [stderr] hook: PostToolUse",
+            "        [stderr] hook: PostToolUse Completed",
+            "⠹ Thinking (Active stderr)... (Ctrl-C to cancel, 19m 52s)",
+            "        [waiting] gpt-6.2-astra: 20m so far, last output 3s ago",
+        ])
+        tl = RunTimeline()
+        tl.feed(sample.encode("utf-8"))
+        step = tl.view(running=True)["steps"][-1]
+        self.assertEqual(step["last"], "Importing Assets/Resources/Tree1.png")
+        self.assertEqual(step["recent"], [
+            "MCP: search_code",
+            "Generating the Xcode project",
+            "Importing Assets/Resources/Tree1.png",
+        ])
+
+        rp = RunProgress()
+        rp.feed(sample.encode("utf-8"))
+        self.assertEqual(rp.snapshot()["activity"], "Importing Assets/Resources/Tree1.png")
 
 
 if __name__ == "__main__":

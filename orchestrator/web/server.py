@@ -621,6 +621,11 @@ class PtySession:
             and not re.match(r"^(?:\[\d+/\d+\]\s*)?updating (?:github )?issue\b", l.strip(), re.IGNORECASE)
             and "build failed; skipping simulator launch" not in l.lower()
         ]
+        from orchestrator.web.run_progress import summarize_activity_line
+        for candidate in reversed(lines):
+            summary = summarize_activity_line(candidate)
+            if summary:
+                return summary[:200]
         return lines[-1][:200] if lines else ""
 
     def _error_summary(self) -> str:
