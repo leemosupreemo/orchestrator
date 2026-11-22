@@ -12957,12 +12957,8 @@ pages.config = async (args = []) => {
       const ok = results.filter((r) => r.status === "fulfilled").length;
       return { ok, failed: results.length - ok, offline };
     };
-    return { ...result, ...(u ? { html: updatesPageHtml(u, { pairedMachines, currentMachineId, currentMachineName, remoteUpdates, otherCount: otherMachines.length, syncAll }) } : {}),
+    return { ...result, ...(u ? { html: updatesPageHtml(u, { pairedMachines, currentMachineId, currentMachineName, remoteUpdates, otherCount: otherMachines.length }) } : {}),
       after: () => {
-        const currentSettings = () => ({
-          auto_minor: Boolean(view.querySelector('[data-update-setting="auto_minor"]')?.checked),
-          auto_breaking: Boolean(view.querySelector('[data-update-setting="auto_breaking"]')?.checked),
-        });
         const setProgress = (message) => {
           const el = view.querySelector("#updates-progress");
           if (!el) return;
@@ -12983,29 +12979,32 @@ pages.config = async (args = []) => {
             setProgress("");
           };
         };
+        // Auto-check on page load if local or any reachable paired machine hasn't been checked in the last 30s.
+        const nowSec = Date.now() / 1000;
+        const staleLocal = u && nowSec - Number(u.last_check?.at || 0) > 30;
+        const staleRemotes = otherMachines.filter((m) => m.reachable && nowSec - Number(remoteUpdates[m.id]?.last_check?.at || 0) > 30);
+        let disposed = false;
+        if (staleLocal || staleRemotes.length) {
+          setProgress("Checking for updates…");
+          Promise.allSettled([
+            ...(staleLocal ? [api("updates", { method: "POST", body: { op: "check" } })] : []),
+            ...staleRemotes.map((m) => callPairedMachine(m, "updates", { op: "check" })),
+          ]).then(() => {
+            if (!disposed && location.hash === "#/config/updates") route();
+          });
+        }
         const onClick = async (event) => {
-          const button = event.target.closest("[data-config-action], [data-update-op], [data-update-machine]");
+          const button = event.target.closest("[data-update-op], [data-update-machine]");
           if (!button) return;
-          if (button.dataset.configAction === "update-fleet") return runAction("update_fleet");
           const machineId = button.dataset.updateMachine;
           if (machineId) {
             const machine = otherMachines.find((m) => m.id === machineId);
-            const machineOp = button.dataset.updateMachineOp || "check";
             if (!machine) return;
-            const restore = beginBusy(
-              button,
-              machineOp === "install" ? "Updating…" : "Checking…",
-              machineOp === "install" ? `Updating ${machine.name}…` : `Checking ${machine.name} for updates…`,
-            );
+            const restore = beginBusy(button, "Updating…", `Updating ${machine.name}…`);
             try {
-              if (machineOp === "install") {
-                await callPairedMachine(machine, "updates", { op: "check" });
-                const res = await callPairedMachine(machine, "updates", { op: "install" });
-                toast(res?.message ? `${machine.name}: ${res.message}` : `Triggered update on ${machine.name}`);
-              } else {
-                await callPairedMachine(machine, "updates", { op: "check" });
-                toast(`Checked ${machine.name}`);
-              }
+              await callPairedMachine(machine, "updates", { op: "check" });
+              const res = await callPairedMachine(machine, "updates", { op: "install" });
+              toast(res?.message ? `${machine.name}: ${res.message}` : `Triggered update on ${machine.name}`);
               route();
             } catch (err) {
               toast(`${machine.name}: ${err.message}`, true);
@@ -13015,23 +13014,9 @@ pages.config = async (args = []) => {
           }
           const op = button.dataset.updateOp;
           if (!op) return;
-          const busyLabel = op === "install" || op === "install-all" ? "Updating…" : "Checking…";
-          const progressMsg = op === "install-all" ? "Updating all online computers…"
-            : op === "check-all" ? "Checking all online computers for updates…"
-            : op === "install" ? `Updating ${currentMachineName}…`
-            : `Checking ${currentMachineName} for updates…`;
-          const restore = beginBusy(button, busyLabel, progressMsg);
+          const progressMsg = op === "install-all" ? "Updating all online computers…" : `Updating ${currentMachineName}…`;
+          const restore = beginBusy(button, "Updating…", progressMsg);
           try {
-            if (op === "check-all") {
-              const reachable = otherMachines.filter((m) => m.reachable);
-              await Promise.allSettled([
-                api("updates", { method: "POST", body: { op: "check" } }),
-                ...reachable.map((m) => callPairedMachine(m, "updates", { op: "check" })),
-              ]);
-              toast(`Checked ${plural(1 + reachable.length, "computer")}`);
-              route();
-              return;
-            }
             if (op === "install-all") {
               const reachable = otherMachines.filter((m) => m.reachable);
               const offline = otherMachines.length - reachable.length;
@@ -13051,12 +13036,10 @@ pages.config = async (args = []) => {
               return;
             }
             const res = await api("updates", { method: "POST", body: { op } });
-            if (op === "install") {
-              toast(res.message || "Updated");
-              if (res.restart) {
-                setProgress("Restarting Orchestrator with the update…");
-                notify("info", "Orchestrator is restarting with the update…", { id: "self-update", sticky: false });
-              } else route();
+            toast(res.message || "Updated");
+            if (res.restart) {
+              setProgress("Restarting Orchestrator with the update…");
+              notify("info", "Orchestrator is restarting with the update…", { id: "self-update", sticky: false });
             } else route();
           } catch (err) { toast(err.message, true); restore(); }
         };
@@ -13079,7 +13062,7 @@ pages.config = async (args = []) => {
         };
         view.addEventListener("click", onClick);
         view.addEventListener("change", onChange);
-        cleanup.push(() => { view.removeEventListener("click", onClick); view.removeEventListener("change", onChange); });
+        cleanup.push(() => { disposed = true; view.removeEventListener("click", onClick); view.removeEventListener("change", onChange); });
       },
     };
   }
@@ -13088,14 +13071,14 @@ pages.config = async (args = []) => {
 
 // Orchestrator's own updates on this computer (self_update.py): what's installed, what's newer and whether it's minor
 // (installs by itself once no run is going) or breaking (waits for you, unless you allow it), and the two settings.
-function updatesPageHtml(u, { pairedMachines = [], currentMachineId = "", currentMachineName = "This computer", remoteUpdates = {}, otherCount = 0, syncAll = true } = {}) {
+function updatesPageHtml(u, { pairedMachines = [], currentMachineId = "", currentMachineName = "This computer", remoteUpdates = {}, otherCount = 0 } = {}) {
   const c = u.last_check || {};
   const when = (t) => t ? new Date(t * 1000).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "";
-  const installLabel = { git: "a git checkout", pip: "pipx", packaged: "the Orchestrator app" }[u.install] || u.install;
-  const state = c.update === "breaking" ? `<div class="notice warn"><p><strong>A breaking update is ready.</strong> It changes something your other computers or saved data depend on, so it waits for you.</p>${(c.breaking_changes || []).length ? `<ul>${c.breaking_changes.map((x) => `<li>${esc(x)}</li>`).join("")}</ul>` : ""}<p class="muted">Update your other computers too, so they keep working together.</p></div>`
+  const installLabel = { git: "git checkout", pip: "pipx", packaged: "Orchestrator app" }[u.install] || u.install;
+  const noticeHtml = c.update === "breaking" ? `<div class="notice warn"><p><strong>A breaking update is ready.</strong> It changes something your other computers or saved data depend on, so it waits for you.</p>${(c.breaking_changes || []).length ? `<ul>${c.breaking_changes.map((x) => `<li>${esc(x)}</li>`).join("")}</ul>` : ""}<p class="muted">Update your other computers too, so they keep working together.</p></div>`
     : c.update === "minor" ? `<div class="notice"><p><strong>An update is ready</strong> (${plural(c.behind || 1, "change")}). ${u.settings.auto_minor ? "It installs by itself once no run is going." : "Automatic minor updates are off."}</p></div>`
     : c.update === "unknown" ? `<div class="notice warn"><p>Couldn't check for updates: ${esc(c.error || "unknown error")}</p></div>`
-    : c.at ? `<p><strong>Up to date.</strong> <span class="muted">Checked ${esc(ago(c.at))}.</span></p>` : `<p class="muted">Not checked yet.</p>`;
+    : "";
   const changes = (c.changes || []).length ? `<details class="fold"><summary class="linklike muted">What's new (${c.changes.length})</summary><ul class="muted">${c.changes.map((x) => `<li>${esc(x)}</li>`).join("")}</ul></details>` : "";
   const history = (u.history || []).length ? `<details class="fold"><summary class="linklike muted">Recent updates</summary><ul class="muted">${u.history.slice().reverse().map((h) => `<li>${esc(when(h.at))}: ${esc(h.message)}</li>`).join("")}</ul></details>` : "";
   const canInstall = ["minor", "breaking"].includes(c.update) && !c.blocked;
@@ -13103,11 +13086,17 @@ function updatesPageHtml(u, { pairedMachines = [], currentMachineId = "", curren
   const localStatusPill = c.update === "breaking" ? `<span class="pill failed">Outdated · breaking</span>`
     : c.update === "minor" ? `<span class="pill attention">Outdated${c.behind ? ` (${c.behind} behind)` : ""}</span>`
     : c.update === "unknown" ? `<span class="pill attention">Check failed</span>`
-    : c.at ? `<span class="pill done">Up to date</span>`
-    : `<span class="pill idle">Not checked</span>`;
+    : c.at ? `<span class="pill done">Up to date.</span>`
+    : `<span class="pill idle">Checking…</span>`;
+  const localVer = [u.version || "", c.installed ? c.installed.slice(0, 7) : ""].filter(Boolean).join(" · ") || "—";
+  const localMeta = [
+    c.branch ? `on ${c.branch}` : "",
+    installLabel,
+    c.at ? `Checked ${ago(c.at)}` : "",
+  ].filter(Boolean).map(esc).join(" · ");
   const otherMachines = (pairedMachines || []).filter((m) => m.id && m.id !== currentMachineId);
   let anyOutdated = localOutdated;
-  const remoteRowsHtml = otherMachines.map((m) => {
+  const remoteRowsHtml = otherMachines.map((m, idx) => {
     const ru = remoteUpdates[m.id] || null;
     const rc = ru?.last_check || {};
     const remoteCommitBehind = Boolean(rc.installed && c.latest && rc.installed !== c.latest);
@@ -13120,56 +13109,66 @@ function updatesPageHtml(u, { pairedMachines = [], currentMachineId = "", curren
       : rc.update === "none" ? `<span class="pill done">Up to date</span>`
       : ru?.error ? `<span class="pill attention">Outdated</span>`
       : `<span class="pill idle">Online</span>`;
-    const ver = ru?.version || m.version || "";
-    const metaParts = [
-      ver ? `Orchestrator ${esc(ver)}` : "",
-      rc.installed ? `<span class="mono">${esc(rc.installed)}</span>` : "",
-      rc.branch ? `on <span class="mono">${esc(rc.branch)}</span>` : "",
-      rc.at ? `Checked ${esc(ago(rc.at))}` : (!m.reachable && m.last_seen ? `Last seen ${esc(ago(m.last_seen))}` : ""),
-    ].filter(Boolean);
+    const ver = [ru?.version || m.version || "", rc.installed ? rc.installed.slice(0, 7) : ""].filter(Boolean).join(" · ") || "—";
+    const meta = [
+      rc.branch ? `on ${rc.branch}` : "",
+      rc.at ? `Checked ${ago(rc.at)}` : (!m.reachable && m.last_seen ? `Last seen ${ago(m.last_seen)}` : ""),
+    ].filter(Boolean).map(esc).join(" · ");
     const canInstallRemote = m.reachable && !rc.blocked && (remoteOutdated || Boolean(ru?.error));
-    return `<div class="item">
-      <div class="main-col stack">
-        <div class="title row gap-8 wrap align-center"><strong>${esc(m.name || m.id)}</strong>${pill}</div>
-        ${metaParts.length ? `<div class="meta">${metaParts.join(" · ")}</div>` : ""}
-        ${rc.blocked ? `<div class="text-bad t-secondary">${esc(rc.blocked)}</div>` : ""}
-        ${ru?.error ? `<div class="muted t-secondary">${esc(ru.error)}</div>` : ""}
+    const versionTag = `<span class="job-type-tag mono">${esc(ver)}</span>`;
+    return `<div class="job-table-row">
+      <div class="col-job has-num">
+        <span class="job-row-num" aria-hidden="true">${idx + 2}</span>
+        <div class="col-job-main">
+          <div class="job-title-row"><div class="job-title">${esc(m.name || m.id)}</div></div>
+          <div class="job-mobile-info">${versionTag}${pill}</div>
+          ${meta ? `<div class="job-meta">${meta}</div>` : ""}
+          ${rc.blocked ? `<div class="job-meta text-bad">${esc(rc.blocked)}</div>` : ""}
+          ${ru?.error ? `<div class="job-meta muted">${esc(ru.error)}</div>` : ""}
+        </div>
       </div>
-      ${m.reachable ? `<div class="side row gap-8">
-        ${canInstallRemote ? `<button type="button" class="btn small primary" data-update-machine="${esc(m.id)}" data-update-machine-op="install">Update</button>` : ""}
-        <button type="button" class="btn small" data-update-machine="${esc(m.id)}" data-update-machine-op="check">Check</button>
-      </div>` : ""}
+      <div class="col-type">${versionTag}</div>
+      <div class="col-status">${pill}</div>
+      <div class="col-date">${canInstallRemote ? `<button type="button" class="btn small primary" data-update-machine="${esc(m.id)}" data-update-machine-op="install">Update</button>` : `<span class="muted">—</span>`}</div>
     </div>`;
   }).join("");
   const totalMachines = 1 + otherMachines.length;
+  const localVersionTag = `<span class="job-type-tag mono">${esc(localVer)}</span>`;
+  const detailsFooter = [noticeHtml, c.blocked ? `<p class="text-bad m-0">${esc(c.blocked)}</p>` : "", c.note ? `<p class="muted m-0">${esc(c.note)}</p>` : "", changes, history].filter(Boolean).join("");
   return `<div class="configuration-page">
     <section class="card configuration-card">
       <div class="card-h">
         <h2>Machines${totalMachines > 1 ? ` <span class="count">${totalMachines}</span>` : ""}</h2>
         ${otherCount > 0 ? `<div class="card-actions">
-          <button type="button" class="btn small" data-update-op="check-all">Check all</button>
           <button type="button" class="btn small${anyOutdated ? " primary" : ""}" data-update-op="install-all">Update all</button>
         </div>` : ""}
       </div>
       <div id="updates-progress" class="card-b" hidden role="status" aria-live="polite"></div>
-      <div class="list">
-        <div class="item">
-          <div class="main-col stack">
-            <div class="title row gap-8 wrap align-center"><strong>${esc(currentMachineName)}</strong><span class="pill idle">Local</span>${localStatusPill}</div>
-            <div class="meta">Orchestrator ${esc(u.version || "")}${c.installed ? ` · <span class="mono">${esc(c.installed)}</span>` : ""}${c.branch ? ` on <span class="mono">${esc(c.branch)}</span>` : ""} · installed with ${esc(installLabel)}</div>
-            ${state}
-            ${c.blocked ? `<p class="text-bad">${esc(c.blocked)}</p>` : ""}
-            ${c.note ? `<p class="muted">${esc(c.note)}</p>` : ""}
-            ${changes}
-            ${history}
-          </div>
-          <div class="side row gap-8">
-            ${canInstall ? `<button type="button" class="btn small primary" data-update-op="install">Update now</button>` : ""}
-            <button type="button" class="btn small${canInstall ? "" : " primary"}" data-update-op="check">Check now</button>
-          </div>
+      <div class="job-table">
+        <div class="job-table-header">
+          <div class="col-job">Machine</div>
+          <div class="col-type">Version</div>
+          <div class="col-status">Status</div>
+          <div class="col-date">Action</div>
         </div>
-        ${remoteRowsHtml}
+        <div class="job-table-body">
+          <div class="job-table-row">
+            <div class="col-job has-num">
+              <span class="job-row-num" aria-hidden="true">1</span>
+              <div class="col-job-main">
+                <div class="job-title-row"><div class="job-title">${esc(currentMachineName)}</div><span class="pill idle">Local</span></div>
+                <div class="job-mobile-info">${localVersionTag}${localStatusPill}</div>
+                ${localMeta ? `<div class="job-meta">${localMeta}</div>` : ""}
+              </div>
+            </div>
+            <div class="col-type">${localVersionTag}</div>
+            <div class="col-status">${localStatusPill}</div>
+            <div class="col-date">${canInstall ? `<button type="button" class="btn small primary" data-update-op="install">Update now</button>` : `<span class="muted">—</span>`}</div>
+          </div>
+          ${remoteRowsHtml}
+        </div>
       </div>
+      ${detailsFooter ? `<div class="card-b stack">${detailsFooter}</div>` : ""}
     </section>
     <section class="card configuration-card">
       <div class="card-h"><h2>Automatic updates</h2></div>
