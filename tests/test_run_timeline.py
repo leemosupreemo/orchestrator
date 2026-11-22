@@ -230,7 +230,7 @@ class PageTests(unittest.TestCase):
 
     def test_failed_run_auto_opens_steps_with_errors(self):
         app = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
-        timeline = app[app.index("function wireRunTimeline"):][:2500]
+        timeline = app[app.index("function wireRunTimeline"):app.index("function wireRunTabs")]
         self.assertIn('s.status === "failed" || s.errors > 0', timeline)
 
     def test_timeline_omits_top_running_duration_and_step_count_banner(self):
