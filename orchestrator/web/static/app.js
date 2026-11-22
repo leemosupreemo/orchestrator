@@ -6191,8 +6191,6 @@ function jobRunsCard(runs, rel, extraDetailsHtml = "") {
   if (!runs) return "";
   const work = runs.filter((r) => !r.side);
   const visibleRuns = runs.slice(0, JOB_RUNS_MAX);
-  const stages = Object.entries(rel?.per_phase || {}).filter(([, n]) => n).map(([phase, n]) => `${phase[0].toUpperCase()}${phase.slice(1)} ${n}`);
-  const metaHtml = (stages.length > 1 ? `<span class="muted">By stage: ${esc(stages.join(" · "))}</span>` : "") + extraDetailsHtml;
   return `<section class="card mb-16" id="job-runs">
     <div class="card-h"><h2>${rel?.single ? "Run" : "Runs"}</h2>${work.length ? `<span class="count">${work.length}</span>` : ""}</div>
     ${visibleRuns.length ? `<div class="job-table">
@@ -6205,7 +6203,7 @@ function jobRunsCard(runs, rel, extraDetailsHtml = "") {
       <div class="job-table-body" id="job-run-list">${visibleRuns.map((r, n) => jobRunTableRow(r, { hidden: n >= JOB_RUNS_SHOWN, number: n + 1 })).join("")}</div>
       ${visibleRuns.length > JOB_RUNS_SHOWN ? `<div class="card-b"><button type="button" class="btn small" data-show-all="job-run-list">Show more (${visibleRuns.length})</button></div>` : ""}
     </div>` : `<div class="empty">Nothing has run for this job yet.</div>`}
-    ${metaHtml ? `<div class="card-b stack">${metaHtml}</div>` : ""}
+    ${extraDetailsHtml ? `<div class="card-b stack">${extraDetailsHtml}</div>` : ""}
   </section>`;
 }
 
@@ -6997,12 +6995,7 @@ pages.job = async ([id]) => {
 
       <div class="job-body">
       ${!reviewingPlan ? tasksCardHtml : ""}
-      ${jobRunsCard(jobRuns, runRel, `<details class="hero-error-details">
-            <summary class="linklike muted">Stage &amp; model details</summary>
-            <div class="progress-foot muted">${phasesInfo.map((p) => `${esc(p.title)}: ${esc(p.subtitle)}`).join(" · ")}</div>
-            ${pipe?.planner || pipe?.builder || pipe?.reviewer ? `<div class="progress-foot muted">Models: ${esc(pipeline.planner === pipeline.builder && pipeline.builder === pipeline.reviewer ? pipeline.planner : `plan ${pipeline.planner} → build ${pipeline.builder} → review ${pipeline.reviewer}`)}</div>` : ""}
-            ${job.auto_assignment ? `<div class="progress-foot muted">Picked by Auto (${esc(job.auto_assignment.complexity || "standard")}): ${esc((job.auto_assignment.reasons || []).join("; "))}.</div>` : ""}
-          </details>`)}
+      ${jobRunsCard(jobRuns, runRel, "")}
       ${!reviewingPlan ? `<section class="card mb-16" id="plan-section" tabindex="-1">
         <div class="card-h"><h2>${s.status === "designing" ? "Design" : "Plan"}</h2>
           ${job.plan?.fast_tracked ? `<span class="count" title="A Quick change: planned in one pass and started without approval">Fast-tracked</span>` : ""}</div>

@@ -1685,10 +1685,9 @@ process.stdout.write(JSON.stringify({html: page.html}));
 
     def test_job_page_says_why_auto_picked_its_models(self):
         js = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
-        self.assertIn("job.auto_assignment ? `<div class=\"progress-foot muted\">Picked by Auto (${esc(job.auto_assignment.complexity", js)
         self.assertIn("conciseReasonText", js)
         self.assertIn('<details class="hero-error-details"><summary class="linklike muted">Error details</summary>', js)
-        self.assertIn("Stage &amp; model details", js)
+        self.assertNotIn("Stage &amp; model details", js)
 
     def test_team_roles_default_to_auto_and_keep_a_chosen_model(self):
         result = self.run_configuration_script("""
