@@ -13170,13 +13170,6 @@ function updatesPageHtml(u, { pairedMachines = [], currentMachineId = "", curren
         ${allMachinesHtml}
       </div>
     </section>
-    <section class="card configuration-card">
-      <div class="card-h"><h2>Build machines</h2></div>
-      <div class="card-b stack">
-        <p class="muted">Update Orchestrator on every machine in the build fleet.</p>
-        <div class="row"><button type="button" class="btn" data-config-action="update-fleet">Update fleet</button></div>
-      </div>
-    </section>
   </div>`;
 }
 
