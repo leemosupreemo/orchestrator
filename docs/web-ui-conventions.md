@@ -174,7 +174,11 @@ Callout and hero containers (`.job-hero`, `.banner`, `.notice`) frame actionable
   - The **Progress** card clearly separates task completion count, active/next builder task, remaining tasks, and verification status.
 - **Job Tasks and Plan**:
   - Tasks appear above Plan once. Each task shows completion and a run count that expands to the associated runs.
+  - The **Runs** table sits directly below Tasks in `.job-table` format with a 5-run cutoff and **Show more** up to 25 runs.
   - Plan shows a short bullet summary, with **Full brief** for viewing or downloading the Markdown and **Edit brief** for changing it.
+- **Modals & dialogs**:
+  - All modal titles (`dialog h2` and `.feedback-title`) share one consistent heading style: `var(--type-page)`, `var(--weight-semibold)`, `line-height: 1.3`, `letter-spacing: -0.01em`, `color: var(--text)`.
+  - Connector modals place a primary blue `Login ↗` button in `.conn-login-top` (bottom padding/margin `--space-4` + `1px solid var(--border)` divider) above the form fields, and an inline `Get token ↗` link next to every secret token field label.
 
 ## Home
 

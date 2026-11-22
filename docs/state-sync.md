@@ -128,4 +128,10 @@ reply's `state_heads`, and an older control plane ignores the report: both fall 
 `POST /api/product/sharing` (`enabled`, `scope`: product or jobs) and `GET /api/shared-jobs`.
 Tests: `tests/test_product_sync.py` and `tests/test_job_sync.py` run two computers against a real bare remote (merges, races,
 ownership hand-over, archives, hooks, clones, consent, files), and `tests/test_wip_backup.py` checks backups ignore pre-push hooks.
-Sync problems show on Home under the `product` and `shared_jobs` channels.
+Sync problems show on Home under the `product` and `shared_jobs` channels, naming the computer (`Sync problems on <Computer Name>`).
+
+### Sync reliability & filtering details
+
+- **Task scratch files excluded:** Internal per-task worker scratch files (`*_task_<N>.json`) are excluded from `job_sync.py`, `account.py` snapshots/updates, and the Home remote-jobs merger so only real jobs are shared.
+- **Live state transitions pushed:** `job_sync.py` includes `state` in its change comparison so a worker exit that flips a job from **Building** to **Paused** (while raw `status` remains `executing`) pushes immediately to `refs/orchestrator/state`.
+- **Stale pre-sleep failures suppressed:** `sync_health.problems()` ignores failures whose `failed_at` is older than 15 minutes (`STALE_FAILURE_SECONDS = 900`, e.g. from before a Mac slept), `start_state_sync()` clears pre-sleep failures on wake, and `GET /api/sync-health` nudges `wake_state_sync()` immediately whenever any failure is recorded.
