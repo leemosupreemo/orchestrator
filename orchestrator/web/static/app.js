@@ -5835,7 +5835,7 @@ document.addEventListener("click", async (e) => {
 function autoresponseNote(job) {
   const auto = (job.clarification_history || []).filter((h) => h.auto);
   if (!auto.length) return "";
-  return `<span class="pill attention autoresponse-note" title="YOLO answered ${auto.length} of the AI's questions to keep it going (${auto.length} of 3; after that it waits for you)">🤖 Answered for you (${auto.length}/3)</span>`;
+  return `<span class="pill attention autoresponse-note" title="YOLO auto-answered ${auto.length} question${auto.length === 1 ? "" : "s"} to keep the job going (up to 3 per job before waiting for you)">🤖 ${auto.length} auto-answered</span>`;
 }
 
 // Sentry's device sign-in, inside the Connect Sentry dialog: open Sentry's approval page with the code filled in, show the
@@ -6932,8 +6932,8 @@ pages.job = async ([id]) => {
         blockingQuestionsCount && nonBlockingQuestionsCount
           ? `${blockingQuestionsCount} blocking · ${nonBlockingQuestionsCount} non-blocking`
           : blockingQuestionsCount
-            ? `${blockingQuestionsCount} unanswered · Blocking`
-            : `${nonBlockingQuestionsCount} unanswered · Non-blocking`
+            ? `${blockingQuestionsCount} blocking`
+            : `${nonBlockingQuestionsCount} non-blocking`
       }</span>`
     : "";
   const unansweredThreadHtml = unansweredQuestions.map((q) => `
