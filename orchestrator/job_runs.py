@@ -85,6 +85,9 @@ def record(runtime: Path, run: dict[str, Any]) -> Path | None:
         data["task_refs"] = run["task_refs"]
     if run.get("task_attempts"):
         data["task_attempts"] = run["task_attempts"]
+    if run.get("running") and isinstance(run.get("pid"), int):
+        data["running"] = True
+        data["pid"] = run["pid"]
     folder = _dir(runtime)
     try:
         folder.mkdir(parents=True, exist_ok=True)
@@ -113,8 +116,20 @@ def recorded(runtime: Path, job_id: str | None = None) -> list[dict[str, Any]]:
     return out
 
 
+def _pid_alive(pid: Any) -> bool:
+    if not isinstance(pid, int) or pid <= 0:
+        return True
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
 def status(run: dict[str, Any]) -> str:
-    if run.get("running"):
+    if run.get("running") and _pid_alive(run.get("pid")):
         return "waiting" if run.get("waiting") else "running"
     if run.get("stopped"):
         return "stopped"
@@ -294,3 +309,333 @@ def relationship(runs: list[dict[str, Any]], job: dict[str, Any]) -> dict[str, A
             "phase": active.get("phase"), "status": active["status"], "now": active.get("now", ""), "seconds": active.get("seconds")},
             "per_phase": per_phase, "latest": latest and {"id": latest["id"], "label": latest["label"], "status": latest["status"]},
             "unreported": unreported}
+
+
+COHESIVE_COMPLEXITIES = {"small", "low", "trivial"}
+SINGLE_PASS_TYPES = {"bug-fix", "bug-investigate", "test-audit", "coverage", "feature-design", "design", "quick-fix"}
+FOUNDATION_WORDS = (
+    "schema", "migration", "database", "data model", "data layer", "models", "entities",
+    "persistence", "repository", "types", "protocol", "interfaces", "scaffold", "boilerplate",
+    "skeleton", "project setup", "infrastructure", "dependencies", "plumbing",
+)
+USER_FACING_WORDS = (
+    "screen", "view", "page", "button", "form", "command", "cli", "ui", "ux", "flow",
+    "user can", "users can", "can now", "end-to-end", "end to end", "displays", "shows",
+    "visible", "launch", "runs", "menu", "tab", "dialog", "output",
+)
+
+
+def _norm_files(files: Any) -> list[str]:
+    if not isinstance(files, list):
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in files:
+        val = str(raw or "").strip().removeprefix("./")
+        if val and not val.endswith("/") and val not in seen:
+            seen.add(val)
+            out.append(val)
+    return out
+
+
+def _is_foundation_task(task: Any) -> bool:
+    if not isinstance(task, dict):
+        return False
+    if task.get("foundation") is True:
+        return True
+    parts = [str(task.get("title", "")), str(task.get("description", ""))] + [str(a) for a in task.get("acceptance_criteria") or []]
+    text = " ".join(parts).lower()
+    has_found = any(re.search(rf"(?<![a-z]){re.escape(w)}(?![a-z])", text) for w in FOUNDATION_WORDS)
+    has_user = any(re.search(rf"(?<![a-z]){re.escape(w)}(?![a-z])", text) for w in USER_FACING_WORDS)
+    return has_found and not has_user
+
+
+def cohesive_batch_indices(tasks: list[Any], completed: list[int] | set[int]) -> list[int]:
+    """Contiguous uncompleted task indices (2-3 tasks) that can execute in one combined builder call."""
+    if not isinstance(tasks, list) or len(tasks) < 2:
+        return []
+    done = {int(i) for i in (completed or []) if str(i).isdigit()}
+    remaining = [i for i in range(len(tasks)) if i not in done]
+    if not (2 <= len(remaining) <= 3):
+        return []
+    if remaining != list(range(remaining[0], remaining[0] + len(remaining))):
+        return []
+    all_files: set[str] = set()
+    prev_files: set[str] = set()
+    for pos, idx in enumerate(remaining):
+        t = tasks[idx]
+        if not isinstance(t, dict):
+            return []
+        comp = str(t.get("complexity") or "").strip().lower()
+        if comp not in COHESIVE_COMPLEXITIES:
+            return []
+        t_files = set(_norm_files(t.get("likely_files")))
+        if not t_files:
+            return []
+        if pos > 0 and not (prev_files & t_files):
+            return []
+        prev_files = t_files
+        all_files.update(t_files)
+    if len(all_files) > 4:
+        return []
+    return remaining
+
+
+def _resolve_explicit_deps(task: Any, index: int, tasks: list[Any]) -> list[int]:
+    """Resolve a task's explicit `depends_on` references (1-based index, T<n>, run_history_id, or title) to 0-based task indices."""
+    if not isinstance(task, dict):
+        return []
+    raw_deps = task.get("depends_on")
+    if not isinstance(raw_deps, list):
+        return []
+    by_id = {
+        str(t.get("run_history_id")): idx
+        for idx, t in enumerate(tasks)
+        if isinstance(t, dict) and t.get("run_history_id")
+    }
+    by_title = {
+        _title(str(t.get("title") or t.get("name") or "")): idx
+        for idx, t in enumerate(tasks)
+        if isinstance(t, dict) and (t.get("title") or t.get("name"))
+    }
+    resolved: list[int] = []
+    for ref in raw_deps:
+        target: int | None = None
+        if isinstance(ref, int) and not isinstance(ref, bool):
+            target = ref - 1 if 1 <= ref <= len(tasks) else (ref if 0 <= ref < len(tasks) else None)
+        elif isinstance(ref, str):
+            s = ref.strip()
+            m = re.fullmatch(r"(?:[tT]|task\s*)?(\d+)", s, re.I)
+            if m:
+                n = int(m.group(1))
+                target = n - 1 if 1 <= n <= len(tasks) else None
+            elif s in by_id:
+                target = by_id[s]
+            elif _title(s) in by_title:
+                target = by_title[_title(s)]
+        if target is not None and 0 <= target < len(tasks) and target != index and target not in resolved:
+            resolved.append(target)
+    return resolved
+
+
+def breakdown(job: dict[str, Any]) -> dict[str, Any]:
+    """Dynamically determine how a job breaks down into runs:
+    - `single_run`: taskless jobs (bug-fix, investigate, test-audit, design), quick-fix, 1-task feature-plan, or a 2-3 task cohesive batch.
+    - `sequential_runs`: multi-task feature-plan whose tasks share files, depend on each other linearly, or run on a shared branch.
+    - `parallel_runs`: multi-task feature-plan with >= 2 tasks in the same dependency wave that touch disjoint likely_files.
+    """
+    if not isinstance(job, dict):
+        job = {}
+    job_type = str(job.get("type") or "")
+    if not job_type:
+        if job.get("source") == "manual" or "repro_steps" in (job.get("plan") or {}):
+            job_type = "bug-fix"
+        elif job.get("source") == "quick" or "quick" in str(job.get("job_id") or ""):
+            job_type = "quick-fix"
+        else:
+            job_type = "feature-plan"
+    plan = job.get("plan") if isinstance(job.get("plan"), dict) else {}
+    raw_tasks = [t for t in (plan.get("tasks") or []) if t] if isinstance(plan.get("tasks"), list) else []
+    completed = {int(i) for i in (job.get("completed_task_indices") or []) if str(i).isdigit()}
+    branch_mode = str(job.get("branch_mode") or "new").lower()
+    shared_branch = "current" in branch_mode or "manual" in branch_mode
+    job_done = str(job.get("status") or "") in ("completed", "review-needed")
+
+    if job_type in SINGLE_PASS_TYPES or not raw_tasks:
+        files = _norm_files(plan.get("likely_files"))
+        for t in raw_tasks:
+            if isinstance(t, dict):
+                for f in _norm_files(t.get("likely_files")):
+                    if f not in files:
+                        files.append(f)
+        task_ids = [str(t["run_history_id"]) for t in raw_tasks if isinstance(t, dict) and isinstance(t.get("run_history_id"), str)]
+        all_done = job_done or (bool(raw_tasks) and all(i in completed for i in range(len(raw_tasks))))
+        reason = (
+            "Quick change builds all tasks together in one pass."
+            if job_type == "quick-fix" and len(raw_tasks) > 1
+            else "Single-pass job without separate task runs."
+        )
+        return {
+            "mode": "single_run",
+            "label": "1 run",
+            "reason": reason,
+            "parallel": False,
+            "planned_runs": 1,
+            "waves": 1,
+            "groups": [{
+                "group_id": "MAIN",
+                "title": str(job.get("title") or plan.get("title") or "Build"),
+                "task_indices": list(range(len(raw_tasks))),
+                "task_ids": task_ids,
+                "likely_files": files,
+                "depends_on": [],
+                "wave": 0,
+                "parallel": False,
+                "cohesive_batch": len(raw_tasks) > 1,
+                "status": "completed" if all_done else "pending",
+            }],
+        }
+
+    if len(raw_tasks) == 1:
+        t0 = raw_tasks[0] if isinstance(raw_tasks[0], dict) else {"title": str(raw_tasks[0])}
+        tid = [str(t0["run_history_id"])] if isinstance(t0.get("run_history_id"), str) else []
+        return {
+            "mode": "single_run",
+            "label": "1 run",
+            "reason": "Single task runs in one build pass.",
+            "parallel": False,
+            "planned_runs": 1,
+            "waves": 1,
+            "groups": [{
+                "group_id": "T1",
+                "title": str(t0.get("title") or t0.get("name") or "Task 1"),
+                "task_indices": [0],
+                "task_ids": tid,
+                "likely_files": _norm_files(t0.get("likely_files") or plan.get("likely_files")),
+                "depends_on": [],
+                "wave": 0,
+                "parallel": False,
+                "cohesive_batch": False,
+                "status": "completed" if (0 in completed or job_done) else "pending",
+            }],
+        }
+
+    if not job.get("retry_tasks_individually"):
+        full_batch = cohesive_batch_indices(raw_tasks, set())
+        if full_batch == list(range(len(raw_tasks))):
+            titles = [str((raw_tasks[i].get("title") if isinstance(raw_tasks[i], dict) else raw_tasks[i]) or f"Task {i + 1}") for i in full_batch]
+            files: list[str] = []
+            task_ids: list[str] = []
+            for i in full_batch:
+                t = raw_tasks[i]
+                if isinstance(t, dict):
+                    if isinstance(t.get("run_history_id"), str):
+                        task_ids.append(t["run_history_id"])
+                    for f in _norm_files(t.get("likely_files")):
+                        if f not in files:
+                            files.append(f)
+            all_done = job_done or all(i in completed for i in full_batch)
+            return {
+                "mode": "single_run",
+                "label": "1 batched run",
+                "reason": f"{len(raw_tasks)} small tasks share files and run together in one pass.",
+                "parallel": False,
+                "planned_runs": 1,
+                "waves": 1,
+                "groups": [{
+                    "group_id": f"T1-T{len(raw_tasks)}",
+                    "title": " + ".join(titles),
+                    "task_indices": full_batch,
+                    "task_ids": task_ids,
+                    "likely_files": files,
+                    "depends_on": [],
+                    "wave": 0,
+                    "parallel": False,
+                    "cohesive_batch": True,
+                    "status": "completed" if all_done else "pending",
+                }],
+            }
+
+    # Build per-task groups and infer dependencies from explicit depends_on, file overlaps, foundation slice, and branch mode.
+    n = len(raw_tasks)
+    files_by_idx = [_norm_files(t.get("likely_files")) if isinstance(t, dict) else [] for t in raw_tasks]
+    explicit_by_idx = [_resolve_explicit_deps(t, i, raw_tasks) for i, t in enumerate(raw_tasks)]
+    any_explicit = any(bool(d) for d in explicit_by_idx)
+    first_is_foundation = _is_foundation_task(raw_tasks[0])
+
+    deps_by_idx: list[set[int]] = [set() for _ in range(n)]
+    for i in range(n):
+        for dep in explicit_by_idx[i]:
+            if dep != i:
+                deps_by_idx[i].add(dep)
+        if shared_branch and i > 0:
+            deps_by_idx[i].add(i - 1)
+            continue
+        my_files = set(files_by_idx[i])
+        for prev in range(i):
+            prev_files = set(files_by_idx[prev])
+            if not my_files or not prev_files or (my_files & prev_files):
+                deps_by_idx[i].add(prev)
+        if i > 0 and first_is_foundation and not any_explicit:
+            deps_by_idx[i].add(0)
+
+    # Break any accidental cycle by keeping only dependencies with index < i when a cycle exists
+    waves_by_idx = [0] * n
+    visiting: set[int] = set()
+    computed: dict[int, int] = {}
+
+    def compute_wave(idx: int) -> int:
+        if idx in computed:
+            return computed[idx]
+        if idx in visiting:
+            return 0
+        visiting.add(idx)
+        valid_deps = [d for d in sorted(deps_by_idx[idx]) if 0 <= d < n and d != idx]
+        w = 0 if not valid_deps else 1 + max(compute_wave(d) for d in valid_deps)
+        visiting.remove(idx)
+        computed[idx] = w
+        return w
+
+    for i in range(n):
+        waves_by_idx[i] = compute_wave(i)
+
+    # Transitive reduction of depends_on for clean display
+    reduced_deps: list[list[int]] = []
+    for i in range(n):
+        direct = sorted(d for d in deps_by_idx[i] if 0 <= d < n and d != i and waves_by_idx[d] < waves_by_idx[i])
+        ancestors_of_direct: set[int] = set()
+        stack = list(direct)
+        while stack:
+            cur = stack.pop()
+            for parent in deps_by_idx[cur]:
+                if parent not in ancestors_of_direct and parent != cur:
+                    ancestors_of_direct.add(parent)
+                    stack.append(parent)
+        reduced_deps.append([d for d in direct if d not in ancestors_of_direct])
+
+    wave_counts: dict[int, int] = {}
+    for w in waves_by_idx:
+        wave_counts[w] = wave_counts.get(w, 0) + 1
+
+    groups: list[dict[str, Any]] = []
+    for i, t in enumerate(raw_tasks):
+        t_dict = t if isinstance(t, dict) else {"title": str(t)}
+        tid = [str(t_dict["run_history_id"])] if isinstance(t_dict.get("run_history_id"), str) else []
+        w = waves_by_idx[i]
+        groups.append({
+            "group_id": f"T{i + 1}",
+            "title": str(t_dict.get("title") or t_dict.get("name") or f"Task {i + 1}"),
+            "task_indices": [i],
+            "task_ids": tid,
+            "likely_files": files_by_idx[i],
+            "depends_on": [f"T{d + 1}" for d in reduced_deps[i]],
+            "wave": w,
+            "parallel": wave_counts.get(w, 0) > 1,
+            "cohesive_batch": False,
+            "status": "completed" if (i in completed or job_done) else "pending",
+        })
+
+    total_waves = (max(waves_by_idx) + 1) if waves_by_idx else 1
+    has_parallel = any(count > 1 for count in wave_counts.values())
+    if has_parallel:
+        mode = "parallel_runs"
+        label = f"{n} runs · {total_waves} wave{'s' if total_waves != 1 else ''} (parallel)"
+        reason = f"Independent tasks touch non-overlapping files and run concurrently across {total_waves} wave{'s' if total_waves != 1 else ''}."
+    else:
+        mode = "sequential_runs"
+        label = f"{n} sequential runs"
+        reason = (
+            "Current-branch mode runs tasks sequentially in the project folder."
+            if shared_branch
+            else "Tasks share files or build on earlier tasks, so they run one after another."
+        )
+
+    return {
+        "mode": mode,
+        "label": label,
+        "reason": reason,
+        "parallel": has_parallel,
+        "planned_runs": len(groups),
+        "waves": total_waves,
+        "groups": groups,
+    }

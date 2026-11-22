@@ -36,10 +36,13 @@ Required JSON schema:
       "acceptance_criteria": ["string"],
       "likely_files": ["string (VERIFIED PATHS ONLY)"],
       "tests": ["string (Names of existing or new tests to run)"],
-      "complexity": "small|medium|large"
+      "complexity": "small|medium|large",
+      "depends_on": [1]
     }
   ]
 }
+
+For each task, set `depends_on` to a list of 1-based task numbers that must finish before this task can start (or `[]` when tasks touch non-overlapping `likely_files` and can build in parallel).
 
 For each task, set complexity from the work itself, not the size of the parent job. Use "small" only for a localized, low-risk change such as adjusting spacing, positioning, colors, or copy in a few UI files, or a similarly contained change with clear acceptance criteria. Do not mark cross-cutting changes, data/schema changes, security/authentication, or changes with unclear requirements as small. Use "medium" for ordinary feature work and "large" for broad or technically risky work.
 

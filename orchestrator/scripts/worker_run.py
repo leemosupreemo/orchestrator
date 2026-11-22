@@ -1081,12 +1081,34 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
             pass
         elif job.get("type") == "feature-plan" and job.get("approved"):
             tasks = job.get("plan", {}).get("tasks", [])
+            job_runs.ensure_task_ids([t for t in tasks if isinstance(t, dict)])
+            job["run_breakdown"] = job_runs.breakdown(job)
+            write_json(job_path, job)
             completed = job.get("completed_task_indices", [])
             all_ok = True
             batch_indices = [] if job.get("retry_tasks_individually") else can_batch_cohesive_tasks(tasks, completed)
             for i, task in enumerate(tasks):
                 if i in completed:
                     print(f"      - Task {i+1} already completed. Skipping.")
+                    continue
+
+                parallel_indices = (
+                    []
+                    if (batch_indices or job.get("retry_tasks_individually"))
+                    else ready_parallel_wave_indices(job, tasks, completed, i)
+                )
+                if len(parallel_indices) >= 2 and i == parallel_indices[0]:
+                    wave_ok, wave_touched, wave_paused = execute_parallel_task_wave(
+                        job_path, job, tasks, parallel_indices, issue_number, job_label, pre_state, pre_hashes, is_yolo
+                    )
+                    touched_this_run.update(wave_touched)
+                    job["run_breakdown"] = job_runs.breakdown(job)
+                    write_json(job_path, job)
+                    if wave_paused:
+                        return
+                    if not wave_ok:
+                        all_ok = False
+                        break
                     continue
 
                 is_batched = bool(batch_indices and i == batch_indices[0])
@@ -2042,11 +2064,366 @@ def remove_task_views(job_path: Path) -> None:
             pass
 
 
+def ready_parallel_wave_indices(job: dict, tasks: list, completed: list[int], current_idx: int) -> list[int]:
+    """Return >=2 task indices in the same parallel dependency wave when `current_idx` is the first ready task in that wave."""
+    bd = job_runs.breakdown({**job, "completed_task_indices": list(completed)})
+    if not bd.get("parallel"):
+        return []
+    groups = bd.get("groups") or []
+    by_id = {g["group_id"]: g for g in groups if isinstance(g, dict) and g.get("group_id")}
+    done_set = set(completed or [])
+    target_group = next((g for g in groups if current_idx in (g.get("task_indices") or [])), None)
+    if not target_group or not target_group.get("parallel"):
+        return []
+    target_wave = target_group.get("wave")
+    ready_indices: list[int] = []
+    for g in groups:
+        if g.get("wave") != target_wave:
+            continue
+        g_indices = [idx for idx in (g.get("task_indices") or []) if idx not in done_set]
+        if not g_indices:
+            continue
+        deps_done = all(
+            all(d_idx in done_set for d_idx in (by_id.get(dep, {}).get("task_indices") or []))
+            for dep in (g.get("depends_on") or [])
+        )
+        if deps_done:
+            ready_indices.extend(g_indices)
+    return ready_indices if len(ready_indices) >= 2 and ready_indices[0] == current_idx else []
+
+
+def _record_parallel_subrun(
+    job: dict,
+    run_id: str,
+    task: dict,
+    idx: int,
+    started: float,
+    *,
+    running: bool,
+    exit_code: int | None = None,
+    status: str = "running",
+    detail: str = "",
+) -> None:
+    """Write a sidecar run record for a parallel wave task so the job's Runs and Tasks tables show each parallel run."""
+    try:
+        runtime = PROJECT_CONFIG.runtime_dir
+    except Exception:
+        return
+    if not isinstance(runtime, Path):
+        return
+    tid = task.get("run_history_id")
+    refs = {job["job_id"]: [tid]} if isinstance(tid, str) else {}
+    attempts = {job["job_id"]: {tid: {"status": status, "detail": detail[:500]}}} if isinstance(tid, str) else {}
+    summary = {
+        "id": run_id,
+        "action": "execute",
+        "title": f"Task {idx + 1}: {task.get('title') or f'Task {idx + 1}'}",
+        "job": job["job_id"],
+        "started": started,
+        "ended": None if running else time.time(),
+        "running": running,
+        "pid": os.getpid() if running else None,
+        "exit_code": None if running else exit_code,
+        "stopped": False,
+        "result": {"headline": detail or f"Task {idx + 1}: {task.get('title') or 'Parallel task'}",
+                   "tone": "done" if exit_code == 0 else ("failed" if exit_code else "")},
+        "task_refs": refs,
+        "task_attempts": attempts,
+    }
+    job_runs.record(runtime, summary)
+
+
+def execute_parallel_task_wave(
+    job_path: Path,
+    job: dict,
+    tasks: list[dict],
+    wave_indices: list[int],
+    issue_number: Optional[int],
+    job_label: str,
+    pre_state: dict,
+    pre_hashes: dict,
+    is_yolo: bool,
+) -> tuple[bool, set[str], bool]:
+    """Execute independent tasks in a parallel wave concurrently, isolating their file lanes and checkpointing each task."""
+    import concurrent.futures
+
+    titles = [str(tasks[idx].get("title") or f"Task {idx + 1}") for idx in wave_indices]
+    print(
+        f"      - ⚡ Parallel task wave: executing tasks {', '.join(str(idx + 1) for idx in wave_indices)} "
+        f"concurrently ({' || '.join(titles)}).",
+        flush=True,
+    )
+    print_phase(f"parallel wave ({', '.join(str(idx + 1) for idx in wave_indices)}/{len(tasks)})", subtext=" || ".join(titles))
+    link_run_to_tasks(job_path, job, tasks, wave_indices)
+
+    temp_paths: dict[int, Path] = {}
+    task_jobs: dict[int, dict] = {}
+    subrun_ids: dict[int, str] = {}
+    started_at: dict[int, float] = {}
+
+    for idx in wave_indices:
+        task = tasks[idx]
+        sibling_files = sorted({
+            str(f).strip()
+            for other in wave_indices if other != idx
+            for f in (tasks[other].get("likely_files") or []) if str(f).strip()
+        })
+        t_job = copy.deepcopy(job)
+        t_job["job_id"] = f"{job['job_id']}_task_{idx + 1}"
+        t_job["title"] = f"{job['title']} (Task {idx + 1}: {task.get('title', f'Task {idx + 1}')})"
+        t_builder = builder_for_task(task, job)
+        if t_builder:
+            t_job["builder"] = t_builder
+        t_job["last_error"] = None
+        t_job["debug_history"] = []
+        t_job["ai_modified_files"] = []
+        t_job["ai_untracked_files"] = []
+        t_job["iteration"] = 0
+        summary_desc = str(task.get("description") or task.get("title") or "")
+        if sibling_files:
+            summary_desc += f"\nParallel wave sibling files (hands-off — do not edit): {', '.join(sibling_files)}"
+        t_job["plan"]["summary"] = summary_desc
+        t_job["plan"]["acceptance_criteria"] = task.get("acceptance_criteria") or []
+        t_job["plan"]["likely_files"] = task.get("likely_files") or []
+        due_task_nums = {idx + 1, None}
+        t_job["plan"]["test_cases"] = [
+            c for c in (job.get("plan", {}).get("test_cases") or [])
+            if isinstance(c, dict) and c.get("task") in due_task_nums
+        ]
+        t_path = job_path.parent / f"{job_path.stem}_task_{idx + 1}.json"
+        write_json(t_path, t_job)
+        temp_paths[idx] = t_path
+        task_jobs[idx] = t_job
+        run_id = f"{int(time.time() * 1000)}-wave-t{idx + 1}"
+        subrun_ids[idx] = run_id
+        started_at[idx] = time.time()
+        report_task_attempt(job, task, "running", "Building in parallel wave")
+        _record_parallel_subrun(job, run_id, task, idx, started_at[idx], running=True)
+
+    task_pre_hashes = dirty_file_hashes(ROOT)
+    use_worktree_subproc = (
+        (ROOT / ".git").exists()
+        and getattr(run_builder, "__module__", "") == "run_builder"
+        and normalize_branch_mode(job.get("branch_mode")) == "new"
+    )
+
+    def _run_one(idx: int) -> tuple[int, bool, bool, dict, set[str], BaseException | None]:
+        t_path = temp_paths[idx]
+        if use_worktree_subproc:
+            from orchestrator import parallel_jobs, worktrees
+            wt_path = parallel_jobs.worktree_for(ROOT, f"{job_path.stem}_task_{idx + 1}")
+            wt = None
+            try:
+                wt = worktrees.ensure(ROOT, wt_path)
+                res_file = t_path.with_suffix(".result.json")
+                argv = [
+                    sys.executable, "-P", "-m", "orchestrator", "script", "worker_run.py",
+                    str(job_path.resolve()), "--run-task-view", str(t_path.resolve()),
+                ]
+                proc = subprocess.run(
+                    argv,
+                    cwd=str(wt),
+                    env=parallel_jobs.worker_env(ROOT, wt, PROJECT_CONFIG.runtime_dir),
+                    capture_output=True,
+                    text=True,
+                )
+                if proc.stdout:
+                    print(proc.stdout, end="", flush=True)
+                if proc.stderr:
+                    print(proc.stderr, end="", file=sys.stderr, flush=True)
+                if res_file.is_file():
+                    payload = read_json(res_file)
+                    res_file.unlink(missing_ok=True)
+                    if payload.get("clarification"):
+                        return idx, False, False, {}, set(), BuilderClarificationNeeded(payload["clarification"])
+                    if payload.get("disk_full"):
+                        return idx, False, False, {}, set(), DiskFullError(payload["disk_full"])
+                    if payload.get("error"):
+                        return idx, False, False, {}, set(), RuntimeError(payload["error"])
+                    wt_files: set[str] = set()
+                    for rel_f in payload.get("files_touched") or []:
+                        src = wt / rel_f
+                        dst = ROOT / rel_f
+                        if src.is_file():
+                            dst.parent.mkdir(parents=True, exist_ok=True)
+                            shutil.copy2(src, dst)
+                            wt_files.add(rel_f)
+                    return idx, bool(payload.get("build_ok")), bool(payload.get("test_ok")), payload.get("task_output") or {}, wt_files, None
+                if proc.returncode != 0:
+                    return idx, False, False, {}, set(), RuntimeError(f"Parallel task {idx + 1} exited with code {proc.returncode}")
+            except BaseException as exc:
+                return idx, False, False, {}, set(), exc
+            finally:
+                if wt is not None:
+                    try:
+                        worktrees.remove(ROOT, wt, force=True)
+                    except Exception:
+                        pass
+        try:
+            b_ok, t_ok, _summary, t_out = unpack_builder_result(run_builder(t_path, resume=False))
+            return idx, b_ok, t_ok, t_out, set(), None
+        except BaseException as exc:
+            return idx, False, False, {}, set(), exc
+
+    results_by_idx: dict[int, tuple[bool, bool, dict, set[str], BaseException | None]] = {}
+    max_workers = max(1, min(len(wave_indices), 4))
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = {pool.submit(_run_one, idx): idx for idx in wave_indices}
+        for fut in concurrent.futures.as_completed(futures):
+            idx, b_ok, t_ok, t_out, wt_files, err = fut.result()
+            results_by_idx[idx] = (b_ok, t_ok, t_out, wt_files, err)
+
+    post_state = get_repo_state()
+    post_hashes = dirty_file_hashes(ROOT)
+    changed_paths = files_changed_between(task_pre_hashes, post_hashes)
+    task_modified = [f for f in post_state["modified"] if f not in pre_state["modified"] and not builder_check.is_ignored_tool_path(f)]
+    task_untracked = [f for f in post_state["untracked"] if f not in pre_state["untracked"] and not builder_check.is_ignored_tool_path(f)]
+    shared_touched = sorted(
+        {f for f in changed_paths if f not in pre_hashes and not builder_check.is_ignored_tool_path(f)}
+        if task_pre_hashes or post_hashes else set(task_modified + task_untracked)
+    )
+
+    wave_touched: set[str] = set(shared_touched)
+    wave_ok = True
+
+    for idx in wave_indices:
+        task = tasks[idx]
+        t_path = temp_paths[idx]
+        t_job = task_jobs[idx]
+        b_ok, t_ok, t_out, wt_files, err = results_by_idx[idx]
+        wave_touched.update(wt_files)
+
+        if err is not None:
+            if isinstance(err, BuilderClarificationNeeded):
+                if can_autorespond(job):
+                    answer = autorespond(job, err.question, "builder")
+                    record_clarification(t_job, err.question, answer)
+                    t_job["clarification_history"][-1].update(auto=True, asker="builder")
+                    job["status"] = t_job["status"] = "executing"
+                    write_json(job_path, job)
+                    write_json(t_path, t_job)
+                    _, b_ok, t_ok, t_out, wt_files, err = _run_one(idx)
+                    wave_touched.update(wt_files)
+                if err is not None and isinstance(err, BuilderClarificationNeeded):
+                    mark_human_needed(job_path, job, err.question, task_index=idx)
+                    update_issue_status(issue_number, "status:human-needed", ["status:executing"])
+                    report_task_attempt(job, task, "paused", "Waiting for an answer.")
+                    _record_parallel_subrun(job, subrun_ids[idx], task, idx, started_at[idx], running=False, exit_code=1, status="paused", detail="Waiting for an answer.")
+                    send_notifications(
+                        job,
+                        "Job Paused: Clarification Needed",
+                        f"Builder needs clarification for {job_label}.\nQuestion: {err.question}\nTitle: {job['title']}",
+                    )
+                    return False, wave_touched, True
+            if err is not None and isinstance(err, DiskFullError):
+                report_task_attempt(job, task, "paused", "The machine ran out of disk space.")
+                _record_parallel_subrun(job, subrun_ids[idx], task, idx, started_at[idx], running=False, exit_code=1, status="paused", detail="The machine ran out of disk space.")
+                raise err
+            if err is not None:
+                report_task_attempt(job, task, "failed", "The worker stopped. See the run log.")
+                _record_parallel_subrun(job, subrun_ids[idx], task, idx, started_at[idx], running=False, exit_code=1, status="failed", detail=str(err))
+                print(f"\n❌ Automation error during parallel Task {idx + 1}: {err}")
+                err_msg = str(err)
+                updated = now_iso()
+                job["last_error"] = err_msg
+                job["status"] = "human-needed"
+                job["worker_pid"] = None
+                job["updated_at"] = updated
+                write_json(job_path, job)
+                t_job["last_error"] = err_msg
+                t_job["status"] = "human-needed"
+                t_job["updated_at"] = updated
+                write_json(t_path, t_job)
+                return False, wave_touched, True
+
+        new_sessions = []
+        try:
+            built = read_json(t_path)
+            if built.get("actual_builder_used"):
+                job["actual_builder_used"] = built["actual_builder_used"]
+            job["reuse_suggested"] = reuse_brief.merge(job.get("reuse_suggested"), built.get("reuse_suggested"))
+            new_sessions = (built.get("llm_sessions") or [])[len(job.get("llm_sessions") or []):]
+            if new_sessions:
+                job["llm_sessions"] = (job.get("llm_sessions") or []) + new_sessions
+        except Exception:
+            pass
+
+        planned = [str(f).strip().removeprefix("./") for f in (task.get("likely_files") or []) if str(f).strip()]
+        if wt_files:
+            task_files = sorted(wt_files)
+        else:
+            matched_planned = [
+                f for f in shared_touched
+                if any(f == p or f.endswith("/" + p) for p in planned)
+            ]
+            task_files = matched_planned or list(shared_touched)
+
+        status, detail = task_validation(task, [], task_files, t_out, b_ok, t_ok)
+        if status == "passed":
+            if idx not in job["completed_task_indices"]:
+                job["completed_task_indices"].append(idx)
+            checkpoint_task(job, idx, len(tasks), task.get("title", f"Task {idx + 1}"), task_files)
+            if new_sessions and task_files:
+                model_outcomes.record(job, "builder", resolve_builder_model(t_job), new_sessions[-1].get("model"),
+                                      "build_checks_passed", tasks=[idx + 1])
+            write_json(job_path, job)
+            report_task_attempt(job, task, status, detail)
+            _record_parallel_subrun(job, subrun_ids[idx], task, idx, started_at[idx], running=False, exit_code=0, status="passed", detail=detail)
+        elif b_ok and t_ok:
+            job["status"] = "human-needed"
+            job["last_error"] = f"Task {idx + 1}: {detail}"
+            print(f"      - {job['last_error']}")
+            write_json(job_path, job)
+            report_task_attempt(job, task, status, detail)
+            _record_parallel_subrun(job, subrun_ids[idx], task, idx, started_at[idx], running=False, exit_code=1, status=status, detail=detail)
+            wave_ok = False
+        else:
+            report_task_attempt(job, task, status, detail)
+            _record_parallel_subrun(job, subrun_ids[idx], task, idx, started_at[idx], running=False, exit_code=1, status=status, detail=detail)
+            print(f"!!! Sub-task {idx + 1} failed validation in parallel wave.")
+            wave_ok = False
+
+    return wave_ok, wave_touched, False
+
+
+def _execute_task_view(task_job_path: Path) -> int:
+    """Run one task view inside an isolated task worktree and write `<task_job>.result.json`."""
+    res_file = task_job_path.with_suffix(".result.json")
+    pre_state = get_repo_state()
+    pre_hashes = dirty_file_hashes(ROOT)
+    try:
+        b_ok, t_ok, _summary, t_out = unpack_builder_result(run_builder(task_job_path, resume=False))
+        post_state = get_repo_state()
+        post_hashes = dirty_file_hashes(ROOT)
+        changed = files_changed_between(pre_hashes, post_hashes)
+        mod = [f for f in post_state["modified"] if f not in pre_state["modified"] and not builder_check.is_ignored_tool_path(f)]
+        untr = [f for f in post_state["untracked"] if f not in pre_state["untracked"] and not builder_check.is_ignored_tool_path(f)]
+        files = sorted(
+            {f for f in changed if f not in pre_hashes and not builder_check.is_ignored_tool_path(f)}
+            if pre_hashes or post_hashes else set(mod + untr)
+        )
+        write_json(res_file, {"build_ok": b_ok, "test_ok": t_ok, "task_output": t_out, "files_touched": files})
+        return 0 if (b_ok and t_ok) else 1
+    except BuilderClarificationNeeded as clar:
+        write_json(res_file, {"clarification": clar.question})
+        return 2
+    except DiskFullError as disk:
+        write_json(res_file, {"disk_full": str(disk)})
+        return 3
+    except Exception as exc:
+        write_json(res_file, {"error": str(exc)})
+        return 1
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("job_file")
     parser.add_argument("--resume", action="store_true", help="Resume from existing artifacts")
+    parser.add_argument("--run-task-view", help="Internal: run a single task view in the current worktree")
     args = parser.parse_args()
+
+    if args.run_task_view:
+        sys.exit(_execute_task_view(Path(args.run_task_view)))
 
     job_path = Path(args.job_file)
     code = run_local(job_path, resume=args.resume)

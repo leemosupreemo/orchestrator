@@ -261,6 +261,43 @@ class WorkerRunTests(unittest.TestCase):
             self.assertNotIn('task_growth', job)
             check.assert_called_once()  # not after the last task: review's scope check covers it
 
+    def test_disjoint_tasks_execute_concurrently_in_parallel_wave(self):
+        disjoint_job = {
+            'type': 'feature-plan',
+            'approved': True,
+            'plan': {
+                'tasks': [
+                    {'title': 'Add iOS screen', 'description': 'iOS view', 'acceptance_criteria': ['ok'], 'likely_files': ['ios/Screen.swift'], 'tests': ['test_ios']},
+                    {'title': 'Add CLI command', 'description': 'CLI tool', 'acceptance_criteria': ['ok'], 'likely_files': ['cli/tool.py'], 'tests': ['test_cli']},
+                ],
+                'test_cases': [],
+            },
+        }
+        states = [
+            {'modified': [], 'untracked': []},
+            {'modified': ['ios/Screen.swift', 'cli/tool.py'], 'untracked': []},
+            {'modified': ['ios/Screen.swift', 'cli/tool.py'], 'untracked': []},
+        ]
+        seen_summaries = []
+
+        def fake_builder(task_path, resume=False):
+            t_data = worker.read_json(task_path)
+            seen_summaries.append(t_data['plan']['summary'])
+            return True, True, Path('summary'), {'action': 'patch'}
+
+        with self.pipeline(disjoint_job, states=states) as (path, calls), \
+             patch.object(worker, 'checkpoint_task') as checkpoint:
+            calls['run_builder'].side_effect = fake_builder
+            worker.execute_job(path)
+            job = worker.read_json(path)
+            self.assertEqual(calls['run_builder'].call_count, 2)
+            self.assertEqual(sorted(job['completed_task_indices']), [0, 1])
+            self.assertEqual(job['run_breakdown']['mode'], 'parallel_runs')
+            self.assertTrue(job['run_breakdown']['parallel'])
+            self.assertEqual(checkpoint.call_count, 2)
+            self.assertTrue(any('hands-off' in s for s in seen_summaries))
+            self.assertIn('Parallel task wave', self.output.getvalue())
+
     def test_resuming_a_paused_job_is_the_person_saying_keep_going(self):
         paused = self.two_task_job(status='human-needed', completed_task_indices=[0], task_growth={'task': 0, 'text': 'Task 1 grew.'})
         with self.pipeline(paused, results=[self.PATCHED], states=self.EDITED) as (path, calls), \

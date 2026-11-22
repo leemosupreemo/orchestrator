@@ -6740,6 +6740,11 @@ pages.job = async ([id]) => {
     : status === "human-needed" && pausedIdx === currentTaskIndex ? "Paused"
     : "Current";
   const runsById = new Map((jobRuns || []).map((run) => [run.id, run]));
+  const runBreakdown = data.run_breakdown || job.run_breakdown || null;
+  const groupByTaskIndex = new Map();
+  for (const g of runBreakdown?.groups || []) {
+    for (const idx of g.task_indices || []) groupByTaskIndex.set(idx, g);
+  }
   const currentTasksCard = typeof view !== "undefined" ? view.querySelector("#tasks-section") : null;
   const expandedTaskRuns = new Set(currentTasksCard?.dataset.jobId === id
     ? [...currentTasksCard.querySelectorAll("[data-task-runs][open]")].map((fold) => fold.dataset.taskRuns) : []);
@@ -6748,7 +6753,20 @@ pages.job = async ([id]) => {
     const detail = typeof t === "object" && t && t.title && t.description ? t.description : "";
     const key = typeof t === "object" && t ? String(t.id ?? i) : String(i);
     const isDone = done.has(key) || done.has(String(i));
-    const isCurrent = !isDone && i === currentTaskIndex;
+    const hasLiveRunningAttempt = !isDone && Boolean(t?.run_history_id && (jobRuns || []).some(
+      (r) => r.status === "running" && r.task_attempts?.[id]?.[t.run_history_id]?.status === "running"
+    ));
+    const isCurrent = !isDone && (i === currentTaskIndex || hasLiveRunningAttempt);
+    const taskGroup = groupByTaskIndex.get(i);
+    const waveBadge = taskGroup && (runBreakdown?.waves > 1 || runBreakdown?.parallel)
+      ? `<span class="pill ${taskGroup.parallel ? "working" : "neutral"} task-wave-badge" title="${esc(
+          taskGroup.parallel
+            ? `Wave ${taskGroup.wave + 1}: runs in parallel with disjoint files`
+            : taskGroup.depends_on?.length
+              ? `Wave ${taskGroup.wave + 1}: waits for ${taskGroup.depends_on.join(", ")}`
+              : `Wave ${taskGroup.wave + 1}`
+        )}">Wave ${taskGroup.wave + 1}${taskGroup.parallel ? " · Parallel" : taskGroup.depends_on?.length ? ` · After ${esc(taskGroup.depends_on.join(", "))}` : ""}</span>`
+      : "";
     const doneWhen = typeof t === "object" ? listOf(t.acceptance_criteria) : [];
     const files = typeof t === "object" ? listOf(t.likely_files) : [];
     const controls = canEditPlan && !isDone ? `<div class="side task-controls"><details class="more task-more"><summary class="btn small ghost icon-only more-icon-btn" aria-label="Task actions: ${esc(title)}" title="Task actions"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-more"/></svg></summary><div class="more-menu">
@@ -6758,7 +6776,7 @@ pages.job = async ([id]) => {
         <hr><button class="btn small" data-task-op="remove" data-i="${i}">Remove</button></div></details></div>` : "";
     const undo = data.undoable_task === i && !activeRun ? `<div class="side task-controls"><button class="btn small ghost" data-undo-task="${i}" aria-label="Undo task: ${esc(title)}">Undo</button></div>` : "";
     const marker = `<span class="task-number${isDone ? " is-done" : isCurrent ? " is-current" : ""}" role="img" aria-label="${isDone ? "Done" : isCurrent ? "Current step" : "To do"}">${isDone ? "✓" : i + 1}</span>`;
-    const currentBadge = isCurrent ? `<span class="pill working task-current-badge">${esc(currentTaskBadgeText)}</span>` : "";
+    const currentBadge = isCurrent ? `<span class="pill working task-current-badge">${esc(hasLiveRunningAttempt ? "In progress" : currentTaskBadgeText)}</span>` : "";
     const more = detail || doneWhen.length || files.length;
     const taskRuns = (data.task_run_ids?.[i] || []).map((runId) => runsById.get(runId)).filter(Boolean);
     const runLabel = plural(taskRuns.length, "run");
@@ -6782,15 +6800,18 @@ pages.job = async ([id]) => {
       return `<ul class="assumptions task-detail-steps">${shown.map((s) => `<li>${esc(s)}</li>`).join("")}</ul>`
         + (rest.length ? `<details class="fold mt-4"><summary class="linklike muted">More (${rest.length})</summary><ul class="assumptions task-detail-steps">${rest.map((s) => `<li>${esc(s)}</li>`).join("")}</ul></details>` : "");
     };
-    return `<div class="item task-row${isCurrent ? " is-current" : ""}"${isCurrent ? ' aria-current="step"' : ""}>${marker}<div class="main-col"><div class="title">${esc(title)}${currentBadge}</div>
+    return `<div class="item task-row${isCurrent ? " is-current" : ""}"${isCurrent ? ' aria-current="step"' : ""}>${marker}<div class="main-col"><div class="title">${esc(title)}${currentBadge}${waveBadge}</div>
       ${more ? `<details class="task-detail"><summary class="linklike muted">Details</summary>${formatTaskDetail(detail)}
       ${doneWhen.length ? `<div class="task-done-when"><span class="label">Done when</span><ul>${doneWhen.slice(0, 4).map((c) => `<li>${esc(c)}</li>`).join("")}</ul></div>` : ""}
       ${files.length ? `<div class="task-files">${files.slice(0, 4).map((f) => `<code title="${esc(f)}">${esc(f.split("/").pop() || f)}</code>`).join("")}${files.length > 4 ? `<span class="muted">+${files.length - 4} more</span>` : ""}</div>` : ""}</details>` : ""}
       ${runList}</div>${controls}${undo}</div>`;
   }).join("") || `<div class="empty">No tasks yet.</div>`;
   const addTaskHtml = canEditPlan ? `<div class="card-b card-b-split"><button type="button" class="btn small ghost icon-only" data-task-op="add" aria-label="Add a task" title="Add a task"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-plus"/></svg></button></div>` : "";
+  const breakdownBadgeHtml = runBreakdown?.label
+    ? `<span class="pill ${runBreakdown.parallel ? "working" : "neutral"} task-breakdown-pill" title="${esc(runBreakdown.reason || "")}">${esc(runBreakdown.label)}</span>`
+    : "";
   const tasksCardHtml = tasksTotal || (canEditPlan && !quickNoPlan) ? `<section class="card mb-16" id="tasks-section" data-job-id="${esc(id)}" tabindex="-1">
-    <div class="card-h"><h2>Tasks</h2>${tasksTotal ? `<span class="count">${tasksDone}/${tasksTotal} done</span>` : ""}</div>
+    <div class="card-h"><h2>Tasks</h2><div class="row gap-8">${breakdownBadgeHtml}${tasksTotal ? `<span class="count">${tasksDone}/${tasksTotal} done</span>` : ""}</div></div>
     <div class="list">${taskRowsHtml}</div>
     ${addTaskHtml}
   </section>` : "";

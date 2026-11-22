@@ -1519,6 +1519,11 @@ def main(args_override: list[str] | None = None) -> None:
                 except Exception:
                     pass
 
+        if isinstance(plan.get("tasks"), list):
+            from orchestrator import job_runs
+            job_runs.ensure_task_ids([t for t in plan["tasks"] if isinstance(t, dict)])
+        job["run_breakdown"] = __import__("orchestrator.job_runs", fromlist=["breakdown"]).breakdown(job)
+
         if not clarification and gate_result.get("plan_gate_passed") and llm_sessions:
             model_outcomes.record(job, "planner", planner, actual_planner, "plan_gate_passed")
         write_json(paths.job_file, job)

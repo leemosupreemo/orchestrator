@@ -115,7 +115,8 @@ Return a single JSON object matching this schema:
       "acceptance_criteria": ["One short observable sentence per criterion"],
       "likely_files": ["verified/path/in/repo"],
       "tests": ["SpecificTestSuite/testMethod"],
-      "complexity": "small|medium|large"
+      "complexity": "small|medium|large",
+      "depends_on": []
     }
   ],
   "test_cases": [

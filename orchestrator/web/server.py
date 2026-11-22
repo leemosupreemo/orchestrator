@@ -10649,7 +10649,8 @@ class UIHandler(BaseHTTPRequestHandler):
         current_idx = next((i for i in range(len(tasks)) if str(i) not in done), len(tasks) - 1 if tasks else None)
         groups = job_runs.task_runs(runtime_dir(root), job_id, tasks, runs, current_task_index=current_idx)
         return {"job_runs": runs, "run_relationship": job_runs.relationship(runs, job),
-                "task_run_ids": [[run["id"] for run in group] for group in groups]}
+                "task_run_ids": [[run["id"] for run in group] for group in groups],
+                "run_breakdown": job_runs.breakdown(job)}
 
     def _sessions_view(self, job_id: str | None = None) -> list[dict[str, Any]]:
         sessions = self.server.sessions.list(job_id=job_id)

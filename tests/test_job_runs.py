@@ -231,5 +231,67 @@ class PageTests(unittest.TestCase):
         self.assertLess(self.app.index("${jobRunsCard(jobRuns, runRel,"), self.app.index('id="verify-section"'))
 
 
+class BreakdownTests(unittest.TestCase):
+    def test_taskless_and_quick_jobs_use_single_run(self):
+        bug = jr.breakdown({"type": "bug-fix", "title": "Fix crash", "plan": {"likely_files": ["app.py"]}})
+        self.assertEqual((bug["mode"], bug["planned_runs"], bug["parallel"]), ("single_run", 1, False))
+        self.assertEqual(bug["groups"][0]["group_id"], "MAIN")
+
+        quick = jr.breakdown({"type": "quick-fix", "title": "Polish", "plan": {"tasks": [
+            {"title": "A", "likely_files": ["a.py"]}, {"title": "B", "likely_files": ["b.py"]}
+        ]}})
+        self.assertEqual((quick["mode"], quick["planned_runs"], quick["parallel"]), ("single_run", 1, False))
+
+        one_task = jr.breakdown({"type": "feature-plan", "plan": {"tasks": [{"title": "Only", "likely_files": ["a.py"]}]}})
+        self.assertEqual((one_task["mode"], one_task["planned_runs"], one_task["groups"][0]["group_id"]), ("single_run", 1, "T1"))
+
+    def test_cohesive_small_tasks_sharing_files_batch_into_single_run(self):
+        batched = jr.breakdown({"type": "feature-plan", "plan": {"tasks": [
+            {"title": "T1", "complexity": "small", "likely_files": ["ui.py"]},
+            {"title": "T2", "complexity": "small", "likely_files": ["ui.py", "style.css"]},
+        ]}})
+        self.assertEqual((batched["mode"], batched["label"], batched["planned_runs"]), ("single_run", "1 batched run", 1))
+        self.assertTrue(batched["groups"][0]["cohesive_batch"])
+
+    def test_overlapping_files_or_shared_branch_schedule_sequential_runs(self):
+        seq = jr.breakdown({"type": "feature-plan", "plan": {"tasks": [
+            {"title": "T1", "complexity": "medium", "likely_files": ["app.py"]},
+            {"title": "T2", "complexity": "medium", "likely_files": ["app.py", "extra.py"]},
+        ]}})
+        self.assertEqual((seq["mode"], seq["parallel"], seq["waves"]), ("sequential_runs", False, 2))
+        self.assertEqual([g["wave"] for g in seq["groups"]], [0, 1])
+        self.assertEqual(seq["groups"][1]["depends_on"], ["T1"])
+
+        cur_branch = jr.breakdown({"type": "feature-plan", "branch_mode": "current", "plan": {"tasks": [
+            {"title": "T1", "likely_files": ["a.py"]},
+            {"title": "T2", "likely_files": ["b.py"]},
+        ]}})
+        self.assertEqual((cur_branch["mode"], cur_branch["parallel"], cur_branch["waves"]), ("sequential_runs", False, 2))
+
+    def test_disjoint_files_and_foundation_dag_produce_parallel_waves(self):
+        # 2 immediately disjoint user-facing tasks -> Wave 0 in parallel
+        par = jr.breakdown({"type": "feature-plan", "plan": {"tasks": [
+            {"title": "Add iOS leaderboard view", "likely_files": ["ios/LeaderboardView.swift"]},
+            {"title": "Add CLI leaderboard export", "likely_files": ["cli/export.py"]},
+        ]}})
+        self.assertEqual((par["mode"], par["parallel"], par["waves"]), ("parallel_runs", True, 1))
+        self.assertEqual([g["wave"] for g in par["groups"]], [0, 0])
+        self.assertTrue(all(g["parallel"] for g in par["groups"]))
+
+        # Diamond DAG: T1 (foundation schema) -> (T2 iOS screen || T3 CLI command) -> T4 (integration touching both)
+        diamond = jr.breakdown({"type": "feature-plan", "plan": {"tasks": [
+            {"title": "Create database schema and data model", "likely_files": ["db/schema.py"]},
+            {"title": "Build iOS profile screen", "likely_files": ["ios/ProfileScreen.swift"]},
+            {"title": "Build CLI profile command", "likely_files": ["cli/profile_cmd.py"]},
+            {"title": "Wire end-to-end profile integration", "likely_files": ["ios/ProfileScreen.swift", "cli/profile_cmd.py"]},
+        ]}})
+        self.assertEqual((diamond["mode"], diamond["parallel"], diamond["waves"]), ("parallel_runs", True, 3))
+        self.assertEqual([g["wave"] for g in diamond["groups"]], [0, 1, 1, 2])
+        self.assertEqual([g["parallel"] for g in diamond["groups"]], [False, True, True, False])
+        self.assertEqual(diamond["groups"][1]["depends_on"], ["T1"])
+        self.assertEqual(diamond["groups"][2]["depends_on"], ["T1"])
+        self.assertEqual(diamond["groups"][3]["depends_on"], ["T2", "T3"])
+
+
 if __name__ == "__main__":
     unittest.main()
