@@ -990,6 +990,16 @@ def job_state(job: dict[str, Any], root: Path | None = None) -> dict[str, Any]:
                 reason = f"The {asker} needs an answer to continue."
             return state("needs_you", "attention", "Question for you", reason, "answer", "Answer")
         error = str(job.get("last_error") or "").strip()
+        if error:
+            from orchestrator import blockers, disk_space as _disk_space
+            if _disk_space.is_disk_error(error):
+                disk_blocker = {"kind": "disk_full", "title": "Low disk space", "detail": error}
+                remote_disk = root is not None and assigned_ssh_machine(root, job)
+                if root is not None and not remote_disk and blockers.is_cleared(disk_blocker, root):
+                    return state("needs_you", "attention", "Blocker cleared",
+                                 "Low disk space: that's fixed now. Resume carries on from where it stopped.", "resume", "Resume")
+                blocked = state("needs_you", "failed", "Low disk space", error, "resume", "Try again")
+                return {**blocked, "steps": blockers.steps(disk_blocker, root or Path(".")), "blocker_kind": "disk_full"}
         if job.get("build_no_changes"):  # the builder changed no files (worker_run.no_change_stop): the build isn't done
             return state("needs_you", "failed", "Nothing was built", error or "The build finished without changing any files.", "resume", "Run the build again")
         check = job.get("test_validation") or {}

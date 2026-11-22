@@ -6481,7 +6481,9 @@ pages.job = async ([id]) => {
   const nextBtnClass = signInAction ? "btn small" : "btn small primary";
   // Another job building the same files right now: merging this one would race it, so Merge waits (overlapAdviceHtml says why).
   const overlapHold = next?.action === "merge" ? (data.overlaps || []).find((o) => o.running) : null;
-  const diskBlocked = s.state.blocker_kind === "disk_full";
+  const diskErrorText = [s.state.reason, job.last_error, runRel?.unreported?.headline].filter(Boolean).join(" ");
+  const diskBlocked = s.state.blocker_kind === "disk_full"
+    || (!activeRun && state?.disk_low !== false && /not enough disk space|free up space|no space left on device|builds need \d+\s*gb/i.test(diskErrorText));
   const showNextAction = next && !diskBlocked && !(signInAction && next.action === "debug");
   const heroAction = activeRun
     ? (isStoppingActive
@@ -7050,8 +7052,8 @@ pages.job = async ([id]) => {
 
       ${reviewingPlan ? "" : diskBlocked ? `<section id="job-hero" tabindex="-1" class="job-hero tone-${esc(heroTone)}">
         <div class="job-hero-main">
-          ${heroTitleHtml}
-          <p class="job-hero-reason">You must free up space before running this job.</p>
+          <h2 class="job-hero-title">Low disk space</h2>
+          <p class="job-hero-reason">${esc(shortReason && /disk space|gb free|builds need/i.test(shortReason) ? shortReason : "You must free up space before running this job.")}</p>
           ${s.state.steps?.length ? s.state.steps.map((step) => `<p class="job-hero-reason muted">${esc(step)}</p>`).join("") : ""}
         </div>
         <div class="job-hero-action">${heroAction}</div>
