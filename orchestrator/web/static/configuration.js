@@ -667,6 +667,12 @@
           </div>
           <div class="configuration-setting-list">${rows || `<div class="empty">No worker machines configured yet.</div>`}</div>
         </section>
+        <section class="card configuration-card">
+          <div class="card-h"><h2>Job failover</h2></div>
+          <div class="card-b stack">
+            <label class="check"><input type="checkbox" data-failover-setting${(() => { try { return root.localStorage?.getItem("orchestrator_auto_failover") === "true" ? " checked" : ""; } catch { return ""; } })()}><span><strong>Auto-handoff jobs on low disk space</strong><br><span class="muted">Automatically move and run jobs on another online paired Mac with ≥15 GB free.</span></span></label>
+          </div>
+        </section>
       </div>`,
     };
   }

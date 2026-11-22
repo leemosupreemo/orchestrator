@@ -13350,8 +13350,15 @@ pages.config = async (args = []) => {
             }
           }
         };
+        const onChange = (event) => {
+          const failoverBox = event.target.closest("[data-failover-setting]");
+          if (!failoverBox) return;
+          try { localStorage.setItem(AUTO_FAILOVER_KEY, failoverBox.checked ? "true" : "false"); } catch {}
+          toast(failoverBox.checked ? "Automatic failover enabled" : "Automatic failover disabled");
+        };
         view.addEventListener("click", onClick);
-        cleanup.push(() => view.removeEventListener("click", onClick));
+        view.addEventListener("change", onChange);
+        cleanup.push(() => { view.removeEventListener("click", onClick); view.removeEventListener("change", onChange); });
       },
     };
   }
@@ -13543,12 +13550,6 @@ pages.config = async (args = []) => {
           } catch (err) { toast(err.message, true); restore(); }
         };
         const onChange = async (event) => {
-          const failoverBox = event.target.closest("[data-failover-setting]");
-          if (failoverBox) {
-            try { localStorage.setItem(AUTO_FAILOVER_KEY, failoverBox.checked ? "true" : "false"); } catch {}
-            toast(failoverBox.checked ? "Automatic failover enabled" : "Automatic failover disabled");
-            return;
-          }
           const box = event.target.closest("[data-update-setting]");
           if (!box) return;
           const settingBody = { [box.dataset.updateSetting]: box.checked };
@@ -13688,7 +13689,6 @@ function updatesPageHtml(u, { pairedMachines = [], currentMachineId = "", curren
       <div class="card-b stack">
         <label class="check"><input type="checkbox" data-update-setting="auto_minor"${u.settings.auto_minor ? " checked" : ""}><span><strong>Auto-install minor updates</strong><br><span class="muted">Fixes and improvements. Checked every 5 min and installed when idle.</span></span></label>
         <label class="check"><input type="checkbox" data-update-setting="auto_breaking"${u.settings.auto_breaking ? " checked" : ""}><span><strong>Auto-install breaking updates</strong><br><span class="muted">Format or sync changes that require all machines to update.</span></span></label>
-        ${otherCount > 0 ? `<hr><label class="check"><input type="checkbox" data-failover-setting${typeof isAutoFailoverEnabled === "function" && isAutoFailoverEnabled() ? " checked" : ""}><span><strong>Auto-handoff jobs on low disk space</strong><br><span class="muted">Automatically move and run jobs on another online paired Mac with ≥15 GB free.</span></span></label>` : ""}
       </div>
     </section>
   </div>`;
