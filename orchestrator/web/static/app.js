@@ -6406,16 +6406,6 @@ function jobDocsOutlineHtml({ docFilesChanged = [], docsIndex = null } = {}) {
     </section>`;
 }
 
-// The run working on the job right now, labelled as a run of this job, with its latest steps.
-function activeRunCard(r, labelled, timeline) {
-  const steps = (timeline?.steps || []).slice(-5);
-  const icon = (st) => st.status === "failed" ? "✕" : st.status === "done" || st.status === "ok" ? "✓" : "…";
-  return `<section class="card mb-16 job-active-run"><div class="card-h"><h2>${esc(labelled?.label || "Run")} <span class="muted">· run in progress</span></h2>
-      <a class="btn small ghost" href="#/runs/${encodeURIComponent(r.id)}">Open live run</a></div>
-    <div class="list">${liveRunCard(r, { onJobPage: true })}</div>
-    ${steps.length ? `<ol class="job-run-steps" aria-label="Latest steps of this run">${steps.map((st) => `<li class="${esc(st.status || "")}"><span aria-hidden="true">${icon(st)}</span> ${esc(st.title)}${st.seconds != null ? ` <span class="muted">${runSeconds(st.seconds)}</span>` : ""}</li>`).join("")}</ol>` : ""}</section>`;
-}
-
 // The AI tools' reviews offered on jobs (tool_abilities.py), read once per visit; the AI tools page keeps the scan fresh.
 let aiAbilities = { highlights: [], loaded: false };
 function planBriefItems(markdown, plan = {}) {
@@ -6459,7 +6449,6 @@ pages.job = async ([id]) => {
 
   const activeRun = runs.find((r) => r.running && !SIDE_RUNS.has(r.action)); // an export or preview isn't work on the job
   const jobRuns = data.job_runs || null, runRel = data.run_relationship || null;
-  const activeTimeline = activeRun ? await api(`runs/${encodeURIComponent(activeRun.id)}/timeline`).catch(() => null) : null;
   if (s.status === "backlog") return waitingEpicPage({ id, s, job, runs, docs, links });
   const summary = { ...s, active_run: !!activeRun };
 
@@ -6556,9 +6545,9 @@ pages.job = async ([id]) => {
     || (!activeRun && state?.disk_low !== false && /not enough disk space|free up space|no space left on device|builds need \d+\s*gb/i.test(diskErrorText));
   const showNextAction = next && !diskBlocked && !(signInAction && next.action === "debug");
   const heroAction = activeRun
-    ? (isStoppingActive
-      ? `<button class="btn small" data-stop="${esc(activeRun.id)}" data-why="Already stopping." disabled aria-busy="true"><span class="spinner inline-spinner" aria-hidden="true"></span>Stopping…</button>`
-      : `<button class="btn small" data-stop="${esc(activeRun.id)}" title="Stops the worker. Resume continues from the next task.">Pause</button>`)
+    ? `<a class="btn small" href="#/runs/${encodeURIComponent(activeRun.id)}">View run</a>${isStoppingActive
+      ? `<button class="btn small danger" data-stop="${esc(activeRun.id)}" data-why="Already stopping." disabled aria-busy="true"><span class="spinner inline-spinner" aria-hidden="true"></span>Stopping…</button>`
+      : `<button class="btn small danger" data-stop="${esc(activeRun.id)}" title="Stops the worker. Resume continues from the next task.">Stop</button>`}`
     : `${signInAction}${diskBlocked ? `<button type="button" class="btn small primary" data-disk-space data-job="${esc(id)}">Free up space</button>` : ""}${showNextAction ? `<button class="${nextBtnClass}" ${act(next.action, { job: s.id, ...(next.params || {}) })}${overlapHold ? ` disabled data-why="Wait for ${esc(overlapHold.title)} to finish building first."` : ""}>${esc(next.label)}</button>` : ""}${showNextAction && job.task_growth && data.undoable_task === job.task_growth.task
       ? `<button class="btn small" data-undo-task="${job.task_growth.task}" title="Reverts what that task changed. Then revise the plan to make it smaller.">Undo task ${job.task_growth.task + 1}</button>` : ""}`;
 
@@ -7083,8 +7072,6 @@ pages.job = async ([id]) => {
     actions: jobHeaderActions(summary, links, { canSplinter, planShown: reviewingPlan, steerShown: Boolean(steer), hasChanges: allFiles.length > 0,
       abilities: aiAbilities.highlights }),
     html: `<div class="job-layout"><div class="job-top">
-      ${runs.filter((r) => r.running && !isBackgroundRun(r)).map((r) => activeRunCard(r, (jobRuns || []).find((x) => x.id === r.id), r.id === activeRun?.id ? activeTimeline : null)).join("")}
-
       ${isAutoImprove ? `
         <div class="banner info improve-banner mb-16 row align-center justify-between">
           <div class="row align-center gap-8">

@@ -197,8 +197,9 @@ class PageTests(unittest.TestCase):
 
     def test_the_job_page_lists_every_run_and_labels_the_live_one(self):
         self.assertIn("${jobRunsCard(jobRuns, runRel, ", self.app)
-        self.assertIn("activeRunCard(r, (jobRuns || []).find((x) => x.id === r.id)", self.app)
-        self.assertIn("· run in progress", self.app)
+        self.assertNotIn("activeRunCard(", self.app)
+        self.assertIn('>View run</a>', self.app)
+        self.assertIn('>Stop</button>', self.app)
         self.assertNotIn("This job ran in one go", self.app)
         self.assertIn('<section class="card mb-16" id="job-runs">', self.app)
         self.assertIn('class="job-table-body" id="job-run-list"', self.app)
