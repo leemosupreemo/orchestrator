@@ -12235,12 +12235,12 @@ pages.git = async (_, query) => {
             : button("connect", g.origin ? `Switch to ${esc(o.label)}` : "Connect a repository", true);
           detail.innerHTML = `<div class="sc-option">
             <div><strong>${esc(o.label)}</strong> <span class="muted">${esc(o.tagline)}</span></div>
-            <p class="muted">With Orchestrator: ${esc(o.workflow)}.</p>
-            <div class="sc-cols"><div><h3>Good at</h3><ul>${o.good.map(t => `<li>${rich(t)}</li>`).join("")}</ul></div>
-              <div><h3>Watch out for</h3><ul>${o.watch.map(t => `<li>${rich(t)}</li>`).join("")}</ul></div></div>
-            <div><h3>${here ? "How it was set up" : g.origin ? "Steps to switch" : "Steps to set it up"}</h3><ol>${o.steps.map(t => `<li>${rich(t)}</li>`).join("")}</ol>
-              ${g.origin && !here && o.action !== "local" ? `<p class="muted">Switching changes where jobs push. Your history comes with you when you push to the new repository.</p>` : ""}</div>
-            <div class="row gap-8 sc-actions">${actions}${owner ? `<button type="button" class="btn small ghost" id="sc-ai">${aiHelp[o.key] ? "Refresh the AI steps" : "Help me set this up with AI"}</button>` : ""}<a class="btn small ghost" href="${esc(o.docs)}" target="_blank" rel="noopener">Official guide ↗</a></div>
+            <div><h3>${here ? "How it was set up" : g.origin ? "Steps to switch" : "Steps"}</h3><ol>${o.steps.map(t => `<li>${rich(t)}</li>`).join("")}</ol></div>
+            <details class="fold"><summary class="linklike muted">Pros &amp; trade-offs</summary>
+              <div class="sc-cols mt-8"><div><h3>Good at</h3><ul>${o.good.map(t => `<li>${rich(t)}</li>`).join("")}</ul></div>
+                <div><h3>Watch out for</h3><ul>${o.watch.map(t => `<li>${rich(t)}</li>`).join("")}</ul></div></div>
+            </details>
+            <div class="row gap-8 sc-actions">${actions}${owner ? `<button type="button" class="btn small ghost" id="sc-ai">${aiHelp[o.key] ? "Refresh AI steps" : "Help with AI"}</button>` : ""}<a class="btn small ghost" href="${esc(o.docs)}" target="_blank" rel="noopener">Docs ↗</a></div>
             <div id="sc-ai-out" aria-live="polite">${aiHelp[o.key] ? aiBlock(aiHelp[o.key]) : ""}</div></div>`;
         };
         const aiBlock = (text) => `<div class="sc-ai"><strong>For this project</strong><div class="md">${Markdown.render(text)}</div><small class="muted">Written by an AI from this project's state. Check it against your host's own instructions.</small></div>`;
