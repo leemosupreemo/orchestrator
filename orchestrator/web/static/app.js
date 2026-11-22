@@ -13584,11 +13584,17 @@ function updatesPageHtml(u, { pairedMachines = [], currentMachineId = "", curren
     : "";
   const canInstall = ["minor", "breaking"].includes(c.update) && !c.blocked;
   const localOutdated = ["minor", "breaking"].includes(c.update);
+  const localUpToDate = !localOutdated && c.update !== "unknown" && Boolean(c.at);
   const localStatusPill = c.update === "breaking" ? `<span class="pill failed">Outdated · breaking</span>`
     : c.update === "minor" ? `<span class="pill attention">Outdated${c.behind ? ` (${c.behind} behind)` : ""}</span>`
     : c.update === "unknown" ? `<span class="pill attention">Check failed</span>`
-    : c.at ? `<span class="pill done">Up to date.</span>`
+    : localUpToDate ? ""
     : `<span class="pill idle">Checking…</span>`;
+  const localActionHtml = canInstall
+    ? `<button type="button" class="btn small primary" data-update-op="install">Update now</button>`
+    : localUpToDate
+      ? `<button type="button" class="btn small" disabled>Up to date</button>`
+      : `<span class="muted">—</span>`;
   const localVer = [u.version || "", c.installed ? c.installed.slice(0, 7) : ""].filter(Boolean).join(" · ") || "—";
   const localMeta = [
     c.branch ? `on ${c.branch}` : "",
@@ -13603,11 +13609,12 @@ function updatesPageHtml(u, { pairedMachines = [], currentMachineId = "", curren
     const remoteCommitBehind = Boolean(rc.installed && c.latest && rc.installed !== c.latest);
     const remoteOutdated = m.reachable && (["minor", "breaking"].includes(rc.update) || remoteCommitBehind);
     if (remoteOutdated) anyOutdated = true;
+    const remoteUpToDate = m.reachable && !remoteOutdated && rc.update === "none";
     const pill = !m.reachable
       ? `<span class="pill idle">Offline</span>`
       : rc.update === "breaking" ? `<span class="pill failed">Outdated · breaking</span>`
       : rc.update === "minor" || remoteCommitBehind ? `<span class="pill attention">Outdated${rc.behind ? ` (${rc.behind} behind)` : ""}</span>`
-      : rc.update === "none" ? `<span class="pill done">Up to date</span>`
+      : remoteUpToDate ? ""
       : ru?.error ? `<span class="pill attention">Outdated</span>`
       : `<span class="pill idle">Online</span>`;
     const ver = [ru?.version || m.version || "", rc.installed ? rc.installed.slice(0, 7) : ""].filter(Boolean).join(" · ") || "—";
@@ -13616,6 +13623,11 @@ function updatesPageHtml(u, { pairedMachines = [], currentMachineId = "", curren
       rc.at ? `Checked ${ago(rc.at)}` : (!m.reachable && m.last_seen ? `Last seen ${ago(m.last_seen)}` : ""),
     ].filter(Boolean).map(esc).join(" · ");
     const canInstallRemote = m.reachable && !rc.blocked && (remoteOutdated || Boolean(ru?.error));
+    const remoteActionHtml = canInstallRemote
+      ? `<button type="button" class="btn small primary" data-update-machine="${esc(m.id)}" data-update-machine-op="install">Update</button>`
+      : remoteUpToDate
+        ? `<button type="button" class="btn small" disabled>Up to date</button>`
+        : `<span class="muted">—</span>`;
     const versionTag = `<span class="job-type-tag mono">${esc(ver)}</span>`;
     return `<div class="job-table-row">
       <div class="col-job has-num">
@@ -13630,7 +13642,7 @@ function updatesPageHtml(u, { pairedMachines = [], currentMachineId = "", curren
       </div>
       <div class="col-type">${versionTag}</div>
       <div class="col-status">${pill}</div>
-      <div class="col-date">${canInstallRemote ? `<button type="button" class="btn small primary" data-update-machine="${esc(m.id)}" data-update-machine-op="install">Update</button>` : `<span class="muted">—</span>`}</div>
+      <div class="col-date">${remoteActionHtml}</div>
     </div>`;
   }).join("");
   const totalMachines = 1 + otherMachines.length;
@@ -13650,7 +13662,7 @@ function updatesPageHtml(u, { pairedMachines = [], currentMachineId = "", curren
           <div class="col-job">Machine</div>
           <div class="col-type">Version</div>
           <div class="col-status">Status</div>
-          <div class="col-date">Action</div>
+          <div class="col-date"></div>
         </div>
         <div class="job-table-body">
           <div class="job-table-row">
@@ -13664,7 +13676,7 @@ function updatesPageHtml(u, { pairedMachines = [], currentMachineId = "", curren
             </div>
             <div class="col-type">${localVersionTag}</div>
             <div class="col-status">${localStatusPill}</div>
-            <div class="col-date">${canInstall ? `<button type="button" class="btn small primary" data-update-op="install">Update now</button>` : `<span class="muted">—</span>`}</div>
+            <div class="col-date">${localActionHtml}</div>
           </div>
           ${remoteRowsHtml}
         </div>
