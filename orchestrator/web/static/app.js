@@ -11436,7 +11436,7 @@ function epicsSection(initial, { onPrdChanged }) {
       <span class="muted">As soon as you fill in any product field above, your requirements are broken down into epics automatically.</span>
       </div></section>`;
     return `<section class="card mb-16" id="epic-breakdown"><div class="card-h"><h2>Break down from the PRD</h2></div><div class="card-b stack">
-      <p class="muted">Splits your requirements into epics. You pick the ones to keep.</p>
+      <p class="muted">Splits your requirements into epics.</p>
       ${ov.epics.length ? "" : `<div class="row"><button type="button" class="btn primary" id="epic-break">Start</button></div>`}
       <details class="advanced"><summary>Advanced options</summary><div class="stack">
         ${FeaturePlan.techniqueSelect(technique)}
