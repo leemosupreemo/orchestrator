@@ -102,3 +102,17 @@ class DiskSpaceTests(unittest.TestCase):
             self.assertFalse((profile / "GPUCache").exists())
             for name in ("Backups", "User/History", "User/workspaceStorage"):
                 self.assertTrue((profile / name).exists())
+
+    def test_recognizes_dev_tool_caches_like_npm_homebrew_and_pip(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / ".npm" / "_cacache").mkdir(parents=True)
+            (root / "Library" / "Caches" / "Homebrew").mkdir(parents=True)
+            (root / ".cache" / "pip").mkdir(parents=True)
+            with patch.object(Path, "home", return_value=root), \
+                 patch.object(disk_space, "derived_data_root", return_value=root / "missing"):
+                candidates = disk_space.cache_candidates(root)
+                self.assertEqual({item["name"] for item in candidates}, {"npm cache", "Homebrew downloads", "pip cache"})
+                removed, errors = disk_space.clear_caches(root, [item["id"] for item in candidates])
+            self.assertFalse(errors)
+            self.assertEqual(set(removed), {"npm cache", "Homebrew downloads", "pip cache"})

@@ -85,8 +85,27 @@ def _xcode_caches() -> Iterator[Cache]:
     if directory.is_symlink():
         return
     for entry in _directories(directory):
-        if entry.name in {"ModuleCache.noindex", "SDKStatCaches.noindex"} or (entry / "info.plist").is_file():
+        if entry.name in {"ModuleCache.noindex", "SDKStatCaches.noindex", "CompilationCache.noindex", "Index.noindex"} or (entry / "info.plist").is_file():
             yield Cache(entry, entry.name, "Xcode")
+
+
+def _dev_tool_caches() -> Iterator[Cache]:
+    home = Path.home()
+    known = (
+        (home / ".npm" / "_cacache", "npm cache", "npm"),
+        (home / ".npm" / "_npx", "npx cache", "npm"),
+        (home / ".cache" / "pip", "pip cache", "pip"),
+        (home / ".cache" / "uv", "uv cache", "Python"),
+        (home / ".cache" / "huggingface", "Hugging Face cache", "AI models"),
+        (home / "Library" / "Caches" / "Homebrew", "Homebrew downloads", "Homebrew"),
+        (home / "Library" / "Caches" / "pip", "pip cache (Library)", "pip"),
+        (home / "Library" / "Caches" / "CocoaPods", "CocoaPods cache", "CocoaPods"),
+        (home / "Library" / "Caches" / "org.swift.swiftpm", "SwiftPM cache", "SwiftPM"),
+        (home / "Library" / "Developer" / "CoreSimulator" / "Caches", "iOS Simulator caches", "Xcode"),
+    )
+    for path, name, tool in known:
+        if not path.is_symlink() and path.is_dir():
+            yield Cache(path, name, tool)
 
 
 def _vscode_caches() -> Iterator[Cache]:
@@ -144,7 +163,7 @@ def _caches(root: Path) -> dict[str, Cache]:
     except OSError:
         return {}
     candidates = {}
-    for cache in chain(_xcode_caches(), _vscode_caches(), _workspace_caches(root)):
+    for cache in chain(_xcode_caches(), _dev_tool_caches(), _vscode_caches(), _workspace_caches(root)):
         path = cache.path
         try:
             meta = path.stat()
@@ -202,6 +221,8 @@ def tool_is_active(tool: str) -> bool:
         "Gradle": ("-f", r"org[.]gradle[.]launcher[.]|org[.]gradle[.]wrapper[.]GradleWrapperMain|/Android Studio[^/]*/Contents/MacOS/|/IntelliJ IDEA[^/]*/Contents/MacOS/"),
         "VS Code": ("-f", r"/Visual Studio Code( - Insiders)?[.]app/Contents/|/Code( - Insiders)?[.]app/Contents/"),
     }
+    if tool not in patterns:
+        return False
     try:
         result = subprocess.run(["pgrep", *patterns[tool]], capture_output=True, timeout=3, check=False)
     except (OSError, subprocess.SubprocessError):
