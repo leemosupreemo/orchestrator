@@ -5462,8 +5462,9 @@ def _team_model(models_cfg: Any, role: str) -> str:
 
 
 def _product_model(settings: dict[str, Any]) -> str:
-    """The model for the Product page's AI: the one picked there, else the AI tools page's reviewer, else "" (its own default)."""
-    return str(settings.get("product_model") or "") or _team_model(settings.get("default_models"), "reviewer")
+    """The model for the Product page's AI: the one picked there (unless 'auto'), else the AI tools page's reviewer, else "" (its own default)."""
+    picked = str(settings.get("product_model") or "")
+    return ("" if picked == "auto" else picked) or _team_model(settings.get("default_models"), "reviewer")
 
 
 def available_models() -> list[dict[str, str]]:
@@ -7595,7 +7596,7 @@ class UIHandler(BaseHTTPRequestHandler):
         try:
             if method == "GET" and parts == ["product"]:
                 settings = read_settings(root)
-                current_model = _product_model(settings) or "claude-sonnet-4-6"
+                current_model = str(settings.get("product_model") or "") or "auto"
                 resp = doc.overview()
                 resp["model"] = current_model
                 resp["available_models"] = available_models()
@@ -7712,6 +7713,8 @@ class UIHandler(BaseHTTPRequestHandler):
                 digest = prd_doc.project_digest(root, commits)
                 settings = read_settings(root)
                 req_model = _text(body, "model", limit=100) if body.get("model") else ""
+                if req_model == "auto":
+                    req_model = ""
                 chosen_model = req_model or _product_model(settings) or ""
                 mode = _choice(body, "mode", list(prd_doc.UPDATE_MODES)) or ""  # updating filled-in requirements: what to change
                 notes = _text(body, "notes", limit=2000) if body.get("notes") else ""

@@ -10644,8 +10644,9 @@ pages.product = async (_, query) => {
       <section class="card mb-16"><div class="card-h"><h2>Keeping it up to date</h2></div><div class="card-b stack">
         <label class="check"><input type="checkbox" id="prd-auto" ${p.auto_update ? "checked" : ""}> <span>Update this automatically when jobs finish</span></label>
         <div class="row gap-12 align-center wrap" id="prd-auto-model"${p.auto_update ? "" : " hidden"}>
-          <span class="muted t-secondary">AI model for automatic updates:</span>
-          <select id="prd-update-model-select" class="prd-model-select" aria-label="AI model for product requirements">
+          <span class="muted t-secondary">AI used:</span>
+          <select id="prd-update-model-select" class="prd-model-select" aria-label="AI used for automatic updates">
+            <option value="auto"${(!p.model || p.model === "auto") ? " selected" : ""}>Auto</option>
             ${(p.available_models || [
               { id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6 (Recommended)" },
               { id: "claude-opus-4-8", label: "Claude Opus 4.8" },
@@ -10653,7 +10654,7 @@ pages.product = async (_, query) => {
               { id: "gemini-3-flash-preview", label: "Gemini 3 Flash" },
               { id: "gpt-4o", label: "GPT-4o" },
               { id: "o3-mini", label: "o3-mini" },
-            ]).map((m) => `<option value="${esc(m.id)}"${m.id === (p.model || "claude-sonnet-4-6") ? " selected" : ""}>${esc(m.label || m.id)}</option>`).join("")}
+            ]).map((m) => `<option value="${esc(m.id)}"${m.id === p.model ? " selected" : ""}>${esc(m.label || m.id)}</option>`).join("")}
             <hr>
             <option value="__manage_llms__">⚙️ Manage LLMs</option>
           </select>
@@ -10859,7 +10860,7 @@ pages.product = async (_, query) => {
           updateModelSelect.addEventListener("change", async (e) => {
             const next = e.target.value;
             if (next === "__manage_llms__") {
-              e.target.value = updateModelSelect.dataset.previous || p.model || "claude-sonnet-4-6";
+              e.target.value = updateModelSelect.dataset.previous || p.model || "auto";
               location.hash = "#/config/models";
               return;
             }
