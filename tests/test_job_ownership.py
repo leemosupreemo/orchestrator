@@ -166,9 +166,11 @@ class OwnershipTests(unittest.TestCase):
         app = (ROOT / "orchestrator" / "web" / "static" / "app.js").read_text(encoding="utf-8")
         self.assertIn("Number(rj.imported_at || 0) > Number(localImportedAt.get(jid) || 0)", app)
         self.assertIn("api(`jobs/${encodeURIComponent(j.id)}/moved`", app)
-        # a run going there is the one thing to wait for: two computers building one branch would clash
-        self.assertIn("const busy = rj.active_run ? `Running on ${machineLabel} now", app)
-        self.assertIn('data-take-over="run"${busy ? ` disabled', app)
+        # a run going there must not silently fork a second copy: offer switching to that machine or stopping that run first
+        self.assertIn("const busy = rj.active_run ? `On ${machineLabel} now", app)
+        self.assertIn("data-switch-machine", app)
+        self.assertIn("data-stop-and-take-over", app)
+        self.assertIn("async function stopRemoteRunAndTakeOver(", app)
         server = (ROOT / "orchestrator" / "web" / "server.py").read_text(encoding="utf-8")
         self.assertIn("This job moved to {moved} and is worked on there now.", server)
 

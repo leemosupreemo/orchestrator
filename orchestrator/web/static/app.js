@@ -2617,7 +2617,7 @@ async function showSnapshotScreen(machineId, machine) {
   }
 }
 
-async function enterMachine(machine, { failover = [], snapshotFallback = null } = {}) {
+async function enterMachine(machine, { failover = [], snapshotFallback = null, hash = "" } = {}) {
   stopAccountPoll();
   signingIn = true;
   if (!machine.reachable && machine.has_snapshot && !failover.length) { // offline: its last snapshot, saying so, instead of waiting to fail
@@ -2645,8 +2645,10 @@ async function enterMachine(machine, { failover = [], snapshotFallback = null } 
     if (idea) {
       location.hash = Account.ideaRoute(idea);
       if (idea.existing) Account.clearIdea();
+    } else if (hash) {
+      location.hash = hash;
     }
-    await unlockWith(res.token, `Opened ${machine.name}`, { home: !idea });
+    await unlockWith(res.token, `Opened ${machine.name}`, { home: !idea && !hash });
   } catch (err) {
     if (cancelled) return;
     if (failover.length) {
@@ -6060,6 +6062,39 @@ async function takeOverJob(rj, machineLabel) {
   }
 }
 
+async function stopRemoteRunAndTakeOver(machine, machineLabel, rj, jobId, onProgress = null) {
+  const session = await openPeerSession(machine);
+  const runsRes = await peerApi(session, "runs", null, "GET");
+  const isJobRun = (r) => r && r.running && (r.job === jobId || r.result_job === jobId || (rj.job_id && r.job === rj.job_id));
+  const activeRuns = (runsRes?.runs || []).filter(isJobRun);
+  if (activeRuns.length) {
+    await Promise.all(activeRuns.map((r) => peerApi(session, `runs/${encodeURIComponent(r.id)}/stop`, {}, "POST")));
+    const stopIds = new Set(activeRuns.map((r) => r.id));
+    const deadline = Date.now() + 10000;
+    while (Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      const check = await peerApi(session, "runs", null, "GET").catch(() => null);
+      if (!check?.runs?.some((r) => stopIds.has(r.id) && r.running)) break;
+    }
+  }
+  if (onProgress) onProgress("Bringing it here…");
+  const detail = await peerApi(session, `jobs/${encodeURIComponent(jobId)}`, null, "GET").catch(() => null);
+  const freshRj = detail?.job ? {
+    ...rj,
+    ...detail.job,
+    job_id: rj.job_id || jobId,
+    title: detail.summary?.title || detail.job.title || rj.title || jobId,
+    status: detail.job.status || detail.summary?.status || rj.status,
+    tasks: Array.isArray(detail.job.plan?.tasks) ? detail.job.plan.tasks : (rj.tasks || []),
+    summary: detail.job.plan?.summary || rj.summary || "",
+    active_run: null,
+    record: detail.job,
+  } : { ...rj, active_run: null };
+  const myName = state.project?.computer?.name || "another computer";
+  await peerApi(session, `jobs/${encodeURIComponent(jobId)}/moved`, { machine: myName }, "POST").catch(() => {});
+  return takeOverJob(freshRj, machineLabel);
+}
+
 pages["remote-job"] = async ([machineId, jobId]) => {
   if (typeof Account === "undefined" || !Account.active?.()) return { title: "Remote job", sub: "", html: `<section class="card"><div class="empty">Sign in to view jobs on a remote machine.</div></section>` };
   const [{ machines = [] }, snapRes] = await Promise.all([
@@ -6079,7 +6114,7 @@ pages["remote-job"] = async ([machineId, jobId]) => {
       : ", offline";
   // One job, whichever computer it's on: when the other computer is online and not actively running it, bring it here
   // straight away and open it on this machine (latest record, branch and unfinished work; ownership goes up so there's
-  // never a second copy). Offline copies pause to warn about unsynced work; active runs wait for that run to finish.
+  // never a second copy). Offline copies pause to warn about unsynced work; active runs offer switching there or stopping & taking over.
   if ((machine?.online || machine?.reachable) && !rj.active_run) {
     const id = await takeOverJob(rj, machineLabel);
     if (id) {
@@ -6091,7 +6126,16 @@ pages["remote-job"] = async ([machineId, jobId]) => {
   }
   const next = rj.state?.next;
   const direct = next && TAKE_OVER_THEN_RUN.has(next.action);
-  const busy = rj.active_run ? `Running on ${machineLabel} now (${rj.active_run.label}${rj.active_run.step ? ` · ${rj.active_run.step}` : ""}). You can pick it up here once that run finishes.` : "";
+  const busy = rj.active_run ? `On ${machineLabel} now (${rj.active_run.label}${rj.active_run.step ? ` · ${rj.active_run.step}` : ""}).` : "";
+  const canReachPeer = Boolean(machine && (machine.online || machine.reachable));
+  const actionsHtml = busy
+    ? `<button type="button" class="btn primary" data-switch-machine${!canReachPeer ? ` disabled data-why="${esc(machineLabel)} is offline"` : ""}>Switch to ${esc(machineLabel)}</button>
+       <button type="button" class="btn danger" data-stop-and-take-over${!canReachPeer ? ` disabled data-why="${esc(machineLabel)} is offline"` : ""}>Stop run &amp; take over here</button>`
+    : `${direct ? `<button type="button" class="btn primary" data-take-over="run">${esc(next.label)}</button>` : ""}
+       <button type="button" class="btn ${direct ? "" : "primary"}" data-take-over="open">${direct ? "Open it here" : "Work on it here"}</button>`;
+  const footnote = busy
+    ? `Switch to ${esc(machineLabel)} to follow this run live, or stop it there to bring its branch, history, and unfinished work here.`
+    : `Its branch, history and unfinished work come with it, and ${esc(machineLabel)} hands it over: one job, never two copies.`;
   return {
     title: rj.title || jobId,
     sub: `${jobId}${rj.branch ? ` · ${rj.branch}` : ""} · last worked on ${machineLabel}${reachTag}`,
@@ -6104,20 +6148,46 @@ pages["remote-job"] = async ([machineId, jobId]) => {
         ${busy ? `<p class="job-hero-reason"><span class="pill working">Running</span> ${esc(busy)}</p>` : ""}
         ${remoteFreshnessHtml(machine, machineLabel, snapRes?.snapshot?.synced_at, rj.record?.wip_backup)}
         <div class="row gap-8 wrap">
-          ${direct ? `<button type="button" class="btn primary" data-take-over="run"${busy ? ` disabled data-why="${esc(machineLabel)} is running it now"` : ""}>${esc(next.label)}</button>` : ""}
-          <button type="button" class="btn ${direct ? "" : "primary"}" data-take-over="open"${busy ? ` disabled data-why="${esc(machineLabel)} is running it now"` : ""}>${direct ? "Open it here" : "Work on it here"}</button>
+          ${actionsHtml}
         </div>
-        <p class="muted">Its branch, history and unfinished work come with it, and ${esc(machineLabel)} hands it over: one job, never two copies.</p>
+        <p class="muted">${footnote}</p>
       </div>
     </section>`,
     after: () => {
+      const disableAll = () => view.querySelectorAll("[data-take-over], [data-switch-machine], [data-stop-and-take-over]").forEach((b) => { b.disabled = true; });
       view.querySelectorAll("[data-take-over]").forEach((btn) => btn.addEventListener("click", async () => {
-        view.querySelectorAll("[data-take-over]").forEach((b) => { b.disabled = true; });
+        disableAll();
         btn.textContent = "Bringing it here…";
         const id = await takeOverJob(rj, machineLabel);
         if (!id) { route(); return; }
         location.hash = `#/jobs/${encodeURIComponent(id)}`;
         if (btn.dataset.takeOver === "run" && next) runAction(next.action, { job: id, ...(next.params || {}) });
+      }));
+      view.querySelectorAll("[data-switch-machine]").forEach((btn) => btn.addEventListener("click", async () => {
+        if (!machine) return;
+        disableAll();
+        btn.textContent = `Switching to ${machineLabel}…`;
+        await enterMachine(machine, { hash: `#/jobs/${encodeURIComponent(jobId)}` });
+      }));
+      view.querySelectorAll("[data-stop-and-take-over]").forEach((btn) => btn.addEventListener("click", async () => {
+        if (!machine) return;
+        const ok = await formDialog(
+          "Stop remote run?",
+          `<p>Stop the active run on <strong>${esc(machineLabel)}</strong> and bring this job to this computer?</p>`,
+          "Stop & take over",
+          { compact: true },
+        );
+        if (!ok) return;
+        disableAll();
+        btn.textContent = `Stopping run on ${machineLabel}…`;
+        try {
+          const id = await stopRemoteRunAndTakeOver(machine, machineLabel, rj, jobId, (msg) => { btn.textContent = msg; });
+          if (!id) { route(); return; }
+          location.hash = `#/jobs/${encodeURIComponent(id)}`;
+        } catch (err) {
+          toast(err.message || `Could not stop the run on ${machineLabel}`, true);
+          route();
+        }
       }));
     },
   };

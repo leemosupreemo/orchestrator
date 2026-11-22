@@ -793,12 +793,14 @@ eval(code.slice(start, end));
   assert(!rsHtml.includes('pip install --upgrade pip'), rsHtml);
   clearPendingUpdateResume();
 
-  // 1b. Online-but-connecting remote machine surfaces connection detail when fallback card renders (e.g. active run)
+  // 1b. Online-but-connecting remote machine surfaces connection detail and active-run actions
   currentMachine = { id: 'm1', name: 'Pro', online: true, reachable: false, connection: { state: 'checking', detail: 'Testing Tailscale Funnel' } };
   remoteJob.active_run = { label: 'Building', step: 'Tests' };
   const connecting = await pages['remote-job'](['m1', 'job-7']);
   assert(connecting.sub.includes('Testing Tailscale Funnel'), connecting.sub);
   assert(!connecting.html.includes('Open on Pro'), connecting.html);
+  assert(connecting.html.includes('Switch to Pro'), connecting.html);
+  assert(connecting.html.includes('Stop run &amp; take over here'), connecting.html);
   delete remoteJob.active_run;
 
   // 2. Online/reachable remote machine without active run: automatically brings the job here and opens it locally
