@@ -12993,6 +12993,27 @@ pages.config = async (args = []) => {
             if (!disposed && location.hash === "#/config/updates") route();
           });
         }
+        const waitForRestart = async () => {
+          setProgress("Restarting Orchestrator with the update…");
+          notify("info", "Orchestrator is restarting with the update…", { id: "self-update", sticky: false });
+          await new Promise((r) => setTimeout(r, 2000));
+          for (let i = 0; i < 20; i++) {
+            if (disposed || location.hash !== "#/config/updates") return;
+            try {
+              await api("updates", { signal: AbortSignal.timeout(3000) });
+              if (disposed || location.hash !== "#/config/updates") return;
+              toast("Orchestrator restarted with the update");
+              route();
+              return;
+            } catch {
+              await new Promise((r) => setTimeout(r, 1500));
+            }
+          }
+          if (!disposed) {
+            setProgress("");
+            toast("Restart is taking longer than expected. Refresh to check.", "warning");
+          }
+        };
         const onClick = async (event) => {
           const button = event.target.closest("[data-update-op], [data-update-machine]");
           if (!button) return;
@@ -13030,16 +13051,14 @@ pages.config = async (args = []) => {
               if (offline) parts.push(`${offline} offline`);
               toast(parts.join(" · "));
               if (localRes?.restart) {
-                setProgress("Restarting Orchestrator with the update…");
-                notify("info", "Orchestrator is restarting with the update…", { id: "self-update", sticky: false });
+                waitForRestart();
               } else route();
               return;
             }
             const res = await api("updates", { method: "POST", body: { op } });
             toast(res.message || "Updated");
             if (res.restart) {
-              setProgress("Restarting Orchestrator with the update…");
-              notify("info", "Orchestrator is restarting with the update…", { id: "self-update", sticky: false });
+              waitForRestart();
             } else route();
           } catch (err) { toast(err.message, true); restore(); }
         };
