@@ -513,6 +513,9 @@ console.log(JSON.stringify(select.innerHTML));
         self.assertIn("Not verified", html)
         self.assertIn('href="https://github.com/login?return_to=%2Fteam%2Fapp%2Flabels"', html)
         self.assertIn("Needs attention", html)
+        self.assertIn("git-problems-card is-warn", html)
+        self.assertIn('<span class="pill attention">1 missing</span>', html)
+        self.assertIn("GitHub labels tag each job's issue and pull request", html)
 
     def test_plain_git_does_not_offer_github_label_management(self):
         html = self.render(origin="git@gitlab.com:team/app.git", provider="GitLab")["html"]

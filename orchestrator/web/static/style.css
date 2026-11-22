@@ -5102,6 +5102,9 @@ body[data-page="home"] #page-sub { grid-column: 1 / -1; grid-row: 2; width: 100%
 .git-problems-card { border-inline-start: 3px solid var(--bad); }
 .git-problems-card > .card-h { background: var(--bad-soft); }
 .git-problems-card > .card-h h2 { color: var(--bad); }
+.git-problems-card.is-warn { border-inline-start-color: var(--warn); }
+.git-problems-card.is-warn > .card-h { background: var(--warn-soft); }
+.git-problems-card.is-warn > .card-h h2 { color: var(--warn); }
 .git-problems-summary { color: var(--muted); font-size: var(--type-secondary); }
 .git-section-note, .git-setting-value small, .git-provider-caption { font-size: var(--type-body); }
 @media (max-width: 760px) {

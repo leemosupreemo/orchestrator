@@ -12098,9 +12098,10 @@ pages.git = async (_, query) => {
   const baseBranchOptions = g.branches.map(branch => `<option value="${esc(branch)}" ${branch === g.base_branch ? "selected" : ""}>${esc(branch)}</option>`).join("")
     || `<option value="" selected disabled>No local branches</option>`;
   const problemCount = problems.length + (missingLabels.length ? 1 : 0) + publishing.problems.length;
-  const problemCard = problemCount ? `<section class="card git-problems-card" id="git-problems-card"><div class="card-h"><h2>Needs attention <span class="count">${problemCount}</span></h2></div><dl class="git-settings-list">
+  const labelsOnlyWarning = !problems.length && !publishing.problems.length && missingLabels.length > 0;
+  const problemCard = problemCount ? `<section class="card git-problems-card${labelsOnlyWarning ? " is-warn" : ""}" id="git-problems-card"><div class="card-h"><h2>Needs attention <span class="count">${problemCount}</span></h2></div><dl class="git-settings-list">
     ${problems.map(check => { const [issue, remedy] = problemCopy(check); return row(esc(issue), `<span>${esc(remedy)}</span>`, check.id === "issues" && g.web_url ? external(`${g.web_url}/settings`, "Settings") : ""); }).join("")}
-    ${missingLabels.length ? row("Job labels", `<span>${missingLabels.length} missing</span>`, owner ? '<button type="button" class="btn small go" id="git-repair-labels">Create missing</button>' : "") : ""}
+    ${missingLabels.length ? row("Job labels", `<span class="pill attention">${missingLabels.length} missing</span><small>GitHub labels tag each job's issue and pull request with its type and current stage. They make it easy to filter and track Orchestrator work directly on GitHub.</small>`, owner ? '<button type="button" class="btn small go" id="git-repair-labels">Create missing</button>' : "") : ""}
     ${publishing.problems.map(job => `<div class="git-job-row">${row(esc(job.title), `<span>${clamped(job.detail, 120)}</span>`, `<div class="card-actions"><a class="btn small ghost" href="#/jobs/${encodeURIComponent(job.id)}">Open job</a><button type="button" class="btn small ghost" data-git-publish="${esc(job.id)}" data-why="Connect a Git remote first." ${!g.origin ? "disabled" : ""}>Retry</button></div>`)}</div>`).join("")}
   </dl></section>` : "";
   const configuration = health.configuration || {};
