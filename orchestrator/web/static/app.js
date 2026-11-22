@@ -15018,7 +15018,7 @@ function archSectionHtml(data) {
         ${data.stale ? `<span class="arch-gap">The code has changed since this was inferred.</span>` : ""}
         ${owner ? `<div class="row wrap gap-12">
           ${decision.origin === "inferred" && data.codeless ? `<button type="button" class="btn primary" id="arch-propose" data-mode="initial" data-why="Fill in the product requirements first." ${data.prd_filled ? "" : "disabled"}>Suggest options</button>` : ""}
-          ${decision.origin === "inferred" && !data.codeless ? `<button type="button" class="btn primary" id="arch-propose" data-mode="describe">Describe the architecture</button>` : ""}
+          ${decision.origin === "inferred" && !data.codeless ? `<button type="button" class="btn primary" id="arch-propose" data-mode="describe">Describe</button>` : ""}
           ${decision.origin === "inferred" ? `<button type="button" class="btn" id="arch-refresh">Refresh from the code</button>` : ""}
           ${decision.stack?.language !== "generic" ? `<button type="button" class="btn" id="arch-approve-current">Approve as it is</button>` : ""}</div>` : ""}</div>` : ""}
       ${proposal ? `<details><summary>Show the current architecture</summary>${body}</details>` : body}
@@ -15041,7 +15041,7 @@ function archSectionHtml(data) {
         ${owner ? `<div class="row gap-12 wrap"><button type="button" class="btn primary" id="arch-propose" data-mode="initial" data-why="Fill in the product requirements first." ${data.prd_filled ? "" : "disabled"}>Suggest options</button></div>` : ""}</div>`
       : `<div class="stack"><strong>Describe this project's architecture</strong>
         <span class="muted">AI sketches how your code is built today. Once you confirm it, every job follows it. Your code isn't changed.</span>
-        ${owner ? `<div class="row gap-12 wrap"><button type="button" class="btn primary" id="arch-propose" data-mode="describe">Describe the architecture</button></div>` : ""}</div>`;
+        ${owner ? `<div class="row gap-12 wrap"><button type="button" class="btn primary" id="arch-propose" data-mode="describe">Describe</button></div>` : ""}</div>`;
     html += archProgressHtml();
   }
   return html;

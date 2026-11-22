@@ -626,7 +626,7 @@ class DocumentationTests(unittest.TestCase):
     def test_both_user_guides_explain_what_a_person_sees_and_does(self):
         for guide in self.guides:
             section = guide[guide.index("## Architecture"):guide.index("## Packages")]
-            for phrase in ("Choose the architecture", "Describe the architecture", "Skip for now", "Decide later", "working assumption",
+            for phrase in ("Choose the architecture", ">Describe</button>", "Skip for now", "Decide later", "working assumption",
                            "Approve as it is", "Refresh from the code", "Best for", "Fit for your product", "diagram", "Good and Watch out",
                            "Style mix", "How it serves your product requirements", "Not covered yet", "Check it against the requirements",
                            "Add or adjust", "Rethink the architecture", "What would change", "History", "docs/architecture-step.md",
