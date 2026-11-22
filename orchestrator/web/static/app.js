@@ -6046,9 +6046,9 @@ const TAKE_OVER_THEN_RUN = new Set(["merge", "complete", "resume", "execute", "s
 async function takeOverJob(rj, machineLabel) {
   try {
     const res = await api("jobs/import-remote", { method: "POST", body: { job: rj, source_machine_name: machineLabel } });
-    if (res.restored_files?.length) toast(`Picked up here, with ${plural(res.restored_files.length, "unfinished file")} from ${machineLabel}`);
-    else if (res.restore_note) toast(`Picked up here. Its unfinished files stay on the job page to bring in: ${res.restore_note}`, true);
-    else toast("Picked up here");
+    if (res.restored_files?.length) toast(`Latest job info synced, with ${plural(res.restored_files.length, "unfinished file")} from ${machineLabel}`);
+    else if (res.restore_note) toast(`Latest job info synced. Its unfinished files stay on the job page to bring in: ${res.restore_note}`, true);
+    else toast("Latest job info synced");
     return res.id || rj.job_id || rj.id;
   } catch (err) {
     if (/^not found$/i.test(err.message || "")) {
