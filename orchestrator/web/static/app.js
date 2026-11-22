@@ -5823,8 +5823,15 @@ function wirePreview(view) {
 // The planner's questions and the person's answers, oldest first, read as a conversation.
 function clarificationThread(history) {
   // An answer Orchestrator gave for you in YOLO mode (common.autorespond) is labelled as such, never as yours.
-  return (history || []).map((h) => `<div class="clarify-msg clarify-ai"><span class="clarify-who">${h.asker === "builder" ? "Builder" : h.asker === "planner" ? "Planner" : "AI"}</span><p>${esc(h.question || "")}</p></div>
-    <div class="clarify-msg clarify-you${h.auto ? " clarify-auto" : ""}"><span class="clarify-who">${h.auto ? "🤖 Answered for you (YOLO)" : "You"}</span><p>${esc(h.answer || "")}</p></div>`).join("");
+  return (history || []).map((h) => `
+    <div class="clarify-row is-ai">
+      <span class="clarify-who">${h.asker === "builder" ? "Builder" : h.asker === "planner" ? "Planner" : "AI"}</span>
+      <div class="clarify-msg clarify-ai"><p>${esc(h.question || "")}</p></div>
+    </div>
+    <div class="clarify-row is-you">
+      <span class="clarify-who">${h.auto ? "🤖 Answered for you (YOLO)" : "You"}</span>
+      <div class="clarify-msg clarify-you${h.auto ? " clarify-auto" : ""}"><p>${esc(h.answer || "")}</p></div>
+    </div>`).join("");
 }
 
 // YOLO answered the AI's questions for the person: said in the job's hero, with the count against the limit.
@@ -7013,13 +7020,15 @@ pages.job = async ([id]) => {
       }</span>`
     : "";
   const unansweredThreadHtml = unansweredQuestions.map((q) => `
-    <div class="clarify-msg clarify-ai">
-      <div class="row align-center justify-between gap-8">
+    <div class="clarify-row is-ai">
+      <div class="row align-center gap-8">
         <span class="clarify-who">${esc(q.who)}</span>
         <span class="pill ${q.blocking ? "attention" : "neutral"}">${q.blocking ? "Blocking" : "Non-blocking"}</span>
       </div>
-      <p class="question">${esc(q.question)}</p>
-      ${q.note ? `<p class="muted t-secondary">${esc(q.note)}</p>` : ""}
+      <div class="clarify-msg clarify-ai">
+        <p class="question">${esc(q.question)}</p>
+        ${q.note ? `<p class="muted t-secondary">${esc(q.note)}</p>` : ""}
+      </div>
     </div>`).join("");
   const hasClarifyFlags = Boolean(questionHeaderFlagHtml || (job.clarification_history || []).some((h) => h.auto));
   const clarifyCardHtml = totalQuestionsCount ? `<section class="card mb-16 clarify-card" id="${s.question ? "clarify" : "clarify-history"}">
@@ -7029,7 +7038,7 @@ pages.job = async ([id]) => {
         <details class="more clarify-export-more"><summary class="btn small ghost icon-only" aria-label="Export chat" title="Export chat"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-download"/></svg></summary><div class="more-menu"><button type="button" class="btn small" data-clarify-export="copy">Copy chat</button><button type="button" class="btn small" data-clarify-export="download">Export chat</button></div></details>
         ${hasClarifyFlags ? `<div class="clarify-header-flags">${questionHeaderFlagHtml}${autoresponseNote(job)}</div>` : ""}
       </summary>
-      <div class="card-b stack">
+      <div class="card-b clarify-thread">
         ${unansweredQuestions.length ? `
           ${unansweredThreadHtml}
           ${s.question ? `<form class="clarify-reply" id="clarify-reply" data-job="${esc(s.id)}">
@@ -7041,7 +7050,7 @@ pages.job = async ([id]) => {
               </div>
             </div>
           </form>` : ""}
-          ${answeredClarifications.length ? `<details class="fold"><summary class="linklike muted">Answered (${answeredClarifications.length})</summary><div class="stack mt-8">${clarificationThread(answeredClarifications)}</div></details>` : ""}
+          ${answeredClarifications.length ? `<details class="fold"><summary class="linklike muted">Answered (${answeredClarifications.length})</summary><div class="clarify-thread mt-8">${clarificationThread(answeredClarifications)}</div></details>` : ""}
         ` : clarificationThread(job.clarification_history)}
       </div>
     </details>

@@ -989,12 +989,16 @@ details.raw pre { margin: 0; padding: 0 var(--space-4) var(--space-4); overflow:
 .question { font-size: var(--type-body); font-weight: var(--weight-medium); }
 /* A planner's questions and the answers, as a conversation: the AI on the left, you on the right */
 .clarify-card { border-color: color-mix(in srgb, var(--accent) 35%, var(--border)); }
-.clarify-msg { display: flex; flex-direction: column; gap: var(--space-1); max-width: 85%; padding: var(--space-2) var(--space-3); border-radius: var(--r-lg); }
+.clarify-thread { display: flex; flex-direction: column; gap: var(--space-3); width: 100%; max-width: 780px; margin: 0 auto; box-sizing: border-box; }
+.clarify-row { display: flex; flex-direction: column; gap: var(--space-1); width: 100%; }
+.clarify-row.is-ai { align-items: flex-start; }
+.clarify-row.is-you { align-items: flex-end; }
+.clarify-msg { display: flex; flex-direction: column; gap: var(--space-1); max-width: 92%; padding: var(--space-3) var(--space-4); border-radius: 16px; line-height: 1.45; }
 .clarify-msg p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
-.clarify-ai { align-self: flex-start; background: var(--panel-2); border: 1px solid var(--border); }
-.clarify-you { align-self: flex-end; background: var(--accent-soft); border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border)); }
-.clarify-auto { background: var(--warn-soft); border-style: dashed; } /* answered by YOLO for the person, not by them */
-.clarify-who { font-size: var(--type-tag); font-weight: var(--weight-bold); color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+.clarify-ai { align-self: flex-start; background: var(--panel-2); border: 1px solid var(--border); border-bottom-left-radius: 4px; }
+.clarify-you { align-self: flex-end; background: var(--accent-soft); border: 1px solid color-mix(in srgb, var(--accent) 32%, var(--border)); border-bottom-right-radius: 4px; }
+.clarify-auto { background: var(--warn-soft); border-color: color-mix(in srgb, var(--warn) 38%, var(--border)); border-style: dashed; } /* answered by YOLO for the person, not by them */
+.clarify-who { font-size: var(--type-tag); font-weight: var(--weight-bold); color: var(--muted); text-transform: uppercase; letter-spacing: .04em; padding: 0 var(--space-1); }
 .clarify-reply { display: flex; flex-direction: column; gap: var(--space-2); }
 .clarify-input-row { display: flex; align-items: flex-end; gap: var(--space-2); width: 100%; }
 .clarify-input-row .field, .clarify-field { flex: 1 1 auto; margin: 0; min-width: 0; }
