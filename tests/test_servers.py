@@ -130,7 +130,7 @@ class StatusTests(unittest.TestCase):
         self.assertIn('id="home-server-card"', app)
         self.assertIn('loadServerCard(view.querySelector("#home-server-card"), false, () => {}, { homeMode: true })', app)
         card = app[app.index("const SERVER_STATE ="):app.index("// ---------------------------------------------------------------- signing keys")]
-        for token in ("Online", "Offline", "Launch server", "sv.version", "c.image"):
+        for token in ("Online", "Offline", "Launch server", "sv.version", "c.image", '<div class="card-actions">', '<div class="card-b stack gap-12">'):
             self.assertIn(token, card)
 
     def test_the_overall_state(self):
@@ -220,6 +220,38 @@ class ChangeTests(unittest.TestCase):
         self.assertIn("can't be started from here", said[0])
         result = servers.change(SERVER, "start", FakeShell(docker=False), sleep=lambda s: None)
         self.assertEqual((result["ok"], result["state"]), (False, "docker-off"))
+
+    def test_docker_auto_launch_supports_colima_orbstack_and_remote_ssh_mac(self):
+        # Local macOS with Colima (no /Applications/Docker.app or OrbStack.app)
+        with tempfile.TemporaryDirectory() as tmp:
+            local = servers.LocalShell(Path(tmp))
+            with patch.object(servers.sys, "platform", "darwin"), \
+                 patch.object(servers.Path, "exists", return_value=False), \
+                 patch.object(servers.shutil, "which", side_effect=lambda name: "/opt/homebrew/bin/colima" if name == "colima" else None):
+                self.assertEqual(servers._docker_launch_command(local), ("Colima", "colima start"))
+
+        # Remote Mac over SSH launches Docker Desktop automatically
+        ssh = servers.SshShell("mini.local", "/Users/me/app")
+        seen: list[str] = []
+        docker_up = {"ready": False}
+
+        def fake_ssh_run(cmd, cwd, timeout):
+            seen.append(cmd)
+            if cmd == "docker info":
+                return (0, "", False) if docker_up["ready"] else (1, "Cannot connect", False)
+            if "docker-desktop-bg" in cmd:
+                return (0, "docker-desktop-bg\n", False)
+            if cmd == "open -g -a Docker":
+                docker_up["ready"] = True
+                return (0, "", False)
+            return (0, "", False)
+
+        said, say = self.say_into()
+        ticks = iter(range(0, 1000, 5))
+        with patch.object(ssh, "run", side_effect=fake_ssh_run):
+            self.assertTrue(servers.ensure_docker(ssh, say, sleep=lambda s: None, clock=lambda: next(ticks)))
+        self.assertIn("open -g -a Docker", seen)
+        self.assertTrue(any("starting Docker Desktop" in line for line in said))
 
 
 class RemoteTests(unittest.TestCase):

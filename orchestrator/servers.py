@@ -19,6 +19,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import time
@@ -305,23 +306,84 @@ def logs(server: dict[str, Any], shell: Shell, lines: int = LOG_LINES) -> str:
 
 # ---------------------------------------------------------------------------------------------------- changing things
 
+_DOCKER_LAUNCHERS: dict[str, tuple[str, str]] = {
+    "docker-desktop": ("Docker Desktop", "open -a Docker"),
+    "docker-desktop-bg": ("Docker Desktop", "open -g -a Docker"),
+    "orbstack": ("OrbStack", "open -g -a OrbStack"),
+    "orbctl": ("OrbStack", "orbctl start"),
+    "colima": ("Colima", "colima start"),
+    "rancher": ("Rancher Desktop", 'open -g -a "Rancher Desktop"'),
+    "systemd": ("Docker", "systemctl --user start docker-desktop 2>/dev/null || systemctl start docker"),
+}
+
+_REMOTE_DOCKER_PROBE = (
+    'if [ -d /Applications/Docker.app ] || [ -d "$HOME/Applications/Docker.app" ]; then echo docker-desktop-bg; '
+    'elif [ -d /Applications/OrbStack.app ] || [ -d "$HOME/Applications/OrbStack.app" ]; then echo orbstack; '
+    'elif command -v orbctl >/dev/null 2>&1; then echo orbctl; '
+    'elif command -v colima >/dev/null 2>&1; then echo colima; '
+    'elif [ -d "/Applications/Rancher Desktop.app" ] || [ -d "$HOME/Applications/Rancher Desktop.app" ]; then echo rancher; '
+    'elif command -v systemctl >/dev/null 2>&1; then echo systemd; '
+    'fi'
+)
+
+
+def _docker_launch_command(shell: Shell) -> tuple[str, str] | None:
+    """Detect how to start Docker on `shell` (local or SSH macOS/Linux): (display label, shell command), or None."""
+    if isinstance(shell, LocalShell):
+        if sys.platform == "darwin":
+            home_apps = Path.home() / "Applications"
+            if Path("/Applications/Docker.app").exists() or (home_apps / "Docker.app").exists():
+                return _DOCKER_LAUNCHERS["docker-desktop"]
+            if Path("/Applications/OrbStack.app").exists() or (home_apps / "OrbStack.app").exists():
+                return _DOCKER_LAUNCHERS["orbstack"]
+            if shutil.which("orbctl"):
+                return _DOCKER_LAUNCHERS["orbctl"]
+            if shutil.which("colima"):
+                return _DOCKER_LAUNCHERS["colima"]
+            if Path("/Applications/Rancher Desktop.app").exists() or (home_apps / "Rancher Desktop.app").exists():
+                return _DOCKER_LAUNCHERS["rancher"]
+        elif sys.platform.startswith("linux") and shutil.which("systemctl"):
+            return _DOCKER_LAUNCHERS["systemd"]
+        return None
+    if isinstance(shell, SshShell):
+        code, output, timed_out = shell.run(_REMOTE_DOCKER_PROBE, ".", 15)
+        if not timed_out and code == 0:
+            found = (output.strip().splitlines() or [""])[-1].strip()
+            return _DOCKER_LAUNCHERS.get(found)
+    return None
+
+
 def ensure_docker(shell: Shell, say: Callable[[str], None], *, sleep: Callable[[float], None] = time.sleep,
                   clock: Callable[[], float] = time.monotonic, can_launch: bool | None = None) -> bool:
-    """Docker running, starting Docker Desktop on this Mac if it isn't. False (with a reason said) when it can't be."""
+    """Docker running, starting Docker Desktop / OrbStack / Colima / Rancher / systemd locally or over SSH if it isn't.
+    False (with a reason said) when it can't be started."""
     if docker_ready(shell):
         return True
-    launch = isinstance(shell, LocalShell) and sys.platform == "darwin" and Path("/Applications/Docker.app").exists() if can_launch is None else can_launch
-    if not launch:
+    if can_launch is False:
+        launcher = None
+    elif can_launch is True:
+        launcher = _docker_launch_command(shell) or _DOCKER_LAUNCHERS["docker-desktop"]
+    else:
+        launcher = _docker_launch_command(shell)
+    if not launcher:
         say("Docker isn't running, and it can't be started from here. Start Docker on that computer and try again.")
         return False
-    say("Docker isn't running: starting Docker Desktop …")
-    shell.run("open -a Docker", ".", 30)
+    label, command = launcher
+    say(f"Docker isn't running: starting {label} …")
+    code, output, timed_out = shell.run(command, ".", 60)
+    if timed_out or code != 0:
+        detail = (output.strip().splitlines() or [""])[-1][:200]
+        if detail:
+            say(f"  Couldn't start {label}: {detail}")
     deadline = clock() + DOCKER_WAIT
     while clock() < deadline:
-        sleep(3)
         if docker_ready(shell):
             say("Docker is running.")
             return True
+        sleep(3)
+    if docker_ready(shell):
+        say("Docker is running.")
+        return True
     say(f"Docker didn't start within {DOCKER_WAIT} seconds.")
     return False
 

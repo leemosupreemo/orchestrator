@@ -8361,31 +8361,37 @@ function serverCardHtml(view, canSend, open = false, { homeMode = false } = {}) 
   const hint = dockerOff
     ? (view.machine === "local" ? "No server is online. Docker is off — Launch server opens it first." : "No server is online. Docker is off on that computer.")
     : (!up ? (st.message || "No server is online right now.") : (st.message || ""));
-  return `<div class="card-h">
+  const actionButtons = owner
+    ? (up
+      ? `<button type="button" class="btn small" data-server-action="restart">Restart</button><button type="button" class="btn small" data-server-action="stop">Stop</button>`
+      : `<button type="button" class="btn small primary" data-server-action="start">Launch server</button>`)
+    : "";
+  return `<div class="server-card-wrap" data-server="${esc(sv.id)}">
+    <div class="card-h">
       <div class="row gap-8 align-center"><h2>Server</h2><span class="pill ${tone}">${esc(label)}</span></div>
-      <div class="row gap-8 align-center">
-        ${homeMode ? `<a class="btn small ghost" href="#/delivery">App delivery</a>` : ""}
-        <button type="button" class="btn small ghost" id="server-refresh">Refresh</button>
-      </div>
+      ${actionButtons ? `<div class="card-actions">${actionButtons}</div>` : ""}
     </div>
-    <div class="card-b stack gap-8" data-server="${esc(sv.id)}">
-      <div class="row gap-12 align-center server-main">
-        ${view.servers.length > 1 ? `<select id="server-pick" class="inline-select" aria-label="Server">${view.servers.map((x) => `<option value="${esc(x.id)}"${x.id === sv.id ? " selected" : ""}>${esc(serverLabel(x))}</option>`).join("")}</select>` : `<strong>${esc(serverLabel(sv))}</strong>`}
-        <span class="grow"></span>
-        ${owner ? (up ? `<button type="button" class="btn small" data-server-action="restart">Restart</button><button type="button" class="btn small" data-server-action="stop">Stop</button>` : `<button type="button" class="btn small primary" data-server-action="start">Launch server</button>`) : ""}
+    <div class="card-b stack gap-12">
+      <div class="stack gap-4 server-summary">
+        <div class="row gap-8 align-center flex-wrap">
+          ${view.servers.length > 1 ? `<select id="server-pick" class="inline-select" aria-label="Server">${view.servers.map((x) => `<option value="${esc(x.id)}"${x.id === sv.id ? " selected" : ""}>${esc(serverLabel(x))}</option>`).join("")}</select>` : `<strong>${esc(serverLabel(sv))}</strong>`}
+          ${metaParts.length ? `<span class="muted t-secondary server-meta-inline">${metaParts.join(' <span class="sep">·</span> ')}</span>` : ""}
+        </div>
+        ${hint ? `<p class="muted t-secondary m-0">${esc(hint)}</p>` : ""}
       </div>
-      ${metaParts.length ? `<div class="row gap-12 align-center flex-wrap muted t-secondary">${metaParts.join('<span class="sep">·</span>')}</div>` : ""}
-      ${hint ? `<p class="muted t-secondary m-0">${esc(hint)}</p>` : ""}
       <details class="server-details"${open ? " open" : ""}><summary class="muted t-secondary">Details</summary>
         <div class="stack gap-8 server-more">
           <div>${services || `<span class="muted">No services listed.</span>`}</div>
           <div class="muted t-secondary">${sv.file ? `Set up in ${esc(sv.dir === "." ? "" : sv.dir + "/")}${esc(sv.file)}. ` : `Set up in ${esc(sv.dir)}. `}Start and Stop only start and stop the containers; nothing is deleted.</div>
-          ${view.rule ? `<div class="muted t-secondary">Your project says (${esc(view.rule.file)}): “${esc(view.rule.sentence)}” Check which server that applies to before starting or stopping one.</div>` : ""}
+          ${view.rule ? `<div class="muted t-secondary">Project rule (${esc(view.rule.file)}): “${esc(view.rule.sentence)}”</div>` : ""}
           ${machines.length > 1 ? `<label class="row gap-8 align-center muted t-secondary">Computer <select id="server-machine" class="inline-select" aria-label="Computer">${machines.map((m) => `<option value="${esc(m.name)}"${m.name === view.machine ? " selected" : ""}>${esc(m.label)}</option>`).join("")}</select></label>` : ""}
           ${owner && canSend ? `<label class="server-app"><input type="checkbox" data-server-app${onSend ? " checked" : ""}> <span class="muted t-secondary">Also start it when I send a build</span></label>` : ""}
-          ${hasContainers ? `<div><button type="button" class="btn small ghost" data-server-logs>View logs</button></div>` : ""}
+          ${(hasContainers || homeMode) ? `<div class="row gap-8 align-center flex-wrap">
+            ${hasContainers ? `<button type="button" class="btn small ghost" data-server-logs>View logs</button>` : ""}
+            ${homeMode ? `<a class="btn small ghost" href="#/delivery">App delivery</a>` : ""}
+          </div>` : ""}
         </div></details>
-    </div>`;
+    </div></div>`;
 }
 
 // ---------------------------------------------------------------- signing keys (App delivery)
@@ -8561,11 +8567,11 @@ async function signingGetDialog(item, view) {
 async function confirmServerAction(action, server, whereLabel, view) {
   const verb = { start: "Start", stop: "Stop", restart: "Restart" }[action];
   const command = { start: "docker compose up -d", stop: "docker compose stop", restart: "docker compose restart" }[action];
-  const ports = server.ports.length ? `<p>It uses ${server.ports.map((p) => `<code>${p}</code>`).join(", ")} on that computer.</p>` : "";
+  const ports = server.ports.length ? `<p class="muted">Ports: ${server.ports.map((p) => `<code>${p}</code>`).join(", ")}</p>` : "";
   return formDialog(`${verb} ${server.name}?`, `<p>${verb} <strong>${esc(server.name)}</strong> on <strong>${esc(whereLabel)}</strong>.</p>
-    <p class="muted">It runs <code>${esc(command)}</code> in <code>${esc(server.dir)}</code>${action === "stop" ? "" : ", starting Docker first if it isn't running, and waits until every service is up and healthy"}. Nothing is deleted.</p>
-    ${ports}${view.rule ? `<div class="notice stack gap-4"><span><strong>A rule from your project</strong> (${esc(view.rule.file)}): “${esc(view.rule.sentence)}”</span>
-      <span class="muted t-secondary">This is your project's own note about protecting a live or production server. Orchestrator only shows it; it doesn't check it. ${verb} here changes nothing but the containers on ${esc(whereLabel)}, so check that is the computer you mean, and not a live one.</span></div>` : ""}`, verb, { compact: true, danger: action === "stop" });
+    <p class="muted">Runs <code>${esc(command)}</code> in <code>${esc(server.dir)}</code> (non-destructive).</p>
+    ${ports}${view.rule ? `<div class="notice stack gap-4"><span><strong>Project rule</strong> (${esc(view.rule.file)}): “${esc(view.rule.sentence)}”</span>
+      <span class="muted t-secondary">Reminder only (not enforced) — ${verb.toLowerCase()} only affects containers on ${esc(whereLabel)}.</span></div>` : ""}`, verb, { compact: true, danger: action === "stop" });
 }
 
 // `onState({required, ready})`: required when builds are set to start it first, ready when it is running; null when there is no server.
@@ -8580,7 +8586,6 @@ async function loadServerCard(box, canSend = false, onState = () => {}, { homeMo
     const picked = view?.servers?.find((x) => x.id === serverPick) || view?.servers?.[0];
     onState(picked ? { required: (view.app || []).some((a) => a.id === picked.id && a.machine === view.machine),
       ready: view.docker !== false && picked.status?.state === "running" } : null);
-    box.querySelector("#server-refresh")?.addEventListener("click", () => load(view.machine));
     box.querySelector("#server-machine")?.addEventListener("change", (e) => load(e.target.value));
     box.querySelector("#server-pick")?.addEventListener("change", (e) => { serverPick = e.target.value; draw(view); });
     box.querySelectorAll("[data-server-action]").forEach((btn) => btn.addEventListener("click", async () => {

@@ -9,19 +9,18 @@ DIALOG = DIALOG[:DIALOG.index("\n}\n")]
 
 class ServerDialogRuleTests(unittest.TestCase):
     def test_the_rule_is_quoted_and_labelled_as_the_projects_own(self):
-        self.assertIn("<strong>A rule from your project</strong> (${esc(view.rule.file)}): “${esc(view.rule.sentence)}”", DIALOG)
+        self.assertIn("<strong>Project rule</strong> (${esc(view.rule.file)}): “${esc(view.rule.sentence)}”", DIALOG)
         self.assertNotIn("Your project says (", DIALOG)
 
-    def test_it_says_what_the_rule_is_and_that_orchestrator_does_not_check_it(self):
-        for bit in ("your project's own note about protecting a live or production server", "Orchestrator only shows it; it doesn't check it"):
-            self.assertIn(bit, DIALOG)
+    def test_it_says_the_rule_is_a_reminder_not_enforced(self):
+        self.assertIn("Reminder only (not enforced)", DIALOG)
 
-    def test_it_says_what_the_action_does_and_where_and_to_check_it_is_the_right_computer(self):
-        self.assertIn("changes nothing but the containers on ${esc(whereLabel)}", DIALOG)
-        self.assertIn("check that is the computer you mean, and not a live one", DIALOG)
+    def test_it_says_what_the_action_does_and_where_succinctly(self):
+        self.assertIn("Runs <code>${esc(command)}</code> in <code>${esc(server.dir)}</code> (non-destructive).", DIALOG)
+        self.assertIn("only affects containers on ${esc(whereLabel)}.", DIALOG)
 
     def test_the_verb_follows_the_action_and_no_rule_means_no_notice(self):
-        self.assertIn("${verb} here changes nothing", DIALOG)
+        self.assertIn("${verb.toLowerCase()} only affects containers", DIALOG)
         self.assertIn("${view.rule ? ", DIALOG)
         self.assertIn(': ""}`, verb, { compact: true, danger: action === "stop" })', DIALOG)
 
