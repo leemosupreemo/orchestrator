@@ -140,6 +140,27 @@ class StepsTests(unittest.TestCase):
 
 
 class LiveTests(unittest.TestCase):
+    def test_quota_handoff_keeps_the_fallback_answer_on_the_right_model(self):
+        for output in ([], ["[output] Received 0 chars in 1s"]):
+            with self.subTest(output=output):
+                timeline = RunTimeline()
+                for line in (
+                    "Running LLM (first, timeout=60s)...",
+                    *output,
+                    "⏸️  first is out of usage until 11:00 PM.",
+                    "Running LLM (second, timeout=60s)...",
+                    "[output] Received 25 chars in 2s",
+                ):
+                    timeline.line(line)
+
+                step = timeline.view()["steps"][-1]
+                self.assertEqual(step["status"], "running")
+                self.assertEqual(step["errors"], 0)
+                self.assertEqual(
+                    [(e["model"], e["status"], e["reason"]) for e in step["events"]],
+                    [("first", "quota", "out of usage until 11:00 PM"), ("second", "done", "")],
+                )
+
     def test_task_markers_accumulate_without_adding_terminal_steps(self):
         from orchestrator.job_runs import task_attempt_marker, task_marker
 

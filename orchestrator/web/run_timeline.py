@@ -19,7 +19,7 @@ from collections import deque
 from typing import Any
 
 from orchestrator import job_runs
-from orchestrator.web.run_progress import RunProgress, summarize_activity_line
+from orchestrator.web.run_progress import MODEL_QUOTA, RunProgress, summarize_activity_line
 
 MAX_STEPS = 200
 MAX_LINES_PER_STEP = 400
@@ -212,14 +212,20 @@ class RunTimeline:
             event.update(status="done", seconds=round(float(done[2])))
             return
         failed = re.match(r"⚠️\s+(\S+) (?:failed \((.*)|timed out)", line)
-        if failed:
-            event = next((e for e in self._calls if e["model"] == failed[1]), None)
-            reason = RunProgress._reason(failed[2] or "", line)
+        quota = MODEL_QUOTA.match(line)
+        if outcome := quota or failed:
+            model = outcome[1]
+            event = next((e for e in self._calls if e["model"] == model), None)
+            status = "quota" if quota else "failed"
+            reason = (quota[2] or "out of usage") if quota else RunProgress._reason(failed[2] or "", line)
             if event:
                 self._calls.remove(event)
-                event.update(status="failed", reason=reason, seconds=round(now - event["started"]) if now and event["started"] else None)
+                event.update(status=status, reason=reason, seconds=round(now - event["started"]) if now and event["started"] else None)
+            elif quota and self.current["events"] and self.current["events"][-1]["model"] == model and self.current["events"][-1]["status"] == "done":
+                # The CLI may report the size of its output before reporting that the output was a quota error.
+                self.current["events"][-1].update(status=status, reason=reason)
             else:
-                self.current["events"].append({"model": failed[1], "status": "failed", "started": now, "seconds": None, "reason": reason})
+                self.current["events"].append({"model": model, "status": status, "started": now, "seconds": None, "reason": reason})
 
     def finish(self, exit_code: int | None, timed: bool = True) -> None:
         """The run ended: the last step is done, or failed when the run did."""

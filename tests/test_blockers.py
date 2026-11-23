@@ -27,13 +27,15 @@ class DetectTests(unittest.TestCase):
             "bash: xcbeautify: command not found": ("tool", "machine", "xcbeautify"),
             "error: No space left on device": ("disk_full", "machine", "disk"),
             "CoreSimulator is out of date for the selected Xcode": ("simulator", "machine", "xcode"),
+            "No model could answer (tried: gpt-6.2-astra, gemini-4-hydrogen-xhigh). Last error: error: Individual quota reached. Resets in 18m3s.": ("usage_limit", "machine", "usage"),
+            "No model could answer (tried: gpt-6.2-astra). Last error: 429 Too Many Requests": ("usage_limit", "machine", "rate"),
         }
         for text, expected in cases.items():
             found = blockers.detect(text)
             self.assertEqual((found["kind"], found["scope"], found["key"]), expected, text)
 
     def test_a_problem_in_the_code_is_not_a_blocker(self):
-        for text in ("AssertionError: 3 != 4", "error: cannot find 'GrassSystem' in scope", "Permission denied for user in test fixture", ""):
+        for text in ("AssertionError: 3 != 4", "error: cannot find 'GrassSystem' in scope", "Permission denied for user in test fixture", "AssertionError: expected HTTP 429 got 200", "error: cannot find 'quota' in scope", ""):
             self.assertIsNone(blockers.detect(text), text)
 
 
@@ -110,6 +112,31 @@ class AutoResumeTests(unittest.TestCase):
         server.audit.record.assert_called_once()
         self.assertEqual(resume(), [])  # already resumed this hour: not again
         self.assertEqual(resume(force=True), ["a"])  # Clear the lock skips the wait
+
+    def test_usage_limit_blocker_waits_until_reset_then_auto_resumes(self):
+        root = Path(tempfile.mkdtemp())
+        jobs_dir = root / ".orchestrator" / "jobs"
+        jobs_dir.mkdir(parents=True)
+        detected = blockers.detect(
+            "No model could answer (tried: gpt-6.2-astra, gemini-4-hydrogen-xhigh). "
+            "Last error: error: Individual quota reached. Resets in 18m3s."
+        )
+        self.assertEqual(detected["kind"], "usage_limit")
+        self.assertFalse(blockers.is_cleared(detected, root))
+        self.assertTrue(any("resumes by itself" in s for s in blockers.steps(detected, root)))
+
+        waiting = {**detected, "detected_at": time.time(), "until": time.time() + 600}
+        ready = {**detected, "detected_at": time.time() - 1200, "until": time.time() - 10}
+        ui.write_json_file(jobs_dir / "wait.json", {"status": "human-needed", "blocker": waiting})
+        ui.write_json_file(jobs_dir / "ready.json", {"status": "human-needed", "blocker": ready})
+        started = []
+        server = SimpleNamespace(
+            sessions=SimpleNamespace(running_job_ids=lambda: set(),
+                                     start=lambda key, title, argv, *a, **k: started.append((key, argv)) or SimpleNamespace()),
+            _publishing_jobs=set(), child_env=lambda: {}, audit=mock.Mock())
+        self.assertEqual(ui.UIServer.resume_cleared_jobs(server, root), ["ready"])
+        self.assertEqual([key for key, _ in started], ["resume"])
+        server.audit.record.assert_called_once_with("blocked_job_resumed", "Orchestrator", ip="server", job="ready", blocker="usage_limit")
 
     def test_the_servers_own_loop_resumes_them(self):
         source = (ROOT / "orchestrator" / "web" / "server.py").read_text(encoding="utf-8")

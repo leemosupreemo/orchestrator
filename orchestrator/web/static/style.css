@@ -993,11 +993,12 @@ details.raw pre { margin: 0; padding: 0 var(--space-4) var(--space-4); overflow:
 .clarify-row { display: flex; flex-direction: column; gap: var(--space-1); width: 100%; }
 .clarify-row.is-ai { align-items: flex-start; }
 .clarify-row.is-you { align-items: flex-end; }
-.clarify-msg { display: flex; flex-direction: column; gap: var(--space-1); max-width: 92%; padding: var(--space-3) var(--space-4); border-radius: 16px; line-height: 1.45; }
+.clarify-msg { display: flex; flex-direction: column; gap: var(--space-2); box-sizing: border-box; max-width: 92%; padding: var(--space-3) var(--space-4); border-radius: 16px; line-height: 1.45; }
 .clarify-msg p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.clarify-msg ul { margin: 0; padding-inline-start: var(--space-4); overflow-wrap: anywhere; }
 .clarify-ai { align-self: flex-start; background: var(--panel-2); border: 1px solid var(--border); border-bottom-left-radius: 4px; }
 .clarify-you { align-self: flex-end; background: var(--accent-soft); border: 1px solid color-mix(in srgb, var(--accent) 32%, var(--border)); border-bottom-right-radius: 4px; }
-.clarify-auto { background: var(--warn-soft); border-color: color-mix(in srgb, var(--warn) 38%, var(--border)); border-style: dashed; } /* answered by YOLO for the person, not by them */
+.clarify-auto { background: var(--panel-2); border-color: var(--border); border-style: dashed; }
 .clarify-who { font-size: var(--type-tag); font-weight: var(--weight-bold); color: var(--muted); text-transform: uppercase; letter-spacing: .04em; padding: 0 var(--space-1); }
 .clarify-reply { display: flex; flex-direction: column; gap: var(--space-2); }
 .clarify-input-row { display: flex; align-items: flex-end; gap: var(--space-2); width: 100%; }

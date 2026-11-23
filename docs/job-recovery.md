@@ -21,7 +21,7 @@ When the build or tests fail, or the worker raises, the job ends up in one of th
 | Cause | Recorded as | Job page | Next |
 |---|---|---|---|
 | Build or tests fail (the code) | `status: debugging` | Needs a fix | An initial repair may run automatically. Further failed repairs wait for **Run another fix**. |
-| Something outside the code: a git lock, an expired sign-in, a missing tool, a full disk, Xcode or the simulator | `status: human-needed`, `blocker: {...}` (`orchestrator/blockers.py`) | The blocker's title, checked now | Steps to clear it, then **Try again**; resumes by itself once cleared |
+| Something outside the code: a git lock, an expired sign-in, a missing tool, a full disk, an AI usage/rate limit, Xcode or the simulator | `status: human-needed`, `blocker: {...}` (`orchestrator/blockers.py`) | The blocker's title, checked now | Steps to clear it, then **Try again**; resumes by itself once cleared |
 | The AI asks a question | `human_clarification_question` | Question for you | **Answer** |
 | The AI's "question" is really a blocker ("rerun with write access") | `human_clarification_question`, classified by `classify_clarification` | The AI couldn't continue (`orchestrator/blocker_fix.py`) | The one fix that applies, e.g. **Plan again** telling the planner it plans only |
 | The work passed its tests but the commit failed | `passed_uncommitted: {files}` | Tests passed, not committed | **Commit the work**: Resume commits those files without building again, and without checking anything out (a forced checkout would throw the uncommitted work away) |
@@ -52,7 +52,7 @@ Home's **Blocked** card shows it once with every job it holds up.
   worktrees (`parallel_jobs.DEFAULT_AT_ONCE = 2`) behind the scenes unless `max_concurrent_jobs` is set explicitly.
 - **Cleared or not.** `is_cleared` checks the blocker now rather than trusting when it was recorded: the lock file is
   gone, the person signed in since (`job_problem.signed_in_at`), the tool is on `PATH`, the build's disk floor is met, the folder is
-  writable. Xcode and simulator problems can't be checked, so they wait for **Try again**.
+  writable, or an AI usage/rate limit's reset time (`until`) has passed. Xcode and simulator problems can't be checked, so they wait for **Try again**.
 - **Resuming by itself.** The server's notifier loop (every 15 seconds, with or without a browser open) resumes each job
   whose blocker is cleared (`UIServer.resume_cleared_jobs`). Home's refresh calls the same method. Each job is resumed at
   most once an hour per blocker (`auto_resumed_at`, carried over in `last_blocker` when the run starts), so a blocker that
@@ -118,22 +118,26 @@ Guards, so jobs never step on each other's work:
   them "Answered for you (YOLO)" and says how many in the hero. When a YOLO job hits a blocker in build/test logs,
   `worker_run.py` goes straight into one automated fix attempt (recording `yolo_blocker_fix_attempts` and passing the
   blocker detail as `debug_feedback`) before falling back to `pause_on_blocker` if it persists.
-- **Out of usage** (`usage_limits.py`, `project_chat.record_out_of_usage`). A usage-limit, quota, credits or rate-limit
+- **Out of usage** (`usage_limits.py`, `project_chat.record_out_of_usage`, `blockers.py`). A usage-limit, quota, credits or rate-limit
   error is checked before auth/unavailability markers so tool output mentioning `"forbidden"` doesn't misclassify a quota
   error as a rejected sign-in. It sets the model's whole family aside (`limit:<family>` in `model_checks.json`) until the
-  reset time read from the message, or an hour (five minutes for a rate limit). `is_model_blocked` leaves it out of every
-  job's choices until then, so it returns to rotation by itself. Within the same call `run_llm` skips that family's other
-  models and gives the next builder or fix attempt a `HANDOFF` note: the work is started, read `git status`/`git diff` and
-  finish it. Manage AI tools lists the holds (`usage_holds`).
+  reset time read from the message (supporting hours, minutes, and seconds such as `Resets in 18m3s`), or an hour (five
+  minutes for a rate limit). `is_model_blocked` leaves it out of every job's choices until then, so it returns to rotation
+  by itself. Within the same call `run_llm` skips that family's other models and gives the next builder or fix attempt
+  the original task and a `HANDOFF` note to continue from the files already changed. The run timeline shows the quota
+  and its reset time when known. If every tried model fails, `run_llm`
+  includes each model's short failure reason in `No model could answer (tried: ...)`, and `blockers.detect` records a
+  `usage_limit` blocker with the parsed `until` timestamp so `UIServer.resume_cleared_jobs` automatically resumes the job
+  once the limit resets. Manage AI tools lists active holds (`usage_holds`).
 - **Deactivated models and cross-provider rescue** (`llm.is_unusable_model_error`, `llm._auth_fallback_models`,
   `server._probe_pool_health`). Deactivated or retired model responses (`"is deactivated"`, `"model_deactivated"`) are
   recorded as unavailable (`record_model_failure`) and quarantined for 24 hours (`KEY_HOLD` in `project_chat.py`) rather
   than treated as generic 30-minute blips, so subsequent jobs skip them. During model refresh (`server.refresh_models`),
   opaque CLIs without a model-list command like `pool` are probed once per `CHECK_FRESH` window when signed in so a
   deactivated remote model is excluded ahead of time before a job tries it. When every configured model in a non-free-only
-  job fails due to provider/account limits (quota, rejected sign-in, or unavailable/deactivated models), `run_llm`
-  automatically expands to other ready, signed-in models on the computer (cheapest adequate first) with `HANDOFF`
-  preserved. If no model can answer and a task aborts with an automation error, `worker_run.py` marks both the parent job
+  job fails and at least one hit a quota or all hit provider/account limits, `run_llm` automatically expands to other
+  ready, signed-in models on the computer (cheapest adequate first) with `HANDOFF` preserved. If no model can answer
+  and a task aborts with an automation error, `worker_run.py` marks both the parent job
   and the active `_task_N.json` file `human-needed` so the task does not remain stuck in `executing`.
 
 ## Durability

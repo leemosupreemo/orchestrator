@@ -44,6 +44,8 @@ class UsageLimitTests(StateDirCase):
     def test_when_it_is_back_comes_from_the_message(self):
         now = datetime(2026, 11, 16, 13, 0).timestamp()
         self.assertEqual(usage_limits.until(LIMIT, now), now + 2.5 * 3600)
+        self.assertEqual(usage_limits.until("Individual quota reached. Resets in 18m3s.", now), now + 18 * 60 + 3)
+        self.assertEqual(usage_limits.until("Try again in 45s.", now), now + 45)
         self.assertEqual(datetime.fromtimestamp(usage_limits.until("Your limit will reset at 3pm.", now)).hour, 15)
         self.assertEqual(datetime.fromtimestamp(usage_limits.until("resets at 9am", now)).day, 17)  # tomorrow morning
         self.assertEqual(usage_limits.until("usage limit reached", now), now + usage_limits.DEFAULT_USAGE_HOLD)
@@ -90,6 +92,52 @@ class SwitchingTests(StateDirCase):
     def test_a_planner_gets_no_handoff_note(self):
         _, prompts = self.run_llm([RuntimeError(LIMIT), '```json\n{"title": "x", "tasks": []}\n```'], role=ModelRole.PLANNER)
         self.assertNotIn("HANDOFF", prompts[1][1])  # nothing was half done in the files
+
+    def test_all_models_failing_lists_each_models_reason(self):
+        with self.assertRaises(RuntimeError) as ctx:
+            self.run_llm([
+                RuntimeError(LIMIT),
+                RuntimeError("error: Individual quota reached. Resets in 18m3s."),
+            ])
+        msg = str(ctx.exception)
+        self.assertIn("No model could answer (tried:", msg)
+        self.assertIn(f"{CLAUDE} (out of usage until", msg)
+        self.assertIn(f"{OPENAI} (out of usage until", msg)
+        self.assertIn("Individual quota reached", msg)
+
+    def test_quota_and_timeout_still_hand_off_to_a_ready_model(self):
+        from orchestrator import project_setup
+
+        configured = [CLAUDE, "pool"]
+        timeout = llm.LLMTimeoutError("pool", 30, 30, 8, 0, "")
+        with patch.object(llm, "_run_llm_single", side_effect=[
+            RuntimeError(LIMIT), timeout, '{"summary": "finished"}',
+        ]) as call, patch.object(
+            llm, "get_prioritized_models",
+            side_effect=lambda **options: list(options["allowed_models"]),
+        ), patch.object(project_setup, "models_ready_here", return_value=[OPENAI]):
+            with patch.dict(os.environ, {"CODEX_HOME": str(Path(self.tmp.name) / "no-codex")}):
+                _, used, _ = llm.run_llm(
+                    CLAUDE, "BUILD IT", allowed_models=configured, role=ModelRole.BUILDER,
+                )
+
+        self.assertEqual(used, OPENAI)
+        self.assertEqual([attempt.args[0] for attempt in call.call_args_list], [CLAUDE, "pool", OPENAI])
+        self.assertTrue(call.call_args.args[1].startswith("BUILD IT"))
+        self.assertIn(f"Another model ({CLAUDE})", call.call_args.args[1])
+
+    def test_failed_fallback_keeps_the_quota_reset_available_for_recovery(self):
+        from orchestrator import blockers, project_setup
+
+        with patch.object(llm, "_run_llm_single", side_effect=[RuntimeError(LIMIT), RuntimeError("CLI exited")]), \
+             patch.object(llm, "get_prioritized_models", return_value=[CLAUDE, OPENAI]), \
+             patch.object(project_setup, "models_ready_here", return_value=[]):
+            with self.assertRaisesRegex(RuntimeError, "Last error: CLI exited") as ctx:
+                llm.run_llm(CLAUDE, "BUILD IT", allowed_models=[CLAUDE, OPENAI], role=ModelRole.BUILDER)
+
+        blocker = blockers.detect(str(ctx.exception))
+        self.assertEqual((blocker or {}).get("kind"), "usage_limit")
+        self.assertAlmostEqual(blocker["until"], time.time() + 2.5 * 3600, delta=2)
 
 
 class SignInFallbackTests(StateDirCase):

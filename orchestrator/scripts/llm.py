@@ -323,11 +323,14 @@ def run_llm(model: str, prompt: str, cwd: Path | None = None, timeout: int = 300
 
     protection = {"protected_paths": protected_paths} if protected_paths else {}
     last_error = None
+    quota_error = None
     actual_session_id = session_id or str(uuid.uuid4())
 
+    edits_files = role in (ModelRole.BUILDER, ModelRole.DEBUGGER)
     handoff = ""  # set when a model ran out of usage partway: the next one is told the work is already started
     failed_auth_clis: set[str] = set()
     attempted_models: list[str] = []
+    attempt_errors: list[tuple[str, str]] = []
     auth_failed_count = 0
     provider_blocked_count = 0
     expanded_auth_fallback = False
@@ -337,7 +340,7 @@ def run_llm(model: str, prompt: str, cwd: Path | None = None, timeout: int = 300
             if (
                 not expanded_auth_fallback
                 and provider_blocked_count > 0
-                and provider_blocked_count == len(attempted_models)
+                and (provider_blocked_count == len(attempted_models) or (quota_error and (job_type or edits_files)))
                 and not _is_free_only_allowlist(allowed_models)
             ):
                 expanded_auth_fallback = True
@@ -346,7 +349,7 @@ def run_llm(model: str, prompt: str, cwd: Path | None = None, timeout: int = 300
                     if auth_failed_count > 0:
                         print(f"ℹ️  Primary tool sign-in expired or rejected; switching to ready signed-in AI model(s) on this computer: {', '.join(extras[:3])}...")
                     else:
-                        print(f"ℹ️  Configured models are out of usage or unavailable; switching to ready signed-in AI model(s) on this computer: {', '.join(extras[:3])}...")
+                        print(f"ℹ️  Configured models couldn't finish; switching to ready signed-in AI model(s) on this computer: {', '.join(extras[:3])}...")
                     attempts.extend(extras)
                     continue
             break
@@ -364,7 +367,7 @@ def run_llm(model: str, prompt: str, cwd: Path | None = None, timeout: int = 300
         format_retry = False
         fallback_note = "Attempting fallback..." if idx < len(attempts) else "No fallback models remain."
         try:
-            attempt_prompt = prompt + handoff if handoff and role in (ModelRole.BUILDER, ModelRole.DEBUGGER) else prompt
+            attempt_prompt = prompt + handoff if edits_files else prompt
             raw_output = _run_llm_single(current_model, attempt_prompt, cwd, timeout, role=role, session_id=session_id, images=images, on_chunk=on_chunk, **protection, **({"web": True} if web else {}), **({"raw": True} if raw else {}))
             
             # Validation: if role expects JSON, verify we have it but DO NOT overwrite raw_output
@@ -380,13 +383,14 @@ def run_llm(model: str, prompt: str, cwd: Path | None = None, timeout: int = 300
                     if on_chunk:
                         on_chunk(None)
                     try:
-                        raw_output = _run_llm_single(current_model, prompt + JSON_REMINDER, cwd, timeout, role=role, session_id=session_id, images=images, on_chunk=on_chunk, **protection)
+                        raw_output = _run_llm_single(current_model, attempt_prompt + JSON_REMINDER, cwd, timeout, role=role, session_id=session_id, images=images, on_chunk=on_chunk, **protection)
                         json.loads(extract_json_block(raw_output), strict=False)
                     except json.JSONDecodeError as exc2:
                         print(f"⚠️  {current_model} still produced invalid JSON. {fallback_note}")
                         # The headline comes first and starts with "Error:", which is the line summarize_cli_error picks. Otherwise
                         # the person is told only "Expecting value: line 1 column 1", with no model and no hint it was the answer's format.
                         last_error = RuntimeError(f"Error: {current_model} produced invalid JSON ({exc2.msg}).\n{raw_output}")
+                        attempt_errors.append((current_model, "invalid JSON"))
                         report("invalid_json")
                         if on_chunk:
                             on_chunk(None)
@@ -407,6 +411,7 @@ def run_llm(model: str, prompt: str, cwd: Path | None = None, timeout: int = 300
             return raw_output, current_model, actual_session_id
         except LLMTimeoutError as exc:
             report("timeout")
+            attempt_errors.append((current_model, "timed out"))
             if on_chunk:
                 on_chunk(None)
             print(f"⚠️  {current_model} timed out. {fallback_note}")
@@ -421,13 +426,17 @@ def run_llm(model: str, prompt: str, cwd: Path | None = None, timeout: int = 300
                 report("quota")
                 provider_blocked_count += 1
                 # Its allowance is used up: left out (every job, this tool's whole family) until it resets, then back by itself.
+                quota_reason = "out of usage"
                 try:
                     from orchestrator.project_chat import record_out_of_usage
                     hold = record_out_of_usage(current_model, err_str)
-                    print(f"⏸️  {current_model} is {hold['reason']}. It's left out until then and used again after. {fallback_note}")
+                    quota_reason = str(hold.get("reason") or quota_reason)
                 except Exception:
-                    print(f"⏸️  {current_model} ran out of usage. {fallback_note}")
+                    pass
+                print(f"⏸️  {current_model} is {quota_reason}.", flush=True)
+                attempt_errors.append((current_model, quota_reason))
                 handoff = HANDOFF.format(model=current_model)
+                quota_error = exc
                 last_error = exc
                 continue
             unusable, key_rejected = is_unusable_model_error(err_str)
@@ -443,11 +452,13 @@ def run_llm(model: str, prompt: str, cwd: Path | None = None, timeout: int = 300
                     if current_meta:
                         failed_auth_clis.update(current_meta.required_clis)
             report("auth" if key_rejected else "unavailable" if unusable else "execution_error")
+            attempt_errors.append((current_model, summary[:80]))
             print(f"⚠️  {current_model} failed ({summary}). {fallback_note}")
             last_error = exc
             continue
         except Exception as exc:
             report("execution_error")
+            attempt_errors.append((current_model, (summarize_cli_error(str(exc)) or str(exc))[:80]))
             if on_chunk:
                 on_chunk(None)
             print(f"⚠️  {current_model} failed ({exc}). {fallback_note}")
@@ -456,8 +467,14 @@ def run_llm(model: str, prompt: str, cwd: Path | None = None, timeout: int = 300
 
     if audit:
         audit.finish(None)
-    tried = ", ".join(attempted_models) or primary_id
-    raise RuntimeError(f"No model could answer (tried: {tried}). Last error: {summarize_cli_error(str(last_error))}")
+    if len(attempt_errors) > 1:
+        tried = ", ".join(f"{model_id} ({reason})" for model_id, reason in attempt_errors)
+    else:
+        tried = ", ".join(attempted_models) or primary_id
+    error_message = f"No model could answer (tried: {tried}). Last error: {summarize_cli_error(str(last_error))}"
+    if quota_error is not None and quota_error is not last_error:
+        error_message += f" Earlier usage error: {summarize_cli_error(str(quota_error))}"
+    raise RuntimeError(error_message)
 
 
 import selectors

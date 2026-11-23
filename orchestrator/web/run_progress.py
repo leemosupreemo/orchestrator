@@ -5,6 +5,8 @@ import json
 import re
 import time
 
+MODEL_QUOTA = re.compile(r"⏸️\s+(\S+) (?:is (out of (?:usage|requests for now)[^.]*?)|ran out of usage)\.")
+
 
 _ACTIVITY_NOISE_RE = re.compile(
     r"^(?:"
@@ -17,6 +19,7 @@ _ACTIVITY_NOISE_RE = re.compile(
     r"hook:\s*(?:PreToolUse|PostToolUse|SessionStart|Stop)\b|"
     r"Running LLM\b|"
     r"\[output\]\s*Received\b|"
+    r"⏸️\s+\S+ (?:is out of|ran out of)\b|"
     r"<<<|"
     r"Attempting fallback|"
     r"exec$|"
@@ -317,6 +320,14 @@ class RunProgress:
                     self.step_fraction = 0.45
                 if self.label.startswith("Waiting for "):
                     self.label = "Reading the model's answer"
+            elif outcome := MODEL_QUOTA.match(line) or failure:
+                model = outcome[1]
+                if model in self.active:
+                    self.active.remove(model)
+                    call = next((c for c in self.calls if c["model"] == model), None)
+                    if call:
+                        self.calls.remove(call)
+                self.stall = 0
             elif "Attempting fallback..." in line:
                 for model in list(self.active):
                     if model in line or line.startswith(f"⚠️  {model} timed out.") or line.startswith(f"⚠️  {model} failed ("):

@@ -5822,16 +5822,31 @@ function wirePreview(view) {
 
 // The planner's questions and the person's answers, oldest first, read as a conversation.
 function clarificationThread(history) {
-  // An answer Orchestrator gave for you in YOLO mode (common.autorespond) is labelled as such, never as yours.
-  return (history || []).map((h) => `
+  const paragraphs = (text) => text.trim().split(/\n\s*\n/).map((part) => `<p>${esc(part)}</p>`).join("");
+  return (history || []).map((h) => {
+    const question = h.question || "";
+    // The planner stores source conflicts as a numbered line, including in older jobs.
+    const conflict = /^(?:\d+\. )?Conflicting requirements between (.+?) and (.+?):\s*(.*?)\s*Which requirement should take precedence\?$/.exec(question.trim());
+    const questionHtml = conflict
+      ? `<p>These two sources disagree.</p><ul><li><code>${esc(conflict[1])}</code></li><li><code>${esc(conflict[2])}</code></li></ul>${conflict[3] ? paragraphs(conflict[3].replace(/\.{2,}$/, ".")) : ""}<p>Which requirement should take precedence?</p>`
+      : paragraphs(question);
+    const answer = h.auto
+      ? (h.answer || "").replace(/(so decide for yourself\.)\s+/, "$1\n\n")
+      : h.answer;
+    const who = h.asker === "builder" ? "Builder" : h.asker === "planner" ? "Planner" : "AI";
+    return `
     <div class="clarify-row is-ai">
-      <span class="clarify-who">${h.asker === "builder" ? "Builder" : h.asker === "planner" ? "Planner" : "AI"}</span>
-      <div class="clarify-msg clarify-ai"><p>${esc(h.question || "")}</p></div>
-    </div>
+      <div class="row align-center gap-8">
+        <span class="clarify-who">${who}</span>
+        ${typeof h.blocking === "boolean" ? `<span class="pill ${h.blocking ? "attention" : "neutral"}">${h.blocking ? "Blocking" : "Non-blocking"}</span>` : ""}
+      </div>
+      <div class="clarify-msg clarify-ai">${questionHtml}</div>
+    </div>${answer ? `
     <div class="clarify-row is-you">
       <span class="clarify-who">${h.auto ? "🤖 Answered for you (YOLO)" : "You"}</span>
-      <div class="clarify-msg clarify-you${h.auto ? " clarify-auto" : ""}"><p>${esc(h.answer || "")}</p></div>
-    </div>`).join("");
+      <div class="clarify-msg clarify-you${h.auto ? " clarify-auto" : ""}">${paragraphs(answer)}</div>
+    </div>` : ""}`;
+  }).join("");
 }
 
 // YOLO answered the AI's questions for the person: said in the job's hero, with the count against the limit.
@@ -6977,7 +6992,7 @@ pages.job = async ([id]) => {
 
   const rawClarifyHistory = Array.isArray(job.clarification_history) ? job.clarification_history : [];
   const answeredClarifications = rawClarifyHistory.filter((h) => h && h.answer && !h.auto);
-  const unansweredQuestions = [];
+  const visibleQuestions = [];
   const seenQuestions = new Set();
   for (const h of rawClarifyHistory) {
     if (!h?.question) continue;
@@ -6988,26 +7003,21 @@ pages.job = async ([id]) => {
     }
     if (seenQuestions.has(qKey)) continue;
     seenQuestions.add(qKey);
-    unansweredQuestions.push({
-      question: h.question,
-      who: h.asker === "builder" ? "Builder" : h.asker === "planner" ? "Planner" : "AI",
-      blocking: !h.auto && status === "human-needed",
-      note: h.auto && h.answer ? `🤖 Answered for you (YOLO): ${h.answer}` : "",
-    });
+    visibleQuestions.push(h.answer ? h : { ...h, blocking: !h.auto && status === "human-needed" });
   }
   if (s.question) {
     const qKey = String(s.question).trim().toLowerCase();
     if (!seenQuestions.has(qKey)) {
       seenQuestions.add(qKey);
-      unansweredQuestions.push({
+      visibleQuestions.push({
         question: s.question,
-        who: String(job.last_error || "").startsWith("Builder clarification needed") ? "Builder" : "Planner",
+        asker: String(job.last_error || "").startsWith("Builder clarification needed") ? "builder" : "planner",
         blocking: true,
-        note: "",
       });
     }
   }
-  const totalQuestionsCount = answeredClarifications.length + unansweredQuestions.length;
+  const totalQuestionsCount = answeredClarifications.length + visibleQuestions.length;
+  const unansweredQuestions = visibleQuestions.filter((q) => !q.answer);
   const blockingQuestionsCount = unansweredQuestions.filter((q) => q.blocking).length;
   const nonBlockingQuestionsCount = unansweredQuestions.length - blockingQuestionsCount;
   const questionHeaderFlagHtml = unansweredQuestions.length
@@ -7019,28 +7029,17 @@ pages.job = async ([id]) => {
             : `${nonBlockingQuestionsCount} non-blocking`
       }</span>`
     : "";
-  const unansweredThreadHtml = unansweredQuestions.map((q) => `
-    <div class="clarify-row is-ai">
-      <div class="row align-center gap-8">
-        <span class="clarify-who">${esc(q.who)}</span>
-        <span class="pill ${q.blocking ? "attention" : "neutral"}">${q.blocking ? "Blocking" : "Non-blocking"}</span>
-      </div>
-      <div class="clarify-msg clarify-ai">
-        <p class="question">${esc(q.question)}</p>
-        ${q.note ? `<p class="muted t-secondary">${esc(q.note)}</p>` : ""}
-      </div>
-    </div>`).join("");
   const hasClarifyFlags = Boolean(questionHeaderFlagHtml || (job.clarification_history || []).some((h) => h.auto));
   const clarifyCardHtml = totalQuestionsCount ? `<section class="card mb-16 clarify-card" id="${s.question ? "clarify" : "clarify-history"}">
-    <details class="fold"${unansweredQuestions.length ? " open" : ""}>
+    <details class="fold"${visibleQuestions.length ? " open" : ""}>
       <summary class="card-h">
         <h2>Questions <span class="count">${totalQuestionsCount}</span></h2>
         <details class="more clarify-export-more"><summary class="btn small ghost icon-only" aria-label="Export chat" title="Export chat"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-download"/></svg></summary><div class="more-menu"><button type="button" class="btn small" data-clarify-export="copy">Copy chat</button><button type="button" class="btn small" data-clarify-export="download">Export chat</button></div></details>
         ${hasClarifyFlags ? `<div class="clarify-header-flags">${questionHeaderFlagHtml}${autoresponseNote(job)}</div>` : ""}
       </summary>
       <div class="card-b clarify-thread">
-        ${unansweredQuestions.length ? `
-          ${unansweredThreadHtml}
+        ${visibleQuestions.length ? `
+          ${clarificationThread(visibleQuestions)}
           ${s.question ? `<form class="clarify-reply" id="clarify-reply" data-job="${esc(s.id)}">
             <div class="clarify-input-row">
               <label class="field clarify-field"><span class="sr-only">Your answer</span><textarea name="answer" rows="2" required placeholder="Your answer (Enter sends, Shift+Enter for a new line)"></textarea></label>
@@ -7389,7 +7388,7 @@ pages.job = async ([id]) => {
         const pairs = [...(job.clarification_history || [])];
         if (s.question) pairs.push({ question: s.question, answer: reply?.answer?.value?.trim() || "" });
         const text = `# ${s.title || s.id} — AI Chat\n\n` + pairs.map((h) =>
-          `### AI\n\n${h.question || ""}` + (h.answer ? `\n\n### You\n\n${h.answer}` : "")
+          `### AI\n\n${h.question || ""}` + (h.answer ? `\n\n### ${h.auto ? "Answered for you (YOLO)" : "You"}\n\n${h.answer}` : "")
         ).join("\n\n---\n\n") + "\n";
         if (btn.dataset.clarifyExport === "copy") {
           await navigator.clipboard.writeText(text);
@@ -17043,6 +17042,7 @@ const RUN_STEP_ICONS = { plan: "i-sparkle", git: "i-branch", test: "i-flask", bu
 const secondsText = (s) => s == null ? "" : s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, "0")}s` : `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
 
 function runStepEvent(e) {
+  if (e.status === "quota") return `<div class="run-step-event">${esc(e.model)} is ${esc(e.reason)}</div>`;
   if (e.status === "failed") return `<div class="run-step-event is-failed">${esc(e.model)} ${e.reason === "timed out" ? "timed out" : `failed${e.reason ? `: ${esc(e.reason)}` : ""}`}, so another model was tried</div>`;
   return `<div class="run-step-event">${e.status === "running" ? `Asking ${esc(e.model)}` : `Asked ${esc(e.model)}`}${e.seconds != null ? ` · ${secondsText(e.seconds)}` : ""}</div>`;
 }

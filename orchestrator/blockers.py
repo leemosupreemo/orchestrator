@@ -17,7 +17,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from orchestrator import disk_space, job_problem
+from orchestrator import disk_space, job_problem, usage_limits
 
 AUTO_RESUME_EVERY = 3600  # seconds: one automatic resume per job per hour, per blocker
 LOCK_STALE_AFTER = 10
@@ -27,6 +27,8 @@ _SIGN_IN = re.compile(r"oauth access token has expired|failed to authenticate|re
                       r"invalid api key|missing api key|please run /login", re.I)
 _TOOL = re.compile(r"(?:^|[\s:'\"`])([\w.+-]{2,40}): command not found", re.M)
 _READ_ONLY = re.compile(r"Read-only file system", re.I)
+_AI_USAGE_LIMIT = re.compile(r"usage limit reached|hit your usage limit|individual quota reached|"
+                             r"exceeded your (?:current )?(?:quota|plan)|out of credits|insufficient credits", re.I)
 
 
 def detect(text: str) -> dict[str, Any] | None:
@@ -48,6 +50,14 @@ def detect(text: str) -> dict[str, Any] | None:
         return _make("tool", "machine", name, f"{name} isn't installed", f"The build needs {name}, which this Mac can't find.")
     if _READ_ONLY.search(text):
         return _make("write_access", "project", "folder", "The project folder is read-only", "Files in the project can't be written.")
+    if ("no model could answer" in text.lower() or _AI_USAGE_LIMIT.search(text)) and (limit_kind := usage_limits.detect(text)):
+        until = usage_limits.until(text)
+        when = usage_limits.when(until)
+        title = "AI usage limit reached" if limit_kind == "usage" else "AI rate limit reached"
+        noun = "usage" if limit_kind == "usage" else "rate"
+        return _make("usage_limit", "machine", limit_kind, title,
+                     f"No AI model could continue after a {noun} limit. Resumes automatically around {when}.",
+                     until=until, limit_kind=limit_kind)
     try:
         from orchestrator.env_issues import detect_simulator_environment_issue
         if issue := detect_simulator_environment_issue(text):
@@ -166,6 +176,9 @@ def is_cleared(blocker: dict[str, Any], root: Path) -> bool | None:
         return os.access(root, os.W_OK)
     if kind == "job_work":  # the other job's files are committed (or put away) now
         return not (dirty_files(root) & set(blocker.get("files") or []))
+    if kind == "usage_limit":
+        until = float(blocker.get("until") or 0)
+        return time.time() >= until if until > 0 else False
     return None
 
 
@@ -190,6 +203,11 @@ def steps(blocker: dict[str, Any], root: Path) -> list[str]:
     if kind == "job_work":
         return [f"Open “{blocker.get('job_title') or blocker.get('key')}” and finish committing its work (Commit the work, or Resume).",
                 "This job then starts by itself."]
+    if kind == "usage_limit":
+        until = float(blocker.get("until") or 0)
+        when = usage_limits.when(until) if until > 0 else "the limit resets"
+        return [f"Wait until around {when} — this job resumes by itself once the limit resets.",
+                "Or press Try again to retry sooner."]
     return ["Fix it as it says, then press Try again."]
 
 
@@ -205,7 +223,7 @@ def groups(root: Path, jobs: list[tuple[str, dict[str, Any]]]) -> list[dict[str,
         if job.get("status") != "human-needed" or not isinstance(blocker, dict) or not blocker.get("kind"):
             continue
         group = out.setdefault((blocker["kind"], str(blocker.get("key") or "")),
-                               {**{k: blocker.get(k) for k in ("kind", "scope", "key", "title", "detail", "provider", "name")},
+                               {**{k: blocker.get(k) for k in ("kind", "scope", "key", "title", "detail", "provider", "name", "until")},
                                 "cleared": is_cleared(blocker, root), "steps": steps(blocker, root), "jobs": []})
         group["jobs"].append({"id": job_id, "title": job.get("title") or job_id,
                               "auto_resume": due_for_auto_resume(blocker)})

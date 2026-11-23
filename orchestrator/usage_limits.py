@@ -14,7 +14,13 @@ from datetime import datetime, timedelta
 USAGE = re.compile(r"usage limit|limit reached|hit your (?:usage )?limit|quota|out of credits|insufficient credits|credit balance|"
                    r"exceeded your (?:current )?(?:quota|plan)|limit will reset|resets? at", re.I)
 RATE = re.compile(r"rate limit|too many requests|\b429\b|overloaded", re.I)
-IN_TIME = re.compile(r"(?:try again|retry|resets?|available again)\s+in\s+(?:(\d+)\s*h(?:ours?|rs?)?)?\s*(?:(\d+)\s*m(?:in(?:ute)?s?)?)?", re.I)
+IN_TIME = re.compile(
+    r"(?:try again|retry|resets?|available again)\s+in\s+"
+    r"(?:(\d+)\s*h(?:ours?|rs?)?)?\s*"
+    r"(?:(\d+)\s*m(?:in(?:ute)?s?)?)?\s*"
+    r"(?:(\d+)\s*s(?:ec(?:ond)?s?)?)?",
+    re.I,
+)
 AT_TIME = re.compile(r"(?:reset|resets|try again|available again)\D{0,20}?\bat\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?", re.I)
 DEFAULT_USAGE_HOLD = 60 * 60
 DEFAULT_RATE_HOLD = 5 * 60
@@ -35,8 +41,9 @@ def until(message: str, now: float | None = None) -> float:
     """When the tool can be asked again, read from its message; else an hour for a used-up allowance, minutes for a rate limit."""
     now = time.time() if now is None else now
     text = str(message or "")
-    if (match := IN_TIME.search(text)) and (match.group(1) or match.group(2)):
-        return now + min(int(match.group(1) or 0) * 3600 + int(match.group(2) or 0) * 60, MAX_HOLD)
+    if (match := IN_TIME.search(text)) and (match.group(1) or match.group(2) or match.group(3)):
+        seconds = int(match.group(1) or 0) * 3600 + int(match.group(2) or 0) * 60 + int(match.group(3) or 0)
+        return now + min(seconds, MAX_HOLD)
     if match := AT_TIME.search(text):
         hour, minute, half = int(match.group(1)), int(match.group(2) or 0), (match.group(3) or "").lower()
         if half == "pm" and hour < 12:

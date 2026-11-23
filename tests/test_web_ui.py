@@ -903,6 +903,31 @@ process.stdout.write(JSON.stringify({
         self.assertIn('.clarify-input-row { display: flex;', css)
         self.assertIn('.clarify-btn', css)
 
+    @unittest.skipUnless(shutil.which("node"), "node is required")
+    def test_automatic_clarification_appears_as_a_separate_reply(self):
+        app = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
+        thread = app[app.index("function clarificationThread("):app.index("function wipRestoreNote(")]
+        script = rf'''
+const assert = require("node:assert/strict");
+require({json.dumps(HTML_JS)});
+const esc = Html.escape;
+{thread}
+const pending = clarificationThread([{{asker: "builder", question: "Can I proceed?", blocking: true}}]);
+assert.match(pending, /Blocking/);
+assert.doesNotMatch(pending, /is-you/);
+const answered = clarificationThread([{{
+  asker: "planner", auto: true,
+  question: "1. Conflicting requirements between README.md and World/CamelotHills/zone-manifest.json: Use the verified folder.. Which requirement should take precedence?",
+  answer: "Nobody is available to answer (this job runs in YOLO mode), so decide for yourself. Choose <the right option>."
+}}]);
+assert.match(answered, /README\.md.*World\/CamelotHills\/zone-manifest\.json/s);
+assert.match(answered, /<p>Use the verified folder\.<\/p>\s*<p>Which requirement should take precedence\?<\/p>/);
+assert.match(answered, /is-you[\s\S]*Answered for you \(YOLO\)/);
+assert.match(answered, /<\/p><p>Choose &lt;the right option&gt;\.<\/p>/);
+'''
+        subprocess.run(["node", "-e", script], check=True)
+        self.assertIn("${clarificationThread(visibleQuestions)}", app)
+
     def test_device_logs_has_no_subtitle_and_its_connect_button_lines_up_with_the_text(self):
         js = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
         page = js[js.index("pages.devlogs = async"):][:1600]
