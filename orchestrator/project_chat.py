@@ -399,11 +399,38 @@ def provider_problems(models: Iterable[Any] | None = None, checks: dict[str, dic
     ids = [m.id for m in (models or [])]
     out = []
     for provider, check in sorted(rejected_providers(checks, now).items()):
+        if check.get("dismissed"):
+            continue
         covered = sorted({m for m in [*ids, *checks] if provider_of(m) == provider})
         reason = str(check.get("reason") or "") or KEY_REJECTED
         out.append({"provider": provider, "name": provider_label(provider), "reason": reason, "models": len(covered),
                     "since": check.get("at"), "fix": f"Run `opencode auth login` on this computer, choose {provider_label(provider)} and enter a valid key."})
     return out
+
+
+def dismiss_provider(provider: str) -> int:
+    """Hide the rejected-key notice for `provider` while keeping its broken models left out of Ask AI."""
+    global _CHECKS_MEMO
+    if not provider:
+        return 0
+    with _CHECKS_LOCK:
+        path = checks_path()
+        data = _read_checks_unlocked(path)
+        marked = 0
+        for m, entry in data.items():
+            if provider_of(m) == provider and isinstance(entry, dict) and not entry.get("ok"):
+                entry["dismissed"] = True
+                marked += 1
+        if marked:
+            fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".checks-")
+            with os.fdopen(fd, "w") as f:
+                json.dump(data, f, indent=1)
+            os.replace(tmp, path)
+            try:
+                _CHECKS_MEMO = (path, path.stat().st_mtime, data)
+            except OSError:
+                _CHECKS_MEMO = None
+    return marked
 
 
 def forget_provider(provider: str) -> int:

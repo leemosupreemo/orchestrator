@@ -657,8 +657,35 @@ def analyze_debug_loop_convergence(
     Analyzes multi-iteration debug history to detect convergence, stagnation,
     and oscillation/ping-pong loops dynamically without relying solely on a fixed iteration cap.
     """
-    history = job.get("debug_history", []) if isinstance(job, dict) else []
-    completed_trials = [t for t in history if isinstance(t, dict) and t.get("result") not in ("pending", None)]
+    raw_history = job.get("debug_history", []) if isinstance(job, dict) else []
+    if not isinstance(raw_history, list):
+        raw_history = []
+    reset_at = job.get("debug_convergence_reset_at") if isinstance(job, dict) else 0
+    if isinstance(reset_at, int) and not isinstance(reset_at, bool) and 0 < reset_at <= len(raw_history):
+        raw_history = raw_history[reset_at:]
+
+    def _is_aborted(entry: dict[str, Any]) -> bool:
+        res = entry.get("result")
+        return res == "aborted" or (isinstance(res, dict) and bool(res.get("aborted")))
+
+    # Ignore infrastructure-aborted attempts and collapse any corrupted duplicate entries with the same iteration number
+    # (keeping the resolved entry over a stale pending duplicate).
+    history: list[dict[str, Any]] = []
+    seen_iter_pos: dict[int, int] = {}
+    for entry in raw_history:
+        if not isinstance(entry, dict) or _is_aborted(entry):
+            continue
+        it = entry.get("iteration")
+        if isinstance(it, int) and not isinstance(it, bool):
+            if it in seen_iter_pos:
+                prev = history[seen_iter_pos[it]]
+                if prev.get("result") in ("pending", None) and isinstance(entry.get("result"), dict):
+                    history[seen_iter_pos[it]] = entry
+                continue
+            seen_iter_pos[it] = len(history)
+        history.append(entry)
+
+    completed_trials = [t for t in history if t.get("result") not in ("pending", None)]
     
     if not completed_trials and not history:
         return {
@@ -705,8 +732,11 @@ def analyze_debug_loop_convergence(
 
     # 3. Check for Oscillation / Ping-Pong loops (Hypotheses, actions, or diff hashes)
     hypotheses = [
-        (t.get("hypothesis") or "").strip().lower()
-        for t in history
+        (
+            t.get("iteration") if isinstance(t.get("iteration"), int) and not isinstance(t.get("iteration"), bool) else pos,
+            (t.get("hypothesis") or "").strip().lower(),
+        )
+        for pos, t in enumerate(history, 1)
         if t.get("hypothesis")
     ]
     diff_hashes = [
@@ -718,11 +748,15 @@ def analyze_debug_loop_convergence(
     oscillation_detected = False
     oscillation_detail = ""
     if len(hypotheses) >= 2:
-        latest_hyp = hypotheses[-1]
-        for idx, prev_h in enumerate(hypotheses[:-1], 1):
-            if latest_hyp and len(latest_hyp) > 10 and (latest_hyp == prev_h or latest_hyp in prev_h or prev_h in latest_hyp):
+        latest_iter, latest_hyp = hypotheses[-1]
+        for prev_iter, prev_h in hypotheses[:-1]:
+            if not latest_hyp or len(latest_hyp) <= 10:
+                continue
+            shorter, longer = (latest_hyp, prev_h) if len(latest_hyp) <= len(prev_h) else (prev_h, latest_hyp)
+            similar = latest_hyp == prev_h or (shorter in longer and len(shorter) >= 0.75 * len(longer))
+            if similar:
                 oscillation_detected = True
-                oscillation_detail = f"Attempt #{len(hypotheses)} repeated hypothesis from Attempt #{idx}"
+                oscillation_detail = f"Attempt #{latest_iter} repeated hypothesis from Attempt #{prev_iter}"
                 break
 
     if not oscillation_detected and len(diff_hashes) >= 3:

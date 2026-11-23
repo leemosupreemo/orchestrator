@@ -575,7 +575,7 @@ details.more[open] > .more-menu { z-index: var(--z-menu); }
 .item:first-child { border-top: 0; }
 a.item:hover { background: var(--panel-2); }
 .item .main-col { min-width: 0; flex: 1; color: var(--text); }
-.item .title { font-weight: var(--weight-medium); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.item .title { font-weight: var(--weight-medium); display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; line-height: 1.35; }
 .item .meta { font-size: var(--type-secondary); color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .item .side { display: flex; align-items: center; gap: var(--space-2); flex: 0 0 auto; }
 .item > .mono, .item > span:not(.pill) { min-width: 0; overflow-wrap: anywhere; }
@@ -2138,9 +2138,13 @@ dialog h2 {
 .job-table-row .job-title {
   font-weight: var(--weight-medium);
   font-size: var(--type-body);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  line-height: 1.35;
+  white-space: normal;
   min-width: 0;
   color: var(--text);
 }
@@ -2673,6 +2677,7 @@ dialog h2 {
 .hero-error-details { width: 100%; margin-top: 2px; font-size: var(--type-secondary); }
 .hero-error-details > summary { cursor: pointer; display: inline-flex; align-items: center; gap: 4px; list-style: none; }
 .hero-copy-log-btn { flex-shrink: 0; }
+.hero-copy-log-btn.is-copied { width: auto; min-width: var(--control-md); padding: 0 var(--space-2-5); gap: var(--space-1-5); color: var(--ok); }
 .hero-error-pre { margin: var(--space-2) 0 0; padding: var(--space-2) var(--space-3); border-radius: var(--r-sm); background: var(--panel-2); border: 1px solid var(--border); font-family: var(--mono); font-size: var(--type-secondary); line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 220px; overflow: auto; }
 .job-hero-action { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; flex-shrink: 0; }
 /* The one place to tell the AI what to change: full width under the status, whatever the stage. */
@@ -5370,6 +5375,24 @@ body[data-page="preview"] .job-preview .job-preview-frame { flex: 1; height: aut
 /* The sidebar's "which computer am I on": the primary for this session, and how many supporting computers it uses. */
 /* Machines, under Project: its label, the menu or chip, then a rule and a little room before Search */
 .machine-switch { display: flex; flex-direction: column; gap: var(--space-1); padding: 0 var(--space-2) var(--space-4); margin-bottom: var(--space-1); border-bottom: 1px solid var(--border); }
+.machine-switch:has(.machine-picker:not([hidden])) #computer-select { display: none; }
+.machine-picker { position: relative; }
+.machine-picker[hidden] { display: none; }
+.machine-picker-trigger { display: flex; align-items: center; gap: var(--space-2); width: 100%; min-height: var(--control-sm); padding: var(--space-1-5) var(--space-2-5); border: 1px solid var(--border); border-radius: var(--r-md); background: var(--panel); color: var(--text); font: inherit; font-size: var(--type-body); text-align: left; cursor: pointer; }
+.machine-picker-trigger:hover { background: var(--panel-2); }
+.machine-picker-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.machine-picker-caret { color: var(--muted); flex-shrink: 0; }
+.machine-dot { width: 8px; height: 8px; border-radius: var(--r-pill); flex-shrink: 0; display: inline-block; }
+.machine-dot.ok { background: var(--ok); }
+.machine-dot.bad { background: var(--bad); }
+.machine-picker-menu { position: absolute; top: calc(100% + var(--space-1)); left: 0; right: 0; z-index: var(--z-menu); display: flex; flex-direction: column; gap: var(--space-0); padding: var(--space-1); border: 1px solid var(--border); border-radius: var(--r-md); background: var(--panel); box-shadow: var(--shadow-2); }
+.machine-picker-menu[hidden] { display: none; }
+.machine-picker-menu .machine-dot { width: 6.4px; height: 6.4px; }
+.machine-picker-item { display: flex; align-items: center; gap: var(--space-2); width: 100%; min-height: var(--control-sm); padding: var(--space-1-5) var(--space-2); border: 0; border-radius: var(--r-sm); background: transparent; color: var(--text); font: inherit; font-size: var(--type-body); text-align: left; cursor: pointer; }
+.machine-picker-item:hover { background: var(--panel-2); }
+.machine-picker-item.is-selected { background: var(--accent-soft); color: var(--accent); font-weight: var(--weight-medium); }
+.machine-picker-divider { height: 1px; margin: var(--space-1) 0; background: var(--border); }
+.machine-picker-manage { color: var(--muted); }
 .machine-switch .session-computer { margin: 0; }
 .session-computer { display: flex; align-items: center; gap: var(--space-2); margin: 0 var(--space-2); padding: var(--space-1) var(--space-2); min-height: var(--control-sm); border: 1px solid var(--border); border-radius: var(--r-md); background: var(--panel); color: var(--text); font: inherit; font-size: var(--type-secondary); cursor: pointer; text-align: left; }
 .session-computer:hover { background: var(--panel-2); }

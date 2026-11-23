@@ -1374,6 +1374,42 @@ class ConvergenceAnalysisTests(unittest.TestCase):
         self.assertTrue(result["oscillation_detected"])
         self.assertIn("repeated hypothesis", result["description"])
 
+    def test_convergence_ignores_aborted_and_duplicate_iterations_and_respects_reset_at(self) -> None:
+        dup_hyp = "The earlier tuning addressed overall cover, but flowers remain hard to distinguish."
+        # Duplicate iteration #1 at the tail (legacy corrupted history) must NOT false-positive as a loop
+        corrupted = {
+            "job_id": "test-5",
+            "debug_history": [
+                {"iteration": 1, "hypothesis": dup_hyp, "result": {"build_ok": False, "tests_ok": False}},
+                {"iteration": 3, "hypothesis": "Static flora validates fine; visual capture missing.", "result": "pending"},
+                {"iteration": 1, "hypothesis": dup_hyp, "result": "pending"},
+            ],
+        }
+        res_corrupted = common.analyze_debug_loop_convergence(corrupted)
+        self.assertFalse(res_corrupted["is_stuck"])
+
+        # Aborted infrastructure attempts (e.g. DiskFullError) don't trigger loop detection when retried
+        aborted = {
+            "job_id": "test-6",
+            "debug_history": [
+                {"iteration": 1, "hypothesis": dup_hyp, "result": {"build_ok": False, "tests_ok": False, "aborted": True}},
+                {"iteration": 2, "hypothesis": dup_hyp, "result": "pending"},
+            ],
+        }
+        self.assertFalse(common.analyze_debug_loop_convergence(aborted)["is_stuck"])
+
+        # Reset marker starts a clean convergence window after human steer
+        reset_job = {
+            "job_id": "test-7",
+            "debug_convergence_reset_at": 2,
+            "debug_history": [
+                {"iteration": 1, "hypothesis": dup_hyp, "result": {"build_ok": True, "tests_ok": False}},
+                {"iteration": 2, "hypothesis": dup_hyp, "result": {"build_ok": True, "tests_ok": False}},
+                {"iteration": 3, "hypothesis": "New approach after human feedback", "result": "pending"},
+            ],
+        }
+        self.assertFalse(common.analyze_debug_loop_convergence(reset_job)["is_stuck"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -46,7 +46,8 @@ class AiToolsPageTests(unittest.TestCase):
 
     def test_only_an_owner_can_ask_for_a_new_check(self):
         self.assertIn("${owner ? `<button type=\"button\" class=\"btn small primary\" data-ai-recheck=", self.card)
-        self.assertIn("I've fixed it, check again", self.card)
+        self.assertIn(">Check again</button>", self.card)
+        self.assertIn('data-ai-dismiss="${escapeHtml(x.provider)}">Dismiss</button>', self.card)
 
     def test_checking_again_forgets_the_failure_asks_the_models_and_reports_the_outcome(self):
         handler = APP[APP.index("const onRecheck = async"):][:1500]
@@ -57,6 +58,13 @@ class AiToolsPageTests(unittest.TestCase):
         self.assertIn("button.disabled = false;", handler)  # a failed check leaves the button usable
         self.assertIn("view.addEventListener(\"click\", onRecheck)", APP)
         self.assertIn("cleanup.push(() => view.removeEventListener(\"click\", onRecheck))", APP)
+
+    def test_dismissing_a_problem_hides_it_via_the_dismiss_endpoint(self):
+        handler = APP[APP.index("const onDismissProblem = async"):][:600]
+        self.assertIn('api("ai-providers/dismiss"', handler)
+        self.assertIn("await route();", handler)
+        self.assertIn('view.addEventListener("click", onDismissProblem)', APP)
+        self.assertIn('cleanup.push(() => view.removeEventListener("click", onDismissProblem))', APP)
 
 
 class StylesTests(unittest.TestCase):

@@ -162,6 +162,50 @@ class OwnershipTests(unittest.TestCase):
         self.assertNotIn("blocker", job)
         self.assertIsNone(account.job_record({"status": "completed", "iteration": 3}))
 
+    def test_taking_back_deduplicates_resolved_debug_history_and_preserves_iteration_order(self):
+        from orchestrator import account
+        hyp1 = "The earlier tuning addressed overall cover, but its mixed-view measurements can improve even when flowers remain hard to distinguish."
+        hyp3 = "The static side is fine; the previous agent did not finish the per-view comparison."
+        # Local older copy (moved away after iter 1 crashed leaving result='pending')
+        self.path.write_text(json.dumps({
+            "job_id": "j1", "title": "Camelot", "status": "debugging", "moved_to": "Mac", "owner_epoch": 6,
+            "debug_history": [{"iteration": 1, "model": "gpt-6.2-astra", "hypothesis": hyp1, "action": "investigate", "result": "pending"}],
+        }))
+        # Remote newer copy from Mac (iter 1 resolved + iter 3 added)
+        remote_source = {
+            "job_id": "j1", "title": "Camelot", "status": "debugging", "iteration": 3, "owner_epoch": 7,
+            "debug_history": [
+                {"iteration": 1, "model": "gpt-6.2-astra", "hypothesis": hyp1, "action": "investigate",
+                 "result": {"build_ok": False, "tests_ok": False, "notes": "The fix attempt changed no files"}},
+                {"iteration": 3, "model": "claude-sonnet-5", "hypothesis": hyp3, "action": "investigate", "result": "pending"},
+            ],
+        }
+        raw = {"job_id": "j1", "title": "Camelot", "status": "debugging", "owner_epoch": 7, "record": account.job_record(remote_source)}
+        with mock.patch("shutil.which", return_value=None):
+            ui.import_remote_job(self.root, {"job": raw, "source_machine_name": "Mac"})
+        merged = json.loads(self.path.read_text())["debug_history"]
+        self.assertEqual([e["iteration"] for e in merged], [1, 3])
+        self.assertIsInstance(merged[0]["result"], dict)
+        self.assertEqual(merged[1]["result"], "pending")
+
+    def test_taking_back_deduplicates_clarification_history_and_prefers_answered(self):
+        from orchestrator import account
+        q = "Which zone manifest should take precedence when README disagrees?"
+        self.path.write_text(json.dumps({
+            "job_id": "j1", "title": "Camelot", "status": "debugging", "moved_to": "Mac", "owner_epoch": 2,
+            "clarification_history": [{"timestamp": "2026-11-21T08:38:00", "asker": "planner", "question": q, "answer": "Use manifest"}],
+        }))
+        remote_source = {
+            "job_id": "j1", "title": "Camelot", "status": "debugging", "owner_epoch": 3,
+            "clarification_history": [{"timestamp": "2026-11-21T08:38:00", "asker": "planner", "question": q, "answer": ""}],
+        }
+        raw = {"job_id": "j1", "title": "Camelot", "status": "debugging", "owner_epoch": 3, "record": account.job_record(remote_source)}
+        with mock.patch("shutil.which", return_value=None):
+            ui.import_remote_job(self.root, {"job": raw, "source_machine_name": "Mac"})
+        merged = json.loads(self.path.read_text())["clarification_history"]
+        self.assertEqual(len(merged), 1)
+        self.assertEqual(merged[0]["answer"], "Use manifest")
+
     def test_the_page_moves_the_older_copy_and_refuses_while_the_other_computer_works(self):
         app = (ROOT / "orchestrator" / "web" / "static" / "app.js").read_text(encoding="utf-8")
         self.assertIn("Number(rj.imported_at || 0) > Number(localImportedAt.get(jid) || 0)", app)

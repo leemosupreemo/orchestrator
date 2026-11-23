@@ -984,7 +984,11 @@ def job_state(job: dict[str, Any], root: Path | None = None) -> dict[str, Any]:
             blocked["next"]["params"] = fix["params"]
             return {**blocked, "steps": fix["steps"], "sign_in": fix["sign_in"], "blocker": question}
         if question:
-            asker = "builder" if str(job.get("last_error") or "").startswith("Builder clarification needed") else "planner"
+            asker = str(job.get("clarification_asker") or "").strip() or (
+                "builder" if str(job.get("last_error") or "").startswith("Builder clarification needed")
+                else "debugger" if str(job.get("last_error") or "").startswith("Debugger clarification needed")
+                else "planner"
+            )
             risk = job.get("risk_assessment") if isinstance(job.get("risk_assessment"), dict) else {}
             plan_obj = job.get("plan") if isinstance(job.get("plan"), dict) else {}
             if risk.get("behavior") == "stop_conflict":
@@ -1913,6 +1917,70 @@ def _sync_snapshot_async(root: Path) -> None:
     threading.Thread(target=_run, daemon=True).start()
 
 
+def _merge_job_history(theirs: Any, mine: Any, *, kind: str) -> list[Any]:
+    """Merge a job's remote (`theirs`, newer owner) and local (`mine`, older copy) history without duplicating entries
+    whose `result` evolved from `pending` to a completed dict or whose text was truncated during sync."""
+    theirs_list = [e for e in theirs if isinstance(e, dict)] if isinstance(theirs, list) else []
+    mine_list = [e for e in mine if isinstance(e, dict)] if isinstance(mine, list) else []
+    if not mine_list:
+        return theirs_list
+
+    def _entry_key(entry: dict[str, Any]) -> tuple[Any, ...]:
+        if entry.get("id"):
+            return ("id", str(entry["id"]))
+        if kind == "debug_history":
+            hyp = str(entry.get("hypothesis") or "").strip().lower()[:180]
+            if isinstance(entry.get("iteration"), int) and not isinstance(entry.get("iteration"), bool):
+                return ("iter", entry["iteration"], str(entry.get("model") or ""), hyp)
+            if hyp:
+                return ("hyp", str(entry.get("model") or ""), hyp)
+        elif kind == "clarification_history":
+            q = str(entry.get("question") or "").strip().lower()[:180]
+            if q:
+                return ("clarify", str(entry.get("timestamp") or ""), str(entry.get("asker") or ""), q)
+        return ("raw", json.dumps(entry, sort_keys=True, default=str)[:240])
+
+    def _is_resolved_debug(entry: dict[str, Any]) -> bool:
+        res = entry.get("result")
+        return isinstance(res, dict) and not res.get("aborted")
+
+    merged: list[dict[str, Any]] = [dict(e) for e in theirs_list]
+    index_by_key: dict[tuple[Any, ...], int] = {_entry_key(e): i for i, e in enumerate(merged)}
+    max_their_iter = max(
+        (e["iteration"] for e in merged if isinstance(e.get("iteration"), int) and not isinstance(e.get("iteration"), bool)),
+        default=-1,
+    )
+
+    for entry in mine_list:
+        key = _entry_key(entry)
+        if key in index_by_key:
+            pos = index_by_key[key]
+            existing = merged[pos]
+            if kind == "debug_history" and existing.get("result") in ("pending", None) and _is_resolved_debug(entry):
+                merged[pos] = {**existing, "result": entry["result"]}
+            elif kind == "clarification_history" and not existing.get("answer") and entry.get("answer"):
+                merged[pos] = {**existing, "answer": entry["answer"]}
+            continue
+        if kind == "debug_history":
+            it = entry.get("iteration")
+            if entry.get("result") in ("pending", None) and isinstance(it, int) and not isinstance(it, bool) and it <= max_their_iter:
+                continue  # stale local pending entry superseded by newer remote iterations
+        index_by_key[key] = len(merged)
+        merged.append(dict(entry))
+
+    if kind == "debug_history":
+        merged = [
+            e for _, e in sorted(
+                enumerate(merged),
+                key=lambda pair: (
+                    pair[1]["iteration"] if isinstance(pair[1].get("iteration"), int) and not isinstance(pair[1].get("iteration"), bool) else 10**9,
+                    pair[0],
+                ),
+            )
+        ]
+    return merged
+
+
 def import_remote_job(root: Path, body: dict[str, Any]) -> dict[str, Any]:
     """Import a job snapshot from another machine onto this machine so it can be viewed or resumed here."""
     raw = body.get("job")
@@ -1969,11 +2037,9 @@ def import_remote_job(root: Path, body: dict[str, Any]) -> dict[str, Any]:
             older = read_json_file(target)
             outcomes = model_outcomes.merge(older.get(model_outcomes.FIELD), outcomes)
             for key in ("clarification_history", "debug_history"):
-                mine, theirs = older.get(key), doc.get(key)
-                if isinstance(mine, list) and mine:
-                    theirs = theirs if isinstance(theirs, list) else []
-                    seen = {json.dumps(e, sort_keys=True, default=str) for e in theirs}
-                    doc[key] = theirs + [e for e in mine if json.dumps(e, sort_keys=True, default=str) not in seen]
+                merged_hist = _merge_job_history(doc.get(key), older.get(key), kind=key)
+                if merged_hist:
+                    doc[key] = merged_hist
         if outcomes:
             doc[model_outcomes.FIELD] = outcomes
         doc["imported_at"] = time.time()  # the newer copy is the job's owner (see mark_job_moved)
@@ -4817,7 +4883,7 @@ def save_upload(root: Path, name: str, data: bytes, folder: Path | None = None) 
 
 
 def build_debug(params: dict[str, Any], root: Path) -> list[str]:
-    argv = orchestrator_argv("script", "debug_job.py", _job_path(params, root))
+    argv = orchestrator_argv("script", "debug_job.py", _job_path(params, root), "--manual")
     logs = _text(params, "logs", limit=4000)
     if logs:
         argv += ["--logs", logs]
@@ -4960,10 +5026,12 @@ def servers_view(root: Path, machine: str | None) -> dict[str, Any]:
     shell = servers.shell_for(root, chosen)
     found = servers.find(root)[:8]
     docker = servers.docker_ready(shell) if found else True
-    rows = [{**s, "status": servers.status(s, shell, docker=docker)} for s in found]
+    rows = [{**s, "status": servers.status(s, shell, docker=docker), "version": servers.version_info(root, s)} for s in found]
+    online_count = sum(1 for r in rows if docker and r["status"].get("state") == "running")
     selection = servers.parse_selection(read_json_file(runtime_dir(root) / "project.json").get("servers_for_app"), found,
                                         [m["name"] for m in server_machines(root)])[0]
     return {"servers": rows, "machines": server_machines(root), "machine": machine or "local", "docker": docker,
+            "any_online": online_count > 0, "online_count": online_count,
             "rule": servers.protected_rule(root), "app": selection}
 
 
@@ -5473,7 +5541,7 @@ def available_models() -> list[dict[str, str]]:
     labels = {"claude": "Anthropic", "gemini": "Google", "openai": "OpenAI", "opencode": "OpenCode", "ollama": "Ollama", "qwen": "Ollama", "pool": "Poolside", "hermes": "NousResearch"}
     names = {m["id"]: m["label"] for m in AVAILABLE_MODELS}
     usable = [m for m in get_all_models() if runnable_here(m)]
-    return [{"id": m.id, "label": names.get(m.id, m.id), "provider": labels[m.family]}
+    return [{"id": m.id, "label": names.get(m.id, m.id), "provider": labels[m.family], "free": m.cost_factor == 0.0}
             for m in sorted(usable, key=lambda m: (m.family, int(m.tier), m.id)) if m.family in labels]
 
 
@@ -6818,11 +6886,13 @@ class UIServer(ThreadingHTTPServer):
         self.connection_manager: Any = None
         self.on_reset_tunnel: Callable[[], bool] | None = None
         self.trigger_heartbeat: Callable[[], None] | None = None
+        self._state_sync_wake = threading.Event()
+        self.wake_state_sync: Callable[[], None] = self._state_sync_wake.set
         from orchestrator.web.browser_grants import BrowserGrantStore
         self.browser_grants = BrowserGrantStore()
         if shared:
             for name in ("token", "sign_ins", "audit", "requests_log", "client_log", "gate", "sessions", "tasks", "_used_tickets",
-                         "_ticket_lock", "_repository_lock", "_repository_check_tasks", "_home_status_tasks", "_publishing_jobs", "_stopping", "browser_grants", "bootstrap_enabled", "_plan_lock", "_plan_sessions", "on_reset_tunnel", "trigger_heartbeat", "connection_manager"):
+                         "_ticket_lock", "_repository_lock", "_repository_check_tasks", "_home_status_tasks", "_publishing_jobs", "_stopping", "browser_grants", "bootstrap_enabled", "_plan_lock", "_plan_sessions", "on_reset_tunnel", "trigger_heartbeat", "connection_manager", "_state_sync_wake", "wake_state_sync"):
                 setattr(self, name, getattr(shared, name))
 
     @property
@@ -7109,7 +7179,7 @@ class UIServer(ThreadingHTTPServer):
         """Share each project's product requirements with the other computers working on it, through the project's own
         repository (orchestrator/product_sync.py). Paired or not: it needs only the project's remote and the person's yes."""
         sync_health.clear_failures()
-        wake = threading.Event()
+        wake = self._state_sync_wake
         self.wake_state_sync = wake.set  # the heartbeat calls it when the account knows a newer shared commit
 
         def share() -> None:
@@ -7122,12 +7192,16 @@ class UIServer(ThreadingHTTPServer):
                     return
                 if wait > 0 and time.time() - t0 > max(wait, 60.0) + 120.0:
                     sync_health.clear_failures()  # machine slept: drop pre-sleep failures before the fresh wake round
+                round_start = time.time()
                 try:  # nothing in a round may stop the thread: it has to try again next time
                     roots = product_sync.project_roots(self.root)
                     before = state_ref.local_heads(roots)
                     wait = product_sync.run_round(self.root)
                     job_sync.run_round(self.root, running=set(self.sessions.running_job_ids()))  # each asked for separately
-                    if state_ref.local_heads(roots) != before and getattr(self, "trigger_heartbeat", None):
+                    if time.time() - round_start > 300.0:
+                        sync_health.clear_failures()  # machine slept mid-round (e.g. during git fetch): retry fresh
+                        wait = 0.0
+                    elif state_ref.local_heads(roots) != before and getattr(self, "trigger_heartbeat", None):
                         self.trigger_heartbeat()  # pushed something: tell the account now, so the others fetch within seconds
                 except Exception as exc:
                     wait = product_sync.CHECK_SECONDS
@@ -9146,8 +9220,27 @@ class UIHandler(BaseHTTPRequestHandler):
                     job[role] = choice
                 else:
                     job.pop(role, None)  # sent empty: back to the project's choice
+            if "free_only" in body:
+                from orchestrator.project_setup import models_ready_here
+                from orchestrator.scripts import llm
+                from orchestrator.scripts.model_registry import get_free_models, get_model
+                if bool(body.get("free_only")):
+                    ready_here = set(models_ready_here(root))
+                    free_ids = [m.id for m in get_free_models() if m.id in ready_here]
+                    if not free_ids:
+                        raise UIError("No free AI models are ready on this computer. Install OpenCode or Ollama first, or turn off Use free AI only.")
+                    job["allowed_models"] = free_ids
+                    for role in ("planner", "builder", "reviewer"):
+                        picked = str(job.get(role) or "").strip()
+                        meta = get_model(picked) if picked else None
+                        if picked and (meta is None or meta.cost_factor != 0.0):
+                            job.pop(role, None)
+                elif llm._is_free_only_allowlist(job.get("allowed_models")):
+                    job.pop("allowed_models", None)
             write_json_file(job_path, job)
-            self._json({"ok": True, "planner": job.get("planner"), "builder": job.get("builder"), "reviewer": job.get("reviewer")})
+            from orchestrator.scripts import llm
+            self._json({"ok": True, "planner": job.get("planner"), "builder": job.get("builder"), "reviewer": job.get("reviewer"),
+                        "allowed_models": job.get("allowed_models"), "free_only": llm._is_free_only_allowlist(job.get("allowed_models"))})
         elif method == "GET" and parts == ["chat"]:
             # Ask AI on Home: the conversation, and which model each of Free, Balanced and Complex would use here.
             models = project_chat.ready_models(root)
@@ -9467,6 +9560,14 @@ class UIHandler(BaseHTTPRequestHandler):
                 raise UIError("Say which provider to check again.")
             self._json({"ok": True, "forgotten": project_chat.forget_provider(provider)})
             self._audit("ai_provider_recheck", provider=provider)
+        elif method == "POST" and parts == ["ai-providers", "dismiss"]:
+            # Hide the rejected-key notice while keeping the provider's broken models left out of Ask AI.
+            self._require_owner("dismiss an AI provider notice")
+            provider = _text(self._body(), "provider", limit=80)
+            if not re.fullmatch(r"[A-Za-z0-9._-]+", provider or ""):
+                raise UIError("Say which provider notice to dismiss.")
+            self._json({"ok": True, "dismissed": project_chat.dismiss_provider(provider)})
+            self._audit("ai_provider_dismiss", provider=provider)
         elif method == "POST" and parts == ["ai-providers", "free"]:
             # Set up free AI in one step (orchestrator/ai_setup.py): check, install OpenCode, test its free models, turn them on.
             self._require_owner("set up an AI tool")

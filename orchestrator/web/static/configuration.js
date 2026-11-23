@@ -403,7 +403,8 @@
         <p class="muted">${escapeHtml(x.fix)}</p>
         <div class="row gap-8 wrap align-center"><code>opencode auth login</code>
           <button type="button" class="btn small ghost" data-setup-copy="opencode auth login">Copy command</button>
-          ${owner ? `<button type="button" class="btn small primary" data-ai-recheck="${escapeHtml(x.provider)}">I've fixed it, check again</button>` : ""}</div></div>`).join("")}</div></section>` : "";
+          ${owner ? `<button type="button" class="btn small primary" data-ai-recheck="${escapeHtml(x.provider)}">Check again</button>
+          <button type="button" class="btn small ghost" data-ai-dismiss="${escapeHtml(x.provider)}">Dismiss</button>` : ""}</div></div>`).join("")}</div></section>` : "";
     const secondary = (state.machines || []).filter((m) => m.enabled !== false && m.mode === "ssh");
     const plugins = (ai.plugins || []).map((p) => `<li><strong>${escapeHtml(p.name)}</strong>: ${escapeHtml(p.why)}</li>`).join("");
     return {

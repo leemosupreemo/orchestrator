@@ -50,9 +50,11 @@ the checks that can be automated live in `tests/test_web_ui.py`.
   list, a job page, or a run page—always opens or stays on `#/jobs/<id>` instead of navigating to a dedicated fix run
   page. When the hero's next action is **Run fix**, the hero renders a single primary **Run fix** button directly under
   the optional note textarea (suppressing the duplicate top-right **Run fix** button), and the failure copy-log control
-  (`#copy-job-failure-log`) uses the standard `.btn.ghost.icon-only` size.
+  (`#copy-job-failure-log`) uses the standard `.btn.ghost.icon-only` size with inline loading spinner and temporary
+  green check + **Copied** confirmation (`.is-copied`).
+- **Titles & in-app question alerts:** Job table titles (`.job-table-row .job-title`) and list item titles (`.item .title`) wrap up to 2 lines (`-webkit-line-clamp: 2` / `line-clamp: 2`) on desktop and mobile before truncating. Newly arriving **Question for you** inbox items show a sticky warning notification in `#messages` with an **Answer question** link (and clear automatically once answered).
 
-- A More menu groups its items under headings (on a job: **Work on this job**, **Share & export**, **Settings**, **Finish or remove**), one line each with the
+- A More menu groups its items under headings (on a job: **Work on this job**, **Links**, **Settings**, **Finish or remove**; sharing and exporting live behind a single **Share & export…** modal), one line each with the
   description in the tooltip (`moreMenu(items, { compact: true })`), only what fits the current stage, and ending
   actions (close, archive, delete) last below a divider. It fits without scrolling; on phones it opens as a sheet over
   a dimmed page.

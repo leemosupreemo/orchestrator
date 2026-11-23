@@ -144,6 +144,154 @@ class ScopedDebugTests(unittest.TestCase):
         for fname in ("planner_feature.md", "planner_bug.md", "planner_quick.md"):
             self.assertIn("YAGNI", (prompts / fname).read_text(encoding="utf-8"), fname)
 
+    def test_manual_run_fix_breaks_paused_loop_deadlock_while_auto_retry_stays_paused(self):
+        stuck_job = {
+            "job_id": "j-stuck",
+            "type": "feature-plan",
+            "status": "debugging",
+            "debug_phase": "paused",
+            "debug_pause_reason": "Loop/Stall detected: Loop detected: Attempt #3 repeated hypothesis from Attempt #1",
+            "iteration": 3,
+            "plan": {},
+            "debug_history": [
+                {"iteration": 1, "hypothesis": "Same repeated hypothesis about flowers", "result": {"build_ok": True, "tests_ok": False}},
+                {"iteration": 2, "hypothesis": "Different hypothesis about shaders", "result": {"build_ok": True, "tests_ok": False}},
+                {"iteration": 3, "hypothesis": "Same repeated hypothesis about flowers", "result": {"build_ok": True, "tests_ok": False}},
+            ],
+        }
+        self.write(stuck_job)
+        # Automated call (no manual flag, no feedback) still pauses on the loop
+        with patch.object(debug_job, "run_propose") as propose, patch.object(debug_job, "run_shell"):
+            debug_job.run_debug_iteration(self.path)
+        propose.assert_not_called()
+        self.assertEqual(json.loads(self.path.read_text())["debug_phase"], "paused")
+
+        # Manual Run fix (as invoked by UI build_debug --manual) breaks the deadlock and resets convergence window
+        with patch.object(debug_job, "run_propose") as propose:
+            debug_job.run_debug_iteration(self.path, feedback="Increase flower contrast directly", manual=True)
+        propose.assert_called_once()
+        saved = json.loads(self.path.read_text())
+        self.assertNotIn("debug_pause_reason", saved)
+        self.assertEqual(saved["debug_convergence_reset_at"], 3)
+        self.assertEqual(propose.call_args.args[0]["iteration"], 4)
+
+    def test_run_implement_marks_pending_entry_aborted_on_early_crash(self):
+        self.write({
+            "job_id": "j-crash",
+            "status": "debugging",
+            "debug_history": [{"iteration": 1, "hypothesis": "Test", "result": "pending"}],
+        })
+        with patch.object(debug_job, "run_shell", side_effect=RuntimeError("Not enough disk space")):
+            with self.assertRaises(RuntimeError):
+                debug_job.run_implement(json.loads(self.path.read_text()), self.path)
+        saved = json.loads(self.path.read_text())
+        res = saved["debug_history"][-1]["result"]
+        self.assertIsInstance(res, dict)
+        self.assertTrue(res["aborted"])
+        self.assertIn("Not enough disk space", res["notes"])
+
+    def test_ask_human_action_flags_question_for_ui_and_skips_implement(self):
+        self.write({
+            "job_id": "j-ask",
+            "title": "Camelot Hills vegetation",
+            "type": "feature-plan",
+            "status": "debugging",
+            "debug_phase": "propose",
+            "reviewer": "claude-sonnet-4-6",
+            "iteration": 1,
+            "yolo": True,
+            "plan": {},
+        })
+        proposal = json.dumps({
+            "evidence": "No paired iPhone or Unity editor available on this computer",
+            "hypothesis": "Cannot capture player-height gameplay screenshots on this machine",
+            "confidence": 0.95,
+            "action": "ask_human",
+            "clarification_question": "Should we skip live iPhone captures and verify using the Unity probe only, or wait until an iPhone is connected?",
+            "files_changed": [],
+            "implementation_plan": "",
+            "expected_signal": "User decides verification scope",
+            "stop_condition": "",
+            "summary": "Need decision on hardware verification",
+        })
+        out_dir = self.path.parent / "output"
+        with patch.object(debug_job, "OUTPUT_DIR", out_dir), \
+             patch.object(debug_job, "run_llm", return_value=(proposal, "claude-sonnet-4-6", "sess-ask")), \
+             patch.object(debug_job, "run_implement") as implement, \
+             patch.object(debug_job, "run_shell") as notify_shell:
+            debug_job.run_debug_iteration(self.path)
+        implement.assert_not_called()
+        notify_shell.assert_called_once()
+        self.assertIn("Question for you", notify_shell.call_args.args[0])
+        saved = json.loads(self.path.read_text())
+        self.assertEqual(saved["status"], "human-needed")
+        self.assertEqual(saved["clarification_asker"], "debugger")
+        self.assertIn("skip live iPhone captures", saved["human_clarification_question"])
+        self.assertEqual(saved["debug_history"][-1]["action"], "ask_human")
+        self.assertTrue(saved["debug_history"][-1]["result"]["aborted"])
+
+        from orchestrator.web import server as web_server
+        st = web_server.job_state(saved)
+        self.assertEqual(st["label"], "Question for you")
+        self.assertIn("debugger needs an answer", st["reason"])
+
+    def test_answering_debugger_question_resumes_debug_loop_and_in_app_notice_wired(self):
+        import job_actions
+        self.write({
+            "job_id": "j-ask-reply",
+            "title": "Camelot Hills vegetation",
+            "type": "feature-plan",
+            "status": "human-needed",
+            "clarification_asker": "debugger",
+            "human_clarification_question": "Skip iPhone captures?",
+            "last_error": "Debugger clarification needed: Skip iPhone captures?",
+            "debug_phase": "paused",
+            "debug_pause_reason": "Waiting for your answer",
+            "debug_history": [{"iteration": 1, "action": "ask_human", "hypothesis": "Missing iPhone", "result": {"aborted": True}}],
+            "plan": {},
+        })
+        with patch.object(job_actions, "run_script", return_value=0) as run_script:
+            code = job_actions.answer(self.path, "Yes, verify with Unity probe only.")
+        self.assertEqual(code, 0)
+        run_script.assert_called_once()
+        self.assertEqual(run_script.call_args.args[0], "debug_job.py")
+        self.assertIn("--manual", run_script.call_args.args[1])
+        saved = json.loads(self.path.read_text())
+        self.assertEqual(saved["status"], "debugging")
+        self.assertEqual(saved["debug_phase"], "propose")
+        self.assertEqual(saved["clarification_history"][-1]["asker"], "debugger")
+        self.assertIsNone(saved["human_clarification_question"])
+
+        # Verify in-app notification & prompt schema wiring
+        root = Path(__file__).resolve().parents[1]
+        app = (root / "orchestrator" / "web" / "static" / "app.js").read_text(encoding="utf-8")
+        self.assertIn('if (ev.title === "Question for you")', app)
+        self.assertIn('notify("warning", `Question for you — ${ev.body}`', app)
+        self.assertIn('label: "Answer question"', app)
+        prompt = (root / "orchestrator" / "prompts" / "debug_agent.md").read_text(encoding="utf-8")
+        self.assertIn('"ask_human"', prompt)
+        self.assertIn('"clarification_question"', prompt)
+
+    def test_answering_debugger_question_restores_question_if_followup_fails(self):
+        import job_actions
+        self.write({
+            "job_id": "j-ask-fail",
+            "title": "Camelot Hills vegetation",
+            "type": "feature-plan",
+            "status": "human-needed",
+            "clarification_asker": "debugger",
+            "human_clarification_question": "Skip iPhone captures?",
+            "last_error": "Debugger clarification needed: Skip iPhone captures?",
+            "plan": {},
+        })
+        with patch.object(job_actions, "run_script", return_value=1):
+            code = job_actions.answer(self.path, "Yes")
+        self.assertEqual(code, 1)
+        saved = json.loads(self.path.read_text())
+        self.assertEqual(saved["status"], "human-needed")
+        self.assertEqual(saved["human_clarification_question"], "Skip iPhone captures?")
+        self.assertEqual(saved["clarification_asker"], "debugger")
+
 
 if __name__ == "__main__":
     unittest.main()

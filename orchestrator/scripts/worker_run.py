@@ -1475,9 +1475,15 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
         # Capture state after builder
         post_state = get_repo_state()
 
-        # Identify files changed/added by AI (never sweep .claude/, .orchestrator/, .worktrees/ tool state into commits)
+        # Identify files changed/added by AI (never sweep .claude/, .orchestrator/, .worktrees/ tool state into commits).
+        # Also include untracked files already recorded as belonging to this job from an earlier aborted run so commits
+        # don't reference missing files (e.g. a .csproj referencing a previously created source file).
+        prior_job_untracked = set(job.get("ai_untracked_files") or [])
         ai_modified = [f for f in post_state["modified"] if f not in pre_state["modified"] and not builder_check.is_ignored_tool_path(f)]
-        ai_untracked = [f for f in post_state["untracked"] if f not in pre_state["untracked"] and not builder_check.is_ignored_tool_path(f)]
+        ai_untracked = [
+            f for f in post_state["untracked"]
+            if (f not in pre_state["untracked"] or f in prior_job_untracked) and not builder_check.is_ignored_tool_path(f)
+        ]
         if committing_only:  # the files the passing run changed, if still uncommitted
             saved = set(job["passed_uncommitted"].get("files") or [])
             ai_modified = [f for f in post_state["modified"] if f in saved and not builder_check.is_ignored_tool_path(f)]
@@ -1567,7 +1573,7 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
             if job.get("debug_history") and job["debug_history"][-1].get("result") == "pending":
                 job["debug_history"][-1]["result"] = {"build_ok": True, "tests_ok": True, "notes": "Tests passed"}
             write_json(job_path, job)
-        if ai_modified or ai_untracked:
+        if build_ok and (ai_modified or ai_untracked):
             print(f"      - Committing {len(ai_modified)} modified and {len(ai_untracked)} untracked files...")
             commit_msg = f"feat: {job['title']} (AI generated)"
             if job.get("type") == "bug-fix":
@@ -1575,6 +1581,8 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
             
             commit_job_files(ai_modified + ai_untracked, commit_msg)
             backup_push(job)
+        elif ai_modified or ai_untracked:
+            print(f"      - Build did not pass; keeping {len(ai_modified)} modified and {len(ai_untracked)} untracked file(s) uncommitted for the next fix attempt.")
         if job.pop("passed_uncommitted", None) is not None:
             write_json(job_path, job)
 
@@ -1610,10 +1618,10 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
                 else:
                     pause_on_blocker(job_path, job, blocker, issue_number)
                     return
-            # Set job status to debugging to trigger an automatic iteration
+            # Set job status to debugging to trigger an automatic iteration (debug_job owns incrementing `iteration`)
             job["status"] = "debugging"
             job["debug_phase"] = "propose"
-            job["iteration"] = job.get("iteration", 0) + 1
+            job.setdefault("iteration", 0)
             if "max_iterations" not in job:
                 job["max_iterations"] = 8
             

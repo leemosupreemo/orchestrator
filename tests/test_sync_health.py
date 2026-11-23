@@ -58,10 +58,35 @@ class SyncHealthTests(unittest.TestCase):
         sync_health.record("product", True, now=1000)
         sync_health.record("product", False, "network error", now=2000)
         # After an hour of sleep with no recent retry, don't flash a stale failure before a fresh check runs
-        self.assertEqual(sync_health.problems(now=2000 + sync_health.STALE_FAILURE_SECONDS + 60), [])
-        # A freshly retried failure that still fails IS reported
-        sync_health.record("product", False, "network error", now=2000 + sync_health.STALE_FAILURE_SECONDS + 60)
-        self.assertEqual(len(sync_health.problems(now=2000 + sync_health.STALE_FAILURE_SECONDS + 65)), 1)
+        wake_now = 2000 + sync_health.STALE_FAILURE_SECONDS + 60
+        self.assertEqual(sync_health.problems(now=wake_now), [])
+        # A single transient failure right after wake starts a fresh grace window instead of reviving the pre-sleep timestamp
+        sync_health.record("product", False, "network error", now=wake_now)
+        self.assertEqual(sync_health.problems(now=wake_now + 5), [])
+        # If it keeps failing past the grace window, it IS reported with the fresh start time
+        sync_health.record("product", False, "network error", now=wake_now + sync_health.GRACE_SECONDS)
+        [problem] = sync_health.problems(now=wake_now + sync_health.GRACE_SECONDS)
+        self.assertEqual(problem["since"], wake_now)
+
+    def test_shared_ui_server_forwards_wake_state_sync(self):
+        from orchestrator.web.server import UIServer
+        local = UIServer(("127.0.0.1", 0), None)
+        remote = UIServer(("127.0.0.1", 0), None, shared=local)
+        try:
+            self.assertIs(remote._state_sync_wake, local._state_sync_wake)
+            self.assertFalse(local._state_sync_wake.is_set())
+            remote.wake_state_sync()
+            self.assertTrue(local._state_sync_wake.is_set())
+        finally:
+            remote.server_close()
+            local.server_close()
+
+    def test_home_auto_rechecks_sync_health_and_server_clears_mid_round_sleep(self):
+        app = (ROOT / "orchestrator" / "web" / "static" / "app.js").read_text(encoding="utf-8")
+        server = (ROOT / "orchestrator" / "web" / "server.py").read_text(encoding="utf-8")
+        self.assertIn("for (const delay of [5000, 15000])", app)
+        self.assertIn('const fresh = await api("sync-health").catch(() => null);', app)
+        self.assertIn("if time.time() - round_start > 300.0:", server)
 
 
 @unittest.skipUnless(shutil.which("node"), "node is required")

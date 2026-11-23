@@ -314,10 +314,23 @@ class PageTests(unittest.TestCase):
         self.assertIn('<use href="#i-log"/>', app)
         self.assertIn('<div class="job-hero-head">${heroTitleHtml}${copyFailureBtnHtml}</div>', app)
         self.assertIn('toast("Failure details and logs copied")', app)
+        self.assertIn('btn.classList.add("is-copied")', app)
+        self.assertIn('<svg class="icon" aria-hidden="true"><use href="#i-check"/></svg><span>Copied</span>', app)
         self.assertIn(".job-hero-head {", css)
         self.assertIn(".hero-copy-log-btn {", css)
+        self.assertIn(".hero-copy-log-btn.is-copied {", css)
         self.assertIn("const steer = activeRun || s.question || reviewingPlan || signIn || diskBlocked || s.state.blocker || autoStopped ? null", app)
         self.assertIn('const showNextAction = next && !diskBlocked && !(signInAction && next.action === "debug");', app)
+
+    def test_job_and_list_titles_wrap_up_to_two_lines_before_clamping(self):
+        css = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "style.css").read_text()
+        job_title_rule = css[css.index(".job-table-row .job-title {"):css.index("}", css.index(".job-table-row .job-title {"))]
+        self.assertIn("-webkit-line-clamp: 2;", job_title_rule)
+        self.assertIn("line-clamp: 2;", job_title_rule)
+        self.assertIn("white-space: normal;", job_title_rule)
+        item_title_line = next(line for line in css.splitlines() if line.startswith(".item .title {"))
+        self.assertIn("-webkit-line-clamp: 2;", item_title_line)
+        self.assertIn("line-clamp: 2;", item_title_line)
 
     def test_spinner_and_hook_noise_do_not_clobber_ai_activity_updates(self):
         from orchestrator.web.run_progress import RunProgress

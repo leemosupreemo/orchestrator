@@ -5308,20 +5308,17 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertIn('"Stop job"', self.js)
 
     def test_delivery_branch_meta_container_and_labels(self):
-        delivery_src = self.js[self.js.index("pages.delivery = async"):self.js.index("pages.git = async")]
-        self.assertIn("branch-meta-box", delivery_src)
-        self.assertIn("branch-meta-row", delivery_src)
-        self.assertIn("Latest commit", delivery_src)
-        self.assertIn("Latest job", delivery_src)
-        self.assertIn("branch-commit-hash", delivery_src)
-        self.assertIn("branch-job-link", delivery_src)
+        delivery_src = self.js[self.js.index("pages.delivery = async"):self.js.index('pages["delivery-setup"] = async')]
+        self.assertNotIn("Latest commit", delivery_src)
+        self.assertNotIn("Latest job", delivery_src)
+        self.assertNotIn("branch-job-link", delivery_src)
+        self.assertNotIn("Release versions", delivery_src)
+        self.assertNotIn("Latest release", delivery_src)
+        self.assertNotIn("Create release tag", delivery_src)
         self.assertIn(".branch-meta-box {", self.css)
         self.assertIn("background: var(--panel-2);", self.css)
         self.assertIn(".branch-meta-row {", self.css)
         self.assertIn(".branch-meta-tag {", self.css)
-        self.assertIn("Base branch:", delivery_src)
-        self.assertIn("Latest release", delivery_src)
-        self.assertIn("Unreleased", delivery_src)
         # Shows loading spinner overlay over job card while in progress
         self.assertIn('live-run-overlay', self.js)
         self.assertIn('role="status"', self.js)
@@ -8471,15 +8468,27 @@ console.log(JSON.stringify({{ fromHyp, fromDoc, bullets, html }}));
 
     def test_job_menu_is_one_plain_list_that_never_repeats_a_button_on_the_page(self):
         fn = self.source[self.source.index("function jobHeaderActions"):self.source.index('document.addEventListener("click", async (e)', self.source.index("function jobHeaderActions"))]
-        for heading in ("Work on this job", "Share & export", "Settings", "Finish or remove"):
+        for heading in ("Work on this job", "Links", "Settings", "Finish or remove"):
             self.assertIn(f'"{heading}"', fn)
         self.assertNotIn("Still broken?", fn)  # one way to ask for a fix
+        self.assertNotIn("Split into jobs", fn)
+        self.assertNotIn('act("splinter_job"', fn)
         self.assertIn('idle && !ctx.steerShown && next !== "debug"', fn)  # not when the status box offers Run fix
-        self.assertIn('idle && !reviewed && !ctx.planShown && ctx.canSplinter', fn)  # the plan card has its own Split
-        self.assertIn("idle && simulator && ctx.hasChanges", fn)  # only once there is something to look at
+        self.assertNotIn("Check on simulator", fn)
+        self.assertNotIn('act("run_visual_check"', fn)
+        delivery_start = self.source.index("pages.delivery = async")
+        delivery = self.source[delivery_start:self.source.index("\npages.", delivery_start + 1)]
+        self.assertIn("Check on simulator", delivery)
+        self.assertIn('act("run_visual_check"', delivery)
         self.assertIn('idle && s.status !== "completed" && ["Choose models…"', fn)
         self.assertIn('idle && s.issue_number && [`Close issue #${s.issue_number} and finish job`', fn)  # says it finishes the job; not mid-run
-        self.assertIn('["Download ZIP", `data-open="/api/jobs/', fn)
+        self.assertIn('["Share & export…", act("export_job_bundle"', fn)
+        self.assertNotIn('["Download ZIP"', fn)
+        self.assertNotIn('["Export to…"', fn)
+        self.assertNotIn('["Share snapshot (.md)"', fn)
+        dialog = self.source[self.source.index("async export_job_bundle(params)"):self.source.index("async run_visual_check(params)")]
+        for option in ("Job bundle (.zip)", "Shareable snapshot (.md)", "Download ZIP in browser", "Save to iCloud Drive", "Save to Google Drive"):
+            self.assertIn(option, dialog)
         self.assertNotIn("const recommendFixBtn", self.source)  # the status box's one Tell-the-AI box replaced the page's fix button
         self.assertIn("steerShown: Boolean(steer), hasChanges: allFiles.length > 0", self.source)
 
@@ -8487,11 +8496,14 @@ console.log(JSON.stringify({{ fromHyp, fromDoc, bullets, html }}));
         dialog = self.source[self.source.index("async select_models(params)"):self.source.index("async export_context(params)")]
         self.assertIn('api("config")', dialog)
         self.assertIn("Project's choice (Model team)", dialog)
-        self.assertNotIn("<input", dialog)  # no free-text model names
-        server =(PACKAGE_ROOT / "orchestrator" / "web" / "server.py").read_text()
-        route = server[server.index('parts[2] == "models"'):][:700]
+        self.assertIn('type="checkbox" name="free"', dialog)
+        self.assertIn("free_only: Boolean(values.free)", dialog)
+        self.assertNotIn('<input type="text"', dialog)  # no free-text model names
+        server = (PACKAGE_ROOT / "orchestrator" / "web" / "server.py").read_text()
+        route = server[server.index('parts[2] == "models"'):][:1400]
         self.assertIn("job.pop(role, None)", route)
         self.assertIn("if role not in body:", route)
+        self.assertIn('if "free_only" in body:', route)
 
     def test_delete_job_dialog_flow_defined(self):
         start = self.source.index("async delete_job(params)")
@@ -9125,6 +9137,49 @@ class SetupActionEndpointTests(ServerTestCase):
             with self.subTest(body=body):
                 res, data = self.request("POST", "/api/ai-providers/recheck", body=body, headers=UI_HEADERS)
                 self.assertEqual(res.status, 400)
+
+    def test_dismissing_a_provider_notice_hides_it_while_keeping_models_blocked(self):
+        project_chat = self.reject_alibaba()
+        res, data = self.request("POST", "/api/ai-providers/dismiss", body={"provider": "alibaba-token-plan"}, headers=UI_HEADERS)
+        self.assertEqual((res.status, data["ok"], data["dismissed"]), (200, True, 1))
+        self.assertEqual(project_chat.provider_problems([], checks=project_chat.load_checks()), [])
+        self.assertTrue(project_chat.is_model_blocked("alibaba-token-plan/glm-5.2", checks=project_chat.load_checks()))
+        bad_res, _ = self.request("POST", "/api/ai-providers/dismiss", body={"provider": "../bad"}, headers=UI_HEADERS)
+        self.assertEqual(bad_res.status, 400)
+
+    def test_job_models_endpoint_toggles_free_only_allowlist_and_clears_paid_picks(self):
+        job_path = self.root / ".orchestrator" / "jobs" / "j-free.json"
+        job_path.parent.mkdir(parents=True, exist_ok=True)
+        job_path.write_text(json.dumps({
+            "job_id": "j-free", "title": "Free toggle", "status": "debugging",
+            "planner": "claude-sonnet-4-6", "builder": "opencode/big-pickle",
+        }))
+        free_model = type("M", (), {"id": "opencode/big-pickle", "cost_factor": 0.0})()
+        paid_model = type("M", (), {"id": "claude-sonnet-4-6", "cost_factor": 5.0})()
+        lookup = {"opencode/big-pickle": free_model, "claude-sonnet-4-6": paid_model}
+
+        with patch("orchestrator.project_setup.models_ready_here", return_value=["opencode/big-pickle", "claude-sonnet-4-6"]), \
+             patch("orchestrator.scripts.model_registry.get_free_models", return_value=[free_model]), \
+             patch("orchestrator.scripts.model_registry.get_model", side_effect=lambda mid: lookup.get(mid)), \
+             patch("orchestrator.scripts.llm.get_model", side_effect=lambda mid: lookup.get(mid)):
+            res, data = self.request("POST", "/api/jobs/j-free/models",
+                                     body={"planner": "claude-sonnet-4-6", "builder": "opencode/big-pickle", "free_only": True},
+                                     headers=UI_HEADERS)
+            self.assertEqual(res.status, 200)
+            self.assertTrue(data["free_only"])
+            self.assertEqual(data["allowed_models"], ["opencode/big-pickle"])
+            self.assertIsNone(data["planner"])  # paid override cleared when free_only enabled
+            self.assertEqual(data["builder"], "opencode/big-pickle")
+
+            res2, data2 = self.request("POST", "/api/jobs/j-free/models", body={"free_only": False}, headers=UI_HEADERS)
+            self.assertEqual(res2.status, 200)
+            self.assertFalse(data2["free_only"])
+            self.assertIsNone(data2["allowed_models"])
+
+        with patch("orchestrator.project_setup.models_ready_here", return_value=[]), \
+             patch("orchestrator.scripts.model_registry.get_free_models", return_value=[free_model]):
+            res3, _ = self.request("POST", "/api/jobs/j-free/models", body={"free_only": True}, headers=UI_HEADERS)
+            self.assertEqual(res3.status, 400)
 
     def test_setup_github_create_endpoint(self):
         with patch("orchestrator.new_project.publish_to_github") as mock_pub:

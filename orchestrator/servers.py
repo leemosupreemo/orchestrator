@@ -242,8 +242,27 @@ def parse_ps(output: str) -> list[dict[str, Any]]:
             continue
         ports = sorted({int(p["PublishedPort"]) for p in row.get("Publishers") or [] if p.get("PublishedPort")})
         out.append({"service": row.get("Service") or row.get("Name") or "?", "state": str(row.get("State") or "").lower(),
-                    "health": str(row.get("Health") or "").lower(), "status": str(row.get("Status") or ""), "ports": ports})
+                    "health": str(row.get("Health") or "").lower(), "status": str(row.get("Status") or ""),
+                    "image": str(row.get("Image") or ""), "ports": ports})
     return sorted(out, key=lambda r: r["service"])
+
+
+def version_info(root: Path, server: dict[str, Any]) -> dict[str, str]:
+    """Read-only git version (tag or short commit, plus branch) for the server's directory, if it is inside a git repo."""
+    target = root / str(server.get("dir") or ".")
+    if not target.exists():
+        return {}
+    out: dict[str, str] = {}
+    try:
+        ref = subprocess.run(["git", "-C", str(target), "describe", "--tags", "--always"], capture_output=True, text=True, timeout=3, check=False)
+        if ref.returncode == 0 and ref.stdout.strip():
+            out["ref"] = ref.stdout.strip()[:40]
+        branch = subprocess.run(["git", "-C", str(target), "rev-parse", "--abbrev-ref", "HEAD"], capture_output=True, text=True, timeout=3, check=False)
+        if branch.returncode == 0 and branch.stdout.strip() and branch.stdout.strip() != "HEAD":
+            out["branch"] = branch.stdout.strip()[:60]
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    return out
 
 
 def summarize(expected: list[str], containers: list[dict[str, Any]]) -> str:

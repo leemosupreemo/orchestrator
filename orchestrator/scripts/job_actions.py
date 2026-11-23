@@ -143,19 +143,38 @@ def answer(path: Path, text: str) -> int:
         print("This job isn't waiting on a question.")
         return 1
     original = json.loads(json.dumps(job))
+    was_debugger = (
+        job.get("clarification_asker") == "debugger"
+        or str(job.get("last_error") or "").startswith("Debugger clarification needed")
+    )
     record_clarification(job, question, text)
-    write_json(path, job)
-    print("Answer recorded. Re-planning with it...\n")
-    code = run_script("new_job.py", [replan_type(job), "--no-dispatch", "--update", str(path),
-                                     "--feedback", f"### USER CLARIFICATION ###\n{text}"])
+    if was_debugger and job.get("clarification_history"):
+        job["clarification_history"][-1]["asker"] = "debugger"
+    job.pop("clarification_asker", None)
+    if was_debugger:
+        job["status"] = "debugging"
+        job["debug_phase"] = "propose"
+        job.pop("debug_pause_reason", None)
+        job["debug_convergence_reset_at"] = len(job.get("debug_history") or [])
+        write_json(path, job)
+        print("Answer recorded. Resuming fix attempt with it...\n")
+        code = run_script("debug_job.py", [str(path), "--manual", "--feedback", f"### USER CLARIFICATION ###\n{text}"])
+    else:
+        write_json(path, job)
+        print("Answer recorded. Re-planning with it...\n")
+        code = run_script("new_job.py", [replan_type(job), "--no-dispatch", "--update", str(path),
+                                         "--feedback", f"### USER CLARIFICATION ###\n{text}"])
     if code != 0:
-        # The re-plan failed. Put the question back so the job isn't left "waiting" on nothing and can be answered again.
+        # The follow-up failed. Put the question back so the job isn't left "waiting" on nothing and can be answered again.
         current = read_json(path)
-        if current.get("status") == "human-needed" and not current.get("human_clarification_question"):
+        if not current.get("human_clarification_question") and current.get("status") in ("human-needed", "debugging"):
+            current["status"] = "human-needed"
             current["human_clarification_question"] = question
+            if original.get("clarification_asker"):
+                current["clarification_asker"] = original["clarification_asker"]
             current["clarification_history"] = original.get("clarification_history", [])
             write_json(path, current)
-            print("The re-plan failed, so your question is back. Answer it again to retry.")
+            print("The follow-up failed, so your question is back. Answer it again to retry.")
     return code
 
 

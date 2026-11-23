@@ -54,9 +54,14 @@ def record(channel: str, ok: bool, error: str = "", now: float | None = None) ->
                 return  # nothing new worth a write
             entry.update(ok_at=now)
             entry.pop("failing_since", None)
+            entry.pop("failed_at", None)
             entry.pop("error", None)
         else:
-            entry.setdefault("failing_since", now)
+            prev_failed_at = entry.get("failed_at")
+            if prev_failed_at and now - float(prev_failed_at) > STALE_FAILURE_SECONDS:
+                entry["failing_since"] = now  # prior failure was before sleep/idle: start a fresh grace window
+            else:
+                entry.setdefault("failing_since", now)
             entry.update(failed_at=now, error=_clean(error))
         data[channel] = entry
         try:

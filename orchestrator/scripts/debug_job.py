@@ -185,7 +185,13 @@ def describe_log_source(source: str) -> str:
     return f"inline runtime log ({len(source)} chars)"
 
 
-def run_debug_iteration(job_path: Path, logs: str | None = None, feedback: str | None = None, max_iterations: int | None = None) -> None:
+def run_debug_iteration(
+    job_path: Path,
+    logs: str | None = None,
+    feedback: str | None = None,
+    max_iterations: int | None = None,
+    manual: bool = False,
+) -> None:
     job = read_json(job_path)
 
     from orchestrator.job_scope import NONPRODUCTION_TYPES
@@ -205,17 +211,24 @@ def run_debug_iteration(job_path: Path, logs: str | None = None, feedback: str |
         job["debug_phase"] = "propose"
         job["iteration"] = 0
         job["debug_history"] = []
+        job.pop("debug_convergence_reset_at", None)
+        job.pop("debug_pause_reason", None)
         if "max_iterations" not in job:
             job["max_iterations"] = 8
 
-    # 2. Handle Iteration Overrides
+    # 2. Handle Iteration Overrides & Explicit Human Resume/Steer
+    human_steered = bool(manual or feedback or logs or max_iterations is not None)
+    was_paused = job.get("debug_phase") == "paused"
     if max_iterations is not None:
         job["max_iterations"] = max_iterations
-        if job.get("debug_phase") == "paused":
-            job["debug_phase"] = "propose"
-        write_json(job_path, job)
-    elif job.get("debug_phase") == "paused":
+    if was_paused:
         job["debug_phase"] = "propose"
+    if human_steered and (was_paused or feedback or logs):
+        # An explicit Run fix from paused state or new human guidance starts a fresh convergence window
+        # instead of immediately deadlocking on prior pre-guidance history.
+        job["debug_convergence_reset_at"] = len(job.get("debug_history") or [])
+        job.pop("debug_pause_reason", None)
+    if was_paused or max_iterations is not None or (human_steered and (feedback or logs)):
         write_json(job_path, job)
 
     # 3. Check for Intelligent Convergence / Loop Termination
@@ -223,7 +236,7 @@ def run_debug_iteration(job_path: Path, logs: str | None = None, feedback: str |
     convergence = analyze_debug_loop_convergence(job, test_summary)
     safety_ceiling = max_iterations if max_iterations is not None else 30
 
-    if convergence["is_stuck"] or (job["iteration"] >= safety_ceiling and convergence["health"] != "converging"):
+    if not (human_steered and was_paused) and (convergence["is_stuck"] or (job["iteration"] >= safety_ceiling and convergence["health"] != "converging")):
         if convergence["is_stuck"]:
             reason = f"Loop/Stall detected: {convergence['description']}"
         else:
@@ -428,6 +441,43 @@ def run_propose(job: dict, job_path: Path, logs_path: str | None, feedback: str 
         job["debug_proposal"] = plan
         if isinstance(plan.get("targeted_tests"), list):
             job["targeted_tests"] = [str(t).strip() for t in plan["targeted_tests"] if str(t).strip()][:10]
+
+        if str(plan.get("action") or "").strip().lower() == "ask_human":
+            question = str(plan.get("clarification_question") or plan.get("summary") or plan.get("hypothesis") or "").strip()
+            if question:
+                job.setdefault("debug_history", []).append({
+                    "iteration": job["iteration"],
+                    "model": actual_model,
+                    "hypothesis": plan.get("hypothesis"),
+                    "action": "ask_human",
+                    "result": {
+                        "build_ok": False,
+                        "tests_ok": False,
+                        "aborted": True,
+                        "notes": "Asked human for clarification",
+                    },
+                })
+                job["status"] = "human-needed"
+                job["human_clarification_question"] = question
+                job["clarification_asker"] = "debugger"
+                job["last_error"] = f"Debugger clarification needed: {question[:200]}"
+                job["debug_phase"] = "paused"
+                job["debug_pause_reason"] = "Waiting for your answer"
+                job["updated_at"] = now_iso()
+                write_json(job_path, job)
+                print(f"\n\033[1;93m❓ Debugger needs your input:\033[0m {question}")
+                try:
+                    notify_body = f"Debugger needs your input on {job.get('title', '')}:\n{question}"
+                    run_shell(
+                        f'{shlex.quote(sys.executable)} {shlex.quote(str(SCRIPTS_DIR / "notify.py"))} '
+                        f'"Question for you" {shlex.quote(notify_body)} {shlex.quote(str(job.get("job_id") or ""))}',
+                        cwd=ROOT,
+                        check=False,
+                    )
+                except Exception:
+                    pass
+                return
+
         job["debug_phase"] = "implement"
         
         # Record iteration in history
@@ -463,13 +513,31 @@ def run_propose(job: dict, job_path: Path, logs_path: str | None, feedback: str 
 
 def run_implement(job: dict, job_path: Path) -> None:
     print(f"      - Implementing debug step...")
-    run_shell(
-        f'{shlex.quote(sys.executable)} {shlex.quote(str(SCRIPTS_DIR / "worker_run.py"))} {shlex.quote(str(job_path))}',
-        cwd=ROOT,
-        check=True,
-        capture=False,
-        env={"AI_DEBUG_CHILD": "1"},
-    )
+    try:
+        run_shell(
+            f'{shlex.quote(sys.executable)} {shlex.quote(str(SCRIPTS_DIR / "worker_run.py"))} {shlex.quote(str(job_path))}',
+            cwd=ROOT,
+            check=True,
+            capture=False,
+            env={"AI_DEBUG_CHILD": "1"},
+        )
+    except Exception as exc:
+        # Don't leave a dangling `result: "pending"` entry when worker_run aborts early (e.g. DiskFullError / quota).
+        try:
+            fresh = read_json(job_path)
+            hist = fresh.get("debug_history")
+            if isinstance(hist, list) and hist and isinstance(hist[-1], dict) and hist[-1].get("result") == "pending":
+                hist[-1]["result"] = {
+                    "build_ok": False,
+                    "tests_ok": False,
+                    "aborted": True,
+                    "notes": f"Implementation aborted before completing: {str(exc)[:200]}",
+                }
+                fresh["updated_at"] = now_iso()
+                write_json(job_path, fresh)
+        except Exception:
+            pass
+        raise
 
 def run_verify(job: dict, job_path: Path) -> None:
     print(f"      - Verification complete. Result recorded.")
@@ -480,9 +548,10 @@ def main() -> None:
     parser.add_argument("--logs", help="Path to runtime logs file")
     parser.add_argument("--feedback", help="Human feedback for this iteration")
     parser.add_argument("--max-iterations", type=int)
+    parser.add_argument("--manual", action="store_true", help="Explicit user-initiated fix run (resets paused loop gate)")
     args = parser.parse_args()
 
-    run_debug_iteration(Path(args.job_file), args.logs, args.feedback, max_iterations=args.max_iterations)
+    run_debug_iteration(Path(args.job_file), args.logs, args.feedback, max_iterations=args.max_iterations, manual=args.manual)
 
 if __name__ == "__main__":
     main()

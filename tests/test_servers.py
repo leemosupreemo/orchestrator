@@ -117,10 +117,21 @@ class FindTests(unittest.TestCase):
 class StatusTests(unittest.TestCase):
     def test_parse_reads_an_array_or_one_object_per_line(self):
         rows = [row("db", ports=[3307]), row("gameserver", "exited")]
-        self.assertEqual([c["service"] for c in servers.parse_ps(json.dumps(rows))], ["db", "gameserver"])
+        rows[0]["Image"] = "mariadb:11.4"
+        parsed = servers.parse_ps(json.dumps(rows))
+        self.assertEqual([c["service"] for c in parsed], ["db", "gameserver"])
+        self.assertEqual(parsed[0]["image"], "mariadb:11.4")
         self.assertEqual([c["service"] for c in servers.parse_ps("\n".join(json.dumps(r) for r in rows))], ["db", "gameserver"])
         self.assertEqual(servers.parse_ps(""), [])
         self.assertEqual(servers.parse_ps(json.dumps(rows))[0]["ports"], [3307])
+
+    def test_homepage_and_server_card_show_online_status_version_and_launch_action(self):
+        app = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text(encoding="utf-8")
+        self.assertIn('id="home-server-card"', app)
+        self.assertIn('loadServerCard(view.querySelector("#home-server-card"), false, () => {}, { homeMode: true })', app)
+        card = app[app.index("const SERVER_STATE ="):app.index("// ---------------------------------------------------------------- signing keys")]
+        for token in ("Online", "Offline", "Launch server", "sv.version", "c.image"):
+            self.assertIn(token, card)
 
     def test_the_overall_state(self):
         def state(*rows):

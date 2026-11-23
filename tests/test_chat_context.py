@@ -548,6 +548,17 @@ class ProviderProblemTests(unittest.TestCase):
             self.assertEqual(project_chat.forget_provider("alibaba-token-plan"), 0)
             self.assertEqual(project_chat.forget_provider(""), 0)
 
+    def test_dismissing_a_provider_hides_its_notice_while_keeping_it_blocked(self):
+        self.set_auth_time(100.0)
+        models = [type("M", (), {"id": "alibaba-token-plan/glm-5.2"})()]
+        with patch.dict(os.environ, {"ORCHESTRATOR_USER_STATE_DIR": self.tmp.name}):
+            project_chat.record_check("alibaba-token-plan/glm-5.2", False, self.KEY, now=1000.0)
+            self.assertEqual(len(project_chat.provider_problems(models, now=1100.0)), 1)
+            self.assertEqual(project_chat.dismiss_provider("alibaba-token-plan"), 1)
+            self.assertEqual(project_chat.provider_problems(models, now=1100.0), [])
+            self.assertTrue(project_chat.is_model_blocked("alibaba-token-plan/glm-5.2", now=1100.0))
+            self.assertEqual(project_chat.dismiss_provider(""), 0)
+
     def test_tiers_leave_the_provider_out_while_rejected_and_take_it_back_after_a_new_sign_in(self):
         models = [type("M", (), {"id": i, "tier": 2, "cost_factor": 5.0, "family": "opencode", "capabilities": ["coding"], "required_clis": ["opencode"]})()
                   for i in ("alibaba-token-plan/glm-5.2", "alibaba-token-plan/qwen3.7-max")]

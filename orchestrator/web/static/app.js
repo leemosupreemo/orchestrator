@@ -1031,7 +1031,7 @@ const dialogs = {
       return dialogs[fix.action] ? dialogs[fix.action](fixParams) : runAction(fix.action, fixParams);
     }
     const question = job.summary?.question || job.job?.human_clarification_question || "";
-    const asker = String(job.job?.last_error || "").startsWith("Builder clarification needed") ? "builder" : "planner";
+    const asker = job.job?.clarification_asker || (String(job.job?.last_error || "").startsWith("Builder clarification needed") ? "builder" : String(job.job?.last_error || "").startsWith("Debugger clarification needed") ? "debugger" : "planner");
     const values = await formDialog(`Answer the ${asker}`, `
       <p class="question">${esc(question)}</p>
       <label class="field"><span>Your answer</span><textarea name="answer" required></textarea>
@@ -1070,6 +1070,9 @@ const dialogs = {
     const [jobData, config] = await Promise.all([api(`jobs/${encodeURIComponent(params.job)}`), api("config").catch(() => ({}))]);
     const job = jobData.job || {};
     const available = config.models?.available || [];
+    const freeIds = new Set(available.filter((m) => m.free).map((m) => m.id));
+    const allowed = Array.isArray(job.allowed_models) ? job.allowed_models : [];
+    const isFreeOnly = allowed.length > 0 && allowed.every((id) => freeIds.has(id) || String(id).startsWith("ollama/") || String(id).endsWith("-free"));
     const roles = [["planner", "Planner", "Turns the request into tasks"], ["builder", "Builder", "Writes the code and the tests"], ["reviewer", "Reviewer", "Reads the changes and looks for what could break"]];
     const select = ([role, label, hint]) => {
       const current = String(job[role] || "");
@@ -1081,11 +1084,12 @@ const dialogs = {
       </select></label>`;
     };
     const values = await formDialog("Models for this job", `<p class="muted mb-8">Used from the next run of this job. Other jobs keep the project's choice.</p>
+      <label class="check mb-8"><input type="checkbox" name="free"${isFreeOnly ? " checked" : ""}><span><strong>Use free AI only</strong><small>Only uses free models and blocks fallback to paid ones.</small></span></label>
       ${roles.map(select).join("")}`, "Save");
     if (values) {
       api(`jobs/${encodeURIComponent(params.job)}/models`, {
         method: "POST",
-        body: values
+        body: { planner: values.planner ?? "", builder: values.builder ?? "", reviewer: values.reviewer ?? "", free_only: Boolean(values.free) }
       }).then(async () => {
         toast("Models updated for this job");
         await refreshState();
@@ -1187,41 +1191,102 @@ const dialogs = {
     }
   },
   async export_job_bundle(params) {
-    // Saving straight to this browser is the menu's Download ZIP; this is for the places the computer saves to.
-    const values = await formDialog("Export job", `
-      <p class="muted">The brief, plan, changes and logs, as one ZIP file.</p>
-      <label class="field"><span>Save to</span>
+    const shareBuildCard = params.can_share_build
+      ? (params.web_app
+          ? `<label class="radio-card">
+              <input type="radio" name="kind" value="web_preview">
+              <div>
+                <strong class="block">Publish preview link</strong>
+                <span class="muted t-secondary">Publishes ${esc(params.branch || "this branch")} on a shareable link for 7 days.</span>
+              </div>
+            </label>`
+          : `<label class="radio-card">
+              <input type="radio" name="kind" value="deliver">
+              <div>
+                <strong class="block">Send to testers</strong>
+                <span class="muted t-secondary">Builds ${esc(params.branch || "this branch")} and sends it to your testers.</span>
+              </div>
+            </label>`)
+      : "";
+    const dialogPromise = formDialog("Share & export", `
+      <div class="stack gap-8">
+        <label class="radio-card">
+          <input type="radio" name="kind" value="zip" checked>
+          <div>
+            <strong class="block">Job bundle (.zip)</strong>
+            <span class="muted t-secondary">The brief, plan, changes and logs in one file.</span>
+          </div>
+        </label>
+        <label class="radio-card">
+          <input type="radio" name="kind" value="markdown">
+          <div>
+            <strong class="block">Shareable snapshot (.md)</strong>
+            <span class="muted t-secondary">A markdown summary of this job you can view, copy or download.</span>
+          </div>
+        </label>
+        ${shareBuildCard}
+      </div>
+      <label class="field" id="export-zip-destination"><span>How to export</span>
         <select name="destination">
-          <option value="icloud">iCloud Drive</option>
-          <option value="gdrive">Google Drive</option>
-          <option value="downloads">Downloads folder on the computer</option>
-          <option value="local">The project's exports folder</option>
+          <option value="direct">Download ZIP in browser</option>
+          <option value="icloud">Save to iCloud Drive</option>
+          <option value="gdrive">Save to Google Drive</option>
+          <option value="downloads">Save to Downloads folder on this computer</option>
+          <option value="local">Save to the project's exports folder</option>
         </select>
       </label>`, "Export");
-    if (values) {
-      if (values.destination === "direct") {
-        try {
-          await downloadApiFile(`/api/jobs/${encodeURIComponent(params.job)}/export-zip`, `${params.job}-export.zip`);
-          toast("Download started", "info");
-        } catch (err) {
-          toast(err.message, true);
-        }
-      } else {
-        // Runs in the background: no run page, and the job doesn't show as busy. One message when it's done.
-        const where = { icloud: "iCloud Drive", gdrive: "Google Drive", downloads: "your Downloads folder", local: "the project's exports folder" }[values.destination] || "the chosen folder";
-        try {
-          const { run } = await api("runs", { method: "POST", body: { action: "export_job", params: { job: params.job, destination: values.destination }, ...terminalSize() } });
-          for (let i = 0; i < 300; i++) {
-            await new Promise((done) => setTimeout(done, 1000));
-            const r = (await api("runs")).runs?.find((x) => x.id === run.id);
-            if (r && !r.running) {
-              if (r.exit_code === 0) toast(`Exported to ${where}`);
-              else toast("The export didn't finish.", true, { label: "See details", run: () => { location.hash = `#/runs/${run.id}`; } });
-              return;
-            }
-          }
-        } catch (e) { toast(e.message, true); }
+    const destWrap = $("#export-zip-destination");
+    const syncExportModal = () => {
+      const kind = $("#dialog-form input[name=kind]:checked")?.value || "zip";
+      const dest = $("#dialog-form select[name=destination]")?.value || "direct";
+      if (destWrap) destWrap.hidden = kind !== "zip";
+      const ok = $("#dialog-ok");
+      if (ok) {
+        ok.textContent = kind === "markdown" ? "Open snapshot"
+          : kind === "web_preview" ? "Publish"
+          : kind === "deliver" ? "Send"
+          : dest === "direct" ? "Download" : "Export";
       }
+    };
+    $("#dialog-form")?.addEventListener("change", syncExportModal);
+    syncExportModal();
+    const values = await dialogPromise;
+    $("#dialog-form")?.removeEventListener("change", syncExportModal);
+    if (!values) return;
+    if (values.kind === "markdown") {
+      location.hash = `#/docs/job/${encodeURIComponent(params.job)}`;
+      return;
+    }
+    if (values.kind === "web_preview") {
+      await runAction("web_preview", { branch: params.branch });
+      return;
+    }
+    if (values.kind === "deliver") {
+      await runAction("deliver", { job: params.job });
+      return;
+    }
+    if (values.destination === "direct") {
+      try {
+        await downloadApiFile(`/api/jobs/${encodeURIComponent(params.job)}/export-zip`, `${params.job}-export.zip`);
+        toast("Download started", "info");
+      } catch (err) {
+        toast(err.message, true);
+      }
+    } else {
+      // Runs in the background: no run page, and the job doesn't show as busy. One message when it's done.
+      const where = { icloud: "iCloud Drive", gdrive: "Google Drive", downloads: "your Downloads folder", local: "the project's exports folder" }[values.destination] || "the chosen folder";
+      try {
+        const { run } = await api("runs", { method: "POST", body: { action: "export_job", params: { job: params.job, destination: values.destination }, ...terminalSize() } });
+        for (let i = 0; i < 300; i++) {
+          await new Promise((done) => setTimeout(done, 1000));
+          const r = (await api("runs")).runs?.find((x) => x.id === run.id);
+          if (r && !r.running) {
+            if (r.exit_code === 0) toast(`Exported to ${where}`);
+            else toast("The export didn't finish.", true, { label: "See details", run: () => { location.hash = `#/runs/${run.id}`; } });
+            return;
+          }
+        }
+      } catch (e) { toast(e.message, true); }
     }
   },
   async run_visual_check(params) {
@@ -1427,6 +1492,7 @@ let connectionLost = false;
 let connectionLostAt = 0;
 let pollFailures = 0; // consecutive failed background polls
 let lastInbox = null; // previous inbox items, to spot new things waiting on you
+const shownQuestionNoticeIds = new Set(); // active in-app question banners in #messages
 let lastRuns = null; // previous poll, to spot runs that finished or started waiting
 
 // The page is deployed on its own; the computer it opens has whatever version was installed. Say so when it's behind,
@@ -1525,7 +1591,28 @@ async function refreshState({ opening = false, isCurrent = () => true, switching
         saveLastProject(newState.project.root);
       }
     }
-    for (const event of [...Notifications.events(lastRuns, newState.runs), ...Notifications.inboxEvents(lastInbox, newState.inbox)]) Notifications.show(event);
+    const inboxEvents = Notifications.inboxEvents(lastInbox, newState.inbox);
+    for (const event of [...Notifications.events(lastRuns, newState.runs), ...inboxEvents]) Notifications.show(event);
+    const activeInboxIds = new Set((newState.inbox || []).map((item) => item.id));
+    for (const id of [...shownQuestionNoticeIds]) {
+      if (!activeInboxIds.has(id)) {
+        clearMessage(`question:${id}`);
+        shownQuestionNoticeIds.delete(id);
+      }
+    }
+    for (const ev of inboxEvents) {
+      if (ev.title === "Question for you") {
+        shownQuestionNoticeIds.add(ev.key);
+        const targetHash = ev.hash || "#/";
+        const onSeen = () => { shownQuestionNoticeIds.delete(ev.key); };
+        notify("warning", `Question for you — ${ev.body}`, {
+          id: `question:${ev.key}`,
+          sticky: true,
+          onDismiss: onSeen,
+          actions: [{ label: "Answer question", href: targetHash, after: onSeen }],
+        });
+      }
+    }
     for (const r of newState.runs || []) {
       const prev = (lastRuns || []).find((x) => x.id === r.id);
       if (prev?.running && !r.running && !r.stopped && r.exit_code !== 0) reportRunError(r);
@@ -1655,7 +1742,12 @@ function renderComputerSelect(select) {
 function fillComputerSelect(select) {
   const wrap = select;
   if (!select) return;
-  if (!Account.active() || document.body.classList.contains("signin-gate")) { wrap.hidden = true; return; }
+  const hidePicker = () => {
+    wrap.hidden = true;
+    const picker = select.parentElement?.querySelector(".machine-picker");
+    if (picker) picker.hidden = true;
+  };
+  if (!Account.active() || document.body.classList.contains("signin-gate")) { hidePicker(); return; }
   if (!accountMachinesLoading && Date.now() - accountMachinesAt > 30000) {
     accountMachinesLoading = true;
     cpApi("machines").then(({ machines }) => { accountMachines = machines || []; accountMachinesAt = Date.now(); renderComputerSelect(select); })
@@ -1665,9 +1757,9 @@ function fillComputerSelect(select) {
   let current = null;
   try { current = localStorage.getItem(Account.MACHINE_KEY); } catch { /* storage blocked */ }
   const machines = accountMachines || [];
-  if (!machines.length) { wrap.hidden = true; return; }
+  if (!machines.length) { hidePicker(); return; }
   wrap.hidden = false;
-  // Native options use text indicators so status appears in the open menu too.
+  // Native options keep status text synced for accessibility/fallbacks; the custom dropdown renders a crisp dot.
   const html = machines.map((m) => `<option value="${esc(m.id)}"${m.id === current ? " selected" : ""}>${m.reachable ? "🟢" : "🔴"} ${esc(m.name)}${m.reachable ? "" : " (offline)"}</option>`).join("")
     + `<option value="__manage__" class="manage-projects-option">💻 Manage computers...</option>`;
   if (select.dataset.html !== html) { select.innerHTML = html; select.dataset.html = html; }
@@ -1679,6 +1771,46 @@ function fillComputerSelect(select) {
     const machine = machines.find((m) => m.id === chosen);
     if (machine && chosen !== current) enterMachine(machine);
   };
+  renderMachinePicker(select, machines, current);
+}
+
+function renderMachinePicker(select, machines, current) {
+  const parent = select.parentElement;
+  if (!parent) return;
+  let picker = parent.querySelector(".machine-picker");
+  if (!picker) {
+    picker = document.createElement("div");
+    picker.className = "machine-picker";
+    picker.innerHTML = `<button type="button" class="machine-picker-trigger" aria-haspopup="listbox" aria-expanded="false"></button><div class="machine-picker-menu" role="listbox" hidden></div>`;
+    select.insertAdjacentElement("afterend", picker);
+    const trigger = picker.querySelector(".machine-picker-trigger");
+    const menu = picker.querySelector(".machine-picker-menu");
+    const close = () => { menu.hidden = true; trigger.setAttribute("aria-expanded", "false"); };
+    trigger.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const opening = menu.hidden;
+      menu.hidden = !opening;
+      trigger.setAttribute("aria-expanded", opening ? "true" : "false");
+    });
+    menu.addEventListener("click", (e) => {
+      const opt = e.target.closest("[data-machine-value]");
+      if (!opt) return;
+      close();
+      select.value = opt.dataset.machineValue;
+      select.onchange?.();
+    });
+    document.addEventListener("click", (e) => { if (!menu.hidden && !picker.contains(e.target)) close(); });
+    document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !menu.hidden) { close(); trigger.focus(); } });
+  }
+  picker.hidden = false;
+  const active = machines.find((m) => m.id === current) || machines[0];
+  const trigger = picker.querySelector(".machine-picker-trigger");
+  const menu = picker.querySelector(".machine-picker-menu");
+  const triggerHtml = `<span class="machine-dot ${active?.reachable ? "ok" : "bad"}" aria-hidden="true"></span><span class="machine-picker-name">${esc(active?.name || "")}${active && !active.reachable ? " (offline)" : ""}</span><span class="machine-picker-caret" aria-hidden="true">▾</span>`;
+  if (trigger.dataset.html !== triggerHtml) { trigger.innerHTML = triggerHtml; trigger.dataset.html = triggerHtml; }
+  const menuHtml = machines.map((m) => `<button type="button" role="option" class="machine-picker-item${m.id === current ? " is-selected" : ""}" aria-selected="${m.id === current ? "true" : "false"}" data-machine-value="${esc(m.id)}"><span class="machine-dot ${m.reachable ? "ok" : "bad"}" aria-hidden="true"></span><span class="machine-picker-name">${esc(m.name)}${m.reachable ? "" : " (offline)"}</span></button>`).join("")
+    + `<div class="machine-picker-divider"></div><button type="button" role="option" class="machine-picker-item machine-picker-manage" data-machine-value="__manage__">💻 Manage computers...</button>`;
+  if (menu.dataset.html !== menuHtml) { menu.innerHTML = menuHtml; menu.dataset.html = menuHtml; }
 }
 
 // Which computer this session is on: the currently selected machine is always the project's primary
@@ -5049,6 +5181,7 @@ pages.home = async (_, query) => {
     html: `
       ${syncHealthBanner(syncHealth)}
       ${HomeStatus.render({git: homeGit, jobs, runs: state.runs, blockers: homeBlockers?.blockers || []})}
+      <section class="card mb-16" id="home-server-card" hidden></section>
       ${!productComplete ? productCardHtml : ""}
 
       ${runningBanner}
@@ -5099,6 +5232,23 @@ pages.home = async (_, query) => {
       ${productComplete ? productCardHtml : ""}`,
     after: () => {
       renderProjectSelect($(".home-project-select")); // the title's project list, now that it's on the page
+      loadServerCard(view.querySelector("#home-server-card"), false, () => {}, { homeMode: true });
+      if (syncHealth?.problems?.length) {
+        // GET /api/sync-health nudges a fresh sync round on the server; re-check briefly so cleared banners disappear automatically.
+        const token = routeToken;
+        for (const delay of [5000, 15000]) {
+          setTimeout(async () => {
+            if (token !== routeToken || current.page !== "home" || !sameProject() || !$("#sync-health")) return;
+            const fresh = await api("sync-health").catch(() => null);
+            if (!fresh || token !== routeToken || current.page !== "home" || !sameProject()) return;
+            const el = $("#sync-health");
+            if (!el) return;
+            const html = syncHealthBanner(fresh);
+            if (!html) el.remove();
+            else el.outerHTML = html;
+          }, delay);
+        }
+      }
       if (jumpToFinished) ((requested === "archived" && $("#home-archived-section")) || $("#home-finished") || $("#home-archived-section"))?.scrollIntoView({ block: "start" });
       // "2 jobs need you" on the Project status card: down to the job list, filtered to them. The marker is dropped from the
       // address once used, so Home refreshing itself doesn't scroll again (and tapping it again still works).
@@ -5162,7 +5312,7 @@ function jobHeaderActions(s, links = [], ctx = {}) {
   const next = s.state.next?.action;
   const idle = !s.active_run;
   const reviewed = ["review-needed", "completed"].includes(s.status);
-  const simulator = state.project?.mobile_app !== false && (!state.project?.languages?.length || state.project.languages.some((l) => l.name === "Swift"));
+  const canShareBuild = Boolean(idle && state.you?.role !== "member" && s.branch && ["review-needed", "debugging"].includes(s.status));
   const groups = [
     ["Work on this job", [
       // Run a fix and Revise plan live in the status box's "Tell the AI what to change" box; here only when it is hidden.
@@ -5172,22 +5322,14 @@ function jobHeaderActions(s, links = [], ctx = {}) {
       idle && s.status === "scheduled" && next !== "execute" && ["Run now", act("execute", j)],
       idle && !ctx.planShown && !ctx.steerShown && ["planned", "designing", "human-needed", "debugging"].includes(s.status)
         && ["Revise plan…", act("revise", j), "Ask the AI to re-plan with what should change"],
-      idle && !reviewed && !ctx.planShown && ctx.canSplinter && ["Split into jobs…", act("splinter_job", j), "Each task becomes its own job, with a GitHub sub-issue"],
-      idle && simulator && ctx.hasChanges && ["Check on simulator", act("run_visual_check", j), "Boot the simulator and capture screenshots"],
       // Reviews by the AI tools themselves (tool_abilities.py), only those this computer's ready tools have
       ...(s.branch && ctx.hasChanges ? (ctx.abilities || []).filter((a) => !a.billed || state.you?.role !== "member")
         .map((a) => [`${a.label}${a.billed ? "…" : ""}`, act(a.mode === "terminal" ? "ai_review_terminal" : "ai_review", { job: s.id, ability: a.id }), a.what]) : []),
-    ]],
-    ["Share & export", [
-      idle && state.you?.role !== "member" && s.branch && ["review-needed", "debugging"].includes(s.status)
-        && (state.project?.web_app
-          ? ["Publish preview link…", act("web_preview", { branch: s.branch }), `Publishes ${s.branch} on a shareable link for 7 days`]
-          : ["Send to testers…", act("deliver", j), `Builds ${s.branch} and sends it to your testers`]),
-      ["Download ZIP", `data-open="/api/jobs/${encodeURIComponent(s.id)}/export-zip"`, "The brief, plan, changes and logs in one file"],
-      ["Export to…", act("export_job_bundle", j), "iCloud Drive, Google Drive or a folder on this computer"],
+      ["Share & export…", act("export_job_bundle", { job: s.id, branch: s.branch || "", can_share_build: canShareBuild, web_app: Boolean(state.project?.web_app) }), "Choose what to share or export"],
       Boolean(s.is_orchestrator_improvement || s.tag === "improve_orchestrator") && !s.submitted_for_inclusion
         && ["Submit for Prize 🏆", `data-submit-inclusion="${esc(s.id)}" data-job-title="${esc(s.title || '')}"`, "Submit this improvement to the core team for permanent inclusion"],
-      ["Share snapshot (.md)", `data-href="#/docs/job/${encodeURIComponent(s.id)}"`, "A shareable markdown summary of this job"],
+    ]],
+    ["Links", [
       ...links.map((link) => [`${link.where ? `Open a ${link.label}` : link.label} ↗`, `data-open="${esc(link.url)}"`, link.where || "On GitHub"]),
     ]],
     ["Settings", [
@@ -7011,7 +7153,7 @@ pages.job = async ([id]) => {
       seenQuestions.add(qKey);
       visibleQuestions.push({
         question: s.question,
-        asker: String(job.last_error || "").startsWith("Builder clarification needed") ? "builder" : "planner",
+        asker: job.clarification_asker || (String(job.last_error || "").startsWith("Builder clarification needed") ? "builder" : String(job.last_error || "").startsWith("Debugger clarification needed") ? "debugger" : "planner"),
         blocking: true,
       });
     }
@@ -7349,17 +7491,18 @@ pages.job = async ([id]) => {
         e.preventDefault();
         const text = steerForm.text.value.trim();
         const mode = steerForm.dataset.mode;
+        const submitBtn = steerForm.querySelector('button[type="submit"]');
         if (text || mode === "debug") steerDrafts.delete(s.id);
         if (mode === "debug") {
-          runAction("debug", { job: s.id, logs: steerForm.device_logs?.checked ? "cloud:latest" : "", feedback: text || String(job.last_error || "").slice(0, 2000) });
+          runAction("debug", { job: s.id, logs: steerForm.device_logs?.checked ? "cloud:latest" : "", feedback: text || String(job.last_error || "").slice(0, 2000) }, { button: submitBtn });
         } else if (!text) {
           steerForm.text.focus();
         } else if (mode === "iterate") { // passed and waits to merge: a change request, not a failure (debug_agent.md rule 0)
-          runAction("refine", { job: s.id, feedback: text });
+          runAction("refine", { job: s.id, feedback: text }, { button: submitBtn });
         } else if (mode === "revise") {
-          runAction("revise", { job: s.id, change: text });
+          runAction("revise", { job: s.id, change: text }, { button: submitBtn });
         } else if (mode === "fix") {
-          runAction("fix", { job: s.id, feedback: text });
+          runAction("fix", { job: s.id, feedback: text }, { button: submitBtn });
         }
       });
       const reply = view.querySelector("#clarify-reply");
@@ -7528,7 +7671,13 @@ pages.job = async ([id]) => {
       }));
       view.querySelector("#copy-job-failure-log")?.addEventListener("click", (e) => {
         const btn = e.currentTarget;
+        if (btn.disabled) return;
+        const origHtml = btn.innerHTML;
+        const origLabel = btn.getAttribute("aria-label") || "Copy failure details and logs";
+        if (btn._copiedTimer) { clearTimeout(btn._copiedTimer); btn._copiedTimer = null; }
+        btn.classList.remove("is-copied");
         btn.disabled = true;
+        btn.innerHTML = `<span class="spinner inline-spinner" aria-hidden="true"></span>`;
         const canReadLogs = state.you?.role !== "member";
         const runLogPath = canReadLogs && latestFailureRun
           ? (latestFailureRun.log || `logs/ui/${latestFailureRun.id}-${latestFailureRun.action}.log`)
@@ -7574,8 +7723,27 @@ pages.job = async ([id]) => {
           ? navigator.clipboard.write([new ClipboardItem({ "text/plain": fetched.then((txt) => new Blob([txt], { type: "text/plain" })) })])
           : fetched.then((txt) => navigator.clipboard.writeText(txt));
         Promise.all([fetched, copied])
-          .then(() => toast("Failure details and logs copied"))
-          .catch(() => toast("Couldn't copy logs here. Open Runs or use Download ZIP in More.", true))
+          .then(() => {
+            toast("Failure details and logs copied");
+            if (btn.isConnected) {
+              btn.classList.add("is-copied");
+              btn.setAttribute("aria-label", "Copied failure details and logs");
+              btn.setAttribute("title", "Copied failure details and logs");
+              btn.innerHTML = `<svg class="icon" aria-hidden="true"><use href="#i-check"/></svg><span>Copied</span>`;
+              btn._copiedTimer = setTimeout(() => {
+                if (!btn.isConnected) return;
+                btn.classList.remove("is-copied");
+                btn.setAttribute("aria-label", origLabel);
+                btn.setAttribute("title", origLabel);
+                btn.innerHTML = origHtml;
+                btn._copiedTimer = null;
+              }, 2500);
+            }
+          })
+          .catch(() => {
+            if (btn.isConnected) btn.innerHTML = origHtml;
+            toast("Couldn't copy logs here. Open Runs or use Download ZIP in More.", true);
+          })
           .finally(() => { btn.disabled = false; });
       });
       view.querySelector("#download-job-diff")?.addEventListener("click", async (e) => {
@@ -7972,14 +8140,14 @@ pages.new = async (_, query) => {
       <div id="nj-discovery"></div>
       <div class="stack" id="nj-fields"></div>
       ${featureSelect()}
-      <div class="autopilot-option">
+      <div class="autopilot-option stack gap-8">
         <label class="check risky"><input type="checkbox" name="yolo"><span><strong>YOLO (Autopilot)</strong><small>Runs without confirmations or review pauses.</small></span></label>
+        <label class="check"><input type="checkbox" name="free"><span><strong>Use free AI only</strong><small>Only uses free models and never falls back to paid ones.</small></span></label>
       </div>
       <details class="advanced"><summary>Advanced</summary>
         <div class="stack">
           <label class="check"><input type="checkbox" name="no_dispatch"><span>Plan only<small>Stop after planning so you can review the plan first.</small></span></label>
           <small class="hint-text" id="nj-mode-note" hidden>With both on, planning runs without stopping, then the job waits for you. Once you start it, it builds in YOLO.</small>
-          <label class="check"><input type="checkbox" name="free"><span>Use free AI only</span></label>
         </div>
       </details>
       <div class="row"><span class="spacer"></span><button class="btn primary big" type="submit">Create job</button></div>
@@ -8152,8 +8320,8 @@ document.addEventListener("click", (e) => {
 
 // The project's Docker servers: whether each is up, and Start / Stop / Restart here or on another computer.
 const SERVER_STATE = {
-  running: ["Running", "ok"], stopped: ["Stopped", ""], starting: ["Starting", "warn"], partial: ["Partly running", "warn"],
-  unhealthy: ["Unhealthy", "bad"], "docker-off": ["Docker is off", "warn"], unreachable: ["Can't reach it", "bad"],
+  running: ["Online", "ok"], stopped: ["Offline", ""], starting: ["Starting", "warn"], partial: ["Partly online", "warn"],
+  unhealthy: ["Unhealthy", "bad"], "docker-off": ["Offline", ""], unreachable: ["Can't reach it", "bad"],
 };
 
 let serverPick = ""; // which server the card is showing, when a project has more than one
@@ -8163,32 +8331,54 @@ function serverLabel(sv) {
   return sv.file ? `${name} (${sv.file.replace(/\.ya?ml$/, "")})` : name;
 }
 
-function serverCardHtml(view, canSend, open = false) {
+function serverCardHtml(view, canSend, open = false, { homeMode = false } = {}) {
   if (!view?.servers?.length) return "";
   const owner = state.you?.role !== "member";
   const sv = view.servers.find((x) => x.id === serverPick) || view.servers[0];
   const machines = view.machines || [];
   const dockerOff = view.docker === false;
   const st = sv.status || { state: "unreachable", containers: [] };
-  const [label, tone] = dockerOff ? ["Not running", ""] : (SERVER_STATE[st.state] || [st.state, ""]);
+  const [label, tone] = dockerOff ? ["Offline", ""] : (SERVER_STATE[st.state] || [st.state, ""]);
   const up = !dockerOff && ["running", "starting", "partial", "unhealthy"].includes(st.state);
+  const runningContainers = !dockerOff ? (st.containers || []).filter((c) => c.state === "running") : [];
   const hasContainers = !dockerOff && (st.containers || []).length > 0;
   const services = (hasContainers ? st.containers : sv.services.map((name) => ({ service: name, state: "not created", health: "" })))
     .map((c) => `<span class="pill ${c.state === "running" ? (c.health === "unhealthy" ? "bad" : "ok") : ""}">${esc(c.service)}</span>`).join(" ");
   const onSend = (view.app || []).some((a) => a.id === sv.id && a.machine === view.machine);
-  const hint = dockerOff ? (view.machine === "local" ? "Docker is off. Start opens it first." : "Docker is off on that computer.") : (st.message || "");
-  return `<div class="card-h"><h2>Server</h2><button type="button" class="btn small ghost" id="server-refresh">Refresh</button></div>
+  const whereLabel = machines.find((m) => m.name === view.machine)?.label || "This computer";
+  const ver = sv.version || {};
+  const images = [...new Set(runningContainers.map((c) => c.image).filter(Boolean))];
+  const uptime = runningContainers.map((c) => c.status).find((s) => /^up\b/i.test(s || "")) || "";
+  const livePorts = [...new Set(runningContainers.flatMap((c) => c.ports || []))];
+  const portsToShow = livePorts.length ? livePorts : (sv.ports || []);
+  const metaParts = [
+    ver.ref ? `Version <code class="mono">${esc(ver.ref)}</code>${ver.branch ? ` (${esc(ver.branch)})` : ""}` : "",
+    up && uptime ? esc(uptime) : "",
+    up && images.length ? `Image <code class="mono">${esc(images[0])}${images.length > 1 ? ` +${images.length - 1}` : ""}</code>` : "",
+    portsToShow.length ? portsToShow.map((p) => `<code class="mono">localhost:${p}</code>`).join(" ") : "",
+    machines.length > 1 ? esc(whereLabel) : "",
+  ].filter(Boolean);
+  const hint = dockerOff
+    ? (view.machine === "local" ? "No server is online. Docker is off — Launch server opens it first." : "No server is online. Docker is off on that computer.")
+    : (!up ? (st.message || "No server is online right now.") : (st.message || ""));
+  return `<div class="card-h">
+      <div class="row gap-8 align-center"><h2>Server</h2><span class="pill ${tone}">${esc(label)}</span></div>
+      <div class="row gap-8 align-center">
+        ${homeMode ? `<a class="btn small ghost" href="#/delivery">App delivery</a>` : ""}
+        <button type="button" class="btn small ghost" id="server-refresh">Refresh</button>
+      </div>
+    </div>
     <div class="card-b stack gap-8" data-server="${esc(sv.id)}">
       <div class="row gap-12 align-center server-main">
         ${view.servers.length > 1 ? `<select id="server-pick" class="inline-select" aria-label="Server">${view.servers.map((x) => `<option value="${esc(x.id)}"${x.id === sv.id ? " selected" : ""}>${esc(serverLabel(x))}</option>`).join("")}</select>` : `<strong>${esc(serverLabel(sv))}</strong>`}
-        <span class="pill ${tone}">${esc(label)}</span>
         <span class="grow"></span>
-        ${owner ? (up ? `<button type="button" class="btn small" data-server-action="restart">Restart</button><button type="button" class="btn small" data-server-action="stop">Stop</button>` : `<button type="button" class="btn small primary" data-server-action="start">Start</button>`) : ""}
+        ${owner ? (up ? `<button type="button" class="btn small" data-server-action="restart">Restart</button><button type="button" class="btn small" data-server-action="stop">Stop</button>` : `<button type="button" class="btn small primary" data-server-action="start">Launch server</button>`) : ""}
       </div>
+      ${metaParts.length ? `<div class="row gap-12 align-center flex-wrap muted t-secondary">${metaParts.join('<span class="sep">·</span>')}</div>` : ""}
       ${hint ? `<p class="muted t-secondary m-0">${esc(hint)}</p>` : ""}
       <details class="server-details"${open ? " open" : ""}><summary class="muted t-secondary">Details</summary>
         <div class="stack gap-8 server-more">
-          <div>${sv.ports.length ? sv.ports.map((p) => `<code>localhost:${p}</code>`).join(" ") : `<span class="muted">No ports published.</span>`} ${services}</div>
+          <div>${services || `<span class="muted">No services listed.</span>`}</div>
           <div class="muted t-secondary">${sv.file ? `Set up in ${esc(sv.dir === "." ? "" : sv.dir + "/")}${esc(sv.file)}. ` : `Set up in ${esc(sv.dir)}. `}Start and Stop only start and stop the containers; nothing is deleted.</div>
           ${view.rule ? `<div class="muted t-secondary">Your project says (${esc(view.rule.file)}): “${esc(view.rule.sentence)}” Check which server that applies to before starting or stopping one.</div>` : ""}
           ${machines.length > 1 ? `<label class="row gap-8 align-center muted t-secondary">Computer <select id="server-machine" class="inline-select" aria-label="Computer">${machines.map((m) => `<option value="${esc(m.name)}"${m.name === view.machine ? " selected" : ""}>${esc(m.label)}</option>`).join("")}</select></label>` : ""}
@@ -8379,12 +8569,12 @@ async function confirmServerAction(action, server, whereLabel, view) {
 }
 
 // `onState({required, ready})`: required when builds are set to start it first, ready when it is running; null when there is no server.
-async function loadServerCard(box, canSend = false, onState = () => {}) {
+async function loadServerCard(box, canSend = false, onState = () => {}, { homeMode = false } = {}) {
   if (!box) return;
   let detailsOpen = false; // survives Refresh and switching server, which both redraw the card
   const draw = (view) => {
     detailsOpen = Boolean(box.querySelector(".server-details")?.open) || detailsOpen;
-    box.innerHTML = serverCardHtml(view, canSend, detailsOpen);
+    box.innerHTML = serverCardHtml(view, canSend, detailsOpen, { homeMode });
     box.querySelector(".server-details")?.addEventListener("toggle", (e) => { detailsOpen = e.target.open; });
     box.hidden = !view?.servers?.length;
     const picked = view?.servers?.find((x) => x.id === serverPick) || view?.servers?.[0];
@@ -8422,10 +8612,16 @@ async function loadServerCard(box, canSend = false, onState = () => {}) {
     }));
   };
   const load = async (machine) => {
-    box.hidden = false;
-    box.innerHTML = `<div class="card-h"><h2>Server</h2></div><div class="card-b"><p class="muted m-0">Checking Docker…</p></div>`;
+    if (!homeMode) {
+      box.hidden = false;
+      box.innerHTML = `<div class="card-h"><h2>Server</h2></div><div class="card-b"><p class="muted m-0">Checking Docker…</p></div>`;
+    }
     try { draw(await api(`servers${machine && machine !== "local" ? `?machine=${encodeURIComponent(machine)}` : ""}`)); }
-    catch (err) { box.innerHTML = `<div class="card-h"><h2>Server</h2></div><div class="card-b"><p class="notice bad m-0">${esc(err.message)}</p></div>`; onState(null); }
+    catch (err) {
+      if (homeMode) { box.hidden = true; }
+      else { box.innerHTML = `<div class="card-h"><h2>Server</h2></div><div class="card-b"><p class="notice bad m-0">${esc(err.message)}</p></div>`; }
+      onState(null);
+    }
   };
   await load();
 }
@@ -8461,88 +8657,201 @@ function deliveryProposalHtml(proposal, canEdit) {
   </form>`;
 }
 
+function buildDeliveryTargetCard(d, canEditTarget) {
+  const target = d.target || { delivery_platform: "ios" };
+  const platform = target.delivery_platform;
+  const platformNames = { ios: "iOS (Xcode → Firebase)", android: "Android (Firebase)",
+    file: "Custom build file (.ipa, .apk, .aab → Firebase)", web: "Web preview (Firebase Hosting)" };
+  return `<section class="card mb-16" id="delivery-target">
+    <div class="card-h"><h2>Build &amp; distribution target</h2></div>
+    <form id="delivery-target-form" class="card-b stack gap-12">
+      <label class="field"><span>Build type</span><select name="delivery_platform" id="delivery-platform"${canEditTarget ? "" : " disabled"}>
+        ${Object.entries(platformNames).map(([k, v]) => `<option value="${k}"${k === platform ? " selected" : ""}>${esc(v)}</option>`).join("")}</select></label>
+      <p class="muted t-secondary" data-for="ios">${target.unity_without_xcode ? "Unity project without an Xcode project — choose Custom build file instead." : "Uses your Xcode project and signing setup."}</p>
+      <div class="stack gap-12" data-for="android web file">
+        <label class="field"><span>Build command <span class="muted">(optional)</span></span><input type="text" name="delivery_build_command" class="mono" value="${esc(target.delivery_build_command)}" placeholder="${platform === "file" ? "tools/package_ios.sh" : "./gradlew assembleDebug"}"${canEditTarget ? "" : " disabled"}>
+          <small class="muted">Runs before upload. Leave blank if you build the file yourself.</small></label>
+      </div>
+      <div class="stack gap-12" data-for="android file">
+        <label class="field"><span>File to send</span><input type="text" name="delivery_artifact" class="mono" value="${esc(target.delivery_artifact)}" placeholder="${platform === "file" ? ".local/release-*/ios/*.ipa" : "app/build/outputs/apk/debug/*.apk"}"${canEditTarget ? "" : " disabled"}>
+          <small class="muted">Path or glob to .ipa, .apk, or .aab (picks newest match).</small></label>
+        <label class="field"><span>Firebase app ID</span><input type="text" name="firebase_app_id" class="mono" value="${esc(target.firebase_app_id)}" placeholder="1:1234567890:ios:abc123"${canEditTarget ? "" : " disabled"}>
+          <small class="muted">From Firebase Console → Project settings → Your apps.</small></label>
+        <label class="field"><span>Tester group <span class="muted">(optional)</span></span><input type="text" name="firebase_groups" value="${esc(target.firebase_groups)}" placeholder="daoc-testers"${canEditTarget ? "" : " disabled"}>
+          <small class="muted">Defaults to <code>internal-testers</code>.</small></label>
+      </div>
+      <div class="stack gap-12" data-for="web">
+        <label class="field"><span>Hosting site <span class="muted">(optional)</span></span><input type="text" name="firebase_hosting_target" value="${esc(target.firebase_hosting_target)}" placeholder="app"${canEditTarget ? "" : " disabled"}>
+          <small class="muted">Only needed if firebase.json has multiple sites.</small></label>
+      </div>
+      <div class="stack gap-12" data-for="android web file">
+        <label class="field"><span>Firebase project <span class="muted">(optional)</span></span><input type="text" name="firebase_project_id" value="${esc(target.firebase_project_id)}" placeholder="my-project"${canEditTarget ? "" : " disabled"}>
+          <small class="muted">Defaults to your <code>firebase use</code> project.</small></label>
+        <label class="yolo-switch"><input type="checkbox" role="switch" name="automatic"${target.automatic ? " checked" : ""}${canEditTarget ? "" : " disabled"}><span>Auto-deliver when tests pass</span></label>
+        <p class="muted t-secondary">Requires Firebase CLI: <code>npm i -g firebase-tools &amp;&amp; firebase login</code></p>
+      </div>
+      ${canEditTarget ? `<div><button type="submit" class="btn primary">Save</button></div>` : ""}
+    </form></section>`;
+}
+
+function wireDeliveryTargetForm(view) {
+  const targetForm = view.querySelector("#delivery-target-form");
+  if (!targetForm) return;
+  const showFields = () => {
+    const chosen = targetForm.elements.delivery_platform.value;
+    targetForm.querySelectorAll("[data-for]").forEach((el) => { el.hidden = !el.dataset.for.split(" ").includes(chosen); });
+  };
+  targetForm.elements.delivery_platform.addEventListener("change", showFields);
+  showFields();
+  targetForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const body = Object.fromEntries(new FormData(targetForm).entries());
+    body.automatic = targetForm.elements.automatic.checked;
+    try {
+      await api("delivery/target", { method: "POST", body });
+      toast("Saved where builds go");
+      route();
+    } catch (err) { toast(err.message, true); }
+  });
+}
+
+function buildDeliveryPrereqs(d, canEditTarget, { setupPage = false } = {}) {
+  const { testers } = d;
+  const web = d.web;
+  const target = d.target || { delivery_platform: "ios" };
+  const platform = target.delivery_platform;
+  const targetReady = Boolean(testers.configured);
+  const setupHref = setupPage ? "#delivery-target" : "#/delivery/setup";
+  const targetBody = targetReady
+    ? `<p class="muted t-secondary m-0">Firebase App Distribution is set up${testers.groups?.length ? ` · groups: ${testers.groups.map(esc).join(", ")}` : ""}. <a href="${setupHref}" id="prereq-change-target">Change</a></p>`
+    : d.proposal?.state === "proposal" ? deliveryProposalHtml(d.proposal, canEditTarget)
+    : `<div class="stack"><ul class="muted">${(testers.gaps || ["Set up Firebase App Distribution and code signing."]).map((g) => `<li>${esc(g)}</li>`).join("")}</ul>
+        <div>${platform === "ios" && !target.unity_without_xcode ? `<a class="btn small primary" href="#/config/firebase">Set up Firebase</a>` : `<a class="btn small primary" href="${setupHref}"${setupPage ? ` data-scroll-target${platform === "ios" ? ` data-pick-platform="file"` : ""}` : ""}>Set up delivery</a>`}</div></div>`;
+  const unityIos = d.unity_ios;
+  const unityBody = !unityIos ? "" : unityIos.ready
+    ? `<p class="muted t-secondary m-0">Unity ${esc(unityIos.version)} iOS Build Support is installed.</p>`
+    : unityIos.can_install
+      ? `<p class="muted t-secondary m-0">Unity ${esc(unityIos.version)} is missing its iOS Build Support module.</p>
+         ${canEditTarget ? `<div><button type="button" class="btn small primary" id="install-unity-ios-btn">Install iOS module</button></div>` : ""}`
+      : !unityIos.editor_installed
+        ? `<p class="muted t-secondary m-0">Unity ${esc(unityIos.version)} is not installed on this computer. Install it in Unity Hub with iOS Build Support.</p>`
+        : `<p class="muted t-secondary m-0">Unity ${esc(unityIos.version)} is missing iOS Build Support and Unity Hub was not found at /Applications/Unity Hub.app.</p>`;
+  const unityCardHtml = unityIos ? `<section class="card prereq-item"><div class="card-h"><h2>Unity iOS Build Support</h2><span class="pill ${unityIos.ready ? "ok" : "warn"}">${unityIos.ready ? "Ready" : "Not set up"}</span></div><div class="card-b stack gap-8">${unityBody}</div></section>` : "";
+  const prereqHtml = web && !setupPage ? "" : `<details class="fold prereqs mb-16" id="delivery-prereqs"${setupPage ? " open" : (targetReady ? " hidden" : " open")}>
+      <summary class="card-h"><h2>Before you can send builds</h2><span class="muted t-secondary" id="prereq-summary">${targetReady ? (setupPage ? "Checking…" : "") : "1 to do"}</span></summary>
+      <div class="card-b stack gap-12">
+        <div class="stack gap-12" id="prereq-todo">
+          <section class="card prereq-item" id="prereq-target"><div class="card-h"><h2>Where builds go</h2><span class="pill ${targetReady ? "ok" : "warn"}">${targetReady ? "Ready" : "Not set up"}</span></div>
+            <div class="card-b stack gap-8">${targetBody}</div></section>
+          <div id="prereq-signing" hidden><section class="card" id="signing-card" hidden></section></div>
+          <div id="prereq-unity" hidden>${unityCardHtml}</div>
+          <div id="prereq-server" hidden></div>
+        </div>
+        <details class="prereq-done" id="prereq-done" hidden><summary class="muted t-secondary">Already set up (<span id="prereq-done-count">0</span>)</summary>
+          <div class="stack gap-8 prereq-done-list" id="prereq-done-list"></div></details>
+      </div></details>`;
+  return { prereqHtml, targetReady };
+}
+
+function wireDeliveryPrereqs(view, d, { setupPage = false } = {}) {
+  const { testers } = d;
+  const web = d.web;
+  const unityIos = d.unity_ios;
+  const targetReady = Boolean(testers.configured);
+  const box = view.querySelector("#delivery-prereqs");
+  const send = view.querySelector("#delivery-send");
+  const items = box ? { target: { el: view.querySelector("#prereq-target"), ready: targetReady }, signing: { el: view.querySelector("#prereq-signing") },
+    unity: { el: view.querySelector("#prereq-unity"), ready: unityIos ? Boolean(unityIos.ready) : null },
+    server: { el: view.querySelector("#prereq-server") } } : {};
+  const refreshPrereqs = () => {
+    if (!box) return;
+    const all = Object.entries(items);
+    const todo = all.filter(([, it]) => it.ready === false), done = all.filter(([, it]) => it.ready === true);
+    const waiting = ["target", "signing"].some((id) => items[id].ready === undefined); // the server check asks Docker and is optional: not waited for
+    todo.forEach(([, it]) => { it.el.hidden = false; box.querySelector("#prereq-todo").append(it.el); });
+    done.forEach(([, it]) => { it.el.hidden = false; box.querySelector("#prereq-done-list").append(it.el); });
+    all.filter(([, it]) => it.ready === null).forEach(([, it]) => { it.el.hidden = true; });
+    const doneBox = box.querySelector("#prereq-done");
+    doneBox.hidden = !done.length;
+    box.querySelector("#prereq-done-count").textContent = String(done.length);
+    box.querySelector("#prereq-summary").textContent = todo.length ? `${todo.length} to do` : "All set";
+    if (setupPage) {
+      box.hidden = false;
+      box.open = true;
+      return;
+    }
+    // On App delivery: only surface the checklist when something still needs setup; "All set" lives on Delivery setup.
+    box.hidden = !todo.length || (waiting && !todo.length);
+    if (!box.hidden) {
+      box.open = true;
+      if (send) send.before(box);
+    }
+    if (send && !web) send.hidden = !targetReady;
+  };
+  const report = (id, ready) => { if (items[id]) { items[id].ready = ready; refreshPrereqs(); } };
+  refreshPrereqs();
+  view.querySelector("#prereq-change-target")?.addEventListener("click", (e) => {
+    if (!setupPage) return;
+    e.preventDefault();
+    view.querySelector("#delivery-target")?.scrollIntoView({ block: "start" });
+  });
+  view.querySelector("#install-unity-ios-btn")?.addEventListener("click", async (e) => {
+    const btn = e.currentTarget;
+    if (btn.disabled) return;
+    const computer = state.project?.computer?.name || "this computer";
+    const confirmed = await formDialog(
+      "Install Unity iOS Build Support?",
+      `<p>This runs Unity Hub's headless installer on <strong>${esc(computer)}</strong> to add the iOS Build Support module to Unity <strong>${esc(unityIos?.version || "")}</strong>.</p><p class="muted t-secondary">It downloads the module from Unity and may take a few minutes.</p>`,
+      "Install module",
+    );
+    if (!confirmed) return;
+    btn.disabled = true;
+    btn.textContent = "Installing…";
+    try {
+      const started = await api("delivery/unity-ios", { method: "POST", body: { confirmed: true } });
+      const result = await waitForTask(started);
+      toast(result.detail || "Unity iOS Build Support installed");
+      await route();
+    } catch (err) {
+      toast(err.message, true);
+      if (btn.isConnected) btn.textContent = "Try again";
+    } finally {
+      if (btn.isConnected) btn.disabled = false;
+    }
+  });
+  const serverCard = view.querySelector("#server-card");
+  if (serverCard) {
+    loadServerCard(serverCard, Boolean(testers.configured) && !web, (s) => { // after the page is up: it asks Docker, which can take a moment
+      // A server is a prerequisite only when builds are set to start it first; otherwise it is an ordinary card below.
+      if (s?.required && items.server) { items.server.el.append(serverCard); report("server", s.ready); }
+      else report("server", null);
+    });
+  }
+  if (!web) loadSigningCard(view.querySelector("#signing-card"), (ready) => report("signing", ready)); // files only: no network unless "Find it" is pressed
+  view.querySelector("#delivery-proposal-form")?.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const body = Object.fromEntries(new FormData(e.target).entries());
+    body.automatic = false; // sending a build is an explicit act: it is never turned on for you
+    try { await api("delivery/target", { method: "POST", body }); toast("Saved. You can send a build now."); route(); }
+    catch (err) { toast(err.message, true); }
+  });
+  view.querySelector("[data-open-advanced]")?.addEventListener("click", () => {
+    if (!setupPage) { location.hash = "#/delivery/setup"; return; }
+    view.querySelector("#delivery-target")?.scrollIntoView({ block: "start" });
+  });
+  view.querySelector("[data-scroll-target]")?.addEventListener("click", (e) => {
+    e.preventDefault();
+    const pick = e.currentTarget.dataset.pickPlatform;
+    const select = view.querySelector("#delivery-platform");
+    if (pick && select && !select.disabled) { select.value = pick; select.dispatchEvent(new Event("change")); }
+    view.querySelector("#delivery-target")?.scrollIntoView({ block: "start" });
+  });
+}
+
 pages.delivery = async (args, query) => {
   const branchParam = query?.get("branch") || "";
   const d = await api("delivery" + (branchParam ? `?branch=${encodeURIComponent(branchParam)}` : ""));
-  const { testers, pipeline, branches = [], current_branch = "", selected_branch = "", branch_commit = {}, latest_job = null, user_email = "" } = d;
-  const when = (iso) => (iso ? ago(Date.parse(iso) / 1000) : "");
-
-  const jobTone = (status) => (status === "completed" ? "done" : (status === "review-needed" || status === "human-needed") ? "attention" : status === "failed" ? "failed" : "working");
-
-  const baseBranchName = d.live?.branch || "main";
-  const hasTag = Boolean(d.live?.tag);
-  const unreleasedCount = d.live?.unreleased ?? 0;
-  const releasesUrl = d.web_url ? `${d.web_url}/releases` : "";
-
-  const releaseCard = `<section class="card mb-16">
-    <div class="card-h">
-      <h2>Release versions</h2>
-      <div class="row gap-8 align-center">
-        <span class="muted t-secondary">Base branch: <strong class="mono">${esc(baseBranchName)}</strong></span>
-        ${d.live?.commit ? `<button type="button" class="btn small go" data-create-release data-owner-only>Create release tag</button>` : ""}
-      </div>
-    </div>
-    <div class="card-b stack">
-      <div class="branch-meta-box">
-        <div class="branch-meta-row">
-          <div class="branch-meta-label">
-            <span class="branch-meta-tag">Latest release</span>
-          </div>
-          <div class="branch-meta-main">
-            ${hasTag ? `
-              <div class="branch-meta-title">
-                <code class="mono branch-commit-hash">${esc(d.live.tag)}</code>
-                ${releasesUrl ? `<a class="muted t-secondary" href="${esc(releasesUrl)}" target="_blank" rel="noopener">View all releases on GitHub ↗</a>` : ""}
-              </div>
-              <div class="branch-meta-sub">
-                <span>Tagged on base branch <strong>${esc(baseBranchName)}</strong></span>
-              </div>
-            ` : `
-              <div class="branch-meta-title">
-                <span class="muted t-secondary">No releases tagged yet on <strong>${esc(baseBranchName)}</strong>.</span>
-              </div>
-              <div class="branch-meta-sub">
-                <span>Tag a release milestone when you ship to track new changes that follow.</span>
-              </div>
-            `}
-          </div>
-        </div>
-
-        <div class="branch-meta-row">
-          <div class="branch-meta-label">
-            <span class="branch-meta-tag">Unreleased</span>
-          </div>
-          <div class="branch-meta-main">
-            ${hasTag ? `
-              <div class="branch-meta-title">
-                ${unreleasedCount === 0 ? `
-                  <span class="pill done">Up to date</span>
-                  <span class="t-secondary">No unreleased commits on <strong>${esc(baseBranchName)}</strong> since <strong>${esc(d.live.tag)}</strong>.</span>
-                ` : `
-                  <span class="pill attention">${unreleasedCount} unreleased commit${unreleasedCount === 1 ? "" : "s"}</span>
-                  <span class="t-secondary">on <strong>${esc(baseBranchName)}</strong> since <strong>${esc(d.live.tag)}</strong></span>
-                `}
-              </div>
-              <div class="branch-meta-sub">
-                <span>${unreleasedCount === 0 ? "Production is running the latest code from this branch." : "Ready to be tested and packaged into your next release milestone."}</span>
-              </div>
-            ` : `
-              <div class="branch-meta-title">
-                <span class="pill working">${unreleasedCount} commit${unreleasedCount === 1 ? "" : "s"}</span>
-                <span class="t-secondary">accumulated on <strong>${esc(baseBranchName)}</strong> awaiting initial release tag.</span>
-              </div>
-              <div class="branch-meta-sub">
-                <span>Click "Create release tag" above to establish your initial release version anchor.</span>
-              </div>
-            `}
-          </div>
-        </div>
-      </div>
-
-      <p class="muted t-secondary">Tags anchor official versions on your base branch (<strong>${esc(baseBranchName)}</strong>) to track what changed since you shipped. Creating a tag records a milestone in Git; it does not deploy or upload your app.</p>
-      ${!d.live?.commit ? `<a class="btn small" href="#/git">Sync the base branch in Git setup</a>` : ""}
-    </div>
-  </section>`;
+  const { testers, branches = [], current_branch = "", selected_branch = "", latest_job = null, user_email = "" } = d;
 
   // Web projects get a shareable preview link of the branch instead of a build sent to devices.
   const web = d.web;
@@ -8550,6 +8859,7 @@ pages.delivery = async (args, query) => {
         <div class="notice"><div class="stack">
           <strong>Not ready to publish previews</strong>
           <ul class="muted">${web.gaps.map((g) => `<li>${esc(g)}</li>`).join("")}</ul>
+          <div><a class="btn small primary" href="#/delivery/setup">Set up web previews</a></div>
         </div></div>`
     : `<div class="stack gap-12">
           <p class="muted t-secondary">Publishes the latest commit on <strong class="mono">${esc(selected_branch)}</strong> to a link anyone can open. It lasts 7 days; publish again to refresh it.</p>
@@ -8560,44 +8870,10 @@ pages.delivery = async (args, query) => {
           ${state.you?.role !== "member" ? `<label class="yolo-switch" title="When a job finishes and is ready for review, its branch is published on its preview link without asking."><input type="checkbox" role="switch" id="web-preview-auto"${web.auto ? " checked" : ""}><span>Publish a link when a job is ready for review</span></label>` : ""}
         </div>`;
 
-  // Where finished builds go: iOS (the wizard's signing setup), Android (Firebase App Distribution) or a web preview.
-  const target = d.target || { delivery_platform: "ios" };
-  const platform = target.delivery_platform;
   const canEditTarget = state.you?.role !== "member";
-  const platformNames = { ios: "iPhone and iPad from an Xcode project (Firebase App Distribution)", android: "Android (Firebase App Distribution)",
-    file: "A file your own script builds: .ipa, .apk or .aab (Firebase App Distribution)", web: "Web preview (Firebase Hosting)" };
-  const targetCard = `<section class="card mb-16" id="delivery-target">
-    <form id="delivery-target-form" class="card-b stack gap-12">
-      <label class="field"><span>Build type</span><select name="delivery_platform" id="delivery-platform"${canEditTarget ? "" : " disabled"}>
-        ${Object.entries(platformNames).map(([k, v]) => `<option value="${k}"${k === platform ? " selected" : ""}>${esc(v)}</option>`).join("")}</select></label>
-      <p class="muted t-secondary" data-for="ios">Uses the signing and distribution settings from the setup wizard, and needs an Xcode project. ${target.unity_without_xcode ? "This is a Unity project with no Xcode project of its own, so choose “A file your own script builds” instead." : "Nothing else to set here."}</p>
-      <div class="stack gap-12" data-for="android web file">
-        <label class="field"><span>Build command <span class="muted">(optional)</span></span><input type="text" name="delivery_build_command" class="mono" value="${esc(target.delivery_build_command)}" placeholder="${platform === "file" ? "tools/package_ios.sh" : "./gradlew assembleDebug"}"${canEditTarget ? "" : " disabled"}>
-          <small class="muted">Runs first, in the project folder: your own build script. Leave it empty if you build the file yourself.</small></label>
-      </div>
-      <div class="stack gap-12" data-for="android file">
-        <label class="field"><span>File to send</span><input type="text" name="delivery_artifact" class="mono" value="${esc(target.delivery_artifact)}" placeholder="${platform === "file" ? ".local/release-*/ios/*.ipa" : "app/build/outputs/apk/debug/*.apk"}"${canEditTarget ? "" : " disabled"}>
-          <small class="muted">An .apk, .aab or .ipa inside the project; a pattern picks the newest match written by the build command.</small></label>
-        <label class="field"><span>Firebase app ID</span><input type="text" name="firebase_app_id" class="mono" value="${esc(target.firebase_app_id)}" placeholder="1:1234567890:ios:abc123"${canEditTarget ? "" : " disabled"}>
-          <small class="muted">Firebase console, Project settings, Your apps. Use the iOS app's ID for an .ipa.</small></label>
-        <label class="field"><span>Tester group <span class="muted">(optional)</span></span><input type="text" name="firebase_groups" value="${esc(target.firebase_groups)}" placeholder="daoc-testers"${canEditTarget ? "" : " disabled"}>
-          <small class="muted">Where builds are sent unless you pick another when you launch one. Empty means the default group, <code>internal-testers</code>: set it if your project only allows one group.</small></label>
-      </div>
-      <div class="stack gap-12" data-for="web">
-        <label class="field"><span>Hosting site <span class="muted">(optional)</span></span><input type="text" name="firebase_hosting_target" value="${esc(target.firebase_hosting_target)}" placeholder="app"${canEditTarget ? "" : " disabled"}>
-          <small class="muted">Only when firebase.json has more than one site. A preview link lasts 7 days.</small></label>
-      </div>
-      <div class="stack gap-12" data-for="android web file">
-        <label class="field"><span>Firebase project <span class="muted">(optional)</span></span><input type="text" name="firebase_project_id" value="${esc(target.firebase_project_id)}" placeholder="my-project"${canEditTarget ? "" : " disabled"}>
-          <small class="muted">Defaults to the project chosen by <code>firebase use</code>.</small></label>
-        <label class="yolo-switch"><input type="checkbox" role="switch" name="automatic"${target.automatic ? " checked" : ""}${canEditTarget ? "" : " disabled"}><span>Deliver automatically when a job's tests pass</span></label>
-        <p class="muted t-secondary" data-for="file">Leave this off if each upload has to be asked for. Then the <strong>Send build</strong> button above is one upload, every time you press it.</p>
-        <p class="muted t-secondary">Needs the Firebase CLI installed and signed in: <code>npm install -g firebase-tools</code>, then <code>firebase login</code>.</p>
-      </div>
-      ${canEditTarget ? `<div><button type="submit" class="btn primary">Save</button></div>` : ""}
-    </form></section>`;
+  const { prereqHtml, targetReady } = buildDeliveryPrereqs(d, canEditTarget, { setupPage: false });
 
-  const branchCard = `<section class="card mb-16" id="delivery-send">
+  const branchCard = `<section class="card mb-16" id="delivery-send"${!web && !targetReady ? " hidden" : ""}>
     <div class="card-h">
       <h2>${web ? "Preview" : "Send to my phone"}</h2>
       <div class="row gap-8 align-center">
@@ -8608,30 +8884,32 @@ pages.delivery = async (args, query) => {
       </div>
     </div>
     <div class="card-b stack">
-      ${web ? previewBlock : !testers.configured ? `<p class="muted m-0">Finish the steps under <strong>Before you can send builds</strong> first. Then you can send a build from here.</p>` : `
+      ${web ? previewBlock : `
         <form id="delivery-build-form" class="stack gap-12">
           <div class="field">
             <span>Send to</span>
-            <div class="row gap-16 align-center flex-wrap">
+            <div class="stack gap-8">
               <label class="row gap-6 align-center cursor-pointer">
                 <input type="radio" name="recipient_type" value="me" checked>
                 <span>Just me ${user_email ? `<span class="muted">(${esc(user_email)})</span>` : ""}</span>
               </label>
-              <label class="row gap-6 align-center cursor-pointer">
-                <input type="radio" name="recipient_type" value="group">
-                <span>Tester group:</span>
-              </label>
-              <select id="delivery-group-select" name="group" class="inline-select" ${testers.groups.length ? "" : "disabled"}>
-                ${testers.groups.length ? testers.groups.map((g) => `<option value="${esc(g)}">${esc(g)}</option>`).join("") : `<option value="">No groups configured</option>`}
-              </select>
-              <button type="button" class="btn small ghost" id="delivery-new-group-btn" title="Create a new Firebase tester group">+ New group</button>
+              <div class="row gap-8 align-center flex-wrap">
+                <label class="row gap-6 align-center cursor-pointer">
+                  <input type="radio" name="recipient_type" value="group">
+                  <span>Tester group:</span>
+                </label>
+                <select id="delivery-group-select" name="group" class="inline-select" ${testers.groups.length ? "" : "disabled"}>
+                  ${testers.groups.length ? testers.groups.map((g) => `<option value="${esc(g)}">${esc(g)}</option>`).join("") : `<option value="">No groups configured</option>`}
+                </select>
+                <button type="button" class="btn small ghost" id="delivery-new-group-btn" title="Create a new Firebase tester group">+ New group</button>
+              </div>
             </div>
           </div>
           <label class="field">
             <span>Release notes <span class="muted">(optional)</span></span>
             <input type="text" name="notes" placeholder="e.g. Test notes for this build">
           </label>
-          ${d.servers_for_app?.length ? `<p class="notice m-0" id="with-servers-note">Before the build is sent, this starts <strong>${esc(d.servers_for_app.map((x) => `${x.name}${x.machine === "local" ? "" : ` on ${x.machine}`}`).join(", "))}</strong> if it isn't already running, and stops if it won't come up. Change this under Server above.</p>` : ""}
+          ${d.servers_for_app?.length ? `<p class="notice m-0" id="with-servers-note">Before the build is sent, this starts <strong>${esc(d.servers_for_app.map((x) => `${x.name}${x.machine === "local" ? "" : ` on ${x.machine}`}`).join(", "))}</strong> if it isn't already running, and stops if it won't come up. Change this under Server below.</p>` : ""}
           <div class="row gap-12 align-center">
             <button type="submit" class="btn primary" ${act("distribute")}>Send build</button>
             ${testers.invite_url ? `
@@ -8644,96 +8922,28 @@ pages.delivery = async (args, query) => {
         </form>
       `}
 
-      <div class="branch-meta-box">
-        <div class="branch-meta-row">
-          <div class="branch-meta-label">
-            <span class="branch-meta-tag">Latest commit</span>
-          </div>
-          <div class="branch-meta-main">
-            ${branch_commit.commit ? `
-              <div class="branch-meta-title">
-                <code class="mono branch-commit-hash">${esc(branch_commit.commit)}</code>
-                <span class="branch-commit-subject">${esc(branch_commit.subject || "(no commit message)")}</span>
-              </div>
-              <div class="branch-meta-sub">
-                ${branch_commit.author ? `<span>by <strong>${esc(branch_commit.author)}</strong></span><span class="sep">·</span>` : ""}
-                <span>${esc(branch_commit.when)}</span>
-              </div>
-            ` : `<div class="muted t-secondary">No commit information found for this branch.</div>`}
-          </div>
-        </div>
-        <div class="branch-meta-row">
-          <div class="branch-meta-label">
-            <span class="branch-meta-tag">Latest job</span>
-          </div>
-          <div class="branch-meta-main">
-            ${latest_job ? `
-              <div class="branch-meta-title">
-                <a class="branch-job-link" href="#/jobs/${encodeURIComponent(latest_job.id)}"><strong>${esc(latest_job.title || latest_job.id)}</strong></a>
-                <span class="pill ${jobTone(latest_job.status)}">${esc(latest_job.status)}</span>
-              </div>
-              <div class="branch-meta-sub">
-                <span>Updated ${esc(ago(latest_job.updated))}</span>
-              </div>
-            ` : `<div class="muted t-secondary">No Orchestrator jobs have run on this branch yet.</div>`}
-          </div>
-        </div>
-      </div>
-
     </div>
   </section>`;
 
-  const pipelineCard = `<section class="card mb-16"><div class="card-h"><h2>Pipeline</h2>${d.xcode_cloud ? `<span class="count">Xcode Cloud configured</span>` : ""}</div>
-      ${pipeline.available ? `<div class="list">${pipeline.runs.map((r) => `<div class="item"><a class="main-col" href="${esc(r.url || "#")}" target="_blank" rel="noopener"><div class="title">${esc(r.title || r.name)}</div>
-        <div class="meta"><span class="mono">${esc(r.branch)}</span> · ${esc(r.name)} · ${esc(when(r.created))}</div></a><div class="side"><span class="pill ${esc(r.tone)}">${esc(r.outcome.replace("_", " "))}</span>${r.can_rerun ? `<button type="button" class="btn small" data-rerun="${r.id}">Re-run failed</button>` : ""}</div></div>`).join("") || `<div class="empty">No pipeline runs yet.</div>`}</div>`
-        : `<div class="empty">Pipeline status comes from GitHub Actions. Sign in with the GitHub CLI (<code>gh auth login</code>) and push this repository to GitHub to see it here.</div>`}</section>`;
-
-  const previewsCard = web?.previews.length ? `<section class="card"><div class="card-h"><h2>Recent previews</h2><span class="count">${web.previews.length}</span></div>
+  const previewsCard = web?.previews.length ? `<section class="card mb-16"><div class="card-h"><h2>Recent previews</h2><span class="count">${web.previews.length}</span></div>
       <div class="list">${web.previews.map((p) => `<div class="item"><div class="main-col"><div class="title"><span class="mono">${esc(p.branch)}</span> · ${esc(p.subject || p.commit || "")}</div>
         <div class="meta">${esc(p.commit || "")} · published ${esc(ago(p.at))}${p.expires ? ` · expires ${esc(new Date(p.expires).toLocaleDateString(undefined, { month: "short", day: "numeric" }))}` : ""}</div></div>
         <div class="side"><a class="btn small ghost" href="${esc(p.url)}" target="_blank" rel="noopener">Open ↗</a></div></div>`).join("")}</div></section>` : "";
-  const buildsCard = web ? previewsCard : testers.builds && testers.builds.length ? `<section class="card"><div class="card-h"><h2>Recent tester builds</h2><span class="count">${testers.builds.length}</span></div>
+  const buildsCard = web ? previewsCard : testers.builds && testers.builds.length ? `<section class="card mb-16"><div class="card-h"><h2>Recent tester builds</h2><span class="count">${testers.builds.length}</span></div>
       <div class="list">${testers.builds.map((b) => `<div class="item"><div class="main-col"><div class="title">${esc(b.version || "?")}${b.build ? ` (${esc(b.build)})` : ""}${b.title ? ` · ${esc(b.title)}` : ""}</div>
         <div class="meta">${esc(ago(b.delivered))} · <span class="mono">${esc(b.branch)}</span>${b.recipients ? ` · to ${esc(b.recipients)}` : ""}</div></div>
         ${b.job_id ? `<div class="side"><a class="btn small" href="#/jobs/${encodeURIComponent(b.job_id)}">Job</a></div>` : ""}</div>`).join("")}</div></section>` : "";
 
-  // Everything that has to be in place before a build can be sent, in one container. What is still to do comes first; what is
-  // already set is tucked under "Already set up", and once nothing is left the whole container drops below the send card.
-  const targetReady = Boolean(testers.configured);
-  const targetBody = targetReady
-    ? `<p class="muted t-secondary m-0">Firebase App Distribution is set up${testers.groups?.length ? ` · groups: ${testers.groups.map(esc).join(", ")}` : ""}. <a href="#delivery-target" id="prereq-change-target">Change</a></p>`
-    : d.proposal?.state === "proposal" ? deliveryProposalHtml(d.proposal, canEditTarget)
-    : `<div class="stack"><ul class="muted">${(testers.gaps || ["Set up Firebase App Distribution and code signing."]).map((g) => `<li>${esc(g)}</li>`).join("")}</ul>
-        <div>${platform === "ios" && !target.unity_without_xcode ? `<a class="btn small primary" href="#/config/firebase">Set up Firebase</a>` : `<a class="btn small primary" href="#delivery-target" data-scroll-target${platform === "ios" ? ` data-pick-platform="file"` : ""}>Set up delivery</a>`}</div></div>`;
-  const unityIos = d.unity_ios;
-  const unityBody = !unityIos ? "" : unityIos.ready
-    ? `<p class="muted t-secondary m-0">Unity ${esc(unityIos.version)} iOS Build Support is installed.</p>`
-    : unityIos.can_install
-      ? `<p class="muted t-secondary m-0">Unity ${esc(unityIos.version)} is missing its iOS Build Support module.</p>
-         ${canEditTarget ? `<div><button type="button" class="btn small primary" id="install-unity-ios-btn">Install iOS module</button></div>` : ""}`
-      : !unityIos.editor_installed
-        ? `<p class="muted t-secondary m-0">Unity ${esc(unityIos.version)} is not installed on this computer. Install it in Unity Hub with iOS Build Support.</p>`
-        : `<p class="muted t-secondary m-0">Unity ${esc(unityIos.version)} is missing iOS Build Support and Unity Hub was not found at /Applications/Unity Hub.app.</p>`;
-  const unityCardHtml = unityIos ? `<section class="card prereq-item"><div class="card-h"><h2>Unity iOS Build Support</h2><span class="pill ${unityIos.ready ? "ok" : "warn"}">${unityIos.ready ? "Ready" : "Not set up"}</span></div><div class="card-b stack gap-8">${unityBody}</div></section>` : "";
-  const prereqHtml = web ? "" : `<details class="fold prereqs mb-16" id="delivery-prereqs"${targetReady ? " hidden" : " open"}>
-      <summary class="card-h"><h2>Before you can send builds</h2><span class="muted t-secondary" id="prereq-summary">${targetReady ? "" : "1 to do"}</span></summary>
-      <div class="card-b stack gap-12">
-        <div class="stack gap-12" id="prereq-todo">
-          <section class="card prereq-item" id="prereq-target"><div class="card-h"><h2>Where builds go</h2><span class="pill ${targetReady ? "ok" : "warn"}">${targetReady ? "Ready" : "Not set up"}</span></div>
-            <div class="card-b stack gap-8">${targetBody}</div></section>
-          <div id="prereq-signing" hidden><section class="card" id="signing-card" hidden></section></div>
-          <div id="prereq-unity" hidden>${unityCardHtml}</div>
-          <div id="prereq-server" hidden></div>
-        </div>
-        <details class="prereq-done" id="prereq-done" hidden><summary class="muted t-secondary">Already set up (<span id="prereq-done-count">0</span>)</summary>
-          <div class="stack gap-8 prereq-done-list" id="prereq-done-list"></div></details>
-      </div></details>`;
+  const simulator = !web && state.project?.mobile_app !== false && (!state.project?.languages?.length || state.project.languages.some((l) => l.name === "Swift"));
+  const simulatorBtn = simulator
+    ? `<button type="button" class="btn small" ${act("run_visual_check", latest_job ? { job: latest_job.id } : {})} title="Boot the simulator and capture screenshots">Check on simulator</button>`
+    : "";
 
   return {
     title: "App delivery",
     sub: web ? "Publish preview links and track releases." : "",
-    actions: `<a class="btn small ghost" href="#/config/firebase" data-owner-only>Tester build setup</a>`,
-    html: `${prereqHtml}${branchCard}<section class="card mb-16" id="server-card" hidden></section><details class="fold mb-16" id="advanced-delivery"><summary class="card-h"><h2>Advanced delivery settings</h2><span class="muted t-secondary">platform, signing and every option</span></summary>${targetCard}</details>${releaseCard}${buildsCard}${pipelineCard}`,
+    actions: `${simulatorBtn}<a class="btn small ghost" href="#/delivery/setup" data-owner-only>Delivery setup</a>`,
+    html: `${prereqHtml}${branchCard}<section class="card mb-16" id="server-card" hidden></section>${buildsCard}`,
     after: () => {
       const branchSelect = view.querySelector("#delivery-branch-select");
       if (branchSelect) {
@@ -8782,111 +8992,7 @@ pages.delivery = async (args, query) => {
         });
       }
 
-      const targetForm = view.querySelector("#delivery-target-form");
-      if (targetForm) {
-        const showFields = () => {
-          const chosen = targetForm.elements.delivery_platform.value;
-          targetForm.querySelectorAll("[data-for]").forEach((el) => { el.hidden = !el.dataset.for.split(" ").includes(chosen); });
-        };
-        targetForm.elements.delivery_platform.addEventListener("change", showFields);
-        showFields();
-        targetForm.addEventListener("submit", async (e) => {
-          e.preventDefault();
-          const body = Object.fromEntries(new FormData(targetForm).entries());
-          body.automatic = targetForm.elements.automatic.checked;
-          try {
-            await api("delivery/target", { method: "POST", body });
-            toast("Saved where builds go");
-            route();
-          } catch (err) { toast(err.message, true); }
-        });
-      }
-      // The prerequisites: each reports whether it is set (true), still to do (false) or doesn't apply here (null). Until the quick ones
-      // have answered, a container with nothing to do stays out of sight instead of flashing at the top and then moving.
-      const box = view.querySelector("#delivery-prereqs"), send = view.querySelector("#delivery-send");
-      const items = box ? { target: { el: view.querySelector("#prereq-target"), ready: targetReady }, signing: { el: view.querySelector("#prereq-signing") },
-        unity: { el: view.querySelector("#prereq-unity"), ready: unityIos ? Boolean(unityIos.ready) : null },
-        server: { el: view.querySelector("#prereq-server") } } : {};
-      let placed = null;
-      const refreshPrereqs = () => {
-        if (!box || !send) return;
-        const all = Object.entries(items);
-        const todo = all.filter(([, it]) => it.ready === false), done = all.filter(([, it]) => it.ready === true);
-        const waiting = ["target", "signing"].some((id) => items[id].ready === undefined); // the server check asks Docker and is optional: not waited for
-        todo.forEach(([, it]) => { it.el.hidden = false; box.querySelector("#prereq-todo").append(it.el); });
-        done.forEach(([, it]) => { it.el.hidden = false; box.querySelector("#prereq-done-list").append(it.el); });
-        all.filter(([, it]) => it.ready === null).forEach(([, it]) => { it.el.hidden = true; });
-        const doneBox = box.querySelector("#prereq-done");
-        doneBox.hidden = !done.length;
-        box.querySelector("#prereq-done-count").textContent = String(done.length);
-        box.querySelector("#prereq-summary").textContent = todo.length ? `${todo.length} to do` : "All set";
-        box.hidden = waiting && !todo.length;
-        if (box.hidden) return;
-        const where = todo.length ? "top" : "below";
-        if (where !== placed) {
-          if (where === "top") send.before(box); else send.after(box);
-          box.open = where === "top"; // something to do: open at the top. Nothing left: one quiet line below the send card
-          placed = where;
-        }
-      };
-      const report = (id, ready) => { if (items[id]) { items[id].ready = ready; refreshPrereqs(); } };
-      refreshPrereqs();
-      view.querySelector("#prereq-change-target")?.addEventListener("click", (e) => {
-        e.preventDefault();
-        const advanced = view.querySelector("#advanced-delivery");
-        if (advanced) advanced.open = true;
-        view.querySelector("#delivery-target")?.scrollIntoView({ block: "start" });
-      });
-      view.querySelector("#install-unity-ios-btn")?.addEventListener("click", async (e) => {
-        const btn = e.currentTarget;
-        if (btn.disabled) return;
-        const computer = state.project?.computer?.name || "this computer";
-        const confirmed = await formDialog(
-          "Install Unity iOS Build Support?",
-          `<p>This runs Unity Hub's headless installer on <strong>${esc(computer)}</strong> to add the iOS Build Support module to Unity <strong>${esc(unityIos?.version || "")}</strong>.</p><p class="muted t-secondary">It downloads the module from Unity and may take a few minutes.</p>`,
-          "Install module",
-        );
-        if (!confirmed) return;
-        btn.disabled = true;
-        btn.textContent = "Installing…";
-        try {
-          const started = await api("delivery/unity-ios", { method: "POST", body: { confirmed: true } });
-          const result = await waitForTask(started);
-          toast(result.detail || "Unity iOS Build Support installed");
-          await route();
-        } catch (err) {
-          toast(err.message, true);
-          if (btn.isConnected) btn.textContent = "Try again";
-        } finally {
-          if (btn.isConnected) btn.disabled = false;
-        }
-      });
-      loadServerCard(view.querySelector("#server-card"), Boolean(testers.configured) && !web, (s) => { // after the page is up: it asks Docker, which can take a moment
-        // A server is a prerequisite only when builds are set to start it first; otherwise it is an ordinary card below.
-        if (s?.required && items.server) { items.server.el.append(view.querySelector("#server-card")); report("server", s.ready); }
-        else report("server", null);
-      });
-      if (!web) loadSigningCard(view.querySelector("#signing-card"), (ready) => report("signing", ready)); // files only: no network unless "Find it" is pressed
-      view.querySelector("#delivery-proposal-form")?.addEventListener("submit", async (e) => {
-        e.preventDefault();
-        const body = Object.fromEntries(new FormData(e.target).entries());
-        body.automatic = false; // sending a build is an explicit act: it is never turned on for you
-        try { await api("delivery/target", { method: "POST", body }); toast("Saved. You can send a build now."); route(); }
-        catch (err) { toast(err.message, true); }
-      });
-      view.querySelector("[data-open-advanced]")?.addEventListener("click", () => {
-        const adv = view.querySelector("#advanced-delivery");
-        if (adv) { adv.open = true; adv.scrollIntoView({ block: "start" }); }
-      });
-      view.querySelector("[data-scroll-target]")?.addEventListener("click", (e) => {
-        e.preventDefault();
-        const advanced = view.querySelector("#advanced-delivery");
-        if (advanced) advanced.open = true; // the settings it points at live in here
-        const pick = e.currentTarget.dataset.pickPlatform;
-        const select = view.querySelector("#delivery-platform");
-        if (pick && select && !select.disabled) { select.value = pick; select.dispatchEvent(new Event("change")); }
-        view.querySelector("#delivery-target")?.scrollIntoView({ block: "start" });
-      });
+      wireDeliveryPrereqs(view, d, { setupPage: false });
 
       const newGroupBtn = view.querySelector("#delivery-new-group-btn");
       if (newGroupBtn) {
@@ -8924,12 +9030,23 @@ pages.delivery = async (args, query) => {
           toast("Couldn't copy", true);
         }
       }));
+    },
+  };
+};
 
-      view.querySelectorAll("[data-rerun]").forEach((btn) => btn.addEventListener("click", async () => {
-        btn.disabled = true;
-        try { await api("delivery/rerun", { method: "POST", body: { run_id: Number(btn.dataset.rerun) } }); toast("Re-running the failed jobs"); route(); }
-        catch (e) { toast(e.message, true); btn.disabled = false; }
-      }));
+pages["delivery-setup"] = async () => {
+  const d = await api("delivery");
+  const canEditTarget = state.you?.role !== "member";
+  const { prereqHtml } = buildDeliveryPrereqs(d, canEditTarget, { setupPage: true });
+  const targetCard = buildDeliveryTargetCard(d, canEditTarget);
+  return {
+    title: "Delivery setup",
+    sub: "Check prerequisites and configure how builds are packaged and distributed.",
+    actions: `<a class="btn small ghost" href="#/config/firebase" data-owner-only>Firebase &amp; tester groups</a>`,
+    html: `${prereqHtml}<section class="card mb-16" id="server-card" hidden></section>${targetCard}`,
+    after: () => {
+      wireDeliveryTargetForm(view);
+      wireDeliveryPrereqs(view, d, { setupPage: true });
     },
   };
 };
@@ -13247,11 +13364,26 @@ pages.config = async (args = []) => {
             } catch (error) {
               toast(error.message, true);
               button.disabled = false;
-              button.textContent = "I've fixed it, check again";
+              button.textContent = "Check again";
             }
           };
           view.addEventListener("click", onRecheck);
           cleanup.push(() => view.removeEventListener("click", onRecheck));
+          const onDismissProblem = async (event) => {
+            const button = event.target.closest("[data-ai-dismiss]");
+            if (!button || button.disabled) return;
+            const provider = button.dataset.aiDismiss;
+            button.disabled = true;
+            try {
+              await api("ai-providers/dismiss", {method: "POST", body: {provider}});
+              await route();
+            } catch (error) {
+              toast(error.message, true);
+              button.disabled = false;
+            }
+          };
+          view.addEventListener("click", onDismissProblem);
+          cleanup.push(() => view.removeEventListener("click", onDismissProblem));
           const onInstall = async (event) => {
             const button = event.target.closest("[data-ai-install]");
             if (!button || button.disabled) return;
@@ -17634,6 +17766,7 @@ function resolveRoute() {
   if (parts[0] === "runs") return { page: "activity", args: [], nav: "activity", query };
   if (parts[0] === "file") return { page: "file", args: [], nav: null, query };
   if (parts[0] === "tests" && parts[1] === "cases") return { page: "test-cases", args: [], nav: "tests", query }; // the case library, under Tests
+  if (parts[0] === "delivery" && parts[1] === "setup") return { page: "delivery-setup", args: [], nav: "delivery", query };
   if (parts[0] === "jobs") return { page: "home", args: [], nav: "home", query }; // Jobs list lives on Home
   if (parts[0] === "config") {
     const section = ConfigurationPages.resolve(parts[1]);
@@ -17659,6 +17792,7 @@ function routeParent(r) {
   if (r.page === "config" && r.args.length) return "#/config";
   if (r.page === "new-project") return "#/projects";
   if (r.page === "test-cases") return "#/tests";
+  if (r.page === "delivery-setup") return "#/delivery";
   if (["connections", "projects"].includes(r.page)) return "#/config";
   if (r.page === "ux-review") return "#/checkup";
   if (["git", "help", "readiness", "checkup", "devlogs", "setup"].includes(r.page)) return "#/";
@@ -17903,7 +18037,7 @@ const PALETTE_PAGES = [["Home", "#/", "What needs you, and all jobs"], ["Product
   ["Packages", "#/packages", "Libraries and plugins this project uses, and ones worth adding"],
   ["Architecture", "#/product?section=architecture", "The language, frameworks and structure this project is built with, and why"],
   ["Test cases", "#/tests/cases", "Manage test cases library, coverage and definitions"],
-  ["Git setup", "#/git", "Branches and changes"], ["App delivery", "#/delivery", "What's live, with testers, pipeline"], ["Analytics", "#/measure", "Project KPIs, analytics platform, and learning log"], ["Documentation", "#/project-docs", "Project docs, feature specs, job records, and AI gap-filling"], ["Onboarding checklist", "#/checkup", "Project requirements, tools, environment checks, and selected workflows"], ["UX review", "#/ux-review", "Check screens against usability and design principles"],
+  ["Git setup", "#/git", "Branches and changes"], ["App delivery", "#/delivery", "What's live, with testers, pipeline"], ["Delivery setup", "#/delivery/setup", "Prerequisites, signing, build target, and tester setup"], ["Analytics", "#/measure", "Project KPIs, analytics platform, and learning log"], ["Documentation", "#/project-docs", "Project docs, feature specs, job records, and AI gap-filling"], ["Onboarding checklist", "#/checkup", "Project requirements, tools, environment checks, and selected workflows"], ["UX review", "#/ux-review", "Check screens against usability and design principles"],
   ["Connections", "#/connections", "Jira, Trello, Sentry, Figma, Slack alerts"], ["Configuration", "#/config", "Models, keys, machines, alerts"], ["Help", "#/help", "How it works, glossary"], ["New job", "#/new", "Describe work to be done"],
   ["Start a new project", "#/new-project", "Describe an idea and set it up"]];
 const palette = { open: false, entries: [], shown: [], active: 0, opener: null };
