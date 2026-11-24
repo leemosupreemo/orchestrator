@@ -1492,7 +1492,6 @@ let connectionLost = false;
 let connectionLostAt = 0;
 let pollFailures = 0; // consecutive failed background polls
 let lastInbox = null; // previous inbox items, to spot new things waiting on you
-const shownQuestionNoticeIds = new Set(); // active in-app question banners in #messages
 let lastRuns = null; // previous poll, to spot runs that finished or started waiting
 
 // The page is deployed on its own; the computer it opens has whatever version was installed. Say so when it's behind,
@@ -1593,18 +1592,19 @@ async function refreshState({ opening = false, isCurrent = () => true, switching
     }
     const inboxEvents = Notifications.inboxEvents(lastInbox, newState.inbox);
     for (const event of [...Notifications.events(lastRuns, newState.runs), ...inboxEvents]) Notifications.show(event);
+    const shownQuestions = (refreshState._shownQuestionNotices ||= new Set());
     const activeInboxIds = new Set((newState.inbox || []).map((item) => item.id));
-    for (const id of [...shownQuestionNoticeIds]) {
+    for (const id of [...shownQuestions]) {
       if (!activeInboxIds.has(id)) {
-        clearMessage(`question:${id}`);
-        shownQuestionNoticeIds.delete(id);
+        if (typeof clearMessage === "function") clearMessage(`question:${id}`);
+        shownQuestions.delete(id);
       }
     }
     for (const ev of inboxEvents) {
-      if (ev.title === "Question for you") {
-        shownQuestionNoticeIds.add(ev.key);
+      if (ev.title === "Question for you" && typeof notify === "function") {
+        shownQuestions.add(ev.key);
         const targetHash = ev.hash || "#/";
-        const onSeen = () => { shownQuestionNoticeIds.delete(ev.key); };
+        const onSeen = () => { shownQuestions.delete(ev.key); };
         notify("warning", `Question for you — ${ev.body}`, {
           id: `question:${ev.key}`,
           sticky: true,
@@ -1710,7 +1710,7 @@ async function refreshState({ opening = false, isCurrent = () => true, switching
   }
   const mobileTitle = $("#mobile-title"); // the phone header names the project you're in
   if (mobileTitle) {
-    if (document.body.classList.contains("signin-gate")) mobileTitle.textContent = "Orchestrator";
+    if (document.body.classList.contains("signin-gate")) mobileTitle.innerHTML = `<span class="mobile-brand"><span class="brand-mark" aria-hidden="true"></span><span>Orchestrator</span></span>`;
     else setMobileProjectTitle(state.project?.name, state.project?.kind);
   }
   const kindSlot = $("#project-kind");
@@ -2026,10 +2026,11 @@ function showSigningIn(label = "Signing you in…", { onCancel = null } = {}) {
   document.body.classList.add("signin-gate");
   document.body.removeAttribute("data-page");
   const mobileTitle = $("#mobile-title");
-  if (mobileTitle) mobileTitle.textContent = "Orchestrator";
+  if (mobileTitle) mobileTitle.innerHTML = `<span class="mobile-brand"><span class="brand-mark" aria-hidden="true"></span><span>Orchestrator</span></span>`;
   document.querySelector(".app")?.classList.add("session-locked");
   view.innerHTML = `<div class="signin-wrap"><div class="signin-card signing-in" role="status" aria-live="polite">
       ${onCancel ? `<button type="button" class="dialog-close-btn signing-in-close" data-cancel-connect="1" aria-label="Cancel" title="Cancel">✕</button>` : ""}
+      <div class="signin-brand signing-in-brand"><span class="brand-mark" aria-hidden="true"></span><span>Orchestrator</span></div>
       <h2>${esc(label)}</h2>
       ${loadingSkeleton("home")}
     </div></div>`;
@@ -2373,7 +2374,7 @@ function showAccountScreen(machines, message = "", troubleshoot = null, { chosen
   document.body.classList.add("signin-gate");
   document.body.removeAttribute("data-page");
   const mobileTitle = $("#mobile-title");
-  if (mobileTitle) mobileTitle.textContent = "Orchestrator";
+  if (mobileTitle) mobileTitle.innerHTML = `<span class="mobile-brand"><span class="brand-mark" aria-hidden="true"></span><span>Orchestrator</span></span>`;
   document.querySelector(".app")?.classList.add("session-locked");
   const email = window.firebase?.auth?.().currentUser?.email || "";
   let macRelease = null;
@@ -2537,7 +2538,7 @@ async function showPairScreen(code) {
   document.body.classList.add("signin-gate");
   document.body.removeAttribute("data-page");
   const mobileTitle = $("#mobile-title");
-  if (mobileTitle) mobileTitle.textContent = "Orchestrator";
+  if (mobileTitle) mobileTitle.innerHTML = `<span class="mobile-brand"><span class="brand-mark" aria-hidden="true"></span><span>Orchestrator</span></span>`;
   document.querySelector(".app")?.classList.add("session-locked");
   const done = (message) => { Account.clearPendingCode(); if (location.hash.startsWith("#/connect")) history.replaceState(null, "", "#/"); openAccount({ list: true, message }); };
   let preview;
@@ -2662,7 +2663,7 @@ async function showSnapshotScreen(machineId, machine) {
   document.body.classList.add("signin-gate");
   document.body.removeAttribute("data-page");
   const mobileTitle = $("#mobile-title");
-  if (mobileTitle) mobileTitle.textContent = "Orchestrator";
+  if (mobileTitle) mobileTitle.innerHTML = `<span class="mobile-brand"><span class="brand-mark" aria-hidden="true"></span><span>Orchestrator</span></span>`;
   document.querySelector(".app")?.classList.add("session-locked");
   view.innerHTML = `<div class="signin-wrap"><div class="signin-card account-card"><p class="muted">Loading snapshot…</p></div></div>`;
   try {
@@ -2968,7 +2969,7 @@ function showSignInGate(message, kind = "error") {
   document.body.classList.add("signin-gate");
   document.body.removeAttribute("data-page");
   const mobileTitle = $("#mobile-title");
-  if (mobileTitle) mobileTitle.textContent = "Orchestrator";
+  if (mobileTitle) mobileTitle.innerHTML = `<span class="mobile-brand"><span class="brand-mark" aria-hidden="true"></span><span>Orchestrator</span></span>`;
   document.querySelector(".app")?.classList.add("session-locked");
   const backend = getBackendUrl() || "";
   const token = getToken() || "";

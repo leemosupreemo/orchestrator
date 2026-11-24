@@ -1006,7 +1006,9 @@ console.log(JSON.stringify({{ withIndex, fallback }}));
         app = APP.read_text(encoding="utf-8")
         start = app.index("async function showSnapshotScreen(")
         block = app[start:start + 3200]
-        self.assertIn('if (mobileTitle) mobileTitle.textContent = "Orchestrator";', block)
+        self.assertIn('mobile-brand', block)
+        self.assertIn('brand-mark', block)
+        self.assertIn('Orchestrator', block)
         self.assertIn('openBtn.textContent = "Connecting…";', block)
         self.assertIn('openBtn.textContent = "Try live connection";', block)
 

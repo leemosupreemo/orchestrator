@@ -3486,6 +3486,8 @@ fieldset.field > legend { padding: 0; margin-bottom: var(--space-2); }
 .signin-wrap:has(.signing-in) { padding-bottom: var(--space-4); }
 .signin-card.signing-in { position: relative; max-width: 640px; align-items: stretch; text-align: center; gap: var(--space-4); }
 .signin-card.signing-in .signing-in-close { position: absolute; top: var(--space-3); right: var(--space-3); margin-right: 0; }
+.signin-card.signing-in .signing-in-brand { justify-content: center; }
+.signin-card.signing-in:has(.signing-in-close) .signing-in-brand,
 .signin-card.signing-in:has(.signing-in-close) h2 { padding-inline: var(--space-8); }
 .signing-in .skeleton-page { text-align: left; }
 .signin-card.signing-in h2 { margin: 0; font-size: var(--type-section); }
@@ -4305,6 +4307,8 @@ a.ticket-chip:hover { border-color: var(--accent); color: var(--accent); }
 .mobile-header-start { display: flex; align-items: center; gap: var(--space-2); }
 .brand-home { display: inline-flex; align-items: center; justify-content: center; min-width: var(--control-lg); min-height: var(--control-lg); flex-shrink: 0; border-radius: var(--r-md); }
 .mobile-title { display: flex; align-items: center; justify-content: center; min-width: 0; font-size: var(--type-body); font-weight: var(--weight-bold); }
+.mobile-brand { display: inline-flex; align-items: center; gap: var(--space-2); }
+.mobile-brand .brand-mark { width: 20px; height: 20px; }
 .mobile-title-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* The name is also a project switcher, like the sidebar's: an invisible <select> over the name opens the project list */
 .project-title-switch { position: relative; display: inline-flex; align-items: center; gap: var(--space-2); min-width: 0; max-width: 100%; min-height: var(--control-md); padding: 0 var(--space-2); border-radius: var(--r-md); cursor: pointer; }

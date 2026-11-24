@@ -265,7 +265,7 @@ class ScopedDebugTests(unittest.TestCase):
         # Verify in-app notification & prompt schema wiring
         root = Path(__file__).resolve().parents[1]
         app = (root / "orchestrator" / "web" / "static" / "app.js").read_text(encoding="utf-8")
-        self.assertIn('if (ev.title === "Question for you")', app)
+        self.assertIn('ev.title === "Question for you"', app)
         self.assertIn('notify("warning", `Question for you — ${ev.body}`', app)
         self.assertIn('label: "Answer question"', app)
         prompt = (root / "orchestrator" / "prompts" / "debug_agent.md").read_text(encoding="utf-8")

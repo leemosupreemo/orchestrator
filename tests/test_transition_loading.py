@@ -50,6 +50,7 @@ view.querySelector = (sel) => sel === '[data-cancel-connect]' ? { addEventListen
 context.showSigningIn('Opening MacBook…', { onCancel: () => { cancelled = true; } });
 console.log(JSON.stringify({
   skeleton: withoutCancel.includes('skeleton-page'),
+  brandWithLogo: withoutCancel.includes('signin-brand signing-in-brand') && withoutCancel.includes('brand-mark') && withoutCancel.includes('Orchestrator'),
   label: withoutCancel.includes('Opening Google…'),
   noCloseWithoutCancel: !withoutCancel.includes('signing-in-close'),
   hasTopRightClose: view.innerHTML.includes('class="dialog-close-btn signing-in-close"') && view.innerHTML.includes('aria-label="Cancel"'),
@@ -59,6 +60,7 @@ console.log(JSON.stringify({
 ''')
         self.assertEqual(out, {
             "skeleton": True,
+            "brandWithLogo": True,
             "label": True,
             "noCloseWithoutCancel": True,
             "hasTopRightClose": True,
