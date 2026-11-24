@@ -330,8 +330,9 @@ console.log(JSON.stringify([
     def test_fix_routing_and_hero_controls(self):
         source = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
         self.assertNotIn("job-fix-series", source)
-        self.assertIn('const isFixForJob = (stayOnJob || action === "debug" || action === "fix") && Boolean(params?.job);', source)
-        self.assertIn('const targetHash = `#/jobs/${encodeURIComponent(params.job)}`;', source)
+        self.assertIn("const stayOnJobPage = Boolean(stayOnJob && params?.job);", source)
+        self.assertIn('const transitionTitle = optimisticRunTitle || (action === "debug" || action === "fix" ? "Starting fix…" : "");', source)
+        self.assertIn("location.hash = `#/runs/${run.id}`;", source)
         self.assertIn('const steer = activeRun || s.question || reviewingPlan || signIn || diskBlocked || s.state.blocker || autoStopped ? null', source)
         self.assertIn('${reviewingPlan ? "" : diskBlocked ? `<section id="job-hero" tabindex="-1" class="job-hero tone-${esc(heroTone)}">', source)
         self.assertIn('primary: nextAction === "debug" && !signIn && !diskBlocked', source)

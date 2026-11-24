@@ -621,9 +621,10 @@ async function runAction(action, params = {}, { skipConfirm = false, button = nu
     button.setAttribute("aria-busy", "true");
     button.innerHTML = `<svg class="icon icon-sm spin" aria-hidden="true"><use href="#i-refresh"/></svg> Starting…`;
   }
-  const isFixForJob = (stayOnJob || action === "debug" || action === "fix") && Boolean(params?.job);
-  const showSkeleton = Boolean(optimisticRunTitle) && !isFixForJob;
-  if (showSkeleton) showRunTransition(optimisticRunTitle);
+  const stayOnJobPage = Boolean(stayOnJob && params?.job);
+  const transitionTitle = optimisticRunTitle || (action === "debug" || action === "fix" ? "Starting fix…" : "");
+  const showSkeleton = Boolean(transitionTitle) && !stayOnJobPage;
+  if (showSkeleton) showRunTransition(transitionTitle);
   try {
     if (await tryAutoFailoverAction(action, params)) { runTransitioning = false; return; }
     const { run } = await api("runs", { method: "POST", body: { action, params, ...terminalSize() } });
@@ -631,7 +632,7 @@ async function runAction(action, params = {}, { skipConfirm = false, button = nu
     if (run && Array.isArray(state.runs) && !state.runs.some((r) => r.id === run.id)) {
       state.runs.unshift(run);
     }
-    if (isFixForJob) {
+    if (stayOnJobPage) {
       const targetHash = `#/jobs/${encodeURIComponent(params.job)}`;
       if (current.page === "job" && String(params.job) === String(current.args?.[0] || "")) {
         await refreshState();

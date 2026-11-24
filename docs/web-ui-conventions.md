@@ -46,12 +46,7 @@ the checks that can be automated live in `tests/test_web_ui.py`.
 - A decision shows what it decides. While a plan waits for approval (or to start), it sits right under the job's
   hero as "The plan to approve": summary, assumptions and risks, and each task with what "done" means and the files it
   touches, editable in place, with **Revise…** beside it. Once approved it folds back to Tasks.
-- **Inline fix routing:** Starting a fix (`action="debug"` or `action="fix"` with a job) from anywhere—Home's job
-  list, a job page, or a run page—always opens or stays on `#/jobs/<id>` instead of navigating to a dedicated fix run
-  page. When the hero's next action is **Run fix**, the hero renders a single primary **Run fix** button directly under
-  the optional note textarea (suppressing the duplicate top-right **Run fix** button), and the failure copy-log control
-  (`#copy-job-failure-log`) uses the standard `.btn.ghost.icon-only` size with inline loading spinner and temporary
-  green check + **Copied** confirmation (`.is-copied`).
+- **Fix run routing:** Starting a fix (`action="debug"` or `action="fix"` with a job) transitions immediately with the run skeleton loader and navigates directly into the fix job's run (`#/runs/<run.id>`). When the hero's next action is **Run fix**, the hero renders a single primary **Run fix** button directly under the optional note textarea (suppressing the duplicate top-right **Run fix** button), and the failure copy-log control (`#copy-job-failure-log`) uses the standard `.btn.ghost.icon-only` size with inline loading spinner and temporary green check + **Copied** confirmation (`.is-copied`).
 - **Titles & in-app question alerts:** Job table titles (`.job-table-row .job-title`) and list item titles (`.item .title`) wrap up to 2 lines (`-webkit-line-clamp: 2` / `line-clamp: 2`) on desktop and mobile before truncating. Newly arriving **Question for you** inbox items show a sticky warning notification in `#messages` with an **Answer question** link (and clear automatically once answered).
 
 - A More menu groups its items under headings (on a job: **Work on this job**, **Links**, **Settings**, **Finish or remove**; sharing and exporting live behind a single **Share & export…** modal), one line each with the

@@ -160,7 +160,19 @@ vm.runInContext(source.slice(skelStart, skelEnd), context);
   await new Promise(setImmediate);
   pendingApi.reject(new Error('Docker failed'));
   await failPromise;
-  console.log(JSON.stringify({ immediate, afterSuccess, routes: routes.length, errToast: toasts[0]?.m }));
+
+  context.location.hash = '#/jobs/job-1';
+  const debugPromise = context.runAction('debug', { job: 'job-1', feedback: 'fix test' }, {});
+  const debugImmediate = {
+    page: context.document.body.dataset.page,
+    skeleton: view.innerHTML.includes('data-kind="run"'),
+    header: headers[headers.length - 1]?.title,
+  };
+  await new Promise(setImmediate);
+  pendingApi.resolve({ run: { id: 'run-fix-99' } });
+  await debugPromise;
+  const debugAfter = { hash: context.location.hash, transitioning: vm.runInContext('runTransitioning', context) };
+  console.log(JSON.stringify({ immediate, afterSuccess, routes: routes.length, errToast: toasts[0]?.m, debugImmediate, debugAfter }));
 })().catch((e) => { console.error(e); process.exitCode = 1; });
 '''
         result = subprocess.run(["node", "-e", script, str(APP)], capture_output=True, text=True, timeout=10)
@@ -177,6 +189,12 @@ vm.runInContext(source.slice(skelStart, skelEnd), context);
             "afterSuccess": {"hash": "#/runs/run-42", "transitioning": False},
             "routes": 1,
             "errToast": "Docker failed",
+            "debugImmediate": {
+                "page": "run",
+                "skeleton": True,
+                "header": "Starting fix…",
+            },
+            "debugAfter": {"hash": "#/runs/run-fix-99", "transitioning": False},
         })
         app_src = APP.read_text(encoding="utf-8")
         self.assertIn("optimisticRunTitle: `${verb} ${serverLabel(server)}…`", app_src)
