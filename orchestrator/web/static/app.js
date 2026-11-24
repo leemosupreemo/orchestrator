@@ -4212,7 +4212,7 @@ async function openDiskSpace(jobId = "") {
       dlg.classList.remove("dialog-compact");
       $("#dialog-title").textContent = "Free up disk space";
       $("#dialog-cancel").hidden = false;
-      $("#dialog-cancel").textContent = "Cancel";
+      $("#dialog-cancel").textContent = "Close";
       $("#dialog-ok").hidden = false;
       $("#dialog-ok").className = "btn primary";
       $("#dialog-ok").textContent = btnLabel;
@@ -4256,7 +4256,7 @@ async function openDiskSpace(jobId = "") {
       }
       if (dlg && !dlg.open) return;
       if (report.remote_machine) {
-        await formDialog("Free up disk space", `<p>This job ran on <strong>${esc(report.remote_machine)}</strong>. Open Orchestrator on that computer or clear space in its system storage settings.</p>`, "Done", { compact: true });
+        await formDialog("Free up disk space", `<p>This job ran on <strong>${esc(report.remote_machine)}</strong>. Open Orchestrator on that computer or clear space in its system storage settings.</p>`, "Done", { compact: true, cancelLabel: "Close" });
         return;
       }
       syncDiskState(report);
@@ -4289,7 +4289,7 @@ async function openDiskSpace(jobId = "") {
         ${!caches.length ? "<p>No removable temporary files (≥1 MB) found on the project volume.</p>" : ""}
         <p class="t-secondary">${esc(extraSpaceHint)}</p>
       </div>`;
-      const answer = formDialog("Free up disk space", body, "Check again");
+      const answer = formDialog("Free up disk space", body, "Check again", { cancelLabel: "Close" });
       const dialogBody = $("#dialog-body");
       const controls = new AbortController();
       dialogBody?.addEventListener("change", () => {

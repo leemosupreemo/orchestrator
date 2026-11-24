@@ -342,6 +342,8 @@ console.log(JSON.stringify([
         self.assertLess(disk_fn.index("showLoading("), disk_fn.index("api(`recovery/disk-space?"))
         self.assertIn("syncDiskState(report);", disk_fn)
         self.assertIn("syncDiskState(result);", disk_fn)
+        self.assertIn('$("#dialog-cancel").textContent = "Close";', disk_fn)
+        self.assertIn('formDialog("Free up disk space", body, "Check again", { cancelLabel: "Close" })', disk_fn)
         self.assertIn("function liveRunCard(r, { onJobPage = false } = {})", source)
         self.assertIn("job-hero-next-preview", source)
         self.assertIn('recoveryAction: "disk-space-cleared"', source)
