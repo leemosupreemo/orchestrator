@@ -8565,6 +8565,7 @@ console.log(JSON.stringify({{ fromHyp, fromDoc, bullets, html }}));
         self.assertNotIn("white-space: nowrap;", activity_block)
         # The stepper shows the stage and the hero's title and button say what's needed: no badge row repeating them.
         self.assertNotIn("job-hero-badge-row", self.job_page)
+        self.assertIn("Raw job data (JSON)", self.job_page)
 
     def test_job_changes_filters_internal_ai_tool_dotfiles(self):
         from orchestrator.web import server as ui

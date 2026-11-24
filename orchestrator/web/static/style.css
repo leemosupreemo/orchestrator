@@ -994,8 +994,8 @@ pre.file {
   margin: 0; padding: var(--space-4) var(--space-4); max-height: 70vh; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere;
   background: var(--panel-2); border-radius: 0 0 var(--radius) var(--radius);
 }
-details.raw summary { cursor: pointer; color: var(--muted); padding: var(--space-3) var(--space-4); }
-details.raw pre { margin: 0; padding: 0 var(--space-4) var(--space-4); overflow: auto; }
+details.raw summary { cursor: pointer; flex-wrap: wrap; color: var(--muted); padding: var(--container-header-y) var(--container-pad-x); overflow-wrap: anywhere; }
+details.raw pre { margin: 0; padding: 0 var(--container-pad-x) var(--container-pad-y); overflow: auto; }
 .question { font-size: var(--type-body); font-weight: var(--weight-medium); }
 /* A planner's questions and the answers, as a conversation: the AI on the left, you on the right */
 .clarify-card { border-color: color-mix(in srgb, var(--accent) 35%, var(--border)); }

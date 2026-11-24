@@ -7493,8 +7493,8 @@ pages.job = async ([id]) => {
       ${(data.context?.updates || []).length ? fold("Updates sent to linked apps", data.context.updates.length, `<div class="list">${data.context.updates.map((e) => `<div class="item"><span aria-label="${e.ok ? "sent" : "failed"}">${e.ok ? "✅" : "⚠️"}</span><div class="main-col">
           <div class="title">${esc(e.message)}</div><div class="meta">${esc([PROVIDER_LABEL[e.provider] || e.provider, e.ref, String(e.event || "").replace(":", " · ").replace("_", " "), e.t].filter(Boolean).join(" · "))}</div></div></div>`).join("")}</div>`) : ""}
 
-      <!-- Technical Details -->
-      <section class="card"><details class="raw"><summary>Technical details (${esc(s.id)})</summary><pre>${esc(JSON.stringify(job, null, 2))}</pre></details></section>
+      <!-- Raw Job Data -->
+      <section class="card"><details class="raw"><summary><span>Raw job data (JSON)</span><span class="mono muted">${esc(s.id)}</span></summary><pre>${esc(JSON.stringify(job, null, 2))}</pre></details></section>
       </div></div>
     `,
     after: () => {
