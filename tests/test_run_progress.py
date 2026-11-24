@@ -656,6 +656,56 @@ for (const phaseLabel of [
         result = subprocess.run(["node", "-e", script, str(source)], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_server_run_status_renders_clean_title_subpoints_and_omits_models(self):
+        source = Path(__file__).resolve().parents[1] / "orchestrator/web/static/app.js"
+        script = r"""
+const fs = require('fs'), assert = require('node:assert/strict');
+const source = fs.readFileSync(process.argv[1], 'utf8');
+for (const name of ['runFailureGuidance', 'runDuration', 'runStatus']) {
+  const start = source.indexOf(`function ${name}(`);
+  assert(start >= 0, `Missing function ${name}`);
+  const end = source.indexOf('\n}', start) + 2;
+  eval(source.slice(start, end).replace(`function ${name}`, `globalThis.${name} = function`));
+}
+require(require('path').join(require('path').dirname(process.argv[1]), 'html.js'));
+globalThis.esc = Html.escape;
+globalThis.plural = (n, word, many = `${word}s`) => `${n} ${Number(n) === 1 ? word : many}`;
+globalThis.act = (action) => `data-action="${action}"`;
+globalThis.stoppingRuns = new Set();
+globalThis.state = { disk_free_bytes: 14.0 * (1024 ** 3), disk_low: true };
+
+const serverDone = runStatus({
+  id: 'run-srv-1',
+  action: 'server_start',
+  title: 'Start server',
+  running: false,
+  exit_code: 0,
+  started: 100,
+  ended: 104,
+  progress: { machines: ['Leemos-MBP'] },
+  result: {
+    headline: 'Done: OpenDAoC-Core is running.',
+    details: [
+      'Container opendaoc-server Started',
+      'Container opendaoc-db Started',
+      'Waiting for every service to be up and healthy …',
+    ],
+    tone: 'ok',
+  },
+});
+assert(serverDone.includes('<strong class="run-status-stage">OpenDAoC-Core is running</strong>'), 'Server title should strip redundant Done: prefix');
+assert(serverDone.indexOf('OpenDAoC-Core is running') < serverDone.indexOf('>Completed<'), 'Title should lead ahead of status pill');
+assert(serverDone.includes('<li>opendaoc-server — started</li>'), 'Container subpoints should be cleanly formatted');
+assert(serverDone.includes('<li>opendaoc-db — started</li>'));
+assert(!serverDone.includes('Waiting for every service'), 'Stale waiting line should not appear in completed server summary');
+assert(!serverDone.includes('<dt>Models</dt>'), 'Non-AI server runs should omit Models row');
+assert(serverDone.includes('<dt>Machine</dt><dd data-run-machines>Leemos-MBP</dd>'));
+assert(serverDone.includes('<dt>Elapsed</dt><dd data-run-elapsed>4s</dd>'));
+assert(serverDone.includes('<dt>Disk space</dt><dd data-run-disk class="text-bad">14.0 GB free</dd>'));
+"""
+        result = subprocess.run(["node", "-e", script, str(source)], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
 
 class StoppingRunsTests(unittest.TestCase):
     """A run that started a model call in a process group of its own (as llm.py does) still stops, and stops it."""

@@ -415,8 +415,44 @@ def package_update(lines: list[str], code: int | None) -> dict[str, Any] | None:
     return None
 
 
+def server_change(lines: list[str], code: int | None) -> dict[str, Any] | None:
+    """Summarize `orchestrator server start|stop|restart` runs with a clear title and container sub-points."""
+    headline = ""
+    tone = "bad" if code else "ok"
+    containers: dict[str, str] = {}
+    docker_started = False
+    error_lines: list[str] = []
+    for raw in lines:
+        line = plain(raw)
+        if not line:
+            continue
+        if line.startswith("Done: "):
+            headline = line[len("Done: "):].strip().rstrip(".")
+        elif line.startswith("Not done: "):
+            headline = line[len("Not done: "):].strip().rstrip(".")
+            tone = "bad"
+        elif line == "Docker is running.":
+            docker_started = True
+        elif match := re.match(r"^Container\s+(\S+)\s+(.+)$", line):
+            containers[match.group(1)] = match.group(2).strip().lower()
+        elif re.match(r"^(?:Error|error|fatal|Couldn't start|Docker didn't start)", line):
+            error_lines.append(line)
+    if not headline and not containers and not error_lines:
+        return None
+    details: list[str] = []
+    if docker_started:
+        details.append("Docker started automatically")
+    for name, state in containers.items():
+        details.append(f"{name} — {state}")
+    for err in error_lines:
+        if err != headline and err not in details:
+            details.append(err)
+    return _result(headline or (error_lines[-1] if error_lines else "Server action complete"), details, tone)
+
+
 READERS: dict[str, Callable[[list[str], int | None], dict[str, Any] | None]] = {
     "package_update": package_update,
+    "server_start": server_change, "server_stop": server_change, "server_restart": server_change,
     "sync_fleet": sync_fleet, "fleet_llm_check": fleet_llm_check, "worker_check": worker_check,
     "test": tests, "test_suite": tests, "test_plan": tests, "coverage": coverage, "visual_check": visual_check, "ux_pass": ux_pass,
 }

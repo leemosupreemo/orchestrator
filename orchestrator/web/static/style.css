@@ -600,15 +600,16 @@ a.item:hover { background: var(--panel-2); }
 .banner.run-status p, .run-status-notice-body p { flex: 0 1 auto; } /* these stack in a column, where that basis would be a height */
 .run-status { display: flex; flex-direction: column; gap: var(--space-3); padding: var(--space-4); }
 .run-status.working { border-color: var(--accent); background: var(--accent-soft); }
-.run-status-heading { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); min-width: 0; max-width: 100%; }
+.run-status-heading { display: flex; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; gap: var(--space-2); min-width: 0; max-width: 100%; }
+.run-status-heading-main { display: flex; align-items: baseline; flex-wrap: wrap; gap: var(--space-2); min-width: 0; flex: 1 1 auto; }
 .run-status-heading .pill { flex-shrink: 0; }
-.run-status-step { font-size: var(--type-section); font-variant-numeric: tabular-nums; }
-.run-status-stage { font-size: var(--type-body); line-height: 1.4; min-width: 0; overflow-wrap: anywhere; }
+.run-status-step { font-size: var(--type-secondary); font-weight: var(--weight-bold); color: var(--muted); font-variant-numeric: tabular-nums; }
+.run-status-stage { font-size: var(--type-section); font-weight: var(--weight-bold); line-height: 1.3; min-width: 0; overflow-wrap: anywhere; }
 .run-status-step ~ .run-status-stage { flex-basis: 100%; }
-.run-status-details { display: grid; grid-template-columns: max-content minmax(0, 1fr); align-items: baseline; gap: var(--space-2) var(--space-4); margin: 0; }
-.run-status-details > div { display: contents; }
-.run-status-details dt { color: var(--text); font-size: var(--type-secondary); margin: 0; font-weight: var(--weight-bold); }
-.run-status-details dd { margin: 0; font-size: var(--type-secondary); font-weight: var(--weight-medium); color: var(--text); overflow-wrap: anywhere; font-variant-numeric: tabular-nums; text-align: left; }
+.run-status-details { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); align-items: start; gap: var(--space-3) var(--space-4); margin: 0; padding-top: var(--space-3); border-top: 1px solid var(--border); }
+.run-status-details > div { display: flex; flex-direction: column; gap: var(--space-0); min-width: 0; }
+.run-status-details dt { color: var(--muted); font-size: var(--type-tag); margin: 0; font-weight: var(--weight-bold); text-transform: uppercase; letter-spacing: 0.04em; }
+.run-status-details dd { margin: 0; font-size: var(--type-secondary); font-weight: var(--weight-bold); color: var(--text); overflow-wrap: anywhere; font-variant-numeric: tabular-nums; text-align: left; }
 .run-status-progress { width: 100%; height: var(--space-1); accent-color: var(--accent); border: 0; }
 .run-status-progress::-webkit-progress-bar { background: var(--border); border-radius: var(--r-pill); }
 .run-status-progress::-webkit-progress-value { background: var(--accent); border-radius: var(--r-pill); }
@@ -4061,19 +4062,24 @@ body[data-page="run"] .topbar-actions {
 
   body[data-page="run"] #next-step .run-status-heading {
     gap: var(--space-1) var(--space-2);
-    align-items: center;
+    align-items: flex-start;
   }
 
   body[data-page="run"] #next-step .run-status-stage {
-    font-size: var(--type-secondary);
-    line-height: 1.25;
+    font-size: var(--type-body);
+    line-height: 1.3;
   }
 
   body[data-page="run"] #next-step .run-status-details {
-    gap: var(--space-0) var(--space-3);
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--space-2) var(--space-3);
+    padding-top: var(--space-2);
   }
 
-  body[data-page="run"] #next-step .run-status-details dt,
+  body[data-page="run"] #next-step .run-status-details dt {
+    font-size: var(--type-tag);
+  }
+
   body[data-page="run"] #next-step .run-status-details dd {
     font-size: var(--type-secondary);
   }
@@ -5234,7 +5240,7 @@ body[data-page="checkup"] .item :is(.title, .meta) { white-space: normal; overfl
 .run-status-result.ok > strong { color: var(--ok); }
 .run-status-result.warn > strong { color: var(--warn); }
 .run-status-result.bad > strong { color: var(--bad); }
-.run-status-result ul { margin: 0; padding-left: var(--space-5); color: var(--text); }
+.run-status-result ul { margin: 0; padding-left: var(--space-4); display: flex; flex-direction: column; gap: var(--space-1); color: var(--text); }
 .run-status-result li { overflow-wrap: anywhere; }
 .run-status-notice-list { margin: var(--space-1) 0 0; padding-left: var(--space-5); font-size: var(--type-secondary); line-height: 1.45; color: var(--text); }
 .run-status-notice-list li { overflow-wrap: anywhere; }

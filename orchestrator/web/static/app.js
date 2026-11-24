@@ -16514,6 +16514,9 @@ function runStatus(r, vc = null) {
   const stepText = numbered ? `Step ${currentStep} of ${totalSteps}` : "";
   const completionLabel = r.action === "update_local"
     ? (pendingUpdate ? "Orchestrator updated — restarting UI to continue your job…" : "Orchestrator updated — restarting UI…")
+    : r.action === "server_start" ? "Server started"
+    : r.action === "server_stop" ? "Server stopped"
+    : r.action === "server_restart" ? "Server restarted"
     : r.action === "coverage" ? "Coverage measurement complete"
     : r.action === "logs_pull" ? "Logs pulled"
     : r.action === "plan_epic" ? "Plan ready to review"
@@ -16535,6 +16538,11 @@ function runStatus(r, vc = null) {
     "logs_pull", "logs_tail", "logs_setup",
     "check", "check_config", "wizard", "worker_check", "worker_install",
     "console", "distribute", "deliver"
+  ]);
+  const omitModelsActions = new Set([
+    "server_start", "server_stop", "server_restart",
+    "signing_import", "signing_secure", "signing_copy",
+    "update_local", "update_fleet",
   ]);
 
   const activeModels = p.active_models || [];
@@ -16596,16 +16604,26 @@ function runStatus(r, vc = null) {
     : "";
   const found = !r.running && r.result?.headline ? r.result : null; // what the run found, read from its output
   const showFound = Boolean(found && !guidance?.fromResult && (done || !guidance || found.details?.length)); // failed tests are already in the summary on top // a failure with guidance and nothing more to add would only repeat it
-  const headerText = showFound && found?.headline ? found.headline : headlineLabel;
-  const foundBlock = showFound && found?.details?.length ? `<div class="run-status-result ${found.tone === "bad" ? "bad" : found.tone === "warn" ? "warn" : "ok"}">
-      <ul>${found.details.map((d) => `<li>${esc(d)}</li>`).join("")}</ul></div>` : "";
+  const isServerAction = ["server_start", "server_stop", "server_restart"].includes(r.action);
+  const rawHeaderText = showFound && found?.headline ? found.headline : headlineLabel;
+  const headerText = isServerAction ? String(rawHeaderText).replace(/^(?:Done|Not done):\s*/i, "").replace(/\.$/, "") : rawHeaderText;
+  const foundDetails = showFound && Array.isArray(found?.details)
+    ? found.details
+      .filter((d) => !(isServerAction && done && /^Waiting for every service\b|^Running:\s*docker compose\b|^(?:starting|stopping|restarting)\s*[…\.]/i.test(String(d).trim())))
+      .map((d) => isServerAction ? String(d).replace(/^Container\s+(\S+)\s+(.+)$/, (_, name, st) => `${name} — ${st.trim().toLowerCase()}`) : d)
+    : [];
+  const foundBlock = foundDetails.length ? `<div class="run-status-result ${found.tone === "bad" ? "bad" : found.tone === "warn" ? "warn" : "ok"}">
+      <ul>${foundDetails.map((d) => `<li>${esc(d)}</li>`).join("")}</ul></div>` : "";
   const resultText = showFound ? "" : done ? "Completed (exit 0)" : (failed && r.exit_code != null ? `Failed (exit ${r.exit_code})` : "");
   const resultItem = resultText ? `<div><dt>Result</dt><dd class="${caveat ? "" : done ? "text-ok" : "text-bad"}">${esc(resultText)}</dd></div>` : "";
   const machines = Array.isArray(p.machines) ? p.machines : [];
   const machineText = machines.length ? machines.join(", ")
-    : nonAiActions.has(r.action) ? "This Mac (local run)"
+    : (nonAiActions.has(r.action) || omitModelsActions.has(r.action)) ? "This Mac (local run)"
     : r.running ? "Assigning a machine…" : "None recorded";
-  const machineItem = `<div><dt>Machines</dt><dd data-run-machines>${esc(machineText)}${machines.length && r.running ? " (active)" : ""}</dd></div>`;
+  const machineLabel = machines.length > 1 ? "Machines" : "Machine";
+  const machineItem = `<div><dt>${machineLabel}</dt><dd data-run-machines>${esc(machineText)}${machines.length && r.running ? " (active)" : ""}</dd></div>`;
+  const hideModelsRow = omitModelsActions.has(r.action) && !calls.length && !displayModels.length && !(r.running && activeCount > 0);
+  const modelsItem = hideModelsRow ? "" : `<div><dt>Models</dt><dd>${modelsText}</dd></div>`;
   const summaryItem = r.summary ? `<div><dt>Summary</dt><dd>${esc(r.summary)}</dd></div>` : "";
   const suites = Array.isArray(p.suites) ? p.suites : []; // the new test suites a coverage plan set out to add
   const suiteNow = Number.isInteger(p.suite) && p.suite > 0 && p.suite <= suites.length ? p.suite : 0;
@@ -16633,9 +16651,12 @@ function runStatus(r, vc = null) {
 
   return `<section class="banner ${tone} run-status" aria-label="Run status">
     <div class="run-status-heading" role="status" aria-live="polite">
-      ${stepText ? `<strong class="run-status-step">${esc(stepText)}</strong>` : ""}
+      <div class="run-status-heading-main">
+        ${stepText ? `<strong class="run-status-step">${esc(stepText)}</strong>` : ""}
+        <strong class="run-status-stage">${esc(headerText)}</strong>
+      </div>
       <span class="pill ${tone}">${esc(status)}</span>
-      <strong class="run-status-stage">${esc(headerText)}</strong></div>
+    </div>
     ${foundBlock}
     <dl class="run-status-details">
       ${summaryItem}
@@ -16645,7 +16666,7 @@ function runStatus(r, vc = null) {
       ${gateStateItem}
       ${suiteItem}
       ${machineItem}
-      <div><dt>Models</dt><dd>${modelsText}</dd></div>
+      ${modelsItem}
       ${skippedItem}
       <div><dt>Elapsed</dt><dd data-run-elapsed>${esc(duration)}</dd></div>
       ${stateItem}

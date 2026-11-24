@@ -120,6 +120,37 @@ class GeneralTests(unittest.TestCase):
         out = rr.summarize("git_pull", "From origin\n❌ Error: branches have diverged\n[exited with code 1]\n", 1)
         self.assertEqual((out["headline"], out["tone"]), ("branches have diverged", "bad"))
 
+    def test_server_start_has_clean_title_and_container_subpoints_without_waiting_noise(self):
+        sample = (
+            "Start OpenDAoC-Core …\n"
+            "  Running: docker compose up -d  (in .)\n"
+            "  Container opendaoc-server Started\n"
+            "  Container opendaoc-db Started\n"
+            "  Waiting for every service to be up and healthy …\n"
+            "Done: OpenDAoC-Core is running.\n"
+        )
+        out = rr.summarize("server_start", sample, 0)
+        self.assertEqual(out["headline"], "OpenDAoC-Core is running")
+        self.assertEqual(out["tone"], "ok")
+        self.assertEqual(out["details"], [
+            "opendaoc-server — started",
+            "opendaoc-db — started",
+        ])
+
+    def test_server_start_records_auto_started_docker_and_failure_reason(self):
+        sample = (
+            "Start OpenDAoC-Core …\n"
+            "  Docker isn't running: starting Docker Desktop …\n"
+            "  Docker is running.\n"
+            "  Container opendaoc-server Started\n"
+            "Not done: OpenDAoC-Core is unhealthy. A service is running but reports unhealthy.\n"
+        )
+        out = rr.summarize("server_start", sample, 1)
+        self.assertEqual(out["tone"], "bad")
+        self.assertIn("OpenDAoC-Core is unhealthy", out["headline"])
+        self.assertIn("Docker started automatically", out["details"])
+        self.assertIn("opendaoc-server — started", out["details"])
+
     def test_without_marks_it_falls_back_to_the_last_lines_and_ignores_noise(self):
         out = rr.summarize("git_fetch", "From github.com:x/y\n * [new branch] a -> origin/a\n==========\n⠋⠙\nAlready up to date.\n[exited]\n", 0)
         self.assertEqual(out["headline"], "Already up to date.")
