@@ -198,3 +198,75 @@ vm.runInContext(source.slice(skelStart, skelEnd), context);
         })
         app_src = APP.read_text(encoding="utf-8")
         self.assertIn("optimisticRunTitle: `${verb} ${serverLabel(server)}…`", app_src)
+
+    def test_tick_does_not_clobber_open_diff_file_before_or_during_refresh(self):
+        script = r'''
+const fs = require('fs');
+const vm = require('vm');
+const source = fs.readFileSync(process.argv[1], 'utf8');
+let openDiff = false;
+let applied = 0;
+let resolvePage;
+const view = {
+  querySelector: (sel) => (openDiff && sel.includes('details.diff-file[open]') ? {} : null),
+  contains: () => false,
+};
+const context = {
+  routeToken: 1,
+  signingIn: false,
+  projectSwitch: false,
+  runTransitioning: false,
+  view,
+  document: {
+    hidden: false,
+    activeElement: null,
+    querySelector: () => null,
+  },
+  $: () => ({ open: false }),
+  state: { project: { name: 'Demo' }, runs: [] },
+  current: { page: 'job', args: ['j1'], query: new URLSearchParams(), rendered: 'old' },
+  LIVE: new Set(['job']),
+  refreshState: async () => {},
+  loadSetup: async () => {},
+  projectDownloads: { pending: () => false },
+  pages: {
+    job: () => new Promise((r) => { resolvePage = r; }),
+  },
+  signatureOf: (r) => r.html,
+  apply: () => { applied += 1; },
+};
+vm.createContext(context);
+const start = source.indexOf('async function tick() {');
+const end = source.indexOf('\nwindow.addEventListener("hashchange", route);', start);
+vm.runInContext(source.slice(start, end), context);
+(async () => {
+  // Case 1: diff already open before tick starts -> never fetches or applies
+  openDiff = true;
+  await context.tick();
+  const afterAlreadyOpen = applied;
+
+  // Case 2: user opens diff while pages.job() fetch is in flight -> must NOT apply and close it
+  openDiff = false;
+  const inflight = context.tick();
+  await new Promise(setImmediate);
+  await new Promise(setImmediate);
+  openDiff = true;
+  resolvePage({ html: 'new-html' });
+  await inflight;
+  const afterRaceOpen = applied;
+
+  // Case 3: user closes diff -> next tick refreshes normally
+  openDiff = false;
+  const normal = context.tick();
+  await new Promise(setImmediate);
+  await new Promise(setImmediate);
+  resolvePage({ html: 'new-html' });
+  await normal;
+  console.log(JSON.stringify({ afterAlreadyOpen, afterRaceOpen, afterClosed: applied }));
+})().catch((e) => { console.error(e); process.exitCode = 1; });
+'''
+        result = subprocess.run(["node", "-e", script, str(APP)], capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), {"afterAlreadyOpen": 0, "afterRaceOpen": 0, "afterClosed": 1})
+        app_src = APP.read_text(encoding="utf-8")
+        self.assertIn('<details class="diff-file" data-no-animate data-diff-path="${esc(f)}">', app_src)

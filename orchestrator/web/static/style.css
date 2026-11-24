@@ -3627,7 +3627,8 @@ textarea.code-editor.tall { min-height: 220px; }
 }
 
 /* Inline diff */
-.diff-files { display: flex; flex-direction: column; gap: var(--space-1); }
+.diff-files { display: flex; flex-direction: column; gap: var(--space-1); overflow-anchor: none; }
+.diff-file { overflow-anchor: none; }
 .diff-file > summary { cursor: pointer; padding: var(--space-1) 0; min-height: var(--control-xs); overflow-wrap: anywhere; }
 .diff { margin: var(--space-1) 0 var(--space-2); padding: var(--space-2) 0; max-height: 420px; overflow: auto; background: var(--panel-2); border-radius: var(--r-md); font-size: var(--type-secondary); line-height: 1.5; }
 .diff-line { display: block; padding: 0 var(--space-3); white-space: pre; min-height: 1.5em; }

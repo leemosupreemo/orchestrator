@@ -7461,7 +7461,7 @@ pages.job = async ([id]) => {
         <div class="card-b delta-summary-line">
           ${deltaUnsaved ? `<div class="delta-line unsaved">${esc(deltaUnsaved)}</div>` : ""}
           ${state.project?.dirty_files ? `<div class="row wrap gap-8 muted t-secondary"><span>${plural(state.project.dirty_files, "uncommitted file")} in workspace.</span><a href="#/git?show=changes">Open Git setup</a></div>` : ""}
-          <div class="diff-files">${allFiles.slice(0, 12).map((f) => `<details class="diff-file" data-diff-path="${esc(f)}"><summary class="mono">${esc(f)}</summary><pre class="diff" aria-live="polite">Loading…</pre></details>`).join("") || `<span class="muted">No modified files</span>`}${allFiles.length > 12 ? `<div class="muted">+${allFiles.length - 12} more: download the full diff (the download button above) for every file</div>` : ""}</div>
+          <div class="diff-files">${allFiles.slice(0, 12).map((f) => `<details class="diff-file" data-no-animate data-diff-path="${esc(f)}"><summary class="mono">${esc(f)}</summary><pre class="diff" aria-live="polite">Loading…</pre></details>`).join("") || `<span class="muted">No modified files</span>`}${allFiles.length > 12 ? `<div class="muted">+${allFiles.length - 12} more: download the full diff (the download button above) for every file</div>` : ""}</div>
         </div>
         ${builderSummaryDoc ? `<details class="raw diffstat-details"><summary>View builder summary</summary><div class="card-b md">${Markdown.render(builderSummaryDoc.text)}</div></details>` : ""}
         ${changes?.diffstat ? `<details class="raw diffstat-details"><summary>View diff summary (${allFiles.length} files)</summary><pre class="file">${esc(changes.diffstat)}</pre></details>` : ""}
@@ -12862,7 +12862,7 @@ pages.git = async (_, query) => {
     <div class="card-h"><h2>Uncommitted changes${g.branch ? ` on <span class="mono">${esc(g.branch)}</span>` : ""} <span class="count">${g.changes_total}</span></h2></div>
     ${(g.change_groups || []).map(group => `<section class="git-change-group">
       <h3>${esc(group.label)} <span class="count">${group.changes.length}</span></h3>
-      <div class="diff-files">${group.changes.map(c => `<details class="diff-file" data-git-diff="${esc(c.path)}" data-kind="${esc(group.id)}">
+      <div class="diff-files">${group.changes.map(c => `<details class="diff-file" data-no-animate data-git-diff="${esc(c.path)}" data-kind="${esc(group.id)}">
         <summary><span class="pill">${esc(c.label)}</span> <span class="mono">${c.old_path ? `${esc(c.old_path)} → ` : ""}${esc(c.path)}</span></summary>
         <pre class="diff" aria-live="polite">Loading…</pre></details>`).join("")}</div>
     </section>`).join("") || `<div class="empty">${g.is_repo ? "Working tree clean." : "Initialize Git to inspect changes."}</div>`}
@@ -18150,14 +18150,21 @@ async function tick() {
     }
     return;
   }
-  if (!LIVE.has(current.page) || $("#dialog").open || $("#preview-update-dialog")?.open || document.querySelector("details.more[open]")) return;
-  if (current.page !== "ux-review" && view.contains(document.activeElement) && document.activeElement.matches("input, textarea, select")) return;
+  const userBusyReading = () => Boolean(
+    $("#dialog")?.open
+    || $("#preview-update-dialog")?.open
+    || document.querySelector("details.more[open]")
+    || view.querySelector?.("details.diff-file[open], details.diffstat-details[open], details.raw[open]")
+    || (current.page !== "ux-review" && view.contains?.(document.activeElement) && document.activeElement?.matches?.("input, textarea, select"))
+  );
+  if (!LIVE.has(current.page) || userBusyReading()) return;
   const page = current.page, args = current.args.join();
   try {
     const result = await pages[page](current.args, current.query);
     if (result?.stale) return;
     if (projectSwitch || token !== routeToken) return;
     if (current.page !== page || current.args.join() !== args) return;
+    if (userBusyReading()) return;
     if (page === "ux-review" && updateUxReviewWhileEditing(result)) return;
     if (signatureOf(result) !== current.rendered) apply(result);
   } catch { /* keep showing the last good render */ }
