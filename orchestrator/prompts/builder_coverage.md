@@ -23,4 +23,4 @@ Return ONLY JSON:
 either covered by a test carrying its id in a comment or named under "skipped".)
 
 If tests require a production change, return
-{"clarification_needed": "What blocks test coverage without production changes?"}.
+{"clarification_needed": "What blocks test coverage without production changes? Under 80 words: what you need decided and what each answer changes."}.

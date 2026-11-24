@@ -11,7 +11,7 @@ Your output must be a single JSON object with the following fields:
   "test_command": "command to run tests (e.g. python3 ai/tests/test_something.py)",
   "risks": "short list of risks",
   "summary": "2-4 succinct bullet points ('- ...', max ~12 words each) stating only what changed and where — no prose paragraphs",
-  "clarification_needed": "string (OPTIONAL: if you encounter uncertainty that requires human guidance)"
+  "clarification_needed": "string (OPTIONAL: if you encounter uncertainty that requires human guidance. Under 80 words: your recommendation, why you are blocked, and what each answer changes.)"
 }
 
 Be careful with:

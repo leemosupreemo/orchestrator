@@ -33,7 +33,7 @@ Human Feedback (Highest Priority):
    - "add_logging": If you need more visibility.
    - "patch": If you are confident in a fix.
    - "investigate": If you need to read more files.
-   - "ask_human": If you cannot make real progress without a human decision, missing hardware/device captures (e.g. a physical phone or tool absent from this machine), subjective visual confirmation, or an ambiguous requirement that code and logs cannot resolve. Set `clarification_question` to one concise, concrete question saying what you need the user to decide or provide.
+   - "ask_human": If you cannot make real progress without a human decision, missing hardware/device captures (e.g. a physical phone or tool absent from this machine), subjective visual confirmation, or an ambiguous requirement that code and logs cannot resolve. Set `clarification_question` to one concise, concrete question saying what you need the user to decide or provide. keep the question short (under 80 words, one decision, answerable in a word or two). Lead with your recommendation, then say why you are blocked and what each answer changes: what you will do, what it costs or risks if the guess is wrong, and what ships unverified or unfinished. No log excerpts or file lists; name only what the person needs to decide.
 10. If choosing "add_logging", follow the **Logging Recipe**:
    - Add function entry/exit markers.
    - Snapshot relevant state flags.
@@ -48,7 +48,7 @@ You MUST return a single JSON object with the following schema:
   "hypothesis": "What you think is happening",
   "confidence": 0.8,
   "action": "add_logging" | "patch" | "investigate" | "ask_human",
-  "clarification_question": "Required when action is ask_human; otherwise omit or empty",
+  "clarification_question": "Required when action is ask_human (under 80 words: recommendation, why blocked, what each answer changes); otherwise omit or empty",
   "files_changed": ["path/to/source_file"],
   "targeted_tests": ["optional/fastest_affected_test_or_suite"],
   "implementation_plan": "Step-by-step instructions",

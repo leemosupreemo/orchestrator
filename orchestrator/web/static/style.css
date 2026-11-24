@@ -14,6 +14,8 @@
   --accent: #3b52d0;
   --accent-ink: #ffffff;
   --accent-soft: #e8ecfd;
+  --chat-you-bg: #e4eefb; /* your side of an AI conversation: a faded blue */
+  --chat-you-border: #bdd3f1;
   --ok: #17794a;
   --ok-soft: #e3f5ea;
   --warn: #945909;
@@ -127,6 +129,8 @@
     --accent: #7289ff;
     --accent-ink: #0f1115;
     --accent-soft: #232a45;
+    --chat-you-bg: #1d2b44;
+    --chat-you-border: #33507d;
     --ok: #43c47d;
     --ok-soft: #173024;
     --warn: #e0a84a;
@@ -1007,7 +1011,7 @@ details.raw pre { margin: 0; padding: 0 var(--container-pad-x) var(--container-p
 .clarify-msg p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .clarify-msg ul { margin: 0; padding-inline-start: var(--space-4); overflow-wrap: anywhere; }
 .clarify-ai { align-self: flex-start; background: var(--panel-2); border: 1px solid var(--border); border-bottom-left-radius: 4px; }
-.clarify-you { align-self: flex-end; background: var(--accent-soft); border: 1px solid color-mix(in srgb, var(--accent) 32%, var(--border)); border-bottom-right-radius: 4px; }
+.clarify-you { align-self: flex-end; background: var(--chat-you-bg); border: 1px solid var(--chat-you-border); border-bottom-right-radius: 4px; }
 .clarify-auto { background: var(--panel-2); border-color: var(--border); border-style: dashed; }
 .clarify-who { font-size: var(--type-tag); font-weight: var(--weight-bold); color: var(--muted); text-transform: uppercase; letter-spacing: .04em; padding: 0 var(--space-1); }
 .clarify-reply { display: flex; flex-direction: column; gap: var(--space-2); }
@@ -3398,7 +3402,7 @@ body[data-page="new-project"] #page-sub { margin-top: var(--space-2); }
 /* Job conversation */
 .chat-thread { display: flex; flex-direction: column; gap: var(--space-3); max-height: 420px; overflow-y: auto; }
 .chat-msg { display: flex; flex-direction: column; gap: var(--space-0); padding: var(--space-2) var(--space-3); border-radius: var(--r-md); background: var(--panel-2); max-width: 90%; }
-.chat-msg.user { align-self: flex-end; background: var(--accent-soft); }
+.chat-msg.user { align-self: flex-end; background: var(--chat-you-bg); border: 1px solid var(--chat-you-border); }
 .chat-who { font-size: var(--type-tag); font-weight: var(--weight-medium); text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
 .chat-text { white-space: pre-wrap; overflow-wrap: anywhere; font-size: var(--type-body); }
 #notify-btn[hidden] { display: none; }
@@ -3671,7 +3675,8 @@ fieldset.field > legend { padding: 0; margin-bottom: var(--space-2); }
 /* Signing in */
 .signin-wrap:has(.signing-in) { padding-bottom: var(--space-4); }
 .signin-card.signing-in { position: relative; max-width: 640px; align-items: stretch; text-align: center; padding: var(--container-pad-y) var(--container-pad-x); gap: var(--container-title-gap); }
-.signin-card.signing-in .signing-in-close { position: absolute; top: var(--space-3); right: var(--space-3); margin-right: 0; }
+/* Centre the ✕ on the title's first line (the card's top padding plus half the title's line box). */
+.signin-card.signing-in .signing-in-close { position: absolute; top: calc(var(--container-pad-y) + (var(--type-section) * var(--leading-tight) - var(--control-md)) / 2); right: var(--space-3); margin-right: 0; }
 .signin-card.signing-in:has(.signing-in-close) h2 { padding-inline: var(--space-8); }
 .signing-in .skeleton-page { text-align: left; }
 .signin-card.signing-in h2 { margin: 0; font-size: var(--type-section); }
@@ -4228,14 +4233,14 @@ body[data-page="run"] .topbar-actions {
     display: flex;
     flex-direction: column;
     gap: var(--space-2);
-    overflow: hidden;
+    overflow-x: hidden;
+    overflow-y: auto; /* only if the card plus the log's minimum height outgrow the screen, so nothing is clipped */
+    overscroll-behavior: contain;
   }
 
+  /* The status card grows to fit its content (no inner scrollbar); the log beside it gives up space instead. */
   body[data-page="run"] #next-step {
     flex-shrink: 0;
-    max-height: 38dvh;
-    overflow-y: auto;
-    overscroll-behavior: contain;
   }
 
   body[data-page="run"] #next-step .run-status,
@@ -4871,6 +4876,8 @@ dialog.dialog-image-viewer form {
   --accent: #7289ff;
   --accent-ink: #0f1115;
   --accent-soft: #232a45;
+  --chat-you-bg: #1d2b44;
+  --chat-you-border: #33507d;
   --ok: #43c47d;
   --ok-soft: #173024;
   --warn: #e0a84a;

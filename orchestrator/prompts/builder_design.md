@@ -11,4 +11,4 @@ Return ONLY JSON:
 {"summary": "What the mockups show", "files": [{"path": "screen.html", "content": "complete HTML or SVG text"}]}
 
 If the request cannot be represented as visual mockups, return
-{"clarification_needed": "What needs to be clarified?"}.
+{"clarification_needed": "What needs to be clarified? Under 80 words: your recommendation, why it blocks you, and what each answer changes."}.

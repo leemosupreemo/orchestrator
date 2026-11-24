@@ -131,6 +131,6 @@ Return a single JSON object matching this schema:
       "task": 1
     }
   ],
-  "clarification_needed": "OPTIONAL: leave empty unless a high-impact decision or explicit conflict requires human input before coding"
+  "clarification_needed": "OPTIONAL: leave empty unless a high-impact decision or explicit conflict requires human input before coding. Under 80 words: your recommendation, why it blocks, and what each answer changes"
 }
 ```

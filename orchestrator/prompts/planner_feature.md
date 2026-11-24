@@ -16,6 +16,8 @@ Before outputting your final plan, you MUST use your tools (`read_file`, `grep_s
 You may provide a brief "Research & Discovery" summary in Markdown first to document your findings. 
 **CRITICAL (Adaptive Ambiguity & Risk Policy)**: Do not treat missing low-impact details as an automatic blocker, and do not silently invent high-impact product requirements. For low-impact, reversible details (UI styling, local naming, conventional patterns), choose a reasonable default for this codebase and document it in `assumptions`. If an uncertain choice is technically investigable, inspect the repository with your tools first. Only STOP and use the `clarification_needed` field when a wrong guess has high product impact, is costly to reverse, or explicit requirements conflict.
 
+**Asking the human**: keep the question short (under 80 words, one decision, answerable in a word or two). Lead with your recommendation, then say why you are blocked and what each answer changes: what you will do, what it costs or risks if the guess is wrong, and what ships unverified or unfinished. No log excerpts or file lists; name only what the person needs to decide.
+
 Your final output MUST be a STRICT JSON object containing the plan.
 
 Required JSON schema:
@@ -28,7 +30,7 @@ Required JSON schema:
 ...
   "constraints": ["string"],
   "risks": ["string"],
-  "clarification_needed": "string (OPTIONAL: if you cannot form a solid plan without more info)",
+  "clarification_needed": "string (OPTIONAL: if you cannot form a solid plan without more info. Under 80 words: your recommendation, why you are blocked, and what each answer changes.)",
   "tasks": [
     {
       "title": "string",

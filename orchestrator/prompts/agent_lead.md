@@ -51,7 +51,7 @@ You must return a STRICT JSON object. No extra text, no markdown fences.
     }
   ],
   "final_response": "...",
-  "clarification": "..."
+  "clarification": "Under 80 words: your recommendation, why you are blocked, and what each answer changes"
 }
 ```
 
