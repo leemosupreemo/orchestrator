@@ -164,6 +164,8 @@ class RunTimeline:
                 else:
                     self._open(title, timed, of=f"{n} of {total}")
             return
+        if cli_step := self._cli_step(line, text, timed):
+            return
         self._model_event(line, timed)
         step = self.current
         self._lines[step["id"]].append(text[:MAX_LINE_CHARS])
@@ -177,6 +179,29 @@ class RunTimeline:
                 recent.append(summary)
                 if len(recent) > 3:
                     del recent[:-3]
+
+    def _cli_step(self, line: str, raw_text: str, timed: bool) -> bool:
+        """Recognize milestone lines printed by direct CLI commands (e.g. `orchestrator server start|stop|restart`)."""
+        if re.fullmatch(r"(?:Start|Stop|Restart)\s+.+?\s*…", line):
+            self._open(plain_title(line), timed)
+            return True
+        if docker_start := re.fullmatch(r"Docker isn't running:\s*starting\s+(.+?)\s*…", line):
+            self._open(plain_title(f"Starting {docker_start[1]}"), timed)
+            return True
+        if line == "Waiting for every service to be up and healthy …":
+            self._open("Waiting for services to be healthy", timed)
+            return True
+        if terminal := re.fullmatch(r"(Done|Not done):\s*(.+)", line):
+            step = self._open(plain_title(line), timed)
+            self._lines[step["id"]].append(raw_text[:MAX_LINE_CHARS])
+            step["lines"] += 1
+            if terminal[1] == "Not done":
+                step["errors"] += 1
+            else:
+                step["status"] = "done"
+                step["ended"] = self._clock() if timed else None
+            return True
+        return False
 
     def _header(self, title: str, timed: bool) -> None:
         task = re.fullmatch(r"(?:SUB[- ]TASK|STEP)\s*(\d+)/(\d+)(?::\s*(.*))?", title, re.I)
@@ -237,6 +262,8 @@ class RunTimeline:
             step["ended"] = self._clock() if timed else None
         elif exit_code not in (0, None) and not any(s["status"] == "failed" for s in self.steps):
             step["status"] = "failed"  # it said it was done, then the run failed after all
+        if len(self.steps) == 1 and step["title"] == "Starting" and step["lines"] > 0:
+            step["title"] = "Failed" if exit_code not in (0, None) else "Done"
         for event in self._calls:
             event["status"] = "failed" if exit_code else "done"
         self._calls = []

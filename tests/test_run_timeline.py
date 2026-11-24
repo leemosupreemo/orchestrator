@@ -138,6 +138,45 @@ class StepsTests(unittest.TestCase):
             for line in timeline.lines(step["id"]):
                 self.assertFalse(line.startswith(("[spec]", "[gate]", "[experience]")))
 
+    def test_server_run_timeline_breaks_into_steps_and_ends_on_done_step(self):
+        server_log = "\n".join([
+            "Start OpenDAoC-Core …",
+            "  Running: docker compose up -d  (in .)",
+            "  Container opendaoc-server Started",
+            "  Container opendaoc-db Started",
+            "  Waiting for every service to be up and healthy …",
+            "Done: OpenDAoC-Core is running.",
+        ])
+        timeline = from_log(server_log + "\n[exited]")
+        steps = timeline.view(running=False)["steps"]
+        self.assertEqual([s["title"] for s in steps], [
+            "Start OpenDAoC-Core",
+            "Waiting for services to be healthy",
+            "Done: OpenDAoC-Core is running",
+        ])
+        self.assertTrue(all(s["status"] == "done" for s in steps))
+        self.assertIn("  Container opendaoc-server Started", timeline.lines(steps[0]["id"]))
+
+        # Failure ends on a failed Not done step.
+        failed_log = "\n".join([
+            "Start OpenDAoC-Core …",
+            "  Docker isn't running: starting Docker Desktop …",
+            "  Docker is running.",
+            "Not done: OpenDAoC-Core is unhealthy.",
+        ])
+        failed_steps = from_log(failed_log + "\n[exited with code 1]").view(running=False)["steps"]
+        self.assertEqual([s["title"] for s in failed_steps], [
+            "Start OpenDAoC-Core",
+            "Starting Docker Desktop",
+            "Not done: OpenDAoC-Core is unhealthy",
+        ])
+        self.assertEqual(failed_steps[-1]["status"], "failed")
+        self.assertEqual(failed_steps[-1]["errors"], 1)
+
+        # Generic single-step run without markers resolves from Starting -> Done on exit 0.
+        plain_steps = from_log("ok line\n[exited]").view(running=False)["steps"]
+        self.assertEqual([(s["title"], s["status"]) for s in plain_steps], [("Done", "done")])
+
 
 class LiveTests(unittest.TestCase):
     def test_quota_handoff_keeps_the_fallback_answer_on_the_right_model(self):
