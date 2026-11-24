@@ -109,3 +109,74 @@ vm.runInContext(source.slice(source.indexOf('async function tick()'),source.inde
 })().catch(e=>{console.error(e);process.exitCode=1;});
 '''.replace("TRANSITION", json.dumps(transition)))
                 self.assertEqual(out, {"skeleton": True})
+
+    def test_launch_server_transitions_immediately_to_run_skeleton_and_restores_on_error(self):
+        script = r'''
+const fs = require('fs'), vm = require('vm');
+const source = fs.readFileSync(process.argv[1], 'utf8');
+const classes = new Set();
+const view = { innerHTML: '', attrs: {}, setAttribute(k, v) { this.attrs[k] = v; }, removeAttribute(k) { delete this.attrs[k]; } };
+const headers = [], toasts = [], routes = [];
+let pendingApi;
+const context = {
+  document: {
+    body: { dataset: {}, classList: { add: (c) => classes.add(c), remove: (c) => classes.delete(c), has: (c) => classes.has(c) } },
+  },
+  location: { hash: '#/' },
+  view,
+  cleanup: [() => {}],
+  routeToken: 1,
+  state: { actions: {}, runs: [] },
+  current: { page: 'home', args: [] },
+  setHeader: (h) => headers.push(h),
+  loadingSkeleton: (page) => `<div class="skeleton-page" data-kind="${page}"></div>`,
+  terminalSize: () => ({ cols: 80, rows: 24 }),
+  tryAutoFailoverAction: async () => false,
+  trackWebEvent: () => {},
+  refreshState: async () => {},
+  route: () => routes.push('routed'),
+  toast: (m, err) => toasts.push({ m, err }),
+  api: () => new Promise((resolve, reject) => { pendingApi = { resolve, reject }; }),
+};
+vm.createContext(context);
+const skelStart = source.indexOf('let runTransitioning = false;');
+const skelEnd = source.indexOf('function formDialog(', skelStart);
+vm.runInContext(source.slice(skelStart, skelEnd), context);
+(async () => {
+  const runPromise = context.runAction('server_start', { id: 'srv-1', machine: 'local' }, { skipConfirm: true, optimisticRunTitle: 'Starting Game Server…' });
+  const immediate = {
+    page: context.document.body.dataset.page,
+    loadingClass: classes.has('route-loading'),
+    skeleton: view.innerHTML.includes('data-kind="run"'),
+    header: headers[headers.length - 1]?.title,
+    transitioning: vm.runInContext('runTransitioning', context),
+  };
+  await new Promise(setImmediate);
+  pendingApi.resolve({ run: { id: 'run-42' } });
+  await runPromise;
+  const afterSuccess = { hash: context.location.hash, transitioning: vm.runInContext('runTransitioning', context) };
+
+  const failPromise = context.runAction('server_start', { id: 'srv-1', machine: 'local' }, { skipConfirm: true, optimisticRunTitle: 'Starting Game Server…' });
+  await new Promise(setImmediate);
+  pendingApi.reject(new Error('Docker failed'));
+  await failPromise;
+  console.log(JSON.stringify({ immediate, afterSuccess, routes: routes.length, errToast: toasts[0]?.m }));
+})().catch((e) => { console.error(e); process.exitCode = 1; });
+'''
+        result = subprocess.run(["node", "-e", script, str(APP)], capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        out = json.loads(result.stdout)
+        self.assertEqual(out, {
+            "immediate": {
+                "page": "run",
+                "loadingClass": True,
+                "skeleton": True,
+                "header": "Starting Game Server…",
+                "transitioning": True,
+            },
+            "afterSuccess": {"hash": "#/runs/run-42", "transitioning": False},
+            "routes": 1,
+            "errToast": "Docker failed",
+        })
+        app_src = APP.read_text(encoding="utf-8")
+        self.assertIn("optimisticRunTitle: `${verb} ${serverLabel(server)}…`", app_src)

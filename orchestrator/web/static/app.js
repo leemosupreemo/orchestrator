@@ -594,7 +594,21 @@ async function tryAutoFailoverAction(action, params) {
   return true;
 }
 
-async function runAction(action, params = {}, { skipConfirm = false, button = null, stayOnJob = false } = {}) {
+let runTransitioning = false;
+function showRunTransition(title) {
+  runTransitioning = true;
+  ++routeToken;
+  cleanup.forEach((fn) => { try { fn(); } catch {} });
+  cleanup = [];
+  if (typeof navigationDrawer !== "undefined") navigationDrawer?.close?.();
+  document.body.dataset.page = "run";
+  document.body.classList.add("route-loading");
+  view.setAttribute("aria-busy", "true");
+  setHeader({ title: title || "Starting…", sub: "", actions: "" });
+  view.innerHTML = loadingSkeleton("run");
+}
+
+async function runAction(action, params = {}, { skipConfirm = false, button = null, stayOnJob = false, optimisticRunTitle = "" } = {}) {
   const meta = state.actions[action] || {};
   if (action === "test" && !(await projectHasTests())) {
     if (await formDialog("No tests to run", `<p>This project has no tests yet. Add them now: a job writes tests for your code and measures coverage.</p>`, "Add tests", { compact: true })) await dialogs.add_tests();
@@ -607,14 +621,16 @@ async function runAction(action, params = {}, { skipConfirm = false, button = nu
     button.setAttribute("aria-busy", "true");
     button.innerHTML = `<svg class="icon icon-sm spin" aria-hidden="true"><use href="#i-refresh"/></svg> Starting…`;
   }
+  const isFixForJob = (stayOnJob || action === "debug" || action === "fix") && Boolean(params?.job);
+  const showSkeleton = Boolean(optimisticRunTitle) && !isFixForJob;
+  if (showSkeleton) showRunTransition(optimisticRunTitle);
   try {
-    if (await tryAutoFailoverAction(action, params)) return;
+    if (await tryAutoFailoverAction(action, params)) { runTransitioning = false; return; }
     const { run } = await api("runs", { method: "POST", body: { action, params, ...terminalSize() } });
     trackWebEvent("web_action_triggered", { action });
     if (run && Array.isArray(state.runs) && !state.runs.some((r) => r.id === run.id)) {
       state.runs.unshift(run);
     }
-    const isFixForJob = (stayOnJob || action === "debug" || action === "fix") && Boolean(params?.job);
     if (isFixForJob) {
       const targetHash = `#/jobs/${encodeURIComponent(params.job)}`;
       if (current.page === "job" && String(params.job) === String(current.args?.[0] || "")) {
@@ -625,10 +641,12 @@ async function runAction(action, params = {}, { skipConfirm = false, button = nu
         void refreshState();
       }
     } else {
+      runTransitioning = false;
       location.hash = `#/runs/${run.id}`;
       void refreshState();
     }
   } catch (e) {
+    if (showSkeleton) { runTransitioning = false; void route(); }
     toast(e?.message || `Could not start ${action}`, true);
     if (button && button.isConnected) {
       button.disabled = false;
@@ -8649,8 +8667,14 @@ async function loadServerCard(box, canSend = false, onState = () => {}, { homeMo
     box.querySelectorAll("[data-server-action]").forEach((btn) => btn.addEventListener("click", async () => {
       const server = view.servers.find((x) => x.id === btn.closest("[data-server]").dataset.server);
       const where = view.machines.find((m) => m.name === view.machine)?.label || "This computer";
-      if (await confirmServerAction(btn.dataset.serverAction, server, where, view)) {
-        await runAction(`server_${btn.dataset.serverAction}`, { id: server.id, machine: view.machine }, { skipConfirm: true });
+      const actName = btn.dataset.serverAction;
+      if (await confirmServerAction(actName, server, where, view)) {
+        const verb = { start: "Starting", stop: "Stopping", restart: "Restarting" }[actName] || "Starting";
+        await runAction(`server_${actName}`, { id: server.id, machine: view.machine }, {
+          skipConfirm: true,
+          button: btn,
+          optimisticRunTitle: `${verb} ${serverLabel(server)}…`,
+        });
       }
     }));
     box.querySelectorAll("[data-server-app]").forEach((box2) => box2.addEventListener("change", async () => {
@@ -17965,6 +17989,7 @@ let routeToken = 0; // only the newest navigation may clear or fill the loading 
 async function route() {
   if (signingIn) return; // the loading screen stays until sign-in finishes
   if (projectSwitch) return; // so does the opening skeleton, until switchProject is done
+  runTransitioning = false;
   const moved = RouteAliases.redirect(location.hash); // an old address: show the page where it lives now
   if (moved) history.replaceState(null, "", moved);
   navigationDrawer.close();
@@ -18048,16 +18073,17 @@ async function route() {
 // Live pages refresh in place — but never under the user's hands.
 async function tick() {
   const token = routeToken;
+  const busyTransition = typeof runTransitioning !== "undefined" && runTransitioning;
   if (typeof signingIn !== "undefined" && signingIn) return;
-  if (projectSwitch || token !== routeToken) return;
+  if (projectSwitch || busyTransition || token !== routeToken) return;
   if (view.querySelector && view.querySelector(".signin-card:not(.signing-in)") && view.contains(document.activeElement) && document.activeElement.matches("input, textarea, select")) return;
   await refreshState(); // also while the tab is hidden, so notifications can fire
-  if (projectSwitch || token !== routeToken) return;
+  if (projectSwitch || (typeof runTransitioning !== "undefined" && runTransitioning) || token !== routeToken) return;
   if (view.querySelector?.("[data-project-download]") && projectDownloads.pending()) return; // The download owns Home until its data is ready.
   if (document.hidden) return;
   if (!state.project) return;
   await loadSetup();
-  if (projectSwitch || token !== routeToken) return;
+  if (projectSwitch || (typeof runTransitioning !== "undefined" && runTransitioning) || token !== routeToken) return;
   if (current.page === "run") {
     const run = state.runs.find((r) => r.id === current.args[0]);
     if (run) {
