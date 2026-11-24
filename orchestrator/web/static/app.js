@@ -6838,8 +6838,9 @@ pages.job = async ([id]) => {
     if (nothingBuilt && idx === 1) return { state: "active failed", icon: "!" };
     if (isJobComplete || idx < currentPhaseIndex) return { state: "done", icon: "✓" };
     if (idx === currentPhaseIndex) {
-      const tone = s.state.tone === "failed" ? "failed" : ["merge", "complete"].includes(s.state.next?.action) ? "done" : s.state.group === "needs_you" ? "attention" : "active";
-      const icon = s.state.tone === "failed" ? "!" : (loopingBack ? "↻" : String(idx + 1));
+      const isBlockedOrFailed = s.state.tone === "failed" || diskBlocked || Boolean(s.state.blocker) || Boolean(s.state.blocker_kind);
+      const tone = isBlockedOrFailed ? "failed" : ["merge", "complete"].includes(s.state.next?.action) ? "done" : s.state.group === "needs_you" ? "attention" : "active";
+      const icon = isBlockedOrFailed ? "!" : (loopingBack ? "↻" : String(idx + 1));
       return { state: `active ${tone}${loopingBack ? " iterating" : ""}`, icon };
     }
     return { state: `upcoming${loopingBack ? " reset" : ""}`, icon: String(idx + 1) };
@@ -7302,12 +7303,8 @@ pages.job = async ([id]) => {
     if (st.includes("active")) return "active";
     return "";
   };
-  const renderStepBtn = ({ p, idx, displayIcon }) => `<button type="button" class="job-step ${p.state}" data-scroll-to="${idx === 0 && reviewingPlan ? "#plan-section" : phaseTargets[idx]}" ${idx === currentPhaseIndex ? 'aria-current="step"' : ""}>
-    <span class="job-step-dot" aria-hidden="true">${displayIcon}</span>
-    <span class="job-step-meta">
-      <span class="job-step-title">${esc(p.title)}</span>
-      <span class="job-step-sub">${esc(p.subtitle)}</span>
-    </span>
+  const renderStepBtn = ({ p, idx }) => `<button type="button" class="job-step ${p.state}" data-scroll-to="${idx === 0 && reviewingPlan ? "#plan-section" : phaseTargets[idx]}" ${idx === currentPhaseIndex ? 'aria-current="step"' : ""} title="${esc(`${p.title}: ${p.subtitle}`)}">
+    <span class="job-step-title">${esc(p.title)}</span>
   </button>`;
   const topSteps = stepperItems.slice(0, stepperItems.length >= 5 ? 3 : 2);
   const bottomSteps = stepperItems.slice(topSteps.length).reverse();
@@ -7323,9 +7320,8 @@ pages.job = async ([id]) => {
     </div>
     <div class="job-oval-mid">
       <div class="job-oval-arc is-return ${returnArcTone}" aria-hidden="true" title="Cyclical loop back to Plan / Build">${returnArcSvg}</div>
-      <div class="job-oval-center${iterationNum > 1 ? " has-loops" : ""}" aria-label="Iteration ${iterationNum}: ${esc(iterSubLabel)}">
-        <span class="job-oval-iter"><span class="job-iter-icon" aria-hidden="true">↻</span> Iteration ${iterationNum}</span>
-        <span class="job-oval-iter-sub">${esc(iterSubLabel)}</span>
+      <div class="job-oval-center${iterationNum > 1 ? " has-loops" : ""}" aria-label="Iteration ${iterationNum}: ${esc(iterSubLabel)}" title="${esc(iterSubLabel)}">
+        <span class="job-oval-iter">Iteration ${iterationNum}</span>
       </div>
       <div class="job-oval-arc is-continue ${rightArcTone}" aria-hidden="true">${forwardArcSvg}</div>
     </div>

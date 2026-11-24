@@ -2349,12 +2349,12 @@ dialog h2 {
 .job-stepper ~ section, .job-body section { scroll-margin-top: var(--space-4); }
 .job-step {
   appearance: none;
-  border: 1px solid transparent;
-  border-radius: var(--radius);
-  background: transparent;
-  padding: var(--space-2);
-  min-height: var(--control-xl);
-  text-align: left;
+  border: 1px solid var(--border);
+  border-radius: var(--r-pill);
+  background: var(--panel);
+  padding: var(--space-1-5) var(--space-3);
+  min-height: var(--control-sm);
+  text-align: center;
   font-family: inherit;
   cursor: pointer;
   transition: background-color 220ms ease, border-color 220ms ease, color 220ms ease;
@@ -2487,7 +2487,7 @@ dialog h2 {
   stroke-dasharray: 4 3;
 }
 .job-oval-arrow.done, .job-oval-arc.done { color: var(--ok); }
-.job-oval-arrow.active, .job-oval-arc.active { color: var(--accent); }
+.job-oval-arrow.active, .job-oval-arc.active { color: var(--warn); }
 .job-oval-arrow.attention, .job-oval-arc.attention { color: var(--warn); }
 .job-oval-arrow.failed, .job-oval-arc.failed { color: var(--bad); }
 .job-stepper-track {
@@ -2561,12 +2561,14 @@ dialog h2 {
 }
 .job-step.reset .job-step-dot { border-style: dashed; }
 .job-step {
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  gap: var(--space-2);
+  justify-content: center;
+  gap: var(--space-1-5);
   padding: var(--space-1-5) var(--space-3);
+  min-height: var(--control-sm);
   border: 1px solid var(--border);
-  border-radius: var(--r-lg);
+  border-radius: var(--r-pill);
   background: var(--panel);
   color: var(--muted);
   font-size: var(--type-secondary);
@@ -2575,19 +2577,25 @@ dialog h2 {
   min-width: 0;
   max-width: 100%;
 }
+.job-step.done {
+  background: var(--ok-soft);
+  border-color: var(--ok);
+  color: var(--ok);
+  font-weight: var(--weight-bold);
+}
+.job-step.done .job-step-title {
+  color: var(--ok);
+}
 .job-step.active,
 .job-step[aria-current="step"] {
-  background: var(--accent-soft);
-  border-color: var(--accent);
-  color: var(--text);
+  background: var(--warn-soft);
+  border-color: var(--warn);
+  color: var(--warn);
   font-weight: var(--weight-bold);
 }
 .job-step.active .job-step-title,
 .job-step[aria-current="step"] .job-step-title {
-  color: var(--accent);
-}
-.job-step.done {
-  color: var(--text);
+  color: var(--warn);
 }
 .job-step-dot {
   width: 22px;
@@ -2642,10 +2650,14 @@ dialog h2 {
   background: var(--bad-soft);
   color: var(--bad);
 }
+.job-step.failed,
 .job-step.active.failed {
   background: var(--bad-soft);
   border-color: var(--bad);
+  color: var(--bad);
+  font-weight: var(--weight-bold);
 }
+.job-step.failed .job-step-title,
 .job-step.active.failed .job-step-title { color: var(--bad); }
 .job-step.active.failed .job-step-dot {
   border-color: var(--bad);
