@@ -130,7 +130,11 @@ class StatusTests(unittest.TestCase):
         self.assertIn('id="home-server-card"', app)
         self.assertIn('loadServerCard(view.querySelector("#home-server-card"), false, () => {}, { homeMode: true })', app)
         card = app[app.index("const SERVER_STATE ="):app.index("// ---------------------------------------------------------------- signing keys")]
-        for token in ("Online", "Offline", "Launch server", "sv.version", "c.image", '<div class="card-actions">', '<div class="card-b stack gap-12">'):
+        for token in (
+            "Online", "Offline", "Launch server", "sv.version", "c.image",
+            '<div class="card-actions">', '<div class="card-b stack gap-12">',
+            'class="btn small icon-only danger" data-server-action="stop"', '#i-stop',
+        ):
             self.assertIn(token, card)
 
     def test_the_overall_state(self):

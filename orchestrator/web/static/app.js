@@ -8439,7 +8439,7 @@ function serverCardHtml(view, canSend, open = false, { homeMode = false } = {}) 
     : (!up ? (st.message || "No server is online right now.") : (st.message || ""));
   const actionButtons = owner
     ? (up
-      ? `<button type="button" class="btn small" data-server-action="restart">Restart</button><button type="button" class="btn small" data-server-action="stop">Stop</button>`
+      ? `<button type="button" class="btn small" data-server-action="restart">Restart</button><button type="button" class="btn small icon-only danger" data-server-action="stop" aria-label="Stop server" title="Stop server"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-stop"/></svg></button>`
       : `<button type="button" class="btn small primary" data-server-action="start">Launch server</button>`)
     : "";
   return `<div class="server-card-wrap" data-server="${esc(sv.id)}">
