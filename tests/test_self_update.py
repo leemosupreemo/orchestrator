@@ -104,6 +104,44 @@ class SelfUpdateTests(unittest.TestCase):
             web_server.UIServer.self_update_tick(fake)
         restart.assert_not_called()
 
+    def test_needs_restart_detects_new_commit_on_disk_and_waits_for_clean_orchestrator_tree(self):
+        boot = self_update.current_commit(self.mac)
+        self.assertTrue(boot)
+        self.assertFalse(self_update.needs_restart(boot, self.mac))
+        self.commit("Fix cache cleanup")
+        git(self.mac, "pull", "-q", "--ff-only", "origin", "web-ui")
+        self.assertTrue(self_update.needs_restart(boot, self.mac))
+        # Mid-edit tracked changes under orchestrator/ defer restart until committed/cleaned.
+        (self.mac / "orchestrator" / "release.json").write_text("{}\n")
+        self.assertFalse(self_update.needs_restart(boot, self.mac))
+        git(self.mac, "checkout", "--", "orchestrator/release.json")
+        self.assertTrue(self_update.needs_restart(boot, self.mac))
+
+    def test_self_update_tick_restarts_when_boot_commit_differs_from_disk_and_idle(self):
+        from unittest.mock import MagicMock, patch
+        from orchestrator.web import server as web_server
+
+        fake = MagicMock()
+        fake._boot_commit = "a" * 40
+        fake.sessions.list.return_value = []
+        with patch.object(web_server.self_update, "load", return_value={"auto_minor": True, "last_check": {"update": "none"}}), \
+             patch.object(web_server.self_update, "due", return_value=False), \
+             patch.object(web_server.self_update, "should_install", return_value=False), \
+             patch.object(web_server.self_update, "needs_restart", return_value=True), \
+             patch.object(web_server, "_trigger_ui_restart") as restart:
+            web_server.UIServer.self_update_tick(fake)
+        restart.assert_called_once_with(fake)
+
+        # Does not interrupt an active run.
+        fake.sessions.list.return_value = [{"id": "r1", "running": True}]
+        with patch.object(web_server.self_update, "load", return_value={"auto_minor": True, "last_check": {"update": "none"}}), \
+             patch.object(web_server.self_update, "due", return_value=False), \
+             patch.object(web_server.self_update, "should_install", return_value=False), \
+             patch.object(web_server.self_update, "needs_restart", return_value=True), \
+             patch.object(web_server, "_trigger_ui_restart") as restart:
+            web_server.UIServer.self_update_tick(fake)
+        restart.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

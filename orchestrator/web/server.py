@@ -6889,11 +6889,12 @@ class UIServer(ThreadingHTTPServer):
         self.trigger_heartbeat: Callable[[], None] | None = None
         self._state_sync_wake = threading.Event()
         self.wake_state_sync: Callable[[], None] = self._state_sync_wake.set
+        self._boot_commit = self_update.current_commit()
         from orchestrator.web.browser_grants import BrowserGrantStore
         self.browser_grants = BrowserGrantStore()
         if shared:
             for name in ("token", "sign_ins", "audit", "requests_log", "client_log", "gate", "sessions", "tasks", "_used_tickets",
-                         "_ticket_lock", "_repository_lock", "_repository_check_tasks", "_home_status_tasks", "_publishing_jobs", "_stopping", "browser_grants", "bootstrap_enabled", "_plan_lock", "_plan_sessions", "on_reset_tunnel", "trigger_heartbeat", "connection_manager", "_state_sync_wake", "wake_state_sync"):
+                         "_ticket_lock", "_repository_lock", "_repository_check_tasks", "_home_status_tasks", "_publishing_jobs", "_stopping", "browser_grants", "bootstrap_enabled", "_plan_lock", "_plan_sessions", "on_reset_tunnel", "trigger_heartbeat", "connection_manager", "_state_sync_wake", "wake_state_sync", "_boot_commit"):
                 setattr(self, name, getattr(shared, name))
 
     @property
@@ -6981,9 +6982,10 @@ class UIServer(ThreadingHTTPServer):
                                   "step": str(progress.get("step") or progress.get("label") or "")[:200]}
         return live
 
-    def start_self_update(self, first_check: float = 120.0) -> threading.Thread:
-        """Keeps Orchestrator itself current (self_update.py): checks the branch it came from every half hour, installs a
-        minor update by itself once no run is going (a breaking one when you allow it), then restarts the UI."""
+    def start_self_update(self, first_check: float = 30.0) -> threading.Thread:
+        """Keeps Orchestrator itself current (self_update.py): checks the branch it came from on schedule, installs a
+        minor update by itself once no run is going (a breaking one when you allow it), and restarts the UI whenever
+        installed code on disk has moved past the commit this server booted with."""
         def loop() -> None:
             if self._stopping.wait(first_check):
                 return
@@ -6992,7 +6994,7 @@ class UIServer(ThreadingHTTPServer):
                     self.self_update_tick()
                 except Exception as exc:
                     print(f"  Update check: {exc}", flush=True)
-                if self._stopping.wait(300):  # look again in 5 minutes; a real check runs when one is due
+                if self._stopping.wait(30):  # remote fetch stays gated by self_update.due() (CHECK_SECONDS); local restart check is fast
                     return
 
         thread = threading.Thread(target=loop, daemon=True, name="self-update")
@@ -7005,7 +7007,13 @@ class UIServer(ThreadingHTTPServer):
             status = data.get("last_check") or {}
         else:
             status = self_update.check()
-        if not self_update.should_install(status, self_update.load()):
+        fresh_data = self_update.load()
+        if not self_update.should_install(status, fresh_data):
+            boot = getattr(self, "_boot_commit", None)
+            if isinstance(boot, str) and boot and fresh_data.get("auto_minor", True) and self_update.needs_restart(boot):
+                if not any(run.get("running") for run in self.sessions.list()):
+                    print("  Update: Installed code changed on disk; restarting UI to load latest commit.", flush=True)
+                    _trigger_ui_restart(self)
             return status
         if any(run.get("running") for run in self.sessions.list()):
             return status  # never under a running job: the next tick tries again

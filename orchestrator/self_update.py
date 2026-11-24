@@ -88,6 +88,34 @@ def install_kind(root: Path | None = None) -> str:
     return "git" if (root / ".git").exists() else "pip"
 
 
+def current_commit(root: Path | None = None) -> str:
+    """The git HEAD SHA currently on disk for a git install, or '' otherwise."""
+    root = root or install_root()
+    if install_kind(root) != "git":
+        return ""
+    try:
+        res = _git(root, "rev-parse", "HEAD", timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return res.stdout.strip() if res.returncode == 0 else ""
+
+
+def needs_restart(boot_commit: str, root: Path | None = None) -> bool:
+    """True when a git install's HEAD moved past the commit this process booted with (e.g. a deferred update restart,
+    local commit, or manual pull) and `orchestrator/` has no uncommitted edits in progress."""
+    if not boot_commit:
+        return False
+    root = root or install_root()
+    head = current_commit(root)
+    if not head or head == boot_commit:
+        return False
+    try:
+        dirty = _git(root, "status", "--porcelain", "--untracked-files=no", "--", "orchestrator", timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return dirty.returncode == 0 and not dirty.stdout.strip()
+
+
 def check(root: Path | None = None, now: float | None = None) -> dict[str, Any]:
     """What's installed, what's newest on the branch it came from, and whether the difference is minor or breaking.
     Records the answer (load()["last_check"]) and returns it."""
