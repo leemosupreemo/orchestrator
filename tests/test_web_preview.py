@@ -396,6 +396,27 @@ console.log(JSON.stringify({{
         self.assertEqual(out["reviewNeededLowDisk"], {"localDiskBlocked": False, "diskBlocked": False, "showNextAction": True})
         self.assertEqual(out["completedLowDisk"], {"localDiskBlocked": False, "diskBlocked": False, "showNextAction": None})
 
+        # Verify machineDiskLineHtml only renders when disk space is directly relevant (diskBlocked or state.disk_low).
+        disk_line_start = source.index("const machineDiskFreeGb = ")
+        disk_line_end = source.index("const diskBlockedReason = ", disk_line_start)
+        disk_line_snippet = source[disk_line_start:disk_line_end]
+        script_disk_line = f"""
+const esc = (s) => String(s);
+function renderDiskLine(state, diskBlocked) {{
+  {disk_line_snippet}
+  return machineDiskLineHtml;
+}}
+console.log(JSON.stringify({{
+  healthyFix: renderDiskLine({{ project: {{ computer: {{ name: "Leemos MacBook Pro" }} }}, disk_low: false, disk_free_bytes: 19.0 * (1024 ** 3) }}, false),
+  lowDisk: renderDiskLine({{ project: {{ computer: {{ name: "Leemos MacBook Pro" }} }}, disk_low: true, disk_free_bytes: 14.1 * (1024 ** 3) }}, false),
+  diskBlocked: renderDiskLine({{ project: {{ computer: {{ name: "Leemos MacBook Pro" }} }}, disk_low: false, disk_free_bytes: 14.1 * (1024 ** 3) }}, true),
+}}));
+"""
+        out_disk = _json.loads(_sp.run(["node", "-e", script_disk_line], capture_output=True, text=True, check=True).stdout)
+        self.assertEqual(out_disk["healthyFix"], "")
+        self.assertIn("Leemos MacBook Pro · 14.1 GB free", out_disk["lowDisk"])
+        self.assertIn("Leemos MacBook Pro · 14.1 GB free", out_disk["diskBlocked"])
+
         # Verify diskBlockedReason wording and More-menu hiding when diskBlocked is true.
         reason_start = source.index("const diskBlockedReason = ")
         reason_end = source.index("return {", reason_start)

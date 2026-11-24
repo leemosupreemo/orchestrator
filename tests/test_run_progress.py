@@ -702,6 +702,21 @@ assert(!serverDone.includes('<dt>Models</dt>'), 'Non-AI server runs should omit 
 assert(serverDone.includes('<dt>Machine</dt><dd data-run-machines>Leemos-MBP</dd>'));
 assert(serverDone.includes('<dt>Elapsed</dt><dd data-run-elapsed>4s</dd>'));
 assert(serverDone.includes('<dt>Disk space</dt><dd data-run-disk class="text-bad">14.0 GB free</dd>'));
+
+// When disk space is healthy and the run isn't about disk space, omit the Disk space item.
+globalThis.state = { disk_free_bytes: 19.0 * (1024 ** 3), disk_low: false };
+const serverHealthyDisk = runStatus({
+  id: 'run-srv-2',
+  action: 'server_start',
+  title: 'Start server',
+  running: false,
+  exit_code: 0,
+  started: 100,
+  ended: 104,
+  progress: { machines: ['Leemos-MBP'] },
+  result: { headline: 'Done: OpenDAoC-Core is running.', details: ['Container opendaoc-server Started'], tone: 'ok' },
+});
+assert(!serverHealthyDisk.includes('<dt>Disk space</dt>'), 'Healthy disk space should be omitted when not relevant to the run');
 """
         result = subprocess.run(["node", "-e", script, str(source)], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)

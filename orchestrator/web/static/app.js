@@ -7290,7 +7290,8 @@ pages.job = async ([id]) => {
   const machineDiskFreeGb = typeof state?.disk_free_bytes === "number" && Number.isFinite(state.disk_free_bytes)
     ? (state.disk_free_bytes / (1024 ** 3)).toFixed(1)
     : "";
-  const machineDiskLineHtml = machineDiskFreeGb
+  const showMachineDiskLine = Boolean(machineDiskFreeGb && (diskBlocked || state?.disk_low));
+  const machineDiskLineHtml = showMachineDiskLine
     ? `<p class="job-hero-disk${state?.disk_low ? " is-low" : ""}">${esc(state.project?.computer?.name || "This computer")} · ${esc(machineDiskFreeGb)} GB free</p>`
     : "";
   const diskBlockedReason = (() => {
@@ -16645,7 +16646,9 @@ function runStatus(r, vc = null) {
   const freeBytes = typeof state !== "undefined" && typeof state?.disk_free_bytes === "number" && Number.isFinite(state.disk_free_bytes)
     ? state.disk_free_bytes
     : null;
-  const diskItem = freeBytes != null
+  const diskRelevant = Boolean(state?.disk_low)
+    || /disk space|no space left|enospc|gb free/i.test(`${r.result?.headline || ""} ${(r.result?.details || []).join(" ")} ${r.summary || ""}`);
+  const diskItem = freeBytes != null && diskRelevant
     ? `<div><dt>Disk space</dt><dd data-run-disk class="${state?.disk_low ? "text-bad" : ""}">${esc((freeBytes / (1024 ** 3)).toFixed(1))} GB free</dd></div>`
     : "";
 
