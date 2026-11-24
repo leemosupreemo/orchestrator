@@ -71,9 +71,96 @@ class WipBackupTests(unittest.TestCase):
         self.job["wip_backup"] = wip_backup.backup_job(self.pro, "job-1", self.job, now=1000.0)
         git(self.air, "checkout", "-q", "-b", "ai/job-1", "origin/ai/job-1")
         (self.air / "keep.txt").write_text("mine\n")
-        with self.assertRaisesRegex(RuntimeError, "already have changes here"):
+        with self.assertRaisesRegex(wip_backup.WipConflictError, "already have changes here") as ctx:
             wip_backup.restore(self.air, "job-1", self.job)
+        self.assertEqual(ctx.exception.files, ["keep.txt"])
         self.assertEqual((self.air / "keep.txt").read_text(), "mine\n")
+
+    def test_restore_succeeds_when_local_dirty_files_already_match_backup(self):
+        (self.pro / "keep.txt").write_text("two\n")
+        (self.pro / "new.txt").write_text("brand new\n")
+        (self.pro / "old.txt").unlink()
+        self.job["wip_backup"] = wip_backup.backup_job(self.pro, "job-1", self.job, machine="Pro", now=1000.0)
+
+        git(self.air, "checkout", "-q", "-b", "ai/job-1", "origin/ai/job-1")
+        (self.air / "keep.txt").write_text("two\n")
+        (self.air / "new.txt").write_text("brand new\n")
+        (self.air / "old.txt").unlink()
+
+        restored = wip_backup.restore(self.air, "job-1", self.job)
+        self.assertEqual(restored, ["keep.txt", "new.txt", "old.txt"])
+        self.assertEqual((self.air / "keep.txt").read_text(), "two\n")
+        self.assertEqual((self.air / "new.txt").read_text(), "brand new\n")
+        self.assertFalse((self.air / "old.txt").exists())
+
+    def test_restore_reports_only_differing_files_and_supports_explicit_overwrite(self):
+        (self.pro / "keep.txt").write_text("two\n")
+        (self.pro / "new.txt").write_text("from pro\n")
+        (self.pro / "old.txt").unlink()
+        self.job["wip_backup"] = wip_backup.backup_job(self.pro, "job-1", self.job, machine="Pro", now=1000.0)
+
+        git(self.air, "checkout", "-q", "-b", "ai/job-1", "origin/ai/job-1")
+        (self.air / "keep.txt").write_text("two\n")        # identical to backup: must not conflict
+        (self.air / "new.txt").write_text("from air\n")    # different untracked file: conflicts
+        (self.air / "old.txt").write_text("edited here\n") # locally edited but deleted in backup: conflicts
+
+        with self.assertRaises(wip_backup.WipConflictError) as ctx:
+            wip_backup.restore(self.air, "job-1", self.job)
+        self.assertEqual(ctx.exception.files, ["new.txt", "old.txt"])
+        self.assertEqual((self.air / "new.txt").read_text(), "from air\n")
+        self.assertEqual((self.air / "old.txt").read_text(), "edited here\n")
+
+        restored = wip_backup.restore(self.air, "job-1", self.job, overwrite=True)
+        self.assertEqual(restored, ["keep.txt", "new.txt", "old.txt"])
+        self.assertEqual((self.air / "keep.txt").read_text(), "two\n")
+        self.assertEqual((self.air / "new.txt").read_text(), "from pro\n")
+        self.assertFalse((self.air / "old.txt").exists())
+        self.assertEqual(git(self.air, "diff", "--cached", "--name-only"), "")
+
+    def test_restore_wip_endpoint_returns_409_conflicts_and_accepts_overwrite(self):
+        import json
+        from http import HTTPStatus
+        from unittest.mock import MagicMock
+        from orchestrator.web import server as ui
+
+        (self.pro / "keep.txt").write_text("from pro\n")
+        backup = wip_backup.backup_job(self.pro, "job-1", self.job, machine="Pro", now=1000.0)
+        jobs_dir = self.air / ".orchestrator" / "jobs"
+        jobs_dir.mkdir(parents=True, exist_ok=True)
+        job_path = jobs_dir / "job-1.json"
+        job_path.write_text(json.dumps({
+            "job_id": "job-1", "status": "human-needed", "branch": "ai/job-1",
+            "imported_from_machine": "Pro", "wip_backup": backup,
+            "ai_modified_files": ["keep.txt"],
+        }))
+        git(self.air, "checkout", "-q", "-b", "ai/job-1", "origin/ai/job-1")
+        (self.air / "keep.txt").write_text("from air\n")
+
+        def call_restore(body):
+            handler = ui.UIHandler.__new__(ui.UIHandler)
+            handler.server = MagicMock()
+            handler.server.bootstrap_enabled = False
+            handler.server.root = self.air
+            handler.server.sessions.running_job_ids.return_value = set()
+            handler._principal = {"role": "owner", "token": "t", "kind": "token"}
+            handler._body = MagicMock(return_value=body)
+            captured = []
+            handler._json = lambda payload, status=HTTPStatus.OK: captured.append((status, payload))
+            handler._api("POST", "/api/jobs/job-1/restore-wip", {})
+            return captured[0]
+
+        status, payload = call_restore({})
+        self.assertEqual(status, HTTPStatus.CONFLICT)
+        self.assertEqual(payload["conflicts"], ["keep.txt"])
+        self.assertIn("already have changes here", payload["error"])
+        self.assertEqual((self.air / "keep.txt").read_text(), "from air\n")
+
+        status, payload = call_restore({"overwrite": True})
+        self.assertEqual(status, HTTPStatus.OK)
+        self.assertEqual(payload, {"ok": True, "files": ["keep.txt"]})
+        self.assertEqual((self.air / "keep.txt").read_text(), "from pro\n")
+        saved = json.loads(job_path.read_text())
+        self.assertEqual(saved["wip_restored"]["commit"], backup["commit"])
 
     def test_nothing_is_backed_up_off_the_jobs_branch_or_for_a_finished_job(self):
         (self.pro / "keep.txt").write_text("two\n")
@@ -155,6 +242,9 @@ console.log(JSON.stringify({{
         self.assertIn("come with Continue here", out["offline"])
         self.assertNotIn("offline", out["online"])
         self.assertIn("2 commits on branch", out["stranded"])
+        self.assertIn('formDialog(\n        "Replace local changes?"', app)
+        self.assertIn('"Replace local files"', app)
+        self.assertIn('body: { overwrite: true }', app)
 
 
 if __name__ == "__main__":

@@ -244,7 +244,9 @@ def tool_is_active(tool: str) -> bool:
     patterns = {
         "Xcode": ("-x", "Xcode|xcodebuild|XCBBuildService|swift-build|swift-frontend"),
         "SwiftPM": ("-x", "Xcode|xcodebuild|XCBBuildService|swift|swift-build|swift-test|swiftc|swift-frontend"),
-        "Unity": ("-x", "Unity|UnityShaderCompiler|UnityPackageManager|Unity[.]Licensing[.]Client"),
+        # Exclude Unity.Licensing.Client: Unity Hub/Editor leaves that license IPC daemon running
+        # in the background indefinitely, and it does not use project/editor build caches.
+        "Unity": ("-x", "Unity|UnityShaderCompiler|UnityPackageManager"),
         "Gradle": ("-f", r"org[.]gradle[.]launcher[.]|org[.]gradle[.]wrapper[.]GradleWrapperMain|/Android Studio[^/]*/Contents/MacOS/|/IntelliJ IDEA[^/]*/Contents/MacOS/"),
         "VS Code": ("-f", r"/Visual Studio Code( - Insiders)?[.]app/Contents/|/Code( - Insiders)?[.]app/Contents/"),
     }

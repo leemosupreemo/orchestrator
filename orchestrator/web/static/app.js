@@ -6012,16 +6012,36 @@ function wipRestoreNote(job, idle) {
   if (job.wip_restored?.commit === b.commit) return "";
   const n = (b.files || []).length;
   return `<div class="job-hero-reason job-overlap"><p>${esc(b.machine)} left ${n === 1 ? "1 unfinished file" : `${n} unfinished files`} on this job${b.at ? `, saved ${esc(ago(b.at))}` : ""}. Bring ${n === 1 ? "it" : "them"} here to carry on from where it stopped.</p>
-    ${idle ? `<div class="row wrap gap-8"><button type="button" class="btn small" data-restore-wip="${esc(job.job_id || "")}" title="Switches to this job's branch if needed; never overwrites files with changes here">Bring the unfinished work here</button></div>` : ""}</div>`;
+    ${idle ? `<div class="row wrap gap-8"><button type="button" class="btn small" data-restore-wip="${esc(job.job_id || "")}" data-wip-machine="${esc(b.machine || "")}" title="Switches to this job's branch if needed; asks before replacing files with local changes">Bring the unfinished work here</button></div>` : ""}</div>`;
 }
 
 document.addEventListener("click", async (e) => {
   const button = e.target.closest("[data-restore-wip]");
   if (!button) return;
+  const jobId = current.args?.[0] || button.dataset.restoreWip;
+  const fromMachine = button.dataset.wipMachine || "the other computer";
   button.disabled = true;
   try {
-    const { files } = await api(`jobs/${encodeURIComponent(current.args?.[0] || button.dataset.restoreWip)}/restore-wip`, { method: "POST", body: {} });
-    toast(`Brought back ${plural(files.length, "unfinished file")}`);
+    let res;
+    try {
+      res = await api(`jobs/${encodeURIComponent(jobId)}/restore-wip`, { method: "POST", body: {} });
+    } catch (err) {
+      const conflicts = err?.status === 409 && Array.isArray(err?.data?.conflicts) ? err.data.conflicts : [];
+      if (!conflicts.length) throw err;
+      const list = conflicts.slice(0, 10).map((f) => `<li class="mono">${esc(f)}</li>`).join("");
+      const more = conflicts.length > 10 ? `<li class="muted">and ${plural(conflicts.length - 10, "more file")}</li>` : "";
+      const confirmed = await formDialog(
+        "Replace local changes?",
+        `<p>These files already have different uncommitted changes on this computer:</p>
+         <ul class="assumptions wrap-anywhere">${list}${more}</ul>
+         <p class="muted">Replacing them overwrites those local edits with the unfinished work from <strong>${esc(fromMachine)}</strong>.</p>`,
+        "Replace local files",
+        { danger: true, compact: true },
+      );
+      if (!confirmed) { button.disabled = false; return; }
+      res = await api(`jobs/${encodeURIComponent(jobId)}/restore-wip`, { method: "POST", body: { overwrite: true } });
+    }
+    toast(`Brought back ${plural((res.files || []).length, "unfinished file")}`);
     route();
   } catch (err) { button.disabled = false; toast(err.message, true); }
 });

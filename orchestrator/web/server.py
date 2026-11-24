@@ -8760,9 +8760,14 @@ class UIHandler(BaseHTTPRequestHandler):
             job = read_json_file(job_path)
             if job.get("moved_to"):
                 raise UIError(f"This job continues on {job['moved_to']}. Continue it here first.")
+            body = self._body()
+            overwrite = bool(body.get("overwrite"))
             repo = Path(job["worktree"]) if job.get("worktree") and Path(job["worktree"]).is_dir() else root
             try:
-                files = wip_backup.restore(repo, parts[1], job)
+                files = wip_backup.restore(repo, parts[1], job, overwrite=overwrite)
+            except wip_backup.WipConflictError as exc:
+                self._json({"error": str(exc), "conflicts": exc.files}, HTTPStatus.CONFLICT)
+                return
             except RuntimeError as exc:
                 raise UIError(str(exc))
             job = read_json_file(job_path)

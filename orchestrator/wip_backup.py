@@ -116,9 +116,39 @@ def backup_job(repo: Path, job_id: str, job: dict[str, Any], machine: str = "", 
     return {"commit": sha, "ref": ref_for(job_id), "base": base, "files": dirty, "digest": stamp, "at": now, "machine": machine}
 
 
-def restore(repo: Path, job_id: str, job: dict[str, Any]) -> list[str]:
-    """Bring a job's backed-up unfinished files into this checkout, on the job's branch. Only when none of those files has
-    changes here (nothing is overwritten). Returns the files restored; raises RuntimeError saying why not."""
+class WipConflictError(RuntimeError):
+    """Local uncommitted changes differ from the backed-up unfinished files."""
+
+    def __init__(self, files: list[str]) -> None:
+        self.files = list(files)
+        shown = ", ".join(self.files[:3])
+        extra = f" (+{len(self.files) - 3} more)" if len(self.files) > 3 else ""
+        super().__init__(f"These files already have changes here: {shown}{extra}. Nothing was overwritten.")
+
+
+def _matches_backup(repo: Path, sha: str, path: str, exists_in_backup: bool) -> bool:
+    """True when the local checkout already has the exact same file state as the backup commit."""
+    local = repo / path
+    if not exists_in_backup:
+        return not local.exists() and not local.is_symlink()
+    if local.is_symlink() or not local.is_file():
+        return False
+    blob = subprocess.run(["git", "show", f"{sha}:{path}"], cwd=str(repo), capture_output=True, timeout=30,
+                          env={**os.environ, **_ENV})
+    if blob.returncode != 0:
+        return False
+    try:
+        return local.read_bytes() == blob.stdout
+    except OSError:
+        return False
+
+
+def restore(repo: Path, job_id: str, job: dict[str, Any], *, overwrite: bool = False) -> list[str]:
+    """Bring a job's backed-up unfinished files into this checkout, on the job's branch.
+
+    Local files whose contents already match the backup commit are skipped instead of blocking. When local files differ,
+    raises `WipConflictError` naming only those conflicting files unless `overwrite=True` is explicitly passed.
+    Returns the files restored; raises RuntimeError saying why not."""
     backup = job.get("wip_backup") if isinstance(job.get("wip_backup"), dict) else {}
     sha, files, branch = str(backup.get("commit") or ""), list(backup.get("files") or []), str(job.get("branch") or "")
     if not re.fullmatch(r"[0-9a-f]{40}", sha) or not files or not branch:
@@ -136,19 +166,25 @@ def restore(repo: Path, job_id: str, job: dict[str, Any]) -> list[str]:
         switched = _git(repo, "checkout", branch)
         if switched.returncode != 0:
             raise RuntimeError(f"Couldn't switch to '{branch}': " + (switched.stderr or switched.stdout).strip()[-200:])
+    exists = set(_git(repo, "ls-tree", "-r", "--name-only", sha, "--", *files).stdout.splitlines())
     busy = dirty_files(repo, files)
-    if busy:
-        raise RuntimeError(f"These files already have changes here: {', '.join(busy[:3])}. Nothing was overwritten.")
-    exists = set(_git(repo, "ls-tree", "-r", "--name-only", sha, "--", *files).stdout.split())
-    present = [f for f in files if f in exists]
+    already_matching = {f for f in busy if _matches_backup(repo, sha, f, f in exists)}
+    conflicts = [f for f in busy if f not in already_matching]
+    if conflicts and not overwrite:
+        raise WipConflictError(conflicts)
+    present = [f for f in files if f in exists and f not in already_matching]
     if present:
         res = _git(repo, "checkout", sha, "--", *present)
         if res.returncode != 0:
             raise RuntimeError((res.stderr or res.stdout).strip()[-300:])
         _git(repo, "reset", "-q", "--", *present)  # back to uncommitted, as they were
-    for f in files:
-        if f not in exists and (repo / f).is_file():
-            (repo / f).unlink()  # deleted in the unfinished work
+    removed = [f for f in files if f not in exists and f not in already_matching]
+    for f in removed:
+        local = repo / f
+        if local.is_file() or local.is_symlink():
+            local.unlink()  # deleted in the unfinished work
+    if removed:
+        _git(repo, "reset", "-q", "--", *removed)
     return files
 
 

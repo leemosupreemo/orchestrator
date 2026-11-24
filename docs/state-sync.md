@@ -127,7 +127,8 @@ reply's `state_heads`, and an older control plane ignores the report: both fall 
 `orchestrator/job_sync.py` (phase 2), `UIServer.start_state_sync` (the thread, paired or not), `GET /api/product` (`sharing`),
 `POST /api/product/sharing` (`enabled`, `scope`: product or jobs) and `GET /api/shared-jobs`.
 Tests: `tests/test_product_sync.py` and `tests/test_job_sync.py` run two computers against a real bare remote (merges, races,
-ownership hand-over, archives, hooks, clones, consent, files), and `tests/test_wip_backup.py` checks backups ignore pre-push hooks.
+ownership hand-over, archives, hooks, clones, consent, files), and `tests/test_wip_backup.py` checks backups ignore pre-push hooks,
+skips identical local files during restore, and enforces explicit `overwrite=True` confirmation (`WipConflictError` / 409 `conflicts`) when local changes differ.
 Sync problems show on Home under the `product` and `shared_jobs` channels, naming the computer (`Sync problems on <Computer Name>`).
 
 ### Sync reliability & filtering details

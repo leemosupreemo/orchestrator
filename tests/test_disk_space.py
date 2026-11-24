@@ -135,3 +135,19 @@ class DiskSpaceTests(unittest.TestCase):
                 self.assertEqual(by_name["NuGet packages cache"], "usually_safe")
                 filtered = disk_space.cache_candidates(root, min_bytes=disk_space.MIB)
                 self.assertEqual({item["name"] for item in filtered}, {"npm cache", "NuGet packages cache"})
+
+    def test_unity_active_check_ignores_background_licensing_daemon(self):
+        seen = []
+
+        def fake_pgrep(args, **kwargs):
+            seen.append(args)
+            return subprocess.CompletedProcess(args, 1, b"", b"")
+
+        with patch.object(disk_space.subprocess, "run", side_effect=fake_pgrep):
+            self.assertFalse(disk_space.tool_is_active("Unity"))
+        self.assertEqual(len(seen), 1)
+        pattern = seen[0][-1]
+        self.assertIn("Unity", pattern)
+        self.assertIn("UnityShaderCompiler", pattern)
+        self.assertIn("UnityPackageManager", pattern)
+        self.assertNotIn("Licensing", pattern)
