@@ -7183,7 +7183,7 @@ pages.job = async ([id]) => {
     || runRel?.unreported
   );
   const copyFailureBtnHtml = hasJobFailure
-    ? `<button type="button" class="btn ghost icon-only hero-copy-log-btn" id="copy-job-failure-log" aria-label="Copy failure details and logs" title="Copy failure details and logs"><svg class="icon" aria-hidden="true"><use href="#i-log"/></svg></button>`
+    ? `<button type="button" class="btn ghost icon-only hero-copy-log-btn" id="copy-job-failure-log" aria-label="Copy failure details and logs" title="Copy failure details and logs"><svg class="icon" aria-hidden="true"><use href="#i-copy"/></svg></button>`
     : "";
   const heroTitleHtml = `<h2 class="job-hero-title">${(activeRun && !activeRun.waiting) || s.state.label === "Building" ? runningMark : ""}${esc(s.state.label || s.status)}</h2>`;
 
