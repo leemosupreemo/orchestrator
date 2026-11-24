@@ -134,6 +134,7 @@ class StatusTests(unittest.TestCase):
             "Online", "Offline", "Launch server", "sv.version", "c.image",
             '<div class="card-actions">', '<div class="card-b stack gap-12">',
             'class="btn small icon-only danger" data-server-action="stop"', '#i-stop',
+            'data-server-uptime>Uptime ${esc(uptimeText)}',
         ):
             self.assertIn(token, card)
 

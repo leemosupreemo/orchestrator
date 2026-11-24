@@ -179,7 +179,7 @@ class ProjectKindTests(unittest.TestCase):
     def test_the_label_shows_in_the_sidebar_picker_phone_header_and_project_cards(self):
         static = PACKAGE_ROOT / "orchestrator" / "web" / "static"
         app = (static / "app.js").read_text()
-        self.assertIn('const KIND_LABELS = { web: "Web app", desktop: "Desktop app", mobile: "Mobile app" };', app)
+        self.assertIn('const KIND_LABELS = { web: "web app", desktop: "desktop app", mobile: "mobile app" };', app)
         css = (static / "style.css").read_text()
         # Centred on the line it sits in, not dropped to the lowercase letters' middle
         self.assertIn(".project-switch > .label { display: flex; align-items: center;", css)

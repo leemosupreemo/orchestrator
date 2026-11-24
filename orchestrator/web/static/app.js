@@ -386,8 +386,8 @@ function ago(ts) {
 
 // A small "i" that explains a term: the text shows on hover, and on tap or keyboard focus (phones have no hover).
 const infoTip = (text) => `<button type="button" class="info-tip" aria-label="${esc(text)}" data-tip="${esc(text)}">i</button>`;
-// What kind of project this is, shown wherever a project is named: Web, Desktop or Mobile.
-const KIND_LABELS = { web: "Web app", desktop: "Desktop app", mobile: "Mobile app" };
+// What kind of project this is, shown wherever a project is named: web, desktop or mobile.
+const KIND_LABELS = { web: "web app", desktop: "desktop app", mobile: "mobile app" };
 const kindPill = (kind) => KIND_LABELS[kind] ? `<span class="kind-pill kind-${esc(kind)}" title="A ${esc(KIND_LABELS[kind].toLowerCase())}">${esc(KIND_LABELS[kind])}</span>` : "";
 // How complete the product requirements are, from how many of their fields have something in them.
 const prdStatusPill = (sections) => {
@@ -8459,12 +8459,15 @@ function serverCardHtml(view, canSend, open = false, { homeMode = false } = {}) 
   const whereLabel = machines.find((m) => m.name === view.machine)?.label || "This computer";
   const ver = sv.version || {};
   const images = [...new Set(runningContainers.map((c) => c.image).filter(Boolean))];
-  const uptime = runningContainers.map((c) => c.status).find((s) => /^up\b/i.test(s || "")) || "";
+  const rawUptime = runningContainers.map((c) => c.status).find((s) => /^up\b/i.test(s || "")) || "";
+  const uptimeText = rawUptime.replace(/^up\s+/i, "").replace(/\s*\([^)]*\)\s*$/g, "").trim();
+  const uptimeHtml = up && uptimeText
+    ? `<span class="count server-uptime" data-server-uptime>Uptime ${esc(uptimeText)}</span>`
+    : "";
   const livePorts = [...new Set(runningContainers.flatMap((c) => c.ports || []))];
   const portsToShow = livePorts.length ? livePorts : (sv.ports || []);
   const metaParts = [
     ver.ref ? `Version <code class="mono">${esc(ver.ref)}</code>${ver.branch ? ` (${esc(ver.branch)})` : ""}` : "",
-    up && uptime ? esc(uptime) : "",
     up && images.length ? `Image <code class="mono">${esc(images[0])}${images.length > 1 ? ` +${images.length - 1}` : ""}</code>` : "",
     portsToShow.length ? portsToShow.map((p) => `<code class="mono">localhost:${p}</code>`).join(" ") : "",
     machines.length > 1 ? esc(whereLabel) : "",
@@ -8479,7 +8482,7 @@ function serverCardHtml(view, canSend, open = false, { homeMode = false } = {}) 
     : "";
   return `<div class="server-card-wrap" data-server="${esc(sv.id)}">
     <div class="card-h">
-      <div class="row gap-8 align-center"><h2>Server</h2><span class="pill ${tone}">${esc(label)}</span></div>
+      <div class="row gap-8 align-center"><h2>Server</h2><span class="pill ${tone}">${esc(label)}</span>${uptimeHtml}</div>
       ${actionButtons ? `<div class="card-actions">${actionButtons}</div>` : ""}
     </div>
     <div class="card-b stack gap-12">

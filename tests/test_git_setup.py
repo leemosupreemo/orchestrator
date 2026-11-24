@@ -431,7 +431,7 @@ pages.git().then(async result => {
 const fs = require('fs');
 require(process.argv[2]);
 const esc = Html.escape;
-const KIND_LABELS = {web: 'Web app', desktop: 'Desktop app', mobile: 'Mobile app'};
+const KIND_LABELS = {web: 'web app', desktop: 'desktop app', mobile: 'mobile app'};
 const projectDownloads = {pending: () => null};
 const $ = () => null;
 const state = {you: {role: 'member'}, project: {root: '/github', github_repos:['me/Remote'], recent: [
