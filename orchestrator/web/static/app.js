@@ -2030,7 +2030,6 @@ function showSigningIn(label = "Signing you in…", { onCancel = null } = {}) {
   document.querySelector(".app")?.classList.add("session-locked");
   view.innerHTML = `<div class="signin-wrap"><div class="signin-card signing-in" role="status" aria-live="polite">
       ${onCancel ? `<button type="button" class="dialog-close-btn signing-in-close" data-cancel-connect="1" aria-label="Cancel" title="Cancel">✕</button>` : ""}
-      <div class="signin-brand signing-in-brand"><span class="brand-mark" aria-hidden="true"></span><span>Orchestrator</span></div>
       <h2>${esc(label)}</h2>
       ${loadingSkeleton("home")}
     </div></div>`;

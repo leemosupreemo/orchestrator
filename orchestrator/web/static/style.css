@@ -3486,8 +3486,6 @@ fieldset.field > legend { padding: 0; margin-bottom: var(--space-2); }
 .signin-wrap:has(.signing-in) { padding-bottom: var(--space-4); }
 .signin-card.signing-in { position: relative; max-width: 640px; align-items: stretch; text-align: center; gap: var(--space-4); }
 .signin-card.signing-in .signing-in-close { position: absolute; top: var(--space-3); right: var(--space-3); margin-right: 0; }
-.signin-card.signing-in .signing-in-brand { justify-content: center; }
-.signin-card.signing-in:has(.signing-in-close) .signing-in-brand,
 .signin-card.signing-in:has(.signing-in-close) h2 { padding-inline: var(--space-8); }
 .signing-in .skeleton-page { text-align: left; }
 .signin-card.signing-in h2 { margin: 0; font-size: var(--type-section); }
