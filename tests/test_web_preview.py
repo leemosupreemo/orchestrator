@@ -332,7 +332,7 @@ console.log(JSON.stringify([
         self.assertNotIn("job-fix-series", source)
         self.assertIn('const isFixForJob = (stayOnJob || action === "debug" || action === "fix") && Boolean(params?.job);', source)
         self.assertIn('const targetHash = `#/jobs/${encodeURIComponent(params.job)}`;', source)
-        self.assertIn('const steer = activeRun || s.question || reviewingPlan || signIn || diskBlocked || s.state.blocker ? null', source)
+        self.assertIn('const steer = activeRun || s.question || reviewingPlan || signIn || diskBlocked || s.state.blocker || autoStopped ? null', source)
         self.assertIn('${reviewingPlan ? "" : diskBlocked ? `<section id="job-hero" tabindex="-1" class="job-hero tone-${esc(heroTone)}">', source)
         self.assertIn('primary: nextAction === "debug" && !signIn && !diskBlocked', source)
         self.assertIn('${heroAction && !steer?.primary ? `<div class="job-hero-action">${heroAction}</div>` : ""}', source)
@@ -340,6 +340,56 @@ console.log(JSON.stringify([
         disk_fn = source[source.index("async function openDiskSpace"):source.index("document.addEventListener(\"click\"", source.index("async function openDiskSpace"))]
         self.assertIn("skeleton skeleton-line", disk_fn)
         self.assertLess(disk_fn.index("showLoading("), disk_fn.index("api(`recovery/disk-space?"))
-        self.assertIn("liveRunCard(r, { onJobPage: true })", source)
+        self.assertIn("syncDiskState(report);", disk_fn)
+        self.assertIn("syncDiskState(result);", disk_fn)
+        self.assertIn("function liveRunCard(r, { onJobPage = false } = {})", source)
+        self.assertIn("job-hero-next-preview", source)
         self.assertIn('recoveryAction: "disk-space-cleared"', source)
         self.assertIn('title: "Disk space is now available"', source)
+
+    def test_low_disk_takes_priority_over_run_fix_on_job_page(self):
+        import json as _json, subprocess as _sp
+        source = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
+        self.assertIn("const localDiskBlocked = !activeRun && !job.moved_to && !data.remote_machine", source)
+        self.assertIn("|| localDiskBlocked", source)
+        self.assertIn('const failoverAction = next?.action === "debug" ? "debug" : "resume";', source)
+        # Verify the exact priority logic in Node for Needs a fix vs cleared/review-needed/remote states.
+        start = source.index("const diskErrorText = ")
+        end = source.index("const heroAction =", start)
+        snippet = source[start:end]
+        script = f"""
+function evalCase({{ state, s, job = {{}}, data = {{}}, activeRun = null, runRel = null, signInAction = "" }}) {{
+  const next = s.state.next;
+  {snippet}
+  return {{ localDiskBlocked, diskBlocked, showNextAction }};
+}}
+console.log(JSON.stringify({{
+  needsFixLowDisk: evalCase({{
+    state: {{ disk_low: true, disk_free_bytes: 14.1 * (1024 ** 3), disk_required_bytes: 15 * (1024 ** 3), disk_needed_bytes: 0.9 * (1024 ** 3) }},
+    s: {{ status: "debugging", state: {{ reason: "The last attempt's diagnosis: ...", next: {{ action: "debug", label: "Run fix" }} }} }},
+  }}),
+  needsFixHealthyDisk: evalCase({{
+    state: {{ disk_low: false, disk_free_bytes: 25 * (1024 ** 3) }},
+    s: {{ status: "debugging", state: {{ reason: "The last attempt's diagnosis: ...", next: {{ action: "debug", label: "Run fix" }} }} }},
+  }}),
+  needsFixRemoteMachine: evalCase({{
+    state: {{ disk_low: true, disk_free_bytes: 14.1 * (1024 ** 3) }},
+    data: {{ remote_machine: "Mac Studio" }},
+    s: {{ status: "debugging", state: {{ reason: "The last attempt's diagnosis: ...", next: {{ action: "debug", label: "Run fix" }} }} }},
+  }}),
+  reviewNeededLowDisk: evalCase({{
+    state: {{ disk_low: true, disk_free_bytes: 14.1 * (1024 ** 3) }},
+    s: {{ status: "review-needed", state: {{ reason: "PR #12 ready", next: {{ action: "merge", label: "Merge & complete" }} }} }},
+  }}),
+  completedLowDisk: evalCase({{
+    state: {{ disk_low: true, disk_free_bytes: 14.1 * (1024 ** 3) }},
+    s: {{ status: "completed", state: {{ reason: "Merged", next: null }} }},
+  }}),
+}}));
+"""
+        out = _json.loads(_sp.run(["node", "-e", script], capture_output=True, text=True, check=True).stdout)
+        self.assertEqual(out["needsFixLowDisk"], {"localDiskBlocked": True, "diskBlocked": True, "showNextAction": False})
+        self.assertEqual(out["needsFixHealthyDisk"], {"localDiskBlocked": False, "diskBlocked": False, "showNextAction": True})
+        self.assertEqual(out["needsFixRemoteMachine"], {"localDiskBlocked": False, "diskBlocked": False, "showNextAction": True})
+        self.assertEqual(out["reviewNeededLowDisk"], {"localDiskBlocked": False, "diskBlocked": False, "showNextAction": True})
+        self.assertEqual(out["completedLowDisk"], {"localDiskBlocked": False, "diskBlocked": False, "showNextAction": None})

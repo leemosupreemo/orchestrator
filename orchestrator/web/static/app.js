@@ -4215,6 +4215,15 @@ async function openDiskSpace(jobId = "") {
     }
     return { signal: controller.signal, done: () => dlg?.removeEventListener("close", onClose) };
   };
+  const syncDiskState = (r) => {
+    if (!r || r.remote_machine || typeof r.free_bytes !== "number") return;
+    state.disk_free_bytes = r.free_bytes;
+    if (typeof r.required_bytes === "number") state.disk_required_bytes = r.required_bytes;
+    if (typeof r.needed_bytes === "number") {
+      state.disk_needed_bytes = r.needed_bytes;
+      state.disk_low = r.needed_bytes > 0;
+    }
+  };
   try {
     for (;;) {
       const loader = showLoading(outcome ? "Rechecking disk space…" : "Checking disk space and caches…", "Checking…");
@@ -4233,6 +4242,7 @@ async function openDiskSpace(jobId = "") {
         await formDialog("Free up disk space", `<p>This job ran on <strong>${esc(report.remote_machine)}</strong>. Open Orchestrator on that computer or clear space in its system storage settings.</p>`, "Done", { compact: true });
         return;
       }
+      syncDiskState(report);
       renderNewJobDiskNotice($("#nj-disk-warning"), report);
       const gb = (bytes) => bytes === null ? "Unknown" : `${(bytes / 1024 ** 3).toFixed(1)} GB`;
       const needsSpace = report.needed_bytes > 0;
@@ -4276,6 +4286,7 @@ async function openDiskSpace(jobId = "") {
       const clearLoader = showLoading("Cleaning selected items…", "Cleaning…");
       try {
         const result = await api("recovery/disk-space", { method: "POST", body: { caches: ids, job: jobId }, signal: clearLoader.signal });
+        syncDiskState(result);
         const hasErrors = Boolean((result.errors || []).length);
         outcome = [result.removed.length ? `Cleaned ${plural(result.removed.length, "item")}. ${gb(result.free_bytes)} free now.` : "", ...(result.errors || [])].filter(Boolean).join(" ") || "Nothing was removed.";
         outcomeTone = hasErrors || !result.removed.length ? "bad" : "ok";
@@ -5317,10 +5328,10 @@ function jobHeaderActions(s, links = [], ctx = {}) {
   const groups = [
     ["Work on this job", [
       // Run a fix and Revise plan live in the status box's "Tell the AI what to change" box; here only when it is hidden.
-      idle && !ctx.steerShown && next !== "debug" && ["review-needed", "completed", "debugging", "failed"].includes(s.status)
+      idle && !ctx.diskBlocked && !ctx.steerShown && next !== "debug" && ["review-needed", "completed", "debugging", "failed"].includes(s.status)
         && ["Run fix", act("debug", j), "Start a fix attempt"],
-      idle && !reviewed && s.tasks_total && s.tasks_done < s.tasks_total && next !== "resume" && ["Resume", act("resume", j), "Continue from the next task"],
-      idle && s.status === "scheduled" && next !== "execute" && ["Run now", act("execute", j)],
+      idle && !ctx.diskBlocked && !reviewed && s.tasks_total && s.tasks_done < s.tasks_total && next !== "resume" && ["Resume", act("resume", j), "Continue from the next task"],
+      idle && !ctx.diskBlocked && s.status === "scheduled" && next !== "execute" && ["Run now", act("execute", j)],
       idle && !ctx.planShown && !ctx.steerShown && ["planned", "designing", "human-needed", "debugging"].includes(s.status)
         && ["Revise plan…", act("revise", j), "Ask the AI to re-plan with what should change"],
       // Reviews by the AI tools themselves (tool_abilities.py), only those this computer's ready tools have
@@ -6722,7 +6733,13 @@ pages.job = async ([id]) => {
   // Another job building the same files right now: merging this one would race it, so Merge waits (overlapAdviceHtml says why).
   const overlapHold = next?.action === "merge" ? (data.overlaps || []).find((o) => o.running) : null;
   const diskErrorText = [s.state.reason, job.last_error, runRel?.unreported?.headline].filter(Boolean).join(" ");
+  const localDiskBlocked = !activeRun && !job.moved_to && !data.remote_machine
+    && state?.disk_low === true
+    && !["completed", "archived"].includes(s.status)
+    && (["debug", "resume", "execute", "schedule"].includes(next?.action)
+      || ["debugging", "failed"].includes(s.status));
   const diskBlocked = s.state.blocker_kind === "disk_full"
+    || localDiskBlocked
     || (!activeRun && state?.disk_low !== false && /not enough disk space|free up space|no space left on device|builds need \d+\s*gb/i.test(diskErrorText));
   const showNextAction = next && !diskBlocked && !(signInAction && next.action === "debug");
   const heroAction = activeRun
@@ -6845,7 +6862,7 @@ pages.job = async ([id]) => {
   // Task progress lives in the hero (a bar under Now/Next) only while building; the stepper and hero cover every other stage.
   const showTaskBar = tasksTotal > 0 && currentPhase === "build" && tasksDone > 0;
   const phaseTargets = ["#plan-section", tasksTotal ? "#tasks-section" : (hasBuildWork ? "#changes-section" : "#plan-section"), "#verify-section", "#document-section", "#job-hero"];
-  const heroTone = ["merge", "complete"].includes(nextAction) && s.state.tone !== "failed" ? "done" : (s.state.tone || "");
+  const heroTone = diskBlocked ? "failed" : ["merge", "complete"].includes(nextAction) && s.state.tone !== "failed" ? "done" : (s.state.tone || "");
   const phasesInfo = [planStep, buildStep, verifyStep, docStep, reviewStep];
   ["plan", "build", "verify", "document", "finalize"].forEach((phase, i) => {
     const n = runRel?.per_phase?.[phase] || 0;
@@ -7239,11 +7256,31 @@ pages.job = async ([id]) => {
   const machineDiskLineHtml = machineDiskFreeGb
     ? `<p class="job-hero-disk${state?.disk_low ? " is-low" : ""}">${esc(state.project?.computer?.name || "This computer")} · ${esc(machineDiskFreeGb)} GB free</p>`
     : "";
+  const diskBlockedReason = (() => {
+    if (shortReason && /disk space|gb free|builds need/i.test(shortReason)) return shortReason;
+    const neededBytes = typeof state?.disk_needed_bytes === "number" && state.disk_needed_bytes > 0
+      ? state.disk_needed_bytes
+      : (typeof state?.disk_required_bytes === "number" && typeof state?.disk_free_bytes === "number"
+        ? Math.max(0, state.disk_required_bytes - state.disk_free_bytes)
+        : 0);
+    const actionLabel = next?.action === "debug" ? "running a fix" : "running this job";
+    if (neededBytes > 0 && machineDiskFreeGb) {
+      const neededGb = Math.max(1, Math.ceil(neededBytes / (1024 ** 3)));
+      const reqGb = typeof state?.disk_required_bytes === "number" && state.disk_required_bytes > 0
+        ? Math.round(state.disk_required_bytes / (1024 ** 3))
+        : null;
+      const host = state.project?.computer?.name || "this computer";
+      return reqGb
+        ? `Free at least ${neededGb} GB on ${host} before ${actionLabel}. Builds need ${reqGb} GB free and ${host} has ${machineDiskFreeGb} GB.`
+        : `Free at least ${neededGb} GB on ${host} before ${actionLabel}.`;
+    }
+    return `You must free up space before ${actionLabel}.`;
+  })();
 
   return {
     title: cleanJobTitle,
     sub: jobHeaderSubs.length ? `<span class="status-line">${jobHeaderSubs.join('<span class="sep">·</span>')}</span>` : "",
-    actions: jobHeaderActions(summary, links, { canSplinter, planShown: reviewingPlan, steerShown: Boolean(steer), hasChanges: allFiles.length > 0,
+    actions: jobHeaderActions(summary, links, { canSplinter, planShown: reviewingPlan, steerShown: Boolean(steer), diskBlocked, hasChanges: allFiles.length > 0,
       abilities: aiAbilities.highlights }),
     html: `<div class="job-layout"><div class="job-top">
       ${isAutoImprove ? `
@@ -7284,7 +7321,7 @@ pages.job = async ([id]) => {
       ${reviewingPlan ? "" : diskBlocked ? `<section id="job-hero" tabindex="-1" class="job-hero tone-${esc(heroTone)}">
         <div class="job-hero-main">
           <h2 class="job-hero-title">Low disk space</h2>
-          <p class="job-hero-reason">${esc(shortReason && /disk space|gb free|builds need/i.test(shortReason) ? shortReason : "You must free up space before running this job.")}</p>
+          <p class="job-hero-reason">${esc(diskBlockedReason)}</p>
           ${s.state.steps?.length ? s.state.steps.map((step) => `<p class="job-hero-reason muted">${esc(step)}</p>`).join("") : ""}
         </div>
         <div class="job-hero-action">${heroAction}</div>
@@ -7396,6 +7433,7 @@ pages.job = async ([id]) => {
       wireImagePreviews(view);
       // 1-click failover (and opt-in automatic handoff) when this computer hits a machine-local blocker.
       const machineBlocker = diskBlocked || ["disk_full", "sign_in", "tool", "simulator"].includes(s.state.blocker_kind);
+      const failoverAction = next?.action === "debug" ? "debug" : "resume";
       if (machineBlocker && !activeRun && !job.moved_to && state.you?.role !== "member" && typeof Account !== "undefined" && Account.active?.()) {
         const heroActionBox = view.querySelector("#job-hero .job-hero-action");
         findReadyFailoverMachine(state.project).then(async (peer) => {
@@ -7404,7 +7442,7 @@ pages.job = async ([id]) => {
             autoFailoverTried.add(id);
             toast(`Low disk space here — handing off to ${peer.machine.name}…`, "info");
             try {
-              await handoffJobToMachine(peer, { jobId: id, job, summary: s, action: "resume" });
+              await handoffJobToMachine(peer, { jobId: id, job, summary: s, action: failoverAction });
               return;
             } catch (err) {
               toast(`Auto-handoff to ${peer.machine.name} failed: ${err.message}`, true);
@@ -7422,7 +7460,7 @@ pages.job = async ([id]) => {
             btn.setAttribute("aria-busy", "true");
             btn.innerHTML = `<span class="spinner inline-spinner" aria-hidden="true"></span>Moving to ${esc(peer.machine.name)}…`;
             try {
-              await handoffJobToMachine(peer, { jobId: id, job, summary: s, action: "resume" });
+              await handoffJobToMachine(peer, { jobId: id, job, summary: s, action: failoverAction });
             } catch (err) {
               toast(err.message, true);
               if (btn.isConnected) { btn.disabled = false; btn.removeAttribute("aria-busy"); btn.innerHTML = orig; }

@@ -2858,6 +2858,7 @@ def job_detail(root: Path, job_id: str) -> dict[str, Any]:
         "parent": job_stub(root, job.get("parent_job_id")),
         "pipeline": pipeline,
         "blockers": job_blockers(root, job),
+        "remote_machine": assigned_ssh_machine(root, job) or "",
         "startup_recheck": True,
         "overlaps": job_overlap.file_overlaps(path.stem, job, all_jobs),
         "mece": parallel_mece.job_mece_summary(path.stem, job, all_jobs, feature_store.load(runtime_dir(root))),
@@ -8117,6 +8118,8 @@ class UIHandler(BaseHTTPRequestHandler):
             disk_low = bool((disk_report.get("needed_bytes") or 0) > 0)
             self._json({"project": project_state(root), "runs": visible_runs, "disk_low": disk_low,
                         "disk_free_bytes": disk_report.get("free_bytes"),
+                        "disk_required_bytes": disk_report.get("required_bytes"),
+                        "disk_needed_bytes": disk_report.get("needed_bytes"),
                         **inbox_state(root, self.server.sessions, runs=visible_runs),
                         "product_notice": prd_doc.Prd(root, runtime_dir(root)).notice(),
                         "models_notice": models_notice(),
