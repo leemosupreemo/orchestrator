@@ -2382,32 +2382,39 @@ dialog h2 {
 }
 .job-oval {
   flex: 1 1 100%;
+  width: 100%;
+  max-width: 560px;
+  margin-inline: auto;
   min-width: 0;
   display: flex;
   flex-direction: column;
   align-items: stretch;
-  gap: var(--space-1-5);
-  padding: var(--container-header-y) var(--container-pad-x);
+  gap: var(--space-2);
+  padding: var(--container-pad-y) var(--container-pad-x);
   border: 1px solid var(--border);
-  border-radius: calc(var(--space-7) + var(--space-3));
+  border-radius: calc(var(--space-7) + var(--space-4));
   background: color-mix(in srgb, var(--panel-2) 55%, var(--panel));
 }
 .job-oval-row {
   display: flex;
   align-items: center;
-  justify-content: center;
-  gap: var(--space-1-5);
+  justify-content: space-between;
+  gap: var(--space-2);
   min-width: 0;
+}
+.job-oval-row .job-step {
+  flex: 1 1 0;
 }
 .job-oval-row.is-bottom {
   padding-inline: var(--space-6);
+  gap: var(--space-3);
 }
 .job-oval-mid {
   display: grid;
-  grid-template-columns: minmax(var(--space-7), 1fr) auto minmax(var(--space-7), 1fr);
+  grid-template-columns: 1fr auto 1fr;
   align-items: center;
-  gap: var(--space-2);
-  padding-inline: var(--space-3);
+  gap: var(--space-3);
+  padding-inline: var(--space-2);
 }
 .job-oval-center {
   display: inline-flex;
@@ -2447,13 +2454,16 @@ dialog h2 {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  flex: 0 1 var(--space-6);
-  min-width: var(--space-4);
-  color: var(--border);
+  flex: 0 0 var(--space-6);
+  width: var(--space-6);
+  color: color-mix(in srgb, var(--muted) 65%, transparent);
+}
+.job-oval-row.is-bottom .job-oval-arrow {
+  flex: 0 0 var(--space-7);
+  width: var(--space-7);
 }
 .job-oval-arrow-svg {
   width: 100%;
-  max-width: var(--space-6);
   height: var(--space-3);
   fill: none;
   stroke: currentColor;
@@ -2465,16 +2475,11 @@ dialog h2 {
 .job-oval-arc {
   display: flex;
   align-items: center;
-  color: var(--border);
-}
-.job-oval-arc.is-return {
-  justify-content: flex-start;
-}
-.job-oval-arc.is-continue {
-  justify-content: flex-end;
+  justify-content: center;
+  color: color-mix(in srgb, var(--muted) 65%, transparent);
 }
 .job-oval-arc-svg {
-  width: var(--space-8);
+  width: var(--space-7);
   height: var(--space-7);
   fill: none;
   stroke: currentColor;
@@ -2691,11 +2696,11 @@ dialog h2 {
 .job-step-arrow.done { background: var(--ok); }
 @container (max-width: 840px) {
   .job-oval {
-    padding: var(--space-2-5) var(--space-3);
+    padding: var(--space-3) var(--space-3);
     border-radius: var(--space-6);
   }
   .job-oval-row.is-bottom {
-    padding-inline: var(--space-3);
+    padding-inline: var(--space-4);
   }
   .job-step {
     padding: var(--space-1-5) var(--space-2);
@@ -2707,46 +2712,38 @@ dialog h2 {
     padding: var(--container-pad-y) var(--container-pad-x);
   }
   .job-oval {
-    padding: var(--space-2-5) var(--space-2);
-    border-radius: var(--space-5);
-    gap: var(--space-1);
+    padding: var(--space-3) var(--space-2-5);
+    border-radius: var(--space-6);
+    gap: var(--space-2);
   }
   .job-oval-row {
-    gap: var(--space-1);
+    gap: var(--space-1-5);
   }
   .job-oval-row.is-bottom {
-    padding-inline: var(--space-2);
+    padding-inline: var(--space-3);
+    gap: var(--space-2);
   }
   .job-oval-mid {
     padding-inline: var(--space-1);
-    gap: var(--space-1);
+    gap: var(--space-2);
   }
   .job-oval-arc-svg {
     width: var(--space-6);
     height: var(--space-6);
   }
   .job-oval-arrow {
-    flex: 0 0 var(--space-3);
-    min-width: var(--space-3);
+    flex: 0 0 var(--space-4);
+    width: var(--space-4);
+  }
+  .job-oval-row.is-bottom .job-oval-arrow {
+    flex: 0 0 var(--space-5);
+    width: var(--space-5);
   }
   .job-oval-center {
     padding: var(--space-1) var(--space-3);
   }
   .job-step {
-    flex: 1 1 0;
-    flex-direction: column;
-    align-items: center;
-    text-align: center;
-    gap: var(--space-1);
-    padding: var(--space-1-5) var(--space-1-5);
-    white-space: normal;
-  }
-  .job-step-meta {
-    align-items: center;
-  }
-  .job-step-sub {
-    white-space: normal;
-    line-height: 1.25;
+    padding: var(--space-1-5) var(--space-2);
   }
   .job-loop-arc { padding-left: 0; }
 }

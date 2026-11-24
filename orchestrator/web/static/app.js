@@ -7308,10 +7308,10 @@ pages.job = async ([id]) => {
   </button>`;
   const topSteps = stepperItems.slice(0, stepperItems.length >= 5 ? 3 : 2);
   const bottomSteps = stepperItems.slice(topSteps.length).reverse();
-  const topArrowSvg = `<svg class="job-oval-arrow-svg" viewBox="0 0 28 14" aria-hidden="true"><path d="M2 7H24M19 2.5L25 7L19 11.5"/></svg>`;
-  const bottomArrowSvg = `<svg class="job-oval-arrow-svg" viewBox="0 0 28 14" aria-hidden="true"><path d="M26 7H4M9 2.5L3 7L9 11.5"/></svg>`;
-  const returnArcSvg = `<svg class="job-oval-arc-svg" viewBox="0 0 44 48" aria-hidden="true"><path class="job-oval-arc-path" d="M38 42C10 42 10 6 38 6"/><path class="job-oval-arc-head" d="M32 2L39 6L32 10"/></svg>`;
-  const forwardArcSvg = `<svg class="job-oval-arc-svg" viewBox="0 0 44 48" aria-hidden="true"><path class="job-oval-arc-path" d="M6 6C34 6 34 42 6 42"/><path class="job-oval-arc-head" d="M12 38L5 42L12 46"/></svg>`;
+  const topArrowSvg = `<svg class="job-oval-arrow-svg" viewBox="0 0 24 14" aria-hidden="true"><path d="M2 7H20M15 2.5L21 7L15 11.5"/></svg>`;
+  const bottomArrowSvg = `<svg class="job-oval-arrow-svg" viewBox="0 0 24 14" aria-hidden="true"><path d="M22 7H4M9 2.5L3 7L9 11.5"/></svg>`;
+  const returnArcSvg = `<svg class="job-oval-arc-svg" viewBox="0 0 32 32" aria-hidden="true"><path class="job-oval-arc-path" d="M20 28C8 23 8 9 20 4"/><path class="job-oval-arc-head" d="M13 3L21 4L16 11"/></svg>`;
+  const forwardArcSvg = `<svg class="job-oval-arc-svg" viewBox="0 0 32 32" aria-hidden="true"><path class="job-oval-arc-path" d="M12 4C24 9 24 23 12 28"/><path class="job-oval-arc-head" d="M19 29L11 28L16 21"/></svg>`;
   const rightArcTone = stepArrowTone(topSteps[topSteps.length - 1]);
   const returnArcTone = isIterating || iterationNum > 1 ? "active" : isJobComplete ? "done" : "";
   const stepperOvalHtml = `<div class="job-oval" data-steps="${stepperItems.length}">
