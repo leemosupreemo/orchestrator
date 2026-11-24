@@ -7287,6 +7287,51 @@ pages.job = async ([id]) => {
 
   const { title: cleanJobTitle, task: jobTaskSub } = splitJobTitle(s.title);
   const jobHeaderSubs = jobTaskSub ? [esc(jobTaskSub), ...subParts] : subParts;
+  const iterSubParts = [
+    fixRuns > 0 ? plural(fixRuns, "fix run") : debugIterations > 0 ? plural(debugIterations, "fix cycle") : "",
+    planRevisions > 0 ? plural(planRevisions, "re-plan") : "",
+    exp?.version ? `v${exp.version}` : "",
+  ].filter(Boolean);
+  const iterSubLabel = iterSubParts.length ? iterSubParts.join(" · ") : isJobComplete ? "Completed" : "First pass";
+  const stepArrowTone = (step) => {
+    const st = step?.p?.state || "";
+    if (st.includes("failed")) return "failed";
+    if (st.includes("attention")) return "attention";
+    if (st.includes("done")) return "done";
+    if (st.includes("active")) return "active";
+    return "";
+  };
+  const renderStepBtn = ({ p, idx, displayIcon }) => `<button type="button" class="job-step ${p.state}" data-scroll-to="${idx === 0 && reviewingPlan ? "#plan-section" : phaseTargets[idx]}" ${idx === currentPhaseIndex ? 'aria-current="step"' : ""}>
+    <span class="job-step-dot" aria-hidden="true">${displayIcon}</span>
+    <span class="job-step-meta">
+      <span class="job-step-title">${esc(p.title)}</span>
+      <span class="job-step-sub">${esc(p.subtitle)}</span>
+    </span>
+  </button>`;
+  const topSteps = stepperItems.slice(0, stepperItems.length >= 5 ? 3 : 2);
+  const bottomSteps = stepperItems.slice(topSteps.length).reverse();
+  const topArrowSvg = `<svg class="job-oval-arrow-svg" viewBox="0 0 28 14" aria-hidden="true"><path d="M2 7H24M19 2.5L25 7L19 11.5"/></svg>`;
+  const bottomArrowSvg = `<svg class="job-oval-arrow-svg" viewBox="0 0 28 14" aria-hidden="true"><path d="M26 7H4M9 2.5L3 7L9 11.5"/></svg>`;
+  const returnArcSvg = `<svg class="job-oval-arc-svg" viewBox="0 0 44 48" aria-hidden="true"><path class="job-oval-arc-path" d="M38 42C10 42 10 6 38 6"/><path class="job-oval-arc-head" d="M32 2L39 6L32 10"/></svg>`;
+  const forwardArcSvg = `<svg class="job-oval-arc-svg" viewBox="0 0 44 48" aria-hidden="true"><path class="job-oval-arc-path" d="M6 6C34 6 34 42 6 42"/><path class="job-oval-arc-head" d="M12 38L5 42L12 46"/></svg>`;
+  const rightArcTone = stepArrowTone(topSteps[topSteps.length - 1]);
+  const returnArcTone = isIterating || iterationNum > 1 ? "active" : isJobComplete ? "done" : "";
+  const stepperOvalHtml = `<div class="job-oval" data-steps="${stepperItems.length}">
+    <div class="job-oval-row is-top">
+      ${topSteps.map((item, pos) => `${renderStepBtn(item)}${pos < topSteps.length - 1 ? `<span class="job-oval-arrow is-right ${stepArrowTone(item)}" aria-hidden="true">${topArrowSvg}</span>` : ""}`).join("")}
+    </div>
+    <div class="job-oval-mid">
+      <div class="job-oval-arc is-return ${returnArcTone}" aria-hidden="true" title="Cyclical loop back to Plan / Build">${returnArcSvg}</div>
+      <div class="job-oval-center${iterationNum > 1 ? " has-loops" : ""}" aria-label="Iteration ${iterationNum}: ${esc(iterSubLabel)}">
+        <span class="job-oval-iter"><span class="job-iter-icon" aria-hidden="true">↻</span> Iteration ${iterationNum}</span>
+        <span class="job-oval-iter-sub">${esc(iterSubLabel)}</span>
+      </div>
+      <div class="job-oval-arc is-continue ${rightArcTone}" aria-hidden="true">${forwardArcSvg}</div>
+    </div>
+    <div class="job-oval-row is-bottom">
+      ${bottomSteps.map((item, pos) => `${renderStepBtn(item)}${pos < bottomSteps.length - 1 ? `<span class="job-oval-arrow is-left ${stepArrowTone(bottomSteps[pos + 1])}" aria-hidden="true">${bottomArrowSvg}</span>` : ""}`).join("")}
+    </div>
+  </div>`;
   const machineDiskFreeGb = typeof state?.disk_free_bytes === "number" && Number.isFinite(state.disk_free_bytes)
     ? (state.disk_free_bytes / (1024 ** 3)).toFixed(1)
     : "";
@@ -7341,18 +7386,7 @@ pages.job = async ([id]) => {
       ` : ""}
 
       <nav class="job-stepper" data-iterating="${isIterating ? "1" : "0"}" aria-label="Job lifecycle progress">
-        <div class="job-stepper-track">
-          ${stepperItems.map(({ p, idx, displayIcon }, pos) => `
-            <button type="button" class="job-step ${p.state}" data-scroll-to="${idx === 0 && reviewingPlan ? "#plan-section" : phaseTargets[idx]}" ${idx === currentPhaseIndex ? 'aria-current="step"' : ""}>
-              <span class="job-step-dot" aria-hidden="true">${displayIcon}</span>
-              <span class="job-step-meta">
-                <span class="job-step-title">${esc(p.title)}</span>
-                <span class="job-step-sub">${esc(p.subtitle)}</span>
-              </span>
-            </button>
-            ${pos < stepperItems.length - 1 ? `<div class="job-step-arrow ${p.state}" aria-hidden="true"></div>` : ""}
-          `).join("")}
-        </div>
+        ${stepperOvalHtml}
         ${experienceStepperHtml}
       </nav>
 

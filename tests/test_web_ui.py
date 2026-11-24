@@ -8535,7 +8535,15 @@ console.log(JSON.stringify({{ fromHyp, fromDoc, bullets, html }}));
         static = PACKAGE_ROOT / "orchestrator" / "web" / "static"
         css = (static / "style.css").read_text()
         self.assertIn('<nav class="job-stepper"', self.job_page)
+        self.assertIn('class="job-oval"', self.job_page)
+        self.assertIn('class="job-oval-center', self.job_page)
+        self.assertIn('Iteration ${iterationNum}', self.job_page)
+        self.assertIn('job-oval-arc is-return', self.job_page)
+        self.assertIn('job-oval-arrow is-right', self.job_page)
+        self.assertIn('job-oval-arrow is-left', self.job_page)
         self.assertIn(".job-stepper {", css)
+        self.assertIn(".job-oval {", css)
+        self.assertIn(".job-oval-center {", css)
         self.assertIn(".job-step-dot {", css)
         stepper_block = css[css.index(".job-stepper {"):css.index("}", css.index(".job-stepper {")) + 1]
         self.assertIn("flex-wrap: wrap", stepper_block)
