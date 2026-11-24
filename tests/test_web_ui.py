@@ -8550,6 +8550,13 @@ console.log(JSON.stringify({{ fromHyp, fromDoc, bullets, html }}));
         self.assertNotIn("overflow-x: auto", stepper_block)
         self.assertIn(".job-hero-next-preview {", css)
         self.assertIn('job-hero-next-preview', self.job_page)
+        preview_block = css[css.index(".job-hero-next-preview {"):css.index("}", css.index(".job-hero-next-preview {")) + 1]
+        self.assertIn("max-width: 100%;", preview_block)
+        self.assertIn("overflow-wrap: anywhere;", preview_block)
+        activity_block = css[css.index(".job-hero-activity {"):css.index("}", css.index(".job-hero-activity {")) + 1]
+        self.assertIn("white-space: normal;", activity_block)
+        self.assertIn("overflow-wrap: anywhere;", activity_block)
+        self.assertNotIn("white-space: nowrap;", activity_block)
         # The stepper shows the stage and the hero's title and button say what's needed: no badge row repeating them.
         self.assertNotIn("job-hero-badge-row", self.job_page)
 
