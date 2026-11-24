@@ -5768,11 +5768,11 @@ class AccessibilityStaticTests(unittest.TestCase):
         self.assertIn(":focus-visible { outline: 2px solid var(--accent)", self.css)
 
     def test_job_hero_and_containers_use_design_tokens(self):
-        self.assertIn(".job-hero-title { margin: 0; font-size: var(--type-body); font-weight: var(--weight-bold);", self.css)
-        self.assertIn(".job-hero-main { display: flex; flex-direction: column; align-items: flex-start; gap: var(--space-2);", self.css)
+        self.assertIn(".job-hero-title { margin: 0; font-size: var(--type-page); font-weight: var(--weight-bold);", self.css)
+        self.assertIn(".job-hero-main { display: flex; flex-direction: column; align-items: flex-start; gap: var(--container-sub-gap);", self.css)
         self.assertIn(".job-hero.tone-attention { border-color: var(--warn); background: var(--warn-soft); }", self.css)
-        self.assertIn(".banner { display: flex; align-items: center; gap: var(--space-3) var(--space-4); padding: var(--space-3) var(--space-4); border-radius: var(--radius); border: 1px solid var(--border);", self.css)
-        self.assertIn(".notice { padding: var(--space-3) var(--space-4); border-radius: var(--radius); border: 1px solid var(--warn);", self.css)
+        self.assertIn(".banner { display: flex; align-items: center; gap: var(--container-title-gap) var(--container-pad-x); padding: var(--container-pad-y) var(--container-pad-x); border-radius: var(--radius); border: 1px solid var(--border);", self.css)
+        self.assertIn(".notice { padding: var(--container-pad-y) var(--container-pad-x); border-radius: var(--radius); border: 1px solid var(--warn);", self.css)
 
     def test_setup_checklist_js_handles_git_init_and_github_create(self):
         self.assertIn('api("setup/git-init"', self.js)
@@ -9311,20 +9311,41 @@ class ConnectionsAndModalLayoutConsistencyTests(unittest.TestCase):
 
     def test_container_padding_design_standard_enforces_consistency(self):
         css = (self.STATIC / "style.css").read_text()
-        # Canonical container padding tokens declared in :root
+        # Canonical 4-tier container vertical rhythm tokens declared in :root
         self.assertIn("--container-pad-x: var(--space-5);", css)
         self.assertIn("--container-pad-y: var(--space-4);", css)
-        # Mobile responsive override for container padding tokens
+        self.assertIn("--container-header-y: var(--space-3);", css)
+        self.assertIn("--container-title-gap: var(--space-3);", css)
+        self.assertIn("--container-sub-gap: var(--space-2);", css)
+        self.assertIn("--container-section-gap: var(--space-4);", css)
+        # Mobile responsive overrides for container vertical rhythm tokens
         self.assertIn("--container-pad-x: var(--space-4);", css)
         self.assertIn("--container-pad-y: var(--space-3);", css)
-        # .card-b and card components use the container padding tokens
+        self.assertIn("--container-title-gap: var(--space-2-5);", css)
+        self.assertIn("--container-section-gap: var(--space-3);", css)
+        # Cards, rows, and stacks use canonical container vertical rhythm tokens
+        self.assertIn("padding: var(--container-header-y) var(--container-pad-x);", css)
         self.assertIn(".card-b { padding: var(--container-pad-y) var(--container-pad-x); }", css)
+        self.assertIn(".card-b.stack { gap: var(--container-section-gap); }", css)
         self.assertIn("padding: var(--space-3) var(--container-pad-x);", css)
-        # Home page job table and hero use container-pad tokens
-        self.assertIn(".job-hero {\n  display: flex;\n  align-items: center;\n  justify-content: space-between;\n  gap: var(--space-3) var(--space-5);\n  flex-wrap: wrap;\n  padding: var(--container-pad-y) var(--container-pad-x);", css)
+        # Hero, banners, run status, notices, project/account cards, dialogs, and stats use the standard
+        self.assertIn(
+            ".job-hero {\n  display: flex;\n  align-items: flex-start;\n  justify-content: space-between;\n  gap: var(--container-title-gap) var(--container-pad-x);\n  flex-wrap: wrap;\n  padding: var(--container-pad-y) var(--container-pad-x);",
+            css,
+        )
+        self.assertIn(".job-hero-main > .job-hero-title:not(:last-child) { margin-bottom: var(--space-1); }", css)
+        self.assertIn(".job-steer { flex: 1 1 100%; display: flex; flex-direction: column; gap: var(--container-sub-gap); margin-top: var(--space-1); padding-top: var(--container-section-gap); border-top: 1px solid var(--border); }", css)
+        self.assertIn(".run-status { display: flex; flex-direction: column; gap: var(--container-title-gap); padding: var(--container-pad-y) var(--container-pad-x); }", css)
+        self.assertIn("padding-top: var(--container-section-gap); border-top: 1px solid var(--border);", css)
+        self.assertIn("--dialog-padding: var(--container-pad-y) var(--container-pad-x);", css)
+        self.assertIn("--dialog-gap: var(--container-title-gap);", css)
         # Connections cards explicitly enforce container padding consistency
         self.assertIn(".conn-card .card-b,", css)
         self.assertIn('body[data-page="connections"] .card-b,', css)
+        # No newly introduced undefined CSS custom properties for container tokens
+        defined = set(re.findall(r"(--container-[a-z0-9-]+):", css))
+        used = set(re.findall(r"var\((--container-[a-z0-9-]+)", css))
+        self.assertEqual(used - defined, set())
 
     def test_modal_on_mobile_is_contained_and_does_not_bleed_off_edges(self):
         css = (self.STATIC / "style.css").read_text()

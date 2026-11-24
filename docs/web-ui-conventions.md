@@ -163,9 +163,13 @@ Callout and hero containers (`.job-hero`, `.banner`, `.notice`) frame actionable
 - **Button sizing & proportions**:
   - Hero action buttons use standard `.btn.primary` (`min-height: 38px`, padding `--space-2` `--space-4`), not bloated 48px `.big` buttons. On phones (`<= 760px`), primary actions stretch to full width with `min-height: 44px`.
   - Banners use `.btn.small` (`min-height: 32px`).
-- **Container geometry**:
+- **Container geometry & vertical rhythm**:
   - Border radius uses `--radius` (`--r-lg`, 12px).
-  - Padding uses `--space-4` `--space-5` on desktop for heroes, `--space-4` on phones, and `--space-3` `--space-4` for banners/notices.
+  - Every container (`.card`, `.job-hero`, `.banner`, `.run-status`, `.notice`, `.rec-callout`, `.project-card`, `.account-card`, `.signin-card`, `dialog form`, `.stat`, `.skeleton-card`, `.np-section-card`, `.configuration-chooser-group`, `.run-timeline`) follows the canonical 4-tier vertical rhythm tokens defined in `:root` (with mobile overrides at `<= 760px`):
+    1. **Top of container to title & outer vertical inset**: `--container-pad-y` (`16px` desktop / `12px` mobile) with `--container-pad-x` (`20px` desktop / `16px` mobile); tinted title bars (`.card-h`) and list rows (`.item`, `.setup-item`, `.branch-meta-row`) use `--container-header-y` (`12px`) vertically and `--container-pad-x` horizontally.
+    2. **Below title to first content**: `--container-title-gap` (`12px` desktop / `10px` mobile) — consistent whether a container uses a separate header row (`.job-hero-head`, `.run-status-heading`, `.dialog-header`, `.project-card-header`) or an inline heading (`.job-hero-main > .job-hero-title`, `.card-b > h3`).
+    3. **Between related sub-content items**: `--container-sub-gap` (`8px`).
+    4. **Larger divides between distinct sections**: `--container-section-gap` (`16px` desktop / `12px` mobile) — used between sibling sections (`.view`, `.stack`, `.card-b.stack`, `#dialog-body.stack`) and around full-width section dividers (`.job-steer`, `.job-review-summary`, `.job-decide-routes`, `.run-status-details`, `.project-card-actions`, `.dialog-actions`, `.setup-group`, `.arch-change`).
 - **Job lifecycle stepper & next step clarity**:
   - Every job detail page presents a 5-phase agile lifecycle stepper (`.job-stepper`): `1. Plan` → `2. Build` → `3. Verify` → `4. Document` → `5. Decide`.
   - Active steps use `var(--accent)` (or `var(--warn)`/`var(--bad)` when attention/fix is needed), completed steps use `var(--ok)` with `✓`, upcoming steps are muted. Subsequent fix/re-plan cycles partially reset downstream steps (`Pending re-verify` / `Pending re-check`), and iteration **Version history** (with `Undo last iteration` and assumed-default chips) folds along the bottom of `.job-stepper`. `Document` is auto-skipped on `quick-fix`, `bug-fix`, `bug-investigate`, `coverage`, `test-audit`, and `tests-only` jobs unless docs changed.
