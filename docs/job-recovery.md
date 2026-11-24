@@ -224,14 +224,14 @@ reconnects. That's why everything uploads early and often; and when it reconnect
 
 ## Low disk space
 
-New Job warns before planning if this computer is below the build's disk-space target. The worker checks again before implementation and before running the build, using the tightest of the project, Orchestrator data, and temporary-file volumes. The build floor defaults to 15 GB and uses the existing `ORCHESTRATOR_MIN_DISK_GB` setting.
+New Job warns before planning if this computer is below the build's disk-space target. On the job page, live `state.disk_low` (`GET /api/state` `disk_free_bytes`, `disk_required_bytes`, `disk_needed_bytes`) takes priority before showing **Run fix**, **Resume**, or **Start** on local jobs (remote SSH-assigned jobs and completed/review-ready jobs are unaffected). The worker checks again before implementation and before running the build, using the tightest of the project, Orchestrator data, and temporary-file volumes. The build floor defaults to 15 GB and uses the existing `ORCHESTRATOR_MIN_DISK_GB` setting.
 
-Open **Free up space** from a startup warning or a failed run. The dialog shows how much space is available and how much the build needs. Select the caches to clear after closing the tools that use them and letting active jobs finish. Use **Check again** after clearing other files in macOS **System Settings → General → Storage**. An SSH job's dialog names the computer that needs cleanup. Local jobs paused by the disk blocker are eligible to resume when they meet the build floor.
+Open **Free up space** from a startup warning, low-disk job hero, or failed run. The dialog shows how much space is available and how much the build needs, and syncs live free-space state immediately after cleaning caches so the job hero flips right back to its next action once the floor is met. Select the caches to clear after closing the tools that use them and letting active jobs finish. Use **Check again** after clearing other files in macOS **System Settings → General → Storage**. An SSH job's dialog names the computer that needs cleanup. Local jobs paused by the disk blocker are eligible to resume when they meet the build floor.
 
 The dialog recognizes these caches on the project volume:
 
 - **Xcode.** DerivedData entries and shared build caches.
-- **Unity.** The ignored `Library` directory in a recognized Unity project. Opening the project again reimports its assets. [Unity asset import guide](https://docs.unity3d.com/cn/2022.3/Manual/ImportingAssets.html)
+- **Unity.** The ignored `Library` directory in a recognized Unity project (plus `~/Library/Unity/cache` and `~/Library/Caches/com.unity3d.UnityEditor`). Opening the project again reimports its assets. Active-process checks look for `Unity`, `UnityShaderCompiler`, and `UnityPackageManager`, and intentionally ignore the persistent background `Unity.Licensing.Client` IPC daemon. [Unity asset import guide](https://docs.unity3d.com/cn/2022.3/Manual/ImportingAssets.html)
 - **Android Studio and IntelliJ.** The ignored project-local `.gradle` cache. If the daemon is still running after closing the IDE, stop it with `./gradlew --stop`. [Gradle directory layout](https://docs.gradle.org/current/userguide/directory_layout.html)
 - **Swift Package Manager.** Compiled debug and release products in an ignored `.build` directory. Dependency checkouts are preserved. [Swift build artifact locations](https://docs.swift.org/latest/documentation/swiftlinux/building/)
 - **VS Code and VS Code Insiders.** Browser and compiled-code caches. Settings, local history and unsaved-file backups are preserved. [VS Code profile cache definitions](https://github.com/microsoft/vscode/blob/main/.agents/skills/launch/SKILL.md)
@@ -265,7 +265,10 @@ The helper keeps its reservation journal under `~/.orchestrator/verification-wor
 | Deactivated-model 24h quarantine and pre-flight `pool` health probe | `tests/test_project_chat.py` (`test_probe_pool_health_blocks_deactivated_pool_model_ahead_of_time`) |
 | Task `_task_N.json` status sync on automation error | `tests/test_worker_run.py` (`test_task_automation_error_marks_both_parent_and_task_job_human_needed`) |
 | End-of-job review gate: parsing blockers/unmet criteria, auto-fix pass, and `human-needed` pause | `tests/test_acceptance.py` (`ReviewOutcomeGateTests`), `tests/test_worker_run.py` (`test_review_gate_triggers_autofix_once_then_pauses_human_needed`) |
-| Inline fix routing, hero controls, and task-title splitting | `tests/test_web_preview.py` (`JobTitleSplitTests`) |
+| Inline fix routing, hero controls, low-disk priority over Run fix, and task-title splitting | `tests/test_web_preview.py` (`JobTitleSplitTests`) |
+| Disk space floor, cache discovery, Unity active-process check (ignoring `Unity.Licensing.Client`), and cache cleanup | `tests/test_disk_space.py` |
+| Unfinished-work backup (`refs/orchestrator/wip/<job>`), identical-file restore skip, 409 conflicts, and opt-in overwrite | `tests/test_wip_backup.py` |
+| Automatic minor updates, deferred restart safety, and boot-commit auto-restart when `HEAD` advances on disk | `tests/test_self_update.py` |
 | A YOLO job whose planner and builder ask, finishing by itself | `tests/e2e/test_pipeline_offline.py` (`YoloAutorespondTests`) |
 | A job blocked mid-run by a held git lock, cleared, resumed by the server, committed and opened as a PR, inside the full offline pipeline | `tests/e2e/test_pipeline_offline.py` (`BlockedJobRecoveryTests`) |
 | Moves recorded by the control plane | `tests/test_control_plane.py` (`MovedJobTests`) |

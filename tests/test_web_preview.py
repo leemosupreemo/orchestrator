@@ -393,3 +393,35 @@ console.log(JSON.stringify({{
         self.assertEqual(out["needsFixRemoteMachine"], {"localDiskBlocked": False, "diskBlocked": False, "showNextAction": True})
         self.assertEqual(out["reviewNeededLowDisk"], {"localDiskBlocked": False, "diskBlocked": False, "showNextAction": True})
         self.assertEqual(out["completedLowDisk"], {"localDiskBlocked": False, "diskBlocked": False, "showNextAction": None})
+
+        # Verify diskBlockedReason wording and More-menu hiding when diskBlocked is true.
+        reason_start = source.index("const diskBlockedReason = ")
+        reason_end = source.index("return {", reason_start)
+        reason_snippet = source[reason_start:reason_end]
+        header_fn = source[source.index("function jobHeaderActions("):source.index("\ndocument.addEventListener", source.index("function jobHeaderActions("))]
+        script2 = f"""
+const esc = (s) => String(s);
+const act = (a) => `data-action="${{a}}"`;
+const attrJSON = (v) => JSON.stringify(v);
+const moreMenu = (items) => JSON.stringify(items);
+const state = {{ you: {{ role: "owner" }}, project: {{ computer: {{ name: "Mac" }} }}, disk_low: true, disk_free_bytes: 14.1 * (1024 ** 3), disk_required_bytes: 15 * (1024 ** 3), disk_needed_bytes: 0.9 * (1024 ** 3) }};
+{header_fn}
+const shortReason = "The last attempt's diagnosis: overall cover improved";
+const machineDiskFreeGb = "14.1";
+const next = {{ action: "debug", label: "Run fix" }};
+{reason_snippet}
+const menuBlocked = jobHeaderActions({{ id: "j1", status: "scheduled", tasks_total: 2, tasks_done: 1, state: {{ next: {{ action: "resume" }} }} }}, [], {{ diskBlocked: true }});
+const menuAllowed = jobHeaderActions({{ id: "j1", status: "scheduled", tasks_total: 2, tasks_done: 1, state: {{ next: {{ action: "resume" }} }} }}, [], {{ diskBlocked: false }});
+console.log(JSON.stringify({{ diskBlockedReason, menuBlocked, menuAllowed }}));
+"""
+        out2 = _json.loads(_sp.run(["node", "-e", script2], capture_output=True, text=True, check=True).stdout)
+        self.assertEqual(
+            out2["diskBlockedReason"],
+            "Free at least 1 GB on Mac before running a fix. Builds need 15 GB free and Mac has 14.1 GB.",
+        )
+        self.assertNotIn("Run now", out2["menuBlocked"])
+        self.assertIn("Run now", out2["menuAllowed"])
+        server_src = (PACKAGE_ROOT / "orchestrator" / "web" / "server.py").read_text()
+        self.assertIn('"disk_required_bytes": disk_report.get("required_bytes")', server_src)
+        self.assertIn('"disk_needed_bytes": disk_report.get("needed_bytes")', server_src)
+        self.assertIn('"remote_machine": assigned_ssh_machine(root, job) or ""', server_src)

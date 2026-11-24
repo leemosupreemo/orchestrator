@@ -115,7 +115,17 @@ class SelfUpdateTests(unittest.TestCase):
         (self.mac / "orchestrator" / "release.json").write_text("{}\n")
         self.assertFalse(self_update.needs_restart(boot, self.mac))
         git(self.mac, "checkout", "--", "orchestrator/release.json")
+        # Untracked scratch files under orchestrator/ do not block restart.
+        (self.mac / "orchestrator" / "scratch.tmp").write_text("temp\n")
         self.assertTrue(self_update.needs_restart(boot, self.mac))
+        (self.mac / "orchestrator" / "scratch.tmp").unlink()
+        # Non-git installs or empty boot_commit never claim a git HEAD restart.
+        self.assertFalse(self_update.needs_restart("", self.mac))
+        with patch.object(self_update, "install_kind", return_value="pip"):
+            self.assertEqual(self_update.current_commit(self.mac), "")
+            self.assertFalse(self_update.needs_restart(boot, self.mac))
+        with patch.object(self_update, "install_kind", return_value="packaged"):
+            self.assertFalse(self_update.needs_restart(boot, self.mac))
 
     def test_self_update_tick_restarts_when_boot_commit_differs_from_disk_and_idle(self):
         from unittest.mock import MagicMock, patch
@@ -132,6 +142,15 @@ class SelfUpdateTests(unittest.TestCase):
             web_server.UIServer.self_update_tick(fake)
         restart.assert_called_once_with(fake)
 
+        # Respects auto_minor=False.
+        with patch.object(web_server.self_update, "load", return_value={"auto_minor": False, "last_check": {"update": "none"}}), \
+             patch.object(web_server.self_update, "due", return_value=False), \
+             patch.object(web_server.self_update, "should_install", return_value=False), \
+             patch.object(web_server.self_update, "needs_restart", return_value=True), \
+             patch.object(web_server, "_trigger_ui_restart") as restart:
+            web_server.UIServer.self_update_tick(fake)
+        restart.assert_not_called()
+
         # Does not interrupt an active run.
         fake.sessions.list.return_value = [{"id": "r1", "running": True}]
         with patch.object(web_server.self_update, "load", return_value={"auto_minor": True, "last_check": {"update": "none"}}), \
@@ -141,6 +160,31 @@ class SelfUpdateTests(unittest.TestCase):
              patch.object(web_server, "_trigger_ui_restart") as restart:
             web_server.UIServer.self_update_tick(fake)
         restart.assert_not_called()
+
+    def test_deferred_restart_completes_on_next_idle_tick_after_apply(self):
+        from unittest.mock import MagicMock, patch
+        from orchestrator.web import server as web_server
+
+        boot = self_update.current_commit(self.mac)
+        self.commit("Fix Unity cache daemon check")
+        fake = MagicMock()
+        fake._boot_commit = boot
+        # Tick 1: idle before apply(), run starts during apply() -> restart deferred.
+        fake.sessions.list.side_effect = [[], [{"id": "r1", "running": True}]]
+        with patch.object(self_update, "install_root", return_value=self.mac), \
+             patch.object(web_server, "_trigger_ui_restart") as restart:
+            web_server.UIServer.self_update_tick(fake, force=True)
+            restart.assert_not_called()
+            # Tick 2: run finished, HEAD == origin/web-ui (update == "none"), but HEAD != boot -> restarts now.
+            fake.sessions.list.side_effect = None
+            fake.sessions.list.return_value = []
+            web_server.UIServer.self_update_tick(fake, force=False)
+            restart.assert_called_once_with(fake)
+
+    def test_shared_ui_server_keeps_boot_commit_in_shared_attributes(self):
+        server_src = (Path(__file__).resolve().parents[1] / "orchestrator" / "web" / "server.py").read_text(encoding="utf-8")
+        self.assertIn("self._boot_commit = self_update.current_commit()", server_src)
+        self.assertIn('"_boot_commit"', server_src)
 
 
 if __name__ == "__main__":

@@ -151,3 +151,37 @@ class DiskSpaceTests(unittest.TestCase):
         self.assertIn("UnityShaderCompiler", pattern)
         self.assertIn("UnityPackageManager", pattern)
         self.assertNotIn("Licensing", pattern)
+
+    def test_clear_unity_cache_succeeds_when_editor_closed_and_blocks_when_active(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            subprocess.run(["git", "init"], cwd=root, check=True, capture_output=True)
+            (root / ".gitignore").write_text("Game/Library/\n")
+            subprocess.run(["git", "add", ".gitignore"], cwd=root, check=True, capture_output=True)
+            for path in ("Game/Library", "Game/ProjectSettings", "Game/Assets"):
+                (root / path).mkdir(parents=True)
+            (root / "Game/ProjectSettings/ProjectVersion.txt").touch()
+            with patch.object(disk_space, "derived_data_root", return_value=root / "missing"), \
+                 patch.object(Path, "home", return_value=root):
+                candidates = disk_space.cache_candidates(root)
+                unity_id = next(c["id"] for c in candidates if c["tool"] == "Unity")
+                real_run = subprocess.run
+
+                def pgrep_only(rc):
+                    def _run(args, *a, **kw):
+                        if args and args[0] == "pgrep":
+                            return subprocess.CompletedProcess(args, rc, b"123\n" if rc == 0 else b"", b"")
+                        return real_run(args, *a, **kw)
+                    return _run
+
+                # Active Unity editor/compiler/package manager blocks removal.
+                with patch.object(disk_space.subprocess, "run", side_effect=pgrep_only(0)):
+                    with self.assertRaisesRegex(disk_space.CacheBusyError, "Finish running Unity before clearing these caches"):
+                        disk_space.clear_caches(root, [unity_id])
+                self.assertTrue((root / "Game/Library").exists())
+                # Once no Unity editor/compiler/package manager matches pgrep, cleanup succeeds.
+                with patch.object(disk_space.subprocess, "run", side_effect=pgrep_only(1)):
+                    removed, errors = disk_space.clear_caches(root, [unity_id])
+                self.assertEqual(removed, ["Game/Library"])
+                self.assertEqual(errors, [])
+                self.assertFalse((root / "Game/Library").exists())
