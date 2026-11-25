@@ -222,7 +222,7 @@ console.log(JSON.stringify({{
         self.assertNotIn("Recent updates", out["breaking"])
         self.assertNotIn("An update is ready", out["minor"])
         self.assertIn("Outdated (2 behind)", out["minor"])
-        self.assertIn('<button type="button" class="btn small" disabled>Up to date</button>', out["current"])
+        self.assertIn('<button type="button" class="btn small" data-why="Already on the latest version." disabled>Up to date</button>', out["current"])
         self.assertNotIn('<div class="col-date">Action</div>', out["current"])
         self.assertNotIn(">Update now</button>", out["current"])
         self.assertNotIn(">Update now</button>", out["blocked"])
