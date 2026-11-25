@@ -17,7 +17,7 @@ class ProductCardTests(unittest.TestCase):
         self.assertIn('class="btn small ghost icon-only product-open" href="#/product" aria-label="Open product" title="Open product"', header)
         self.assertIn('<use href="#i-external"/>', header)
         self.assertIn('id="i-external"', SPRITE)
-        self.assertIn(".fold > summary.card-h .product-open { margin-left: auto; }", CSS)
+        self.assertIn(".fold > summary.card-h .product-open, .fold > summary.card-h > .more { margin-left: auto; }", CSS)
 
     def test_the_pitch_is_whole_and_folds_behind_show_more_in_both_states(self):
         self.assertEqual(STRIP.count('data-expandable="${PRD_PITCH_LINES_PX}" data-expandable-slack="0"'), 2)

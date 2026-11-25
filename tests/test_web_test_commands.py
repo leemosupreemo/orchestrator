@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sys
 import time
 from pathlib import Path
@@ -166,8 +167,8 @@ class ProjectSwitchTests(ServerTestCase):
         # while it is switching, a late page load or poll leaves the skeleton alone
         route = js[js.index("async function route() {"):][:400]
         self.assertIn("if (projectSwitch) return;", route)
-        tick = js[js.index("async function tick() {"):][:1400]
-        self.assertGreaterEqual(tick.count("if (projectSwitch || token !== routeToken) return;"), 3)
+        tick = js[js.index("async function tick() {"):js.index('\nwindow.addEventListener("hashchange", route);')]
+        self.assertGreaterEqual(len(re.findall(r"if \(projectSwitch \|\| .*?token !== routeToken\) return;", tick)), 3)
 
 
 class ComputerCardStateTests(ServerTestCase):

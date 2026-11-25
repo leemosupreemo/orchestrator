@@ -1015,7 +1015,7 @@ class ProductStripTests(unittest.TestCase):
     def test_model_choices_are_inside_ai_steps_and_automatic_ai_settings(self):
         js = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
         self.assertIn('prdModelField(p, "prd-draft-model")', js)
-        self.assertIn('prdModelField(p, "prd-reverse-model")', js)
+        self.assertIn('prdModelField({ ...p, available_models: supported }, "prd-reverse-model")', js)
         self.assertIn('id="prd-update-model-select"', js)
         self.assertIn('api("product/model"', js)
 
@@ -5115,7 +5115,7 @@ class AccessibilityStaticTests(unittest.TestCase):
         css = (self.STATIC / "style.css").read_text()
         self.assertIn("--control-md: 40px;", css)  # the height buttons actually render at, so inputs can match it
         self.assertIn("select {\n  min-height: var(--control-md);", css)  # every text input and select, not whatever its font made it
-        self.assertIn(".view { display: flex; flex-direction: column; gap: var(--space-4); }", css)  # 16px between cards, everywhere
+        self.assertIn(".view { display: flex; flex-direction: column; gap: var(--container-section-gap); }", css)  # 16px between cards, everywhere
         self.assertIn(".view > .mb-16 { margin-bottom: 0; }", css)  # so a margin doesn't stack on that gap
         for page in (".configuration-page {", ".git-page {"):
             self.assertIn("gap: var(--space-4)", css[css.index(page):css.index(page) + 120], page)
@@ -5584,11 +5584,13 @@ class AccessibilityStaticTests(unittest.TestCase):
     def test_signin_modal_omits_orchestrator_icon_and_title(self):
         # No "Orchestrator" title row on the sign-in screen: just the logo over "Sign in", as in the login design it follows
         gate = self.js[self.js.index("function showSignInGate"):self.js.index("function showSignInGate") + 2500]
-        self.assertNotIn("signin-brand", gate)
-        self.assertEqual(gate.count("brand-mark"), 1)
+        card = gate[gate.index('<div class="signin-card'):]
+        self.assertNotIn("signin-brand", card)
+        self.assertEqual(card.count("brand-mark"), 1)
         signing_in = self.js[self.js.index("function showSigningIn"):self.js.index("function cpApi")]
-        self.assertNotIn("signin-brand", signing_in)
-        self.assertNotIn("brand-mark", signing_in)
+        signing_in_card = signing_in[signing_in.index('<div class="signin-card'):]
+        self.assertNotIn("signin-brand", signing_in_card)
+        self.assertNotIn("brand-mark", signing_in_card)
 
     def test_home_new_job_button_is_sticky(self):
         # The + new job button stays in place when scrolling
@@ -5724,7 +5726,8 @@ class AccessibilityStaticTests(unittest.TestCase):
             self.assertIn(part, fn, part)
         self.assertIn("if (!first) Notifications.show", fn)  # a browser alert only for an update that happens while you are here
         self.assertNotIn("prdNoticeHtml", self.js)  # no separate banners on Home and the Product page any more
-        refresh = self.js[self.js.index("async function refreshState("):][:3000]
+        refresh_start = self.js.index("async function refreshState(")
+        refresh = self.js[refresh_start:self.js.index("} catch (e) {", refresh_start)]
         self.assertIn("showPrdUpdate(newState.product_notice)", refresh)
         home = self.js[self.js.index("function productStripHtml"):][:1500]
         self.assertNotIn("notice", home)
@@ -5735,7 +5738,8 @@ class AccessibilityStaticTests(unittest.TestCase):
             self.assertIn(part, fn, part)
         self.assertNotIn("sticky: true", fn)
         self.assertIn("if (!first) Notifications.show", fn)  # a browser alert only for a change that happens while you are here
-        refresh = self.js[self.js.index("async function refreshState("):][:3000]
+        refresh_start = self.js.index("async function refreshState(")
+        refresh = self.js[refresh_start:self.js.index("} catch (e) {", refresh_start)]
         self.assertIn("showModelsUpdate(newState.models_notice)", refresh)
 
     def test_failing_tests_and_defects_offer_a_prefilled_bug_report(self):
@@ -6346,6 +6350,7 @@ const context = {
   $: () => null, view: {querySelectorAll: selector => selector === '[data-pkg]' ? buttons : []},
   esc: String, moreMenu: () => '', PACKAGE_REVIEW_BUDGET_SECONDS: 240,
   terminalSize: () => ({}), trackWebEvent() {}, refreshState() {},
+  tryAutoFailoverAction: async () => false,
   toast(message) { throw Error(message); },
   formDialog() { throw Error('Accept must not open another form'); }
 };
@@ -7714,7 +7719,7 @@ class ProductEndpointTests(ServerTestCase):
     def test_product_overview_returns_model_and_available_models(self):
         with patch("orchestrator.scripts.model_registry.runnable_here", return_value=True):  # every tool installed, whatever this machine has
             _, data = self.request("GET", "/api/product")
-        self.assertEqual(data["model"], "claude-sonnet-4-6")
+        self.assertEqual(data["model"], "auto")
         self.assertTrue(isinstance(data["available_models"], list))
         self.assertTrue(any(m["id"] == "claude-sonnet-4-6" for m in data["available_models"]))
 
@@ -8281,6 +8286,7 @@ const hydrateAuthImages = () => {};
 const wireImagePreviews = () => {};
 const view = { querySelector: () => null, querySelectorAll: () => [] };
 const $ = () => null;
+const diskBlocked = false, s = { state: {} }, next = null, activeRun = null, job = {}, state = {};
 const after = () => {
 """ + match.group(1) + """
 };
@@ -8357,7 +8363,7 @@ console.log(JSON.stringify({{ fromHyp, fromDoc, bullets, html }}));
         # what the builder did heads the Changes card as succinct bullets; the status box keeps only the file count and PR link
         self.assertIn("jobChangeSummaryHtml(changeSummaryFull)", self.job_page)
         self.assertNotIn('<p class="job-hero-reason muted">${esc(changeSummary', self.job_page)
-        self.assertIn('const heroTone = ["merge", "complete"].includes(nextAction) && s.state.tone !== "failed" ? "done" : (s.state.tone || "");', self.job_page)
+        self.assertIn('const heroTone = diskBlocked ? "failed" : ["merge", "complete"].includes(nextAction) && s.state.tone !== "failed" ? "done" : (s.state.tone || "");', self.job_page)
         self.assertIn('const showTaskBar = tasksTotal > 0 && currentPhase === "build" && tasksDone > 0;', self.job_page)
         self.assertNotIn('<h2>Progress</h2>', self.job_page)  # the stepper and hero carry status; no separate card
         self.assertNotIn('<h2>Finalize</h2>', self.job_page)  # the hero holds the merge decision; Finalize links to it
@@ -8365,9 +8371,9 @@ console.log(JSON.stringify({{ fromHyp, fromDoc, bullets, html }}));
         # One "Tell the AI what to change" box in the status box; ready to merge, it sends a change request through the fix
         # loop on the same branch. The old separate buttons and menu items are gone while it shows.
         app_js = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
-        self.assertIn('runAction("refine", { job: s.id, feedback: text });', app_js)
+        self.assertIn('runAction("refine", { job: s.id, feedback: text }, { button: submitBtn });', app_js)
         self.assertIn('mode: "iterate", button: "Request changes"', self.job_page)
-        self.assertIn("idle && !ctx.steerShown && next !== \"debug\"", app_js)
+        self.assertIn('idle && !ctx.diskBlocked && !ctx.steerShown && next !== "debug"', app_js)
         self.assertNotIn("Keep iterating", app_js)
         self.assertIn("starts with `CHANGE REQUEST:`", (PACKAGE_ROOT / "orchestrator" / "prompts" / "debug_agent.md").read_text())
         # A Quick change can show its scope without empty task rows.
@@ -8473,7 +8479,7 @@ console.log(JSON.stringify({{ fromHyp, fromDoc, bullets, html }}));
         self.assertNotIn("Still broken?", fn)  # one way to ask for a fix
         self.assertNotIn("Split into jobs", fn)
         self.assertNotIn('act("splinter_job"', fn)
-        self.assertIn('idle && !ctx.steerShown && next !== "debug"', fn)  # not when the status box offers Run fix
+        self.assertIn('idle && !ctx.diskBlocked && !ctx.steerShown && next !== "debug"', fn)  # not when the status box offers Run fix
         self.assertNotIn("Check on simulator", fn)
         self.assertNotIn('act("run_visual_check"', fn)
         delivery_start = self.source.index("pages.delivery = async")
@@ -8490,7 +8496,7 @@ console.log(JSON.stringify({{ fromHyp, fromDoc, bullets, html }}));
         for option in ("Job bundle (.zip)", "Shareable snapshot (.md)", "Download ZIP in browser", "Save to iCloud Drive", "Save to Google Drive"):
             self.assertIn(option, dialog)
         self.assertNotIn("const recommendFixBtn", self.source)  # the status box's one Tell-the-AI box replaced the page's fix button
-        self.assertIn("steerShown: Boolean(steer), hasChanges: allFiles.length > 0", self.source)
+        self.assertIn("steerShown: Boolean(steer), diskBlocked, hasChanges: allFiles.length > 0", self.source)
 
     def test_choosing_models_uses_the_model_team_list_and_can_go_back_to_the_projects_choice(self):
         dialog = self.source[self.source.index("async select_models(params)"):self.source.index("async export_context(params)")]

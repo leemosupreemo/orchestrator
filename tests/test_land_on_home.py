@@ -58,7 +58,7 @@ class WhichSignInsLandOnHomeTests(unittest.TestCase):
 
     def test_opening_a_computer_after_signing_in_lands_on_home_unless_an_idea_is_waiting(self):
         body = function_source("async function enterMachine(")
-        self.assertIn("{ home: !idea }", body)
+        self.assertIn("{ home: !idea && !hash }", body)
 
     def test_the_access_token_form_lands_on_home(self):
         form = APP[APP.index('toast("Session unlocked");'):][:400]

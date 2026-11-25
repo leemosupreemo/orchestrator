@@ -4103,7 +4103,7 @@ async function openOllamaModelsModal() {
           <div class="title"><span class="mono">${esc(m.tag)}</span> ${m.installed ? `<span class="pill done">Installed</span>` : ""}</div>
           <div class="meta">${esc(m.summary)} · ${esc(fmtGb(m.size_bytes))}${m.size_source === "estimate" ? " (est.)" : ""}${tooBig ? ' · <span class="text-bad">Not enough free space</span>' : ""}</div>
         </div>
-        <div class="side">${m.installed ? "" : `<button type="button" class="btn small primary" data-ollama-pull="${esc(m.tag)}"${tooBig ? " disabled" : ""}>Download</button>`}</div>
+        <div class="side">${m.installed ? "" : `<button type="button" class="btn small primary" data-ollama-pull="${esc(m.tag)}"${tooBig ? ' data-why="Not enough free disk space." disabled' : ""}>Download</button>`}</div>
       </div>`;
     }).join("");
     showShell(`
@@ -13947,7 +13947,7 @@ function updatesPageHtml(u, { pairedMachines = [], currentMachineId = "", curren
   const localActionHtml = canInstall
     ? `<button type="button" class="btn small primary" data-update-op="install">Update now</button>`
     : localUpToDate
-      ? `<button type="button" class="btn small" disabled>Up to date</button>`
+      ? `<button type="button" class="btn small" data-why="Already on the latest version." disabled>Up to date</button>`
       : `<span class="muted">—</span>`;
   const localVer = [u.version || "", c.installed ? c.installed.slice(0, 7) : ""].filter(Boolean).join(" · ") || "—";
   const localMeta = [
@@ -13980,7 +13980,7 @@ function updatesPageHtml(u, { pairedMachines = [], currentMachineId = "", curren
     const remoteActionHtml = canInstallRemote
       ? `<button type="button" class="btn small primary" data-update-machine="${esc(m.id)}" data-update-machine-op="install">Update</button>`
       : remoteUpToDate
-        ? `<button type="button" class="btn small" disabled>Up to date</button>`
+        ? `<button type="button" class="btn small" data-why="Already on the latest version." disabled>Up to date</button>`
         : `<span class="muted">—</span>`;
     const versionTag = `<span class="job-type-tag mono">${esc(ver)}</span>`;
     return `<div class="job-table-row">

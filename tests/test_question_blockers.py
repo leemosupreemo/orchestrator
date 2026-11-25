@@ -74,7 +74,8 @@ class QuestionBlockerTests(unittest.TestCase):
         self.assertFalse(ui.question_is_blocker("Should the timer reset on rematch?"))
         self.assertFalse(ui.question_is_blocker(None))
         app = (STATIC / "app.js").read_text(encoding="utf-8")
-        self.assertIn('"A question during the build" : "A question before planning"', app)
+        self.assertIn('id="${s.question ? "clarify" : "clarify-history"}"', app)
+        self.assertIn("if (s.question) {", app)
         # a dialog that can't load its data shows the error, so Answer never seems to do nothing
         self.assertIn("return Promise.resolve().then(() => dialogs[action](params)).catch((err) => toast(", app)
         self.assertIn("job.summary?.question || job.job?.human_clarification_question", app)
