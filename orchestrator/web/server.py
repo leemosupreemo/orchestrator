@@ -2380,8 +2380,13 @@ def preflight_overview(root: Path, refresh: bool = False) -> list[dict[str, str]
         free = None
     from orchestrator.code_host import origin_url, resolve_mode
     github = resolve_mode(config.get("code_host"), config.get("git_remote") or origin_url(root)) == "github"
+    try:
+        from orchestrator import claude_plugins
+        plugin_findings = claude_plugins.findings(root)
+    except Exception:
+        plugin_findings = []
     items = preflight.checks(config, machines, is_apple_app(root, config), free, run, lambda t: shutil.which(t, path=search_path) is not None,
-                             model_clis, github=github, env=os.environ)
+                             model_clis, github=github, env=os.environ, claude_plugin_findings=plugin_findings)
     _PREFLIGHT_CACHE[key] = (time.time(), items)
     return items
 

@@ -51,8 +51,10 @@ def _resolve_tool(tool: str, env: Mapping[str, str]) -> str | None:
 
 def checks(config: dict[str, Any], machines: list[dict[str, Any]], is_apple_app: bool, disk_free_gb: float | None,
            run: Run, which: Which, model_clis: Callable[[str], list[str]] = lambda m: [],
-           github: bool = True, *, env: Mapping[str, str] | None = None) -> list[dict[str, str]]:
-    """`github`: the project uses GitHub issues and pull requests (code_host); plain git needs no GitHub check."""
+           github: bool = True, *, env: Mapping[str, str] | None = None,
+           claude_plugin_findings: list[dict[str, str]] | None = None) -> list[dict[str, str]]:
+    """`github`: the project uses GitHub issues and pull requests (code_host); plain git needs no GitHub check.
+    `claude_plugin_findings`: project-scoped Claude Code plugins in a macOS-protected folder (`claude_plugins.findings`)."""
     out: list[dict[str, str]] = []
 
     # 1. The programs the build and test commands start.
@@ -120,7 +122,16 @@ def checks(config: dict[str, Any], machines: list[dict[str, Any]], is_apple_app:
         if local and not any(m.get("supports_xcode") for m in local) and not any(m.get("execution_mode") == "remote" and m.get("supports_xcode") for m in machines):
             out.append(_item("xcode-machine", "fail", "No machine is marked as able to build with Xcode", "Jobs for this project will have nowhere to run.", "Open Machines", "#/config/fleet"))
 
-    # 5. Room to build.
+    # 5. Claude Code plugins that can make `claude -p` wait for a macOS permission question nobody can answer.
+    if claude_plugin_findings:
+        folders = sorted({f["folder"] for f in claude_plugin_findings})
+        out.append(_item("claude-plugins", "warn", "A Claude Code plugin may make Claude calls hang",
+                         "; ".join(f"{f['plugin']} is installed for {f['path']}" for f in claude_plugin_findings)
+                         + ". In a git repository Claude opens that folder at startup, and macOS can hold it for a permission question.",
+                         f"Allow {' and '.join(folders)} for the app that runs Orchestrator (System Settings > Privacy & Security > "
+                         "Files and Folders), or remove the entry from ~/.claude/plugins/installed_plugins.json"))
+
+    # 6. Room to build.
     if disk_free_gb is not None and local and disk_free_gb < MIN_DISK_GB:
         out.append(_item("disk", "fail", "Not enough free disk space", f"{disk_free_gb:.0f} GB free; builds want {MIN_DISK_GB} GB.", "Free some space, or lower ORCHESTRATOR_MIN_DISK_GB for a small project"))
     return out

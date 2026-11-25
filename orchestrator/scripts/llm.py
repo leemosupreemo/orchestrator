@@ -699,6 +699,18 @@ def get_llm_env() -> dict[str, str]:
     return env
 
 
+def _claude_plugin_warnings(model: str, cwd: Path) -> list[str]:
+    """Why a Claude Code call in `cwd` might never answer (a project plugin in a macOS-protected folder), said before it starts.
+    Never raises: a warning must not stop the call it is about."""
+    if not (model.startswith("claude-") or model == "claude"):
+        return []
+    try:
+        from orchestrator import claude_plugins
+        return [claude_plugins.describe(f) for f in claude_plugins.findings(cwd)]
+    except Exception:
+        return []
+
+
 def _run_llm_single(model: str, prompt: str, cwd: Path | None = None, timeout: int = 300, role: str | None = None, session_id: str | None = None, images: list[Path] | None = None, protected_paths: list[Path] | None = None, web: bool = False, raw: bool = False, on_chunk: Callable[[str], None] | None = None) -> str:
     source = os.environ.get("AI_REQUEST_SOURCE")
     if source:
@@ -722,6 +734,8 @@ def _run_llm_single(model: str, prompt: str, cwd: Path | None = None, timeout: i
     prompt_chars = len(prompt)
     print(f"      - Running LLM ({model}, timeout={timeout}s)...", flush=True)
     print(f"        [input] Sending {prompt_chars} chars of prompt context", flush=True)
+    for warning in _claude_plugin_warnings(model, cwd or ROOT):
+        print(f"        [warning] {warning}", flush=True)
 
     stdout_chunks = []
     stderr_chunks = []

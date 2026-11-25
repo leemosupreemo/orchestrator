@@ -103,6 +103,25 @@ class GenericChecks(unittest.TestCase):
         self.assertFalse({"xcode", "simulator", "xcode-machine"} & set(r))
 
 
+class ClaudePluginChecks(unittest.TestCase):
+    FOUND = [{"plugin": "playwright@claude-plugins-official", "path": "/Users/me/Documents/Thirteen", "folder": "Documents"}]
+
+    def test_a_project_plugin_in_a_protected_folder_is_a_warning_not_a_blocker(self):
+        run, which, _ = probes(installed=("gh",))
+        items = pf.checks({}, [machine()], False, 100.0, run, which, claude_plugin_findings=self.FOUND)
+        item = by_id(items)["claude-plugins"]
+        self.assertEqual(item["status"], "warn")
+        self.assertIn("playwright@claude-plugins-official", item["detail"])
+        self.assertIn("/Users/me/Documents/Thirteen", item["detail"])
+        self.assertIn("installed_plugins.json", item["fix"])
+        self.assertIn("Documents", item["fix"])
+        self.assertEqual(pf.failures(items), [])
+
+    def test_nothing_is_said_without_one(self):
+        run, which, _ = probes(installed=("gh",))
+        self.assertNotIn("claude-plugins", by_id(pf.checks({}, [machine()], False, 100.0, run, which)))
+
+
 class AppleChecks(unittest.TestCase):
     def go(self, installed=("xcodebuild", "gh"), results=None, machines=None):
         run, which, calls = probes(installed, results)

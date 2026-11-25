@@ -140,6 +140,19 @@ Guards, so jobs never step on each other's work:
   ready, signed-in models on the computer (cheapest adequate first) with `HANDOFF` preserved. If no model can answer
   and a task aborts with an automation error, `worker_run.py` marks both the parent job
   and the active `_task_N.json` file `human-needed` so the task does not remain stuck in `executing`.
+- **A Claude call that never answers (macOS privacy prompt)** (`claude_plugins.py`, `llm._claude_plugin_warnings`,
+  `preflight.checks`). On macOS, a Claude Code plugin installed for one project (`scope: project` in
+  `~/.claude/plugins/installed_plugins.json`) whose folder is inside Documents, Desktop or Downloads is looked up whenever
+  `claude` starts in *any* git repository. If the app that started `claude` has no permission for that folder, macOS
+  holds the open until someone answers a privacy question, so a headless `claude -p` prints nothing until the stall limit,
+  and only inside a git repository (it answers in seconds in a plain folder). Orchestrator reads the plugin file and
+  compares paths only: touching the folder to test it would hang the same way. `llm._run_llm_single` prints a
+  `[warning]` line naming the plugin, the folder and the fix before a Claude call starts, and Preflight shows a
+  `claude-plugins` warning (never a blocker) on the project's checklist. To fix it, allow Documents (or the named
+  folder) for the app that runs Orchestrator in System Settings > Privacy & Security > Files and Folders (or add that
+  app under Full Disk Access), then restart Orchestrator; or remove the entry from `installed_plugins.json` (keep a
+  backup) and re-add the plugin from the project with `/plugin`. A warning does not stop the call: a sign-in or
+  permission that is already in place still works.
 
 ## Durability
 
@@ -262,6 +275,7 @@ The helper keeps its reservation journal under `~/.orchestrator/verification-wor
 | Backup push (in throwaway repositories), job ownership, moves from the heartbeat, record restore | `tests/test_job_ownership.py` |
 | Commit the work, end to end in a throwaway repository | `tests/test_passed_uncommitted.py` (`CommitOnlyResumeTests`) |
 | Out-of-usage holds, deactivated-model fallback with handoff, YOLO autoresponses | `tests/test_autorespond_and_usage.py` |
+| Claude plugins that can hang `claude -p` (macOS-protected folders): finding them, the Preflight warning, the pre-call warning | `tests/test_claude_plugins.py`, `tests/test_preflight.py` (`ClaudePluginChecks`), `tests/test_llm_claude_plugin_warning.py` |
 | Deactivated-model 24h quarantine and pre-flight `pool` health probe | `tests/test_project_chat.py` (`test_probe_pool_health_blocks_deactivated_pool_model_ahead_of_time`) |
 | Task `_task_N.json` status sync on automation error | `tests/test_worker_run.py` (`test_task_automation_error_marks_both_parent_and_task_job_human_needed`) |
 | End-of-job review gate: parsing blockers/unmet criteria, auto-fix pass, and `human-needed` pause | `tests/test_acceptance.py` (`ReviewOutcomeGateTests`), `tests/test_worker_run.py` (`test_review_gate_triggers_autofix_once_then_pauses_human_needed`) |
