@@ -258,6 +258,49 @@ class ChangeTests(unittest.TestCase):
         self.assertIn("open -g -a Docker", seen)
         self.assertTrue(any("starting Docker Desktop" in line for line in said))
 
+    def test_docker_auto_launch_respects_active_context_minimal_path_and_cli_fallback(self):
+        # Active docker context 'colima' wins over /Applications/Docker.app when colima is installed.
+        with tempfile.TemporaryDirectory() as tmp:
+            local = servers.LocalShell(Path(tmp))
+            with patch.object(servers.sys, "platform", "darwin"), \
+                 patch.object(servers, "_active_docker_context", return_value="colima"), \
+                 patch.object(servers.Path, "exists", return_value=True), \
+                 patch.object(servers, "_which", side_effect=lambda name: "/opt/homebrew/bin/colima" if name == "colima" else None):
+                self.assertEqual(servers._docker_launch_command(local), ("Colima", "colima start"))
+
+            # LocalShell enriches minimal GUI/launchd PATH with Homebrew & Docker Desktop bins.
+            with patch.dict(servers.os.environ, {"PATH": "/usr/bin:/bin"}, clear=False):
+                env = servers._local_env()
+            self.assertIn("/opt/homebrew/bin", env["PATH"])
+            self.assertIn("/Applications/Docker.app/Contents/Resources/bin", env["PATH"])
+
+        # If `open -a Docker` fails (e.g. headless session), ensure_docker falls back to `docker desktop start`.
+        seen: list[str] = []
+        ready = {"up": False}
+
+        class FallbackShell:
+            def run(self, cmd, cwd, timeout):
+                seen.append(cmd)
+                if cmd == "docker info":
+                    return (0, "", False) if ready["up"] else (1, "Cannot connect", False)
+                if cmd == "open -a Docker":
+                    return (1, "LSOpenURLsWithRole() failed", False)
+                if cmd == "docker desktop start":
+                    ready["up"] = True
+                    return (0, "", False)
+                return (0, "", False)
+
+        said, say = self.say_into()
+        ticks = iter(range(0, 1000, 5))
+        self.assertTrue(servers.ensure_docker(FallbackShell(), say, sleep=lambda s: None, clock=lambda: next(ticks), can_launch=True))
+        self.assertIn("open -a Docker", seen)
+        self.assertIn("docker desktop start", seen)
+
+        # When ensure_docker cannot start Docker, change() surfaces the specific reason in result["message"].
+        result = servers.change(SERVER, "start", FakeShell(docker=False), sleep=lambda s: None)
+        self.assertEqual((result["ok"], result["state"]), (False, "docker-off"))
+        self.assertIn("can't be started from here", result["message"])
+
 
 class RemoteTests(unittest.TestCase):
     def test_another_computer_is_reached_over_ssh_in_its_copy_of_the_project(self):

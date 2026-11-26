@@ -204,11 +204,11 @@ def unmet_requirements(requires: tuple[str, ...] | list[str], root: Path, *,
     return missing
 
 
-def execute(command: str, cwd: Path, timeout: int) -> tuple[int, str, bool]:
+def execute(command: str, cwd: Path, timeout: int, *, env: dict[str, str] | None = None) -> tuple[int, str, bool]:
     """Run a shell command, output and errors together. On timeout the whole process group gets SIGTERM, then
     SIGKILL after a grace period, so a test runner's children (Unity, dotnet, docker clients) don't linger."""
     process = subprocess.Popen(command, cwd=str(cwd), shell=True, executable="/bin/bash", stdout=subprocess.PIPE,
-                               stderr=subprocess.STDOUT, text=True, errors="replace", start_new_session=True)
+                               stderr=subprocess.STDOUT, text=True, errors="replace", start_new_session=True, env=env)
     try:
         output, _ = process.communicate(timeout=timeout)
         return process.returncode, output or "", False
