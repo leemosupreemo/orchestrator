@@ -401,6 +401,76 @@ class PageTests(unittest.TestCase):
         rp.feed(sample.encode("utf-8"))
         self.assertEqual(rp.snapshot()["activity"], "Importing Assets/Resources/Tree1.png")
 
+    def test_run_page_renders_inline_plan_brief_and_approve_or_question_controls(self):
+        import json
+        import shutil
+        import subprocess
+        if not shutil.which("node"):
+            self.skipTest("node is required")
+        app = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
+        self.assertIn('<div id="run-plan-review"></div>', app[app.index("pages.run = async"):][:5000])
+        self.assertIn("void refreshRunPlanReview(run);", app[app.index("pages.run = async"):][:5000])
+        plan_brief_src = app[app.index("function planBriefItems("):app.index("pages.job = async")]
+        clarify_src = app[app.index("function clarificationThread("):app.index("\n// ", app.index("function clarificationThread("))]
+        run_review_src = app[app.index("const RUN_PLAN_ACTIONS"):app.index("function wireRunPlanReview(")]
+        script = f"""
+const SIDE_RUNS = new Set(["preview"]);
+const esc = (s) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+const attrJSON = (v) => esc(JSON.stringify(v));
+const act = (action, params) => `data-action="${{action}}"${{params ? ` data-params='${{attrJSON(params)}}'` : ""}}`;
+const plural = (n, w) => `${{n}} ${{w}}${{n === 1 ? "" : "s"}}`;
+const state = {{ you: {{ role: "owner" }} }};
+{plan_brief_src}
+{clarify_src}
+{run_review_src}
+const briefMd = "# Feature brief\\n## Summary\\nMake Camelot Hills grass denser.\\n## Acceptance criteria\\n- Increase coverage.\\n- Keep frame budget.\\n## Constraints\\n- Camelot Hills only.";
+const planRun = {{ id: "r-1", action: "answer", running: false, stopped: false, exit_code: 0, job: "job-19", result: {{ tone: "warn", headline: "Plan updated — ready for approval (nothing built yet)" }} }};
+const execRun = {{ id: "r-2", action: "execute", running: false, stopped: false, exit_code: 0, job: "job-19" }};
+const approveHtml = renderRunPlanReviewHtml(planRun, {{
+  summary: {{ id: "job-19", status: "planned", state: {{ label: "Ready to approve", next: {{ action: "approve", label: "Approve plan" }} }} }},
+  job: {{ plan: {{ tasks: [{{ title: "Tune flora" }}, {{ title: "Add test" }}] }} }},
+  docs: [{{ name: "brief.md", text: briefMd }}],
+  runs: [],
+  plan_size: {{ label: "Small", files: 3, too_large: false }},
+}});
+const archHtml = renderRunPlanReviewHtml(planRun, {{
+  summary: {{ id: "job-19", status: "human-needed", question: "Architect raised concerns: (1) Split helper.", state: {{ label: "Needs your answer", next: {{ action: "approve", label: "Accept suggestions" }} }} }},
+  job: {{ verification: {{ status: "concerns", comments: "Split helper.", suggested_additions: ["Add dotnet test"] }}, plan: {{ tasks: [{{ title: "Tune flora" }}] }} }},
+  docs: [{{ name: "brief.md", text: briefMd }}],
+  runs: [],
+  plan_size: {{ label: "Small", files: 2, too_large: false }},
+}});
+const doneHtml = renderRunPlanReviewHtml(planRun, {{
+  summary: {{ id: "job-19", status: "in-progress", state: {{ label: "Building", tone: "working", next: null }} }},
+  job: {{ plan: {{ tasks: [{{ title: "Tune flora" }}] }} }},
+  docs: [{{ name: "brief.md", text: briefMd }}],
+  runs: [],
+}});
+process.stdout.write(JSON.stringify({{
+  fetchPlan: shouldFetchRunPlanReview(planRun),
+  fetchExec: shouldFetchRunPlanReview(execRun),
+  approveHtml,
+  archHtml,
+  doneHtml,
+}}));
+"""
+        out = json.loads(subprocess.run(["node", "-e", script], capture_output=True, text=True, check=True).stdout)
+        self.assertTrue(out["fetchPlan"])
+        self.assertFalse(out["fetchExec"])
+        self.assertIn("Approve this plan", out["approveHtml"])
+        self.assertIn('data-action="approve"', out["approveHtml"])
+        self.assertIn('data-action="revise"', out["approveHtml"])
+        self.assertIn("Make Camelot Hills grass denser.", out["approveHtml"])
+        self.assertIn("Increase coverage.", out["approveHtml"])
+        self.assertNotIn("Camelot Hills only.", out["approveHtml"])  # capped to 2 brief bullets
+        self.assertIn("Full brief", out["approveHtml"])
+        self.assertIn("Tasks <span class=\"count\">2</span>", out["approveHtml"])
+        self.assertIn("Architect review", out["archHtml"])
+        self.assertIn("Accept suggestions", out["archHtml"])
+        self.assertIn('id="run-clarify-reply"', out["archHtml"])
+        self.assertIn("Plan brief", out["doneHtml"])
+        self.assertNotIn('data-action="approve"', out["doneHtml"])
+
 
 if __name__ == "__main__":
     unittest.main()

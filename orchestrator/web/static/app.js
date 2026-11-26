@@ -16804,7 +16804,7 @@ function runStatus(r, vc = null) {
     : r.action === "plan_epic" && r.result_job ? `<a class="btn small primary" href="#/jobs/${encodeURIComponent(r.result_job)}">Review plan</a>` // the epic's waiting job is gone: planning replaced it
     : r.action === "logs_pull" ? `<a class="btn small" href="#/devlogs">See pulled logs</a>`
     : r.result_job && !r.job ? `<a class="btn small primary" href="#/jobs/${encodeURIComponent(r.result_job)}">Open job</a>`
-    : planReviewWaiting && (r.job || r.result_job) ? `<a class="btn small primary" href="#/jobs/${encodeURIComponent(r.job || r.result_job)}">Open job</a>`
+    : planReviewWaiting && (r.job || r.result_job) ? `<a class="btn small" href="#/jobs/${encodeURIComponent(r.job || r.result_job)}">Open job</a>`
     : doneNext ? `<button type="button" class="btn small primary" ${act(doneNext.action, doneNext.params || {})}>${esc(doneNext.label)}</button>`
     : "")
     : "";
@@ -17335,6 +17335,7 @@ function updateRunStatus(r) {
       container.innerHTML = runStatus(r);
       container.runStatusSignature = signature;
       wireRunGuidance(container);
+      void refreshRunPlanReview(r);
       if (r.exit_code !== 0) {
         $("#term-wrap")?.classList?.add("run-failed");
         if (typeof document !== "undefined") document.body?.classList?.add("run-failed");
@@ -17667,6 +17668,7 @@ pages.run = async ([id]) => {
     ...runHeader(run, family),
     html: `
       <div id="next-step">${runStatus(run, vc)}</div>
+      <div id="run-plan-review"></div>
       <div class="run-stream">
         <div class="run-stream-head">
           <div class="run-tabs" id="run-tabs" role="tablist" aria-label="How to show the run">
@@ -17690,11 +17692,13 @@ pages.run = async ([id]) => {
       if (run.is_saved && run.saved_log_text) {
         attachSavedTerminal(run.saved_log_text, run.exit_code !== 0);
         wireRunGuidance($("#next-step"));
+        void refreshRunPlanReview(run);
         cleanup.push(() => { document.body.classList.remove("run-failed"); });
         return;
       }
       attachTerminal(id);
       wireRunGuidance($("#next-step"));
+      if (!run.running) void refreshRunPlanReview(run);
       cleanup.push(() => { document.body.classList.remove("run-failed"); });
       let lastPoll = Date.now();
       const statusTimer = setInterval(async () => {
@@ -17721,6 +17725,168 @@ pages.run = async ([id]) => {
     },
   };
 };
+
+const RUN_PLAN_ACTIONS = new Set(["new_job", "plan_epic", "answer", "revise", "approve", "refine"]);
+
+function runPlanJobId(r) {
+  if (!r) return "";
+  return r.action === "plan_epic" && r.result_job ? r.result_job : (r.result_job || r.job || "");
+}
+
+function shouldFetchRunPlanReview(r) {
+  if (!r || r.running || r.stopped || r.exit_code !== 0) return false;
+  if (!runPlanJobId(r)) return false;
+  const planWait = Boolean(r.result?.tone === "warn" && /nothing built yet|ready for approval|waiting on your answer|architect raised concerns/i.test(r.result?.headline || ""));
+  return RUN_PLAN_ACTIONS.has(r.action) || planWait;
+}
+
+function renderRunPlanReviewHtml(r, jobData) {
+  const s = jobData?.summary;
+  const job = jobData?.job;
+  if (!s || !job) return "";
+  const docs = Array.isArray(jobData?.docs) ? jobData.docs : [];
+  const runs = Array.isArray(jobData?.runs) ? jobData.runs : [];
+  const size = jobData?.plan_size || { label: "", files: 0, too_large: false, reasons: [] };
+  const hasActiveRun = runs.some((item) => item?.running && !SIDE_RUNS.has(item.action));
+  const briefDoc = docs.find((d) => d?.name === "brief.md" || (d?.title && d.title.toLowerCase() === "brief")) || {
+    text: job.plan?.summary || job.description || job.prompt || "",
+  };
+  const shownBriefItems = planBriefItems(briefDoc.text, job.plan || {}).slice(0, 2);
+  const tasks = Array.isArray(job.plan?.tasks) ? job.plan.tasks : [];
+  const next = s.state?.next || null;
+  const nextAction = next?.action || "";
+  const role = typeof state !== "undefined" ? state.you?.role : null;
+  const canAct = !hasActiveRun && role !== "member";
+  const isWaitingQuestion = canAct && Boolean(s.question);
+  const isWaitingApproval = canAct && !s.question && ["approve", "schedule"].includes(nextAction) && (tasks.length > 0 || s.status === "designing");
+  const canSplinter = tasks.length >= 2 && ["planned", "human-needed"].includes(s.status);
+  const splitInstead = Boolean(size.too_large && canSplinter);
+  const sizeLine = [tasks.length ? plural(tasks.length, "task") : "", size.files ? plural(size.files, "file") : "", size.too_large ? "" : (size.label || "")].filter(Boolean).join(" · ");
+  const briefHtml = `<div class="card-b plan-summary">
+    ${shownBriefItems.length ? `<ul class="assumptions plan-brief-items">${shownBriefItems.map((item) => `<li>${esc(item)}</li>`).join("")}</ul>` : ""}
+    <div class="row wrap gap-8 align-center">
+      <button type="button" class="btn small ghost" data-run-brief-full="${esc(s.id)}">Full brief</button>
+      <a class="btn small ghost" href="#/jobs/${encodeURIComponent(s.id)}">Open job</a>
+      ${sizeLine ? `<span class="muted t-secondary">${esc(sizeLine)}</span>` : ""}
+    </div>
+  </div>`;
+
+  if (isWaitingQuestion) {
+    const isArchQ = /^Architect raised concerns\b/i.test(String(s.question || "").trim());
+    const asker = isArchQ ? "architect" : (job.clarification_asker
+      || (String(job.last_error || "").startsWith("Builder clarification needed") ? "builder"
+        : String(job.last_error || "").startsWith("Debugger clarification needed") ? "debugger" : "planner"));
+    const blocking = s.status === "human-needed";
+    const entry = {
+      question: s.question,
+      asker,
+      blocking,
+      asked_at: job.clarification_asked_at || job.updated_at || r.ended || r.started || null,
+      run_id: job.clarification_run_id || r.id || null,
+      ...(isArchQ && job.verification ? { verification: job.verification } : {}),
+    };
+    const acceptBtn = nextAction === "approve"
+      ? `<button type="button" class="btn small primary" ${act("approve", { job: s.id })}>${esc(next.label)}</button>`
+      : "";
+    return `<section class="card mb-16 clarify-card" id="run-plan-card">
+      <div class="card-h">
+        <h2>${isArchQ ? "Architect review" : "Question for you"}</h2>
+        <div class="card-actions">
+          <span class="pill ${blocking ? "attention" : "neutral"}">${blocking ? "Blocking" : "Non-blocking"}</span>
+          ${acceptBtn}
+        </div>
+      </div>
+      <div class="card-b clarify-thread">
+        ${clarificationThread([entry])}
+        <form class="clarify-reply" id="run-clarify-reply" data-job="${esc(s.id)}">
+          <div class="clarify-input-row">
+            <label class="field clarify-field"><span class="sr-only">Your answer</span><textarea name="answer" rows="2" required placeholder="Your answer (Enter sends, Shift+Enter for a new line)"></textarea></label>
+            <div class="clarify-buttons">
+              <button type="submit" class="btn primary clarify-btn clarify-send-btn" aria-label="Send" title="Send"><svg class="icon" aria-hidden="true"><use href="#i-send"/></svg></button>
+            </div>
+          </div>
+        </form>
+      </div>
+      ${shownBriefItems.length ? `<details class="fold plan-notes"><summary class="card-h"><h2>Plan brief${tasks.length ? ` <span class="count">${plural(tasks.length, "task")}</span>` : ""}</h2></summary>${briefHtml}</details>` : ""}
+    </section>`;
+  }
+
+  if (isWaitingApproval) {
+    const title = size.too_large ? "Too big for one job"
+      : nextAction === "approve" ? (s.status === "designing" ? "Approve this design" : "Approve this plan")
+      : "Ready to start";
+    const actionsHtml = `<button type="button" class="btn small" ${act("revise", { job: s.id })} title="Ask the AI to re-plan with what should change">Revise…</button>${splitInstead
+      ? `<button type="button" class="btn small primary" ${act("splinter_job", { job: s.id })} title="Each task becomes its own job">Split into ${tasks.length} jobs</button><button type="button" class="btn small" ${act(next.action, { job: s.id })}>${esc(next.label)} anyway</button>`
+      : `<button type="button" class="btn small primary" ${act(next.action, { job: s.id })}>${esc(next.label)}</button>`}`;
+    const tasksFold = tasks.length
+      ? `<details class="fold plan-notes"><summary class="card-h"><h2>Tasks <span class="count">${tasks.length}</span></h2></summary>
+          <div class="card-b"><ol class="assumptions">${tasks.map((t) => `<li>${esc(typeof t === "string" ? t : (t?.title || t?.description || "Task"))}</li>`).join("")}</ol></div></details>`
+      : "";
+    return `<section class="card mb-16 plan-review${size.too_large ? " too-large" : nextAction === "approve" ? " needs-approval" : ""}" id="run-plan-card">
+      <div class="card-h"><h2>${esc(title)}</h2><div class="card-actions">${actionsHtml}</div></div>
+      ${briefHtml}
+      ${tasksFold}
+    </section>`;
+  }
+
+  if (RUN_PLAN_ACTIONS.has(r.action) && shownBriefItems.length) {
+    const toneClass = s.state?.tone === "done" ? "done" : s.state?.tone === "failed" ? "failed" : s.state?.tone === "attention" ? "attention" : "neutral";
+    return `<section class="card mb-16 plan-review" id="run-plan-card">
+      <div class="card-h"><h2>Plan brief</h2><span class="pill ${toneClass}">${esc(s.state?.label || s.status || "Planned")}</span></div>
+      ${briefHtml}
+    </section>`;
+  }
+  return "";
+}
+
+function wireRunPlanReview(container) {
+  if (!container) return;
+  container.querySelectorAll("[data-run-brief-full]").forEach((btn) => btn.addEventListener("click", async () => {
+    const jobId = btn.dataset.runBriefFull;
+    if (!jobId) return;
+    try {
+      const { text } = await api(`jobs/${encodeURIComponent(jobId)}/brief?full=1`);
+      const download = await formDialog("Full brief", `<pre class="doc">${esc(text)}</pre>`, "Download Markdown");
+      if (download) downloadText(`${jobId}-brief.md`, text);
+    } catch (e) {
+      toast(e.message, true);
+    }
+  }));
+  const reply = container.querySelector("#run-clarify-reply");
+  reply?.answer.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+      e.preventDefault();
+      reply.requestSubmit();
+    }
+  });
+  reply?.addEventListener("submit", (e) => {
+    e.preventDefault();
+    const text = reply.answer.value.trim();
+    if (text) runAction("answer", { job: reply.dataset.job, answer: text });
+  });
+}
+
+async function refreshRunPlanReview(r) {
+  const slot = $("#run-plan-review");
+  if (!slot) return;
+  if (!shouldFetchRunPlanReview(r)) {
+    slot.innerHTML = "";
+    delete slot.dataset.reviewKey;
+    return;
+  }
+  const jobId = runPlanJobId(r);
+  const key = `${r.id}:${jobId}:${r.exit_code}:${r.ended || ""}`;
+  if (slot.dataset.reviewKey === key) return;
+  slot.dataset.reviewKey = key;
+  try {
+    const jobData = await api(`jobs/${encodeURIComponent(jobId)}`);
+    if (!slot.isConnected || slot.dataset.reviewKey !== key) return;
+    slot.innerHTML = renderRunPlanReviewHtml(r, jobData);
+    wireRunPlanReview(slot);
+  } catch {
+    if (slot.isConnected && slot.dataset.reviewKey === key) slot.innerHTML = "";
+  }
+}
 
 pages["auto-improve"] = async (_, query) => {
   let jobs = [];

@@ -4251,6 +4251,10 @@ body[data-page="run"] .topbar-actions {
     flex-shrink: 0;
   }
 
+  body[data-page="run"] #run-plan-review {
+    flex-shrink: 0;
+  }
+
   body[data-page="run"] #next-step .run-status,
   body[data-page="run"] #next-step .banner {
     padding: var(--container-pad-y) var(--container-pad-x);
