@@ -5143,7 +5143,7 @@ pages.home = async (_, query) => {
       sharedByComputer.get(entry.machine).push(entry);
     }
     const sharedItems = [...sharedByComputer].map(([name, recent_jobs]) => {
-      const m = (homeRemoteSnaps.machines || []).find((x) => x.name === name) || { id: "", name, online: false, reachable: false };
+      const m = (homeRemoteSnaps.machines || []).find((x) => x.name === name) || { id: `shared:${name}`, name, online: false, reachable: false };
       return { m, snap: { recent_jobs, synced_at: shared.synced_at || 0 } };
     });
     const snaps = [...sharedItems, ...homeRemoteSnaps.snaps];
@@ -6382,12 +6382,22 @@ function strandedNote(job) {
   return `<p class="job-hero-reason">This computer had work it hadn't uploaded when the job moved on: ${bits}, saved on GitHub so nothing is lost. Bring it into the job there if it's still needed.</p>`;
 }
 
-// The computer that has the latest copy of a job, from your account: the one named `hint` first, then any other.
+// The computer that has the latest copy of a job, from shared git state first, then your account snapshots.
 async function findJobElsewhere(jobId, hint = "") {
-  if (typeof Account === "undefined" || !Account.active?.() || typeof cpApi !== "function") return null;
   let mine = "";
-  try { mine = localStorage.getItem(Account.MACHINE_KEY) || ""; } catch { /* unavailable */ }
-  const { machines = [] } = await cpApi("machines", { signal: AbortSignal.timeout(4000) }).catch(() => ({ machines: [] }));
+  try { mine = (typeof Account !== "undefined" && localStorage.getItem(Account.MACHINE_KEY)) || ""; } catch { /* unavailable */ }
+  const canAccount = typeof Account !== "undefined" && Account.active?.() && typeof cpApi === "function";
+  const [sharedRes, machinesRes] = await Promise.all([
+    api("shared-jobs").catch(() => ({ jobs: [] })),
+    canAccount ? cpApi("machines", { signal: AbortSignal.timeout(4000) }).catch(() => ({ machines: [] })) : Promise.resolve({ machines: [] }),
+  ]);
+  const machines = machinesRes?.machines || [];
+  const sharedMatch = (sharedRes?.jobs || []).find((j) => (j.job_id || j.id) === jobId && !j.moved_to);
+  if (sharedMatch && sharedMatch.machine) {
+    const m = machines.find((x) => x.name === sharedMatch.machine) || { id: `shared:${sharedMatch.machine}`, name: sharedMatch.machine, online: false, reachable: false };
+    return { machineId: m.id, machine: m, job: sharedMatch };
+  }
+  if (!canAccount) return null;
   const others = machines.filter((m) => m.id !== mine && m.has_snapshot).sort((a, b) => (b.name === hint) - (a.name === hint));
   for (const m of others) {
     const snap = await cpApi("machine/snapshot", { method: "POST", body: { machine_id: m.id }, signal: AbortSignal.timeout(4000) }).catch(() => null);
@@ -6438,6 +6448,7 @@ async function stopRemoteRunAndTakeOver(machine, machineLabel, rj, jobId, onProg
   }
   if (onProgress) onProgress("Bringing it here…");
   const detail = await peerApi(session, `jobs/${encodeURIComponent(jobId)}`, null, "GET").catch(() => null);
+  const briefDocText = (detail?.docs || []).find((d) => d?.name === "brief.md" || (d?.title || "").toLowerCase() === "brief")?.text || "";
   const freshRj = detail?.job ? {
     ...rj,
     ...detail.job,
@@ -6446,6 +6457,8 @@ async function stopRemoteRunAndTakeOver(machine, machineLabel, rj, jobId, onProg
     status: detail.job.status || detail.summary?.status || rj.status,
     tasks: Array.isArray(detail.job.plan?.tasks) ? detail.job.plan.tasks : (rj.tasks || []),
     summary: detail.job.plan?.summary || rj.summary || "",
+    ...(briefDocText ? { brief_md: briefDocText } : {}),
+    ...(Array.isArray(detail.job_runs) && detail.job_runs.length ? { runs: detail.job_runs } : {}),
     active_run: null,
     record: detail.job,
   } : { ...rj, active_run: null };
@@ -6455,16 +6468,31 @@ async function stopRemoteRunAndTakeOver(machine, machineLabel, rj, jobId, onProg
 }
 
 pages["remote-job"] = async ([machineId, jobId]) => {
-  if (typeof Account === "undefined" || !Account.active?.()) return { title: "Remote job", sub: "", html: `<section class="card"><div class="empty">Sign in to view jobs on a remote machine.</div></section>` };
-  const [{ machines = [] }, snapRes] = await Promise.all([
-    cpApi("machines").catch(() => ({ machines: [] })),
-    cpApi("machine/snapshot", { method: "POST", body: { machine_id: machineId } }).catch(() => null),
-  ]);
-  const machine = machines.find((m) => m.id === machineId);
-  const rj = (snapRes?.snapshot?.recent_jobs || []).find((j) => (j.job_id || j.id) === jobId);
+  const isSharedId = String(machineId || "").startsWith("shared:");
+  const accountActive = typeof Account !== "undefined" && Boolean(Account.active?.());
+  const sharedRes = await api("shared-jobs").catch(() => ({ jobs: [] }));
+  const sharedJob = (sharedRes?.jobs || []).find((j) => (j.job_id || j.id) === jobId && (!isSharedId || j.machine === machineId.slice("shared:".length)))
+    || (sharedRes?.jobs || []).find((j) => (j.job_id || j.id) === jobId);
+  if (!accountActive && !sharedJob) return { title: "Remote job", sub: "", html: `<section class="card"><div class="empty">Sign in to view jobs on a remote machine.</div></section>` };
+  const [{ machines = [] }, snapRes] = accountActive
+    ? await Promise.all([
+        cpApi("machines").catch(() => ({ machines: [] })),
+        !isSharedId ? cpApi("machine/snapshot", { method: "POST", body: { machine_id: machineId } }).catch(() => null) : Promise.resolve(null),
+      ])
+    : [{ machines: [] }, null];
+  const machine = machines.find((m) => m.id === machineId)
+    || (sharedJob?.machine ? machines.find((m) => m.name === sharedJob.machine) : null)
+    || (sharedJob?.machine ? { id: machineId, name: sharedJob.machine, online: false, reachable: false } : null);
+  const snapJob = (snapRes?.snapshot?.recent_jobs || []).find((j) => (j.job_id || j.id) === jobId);
+  // Prefer the richer refs/orchestrator/state entry (full brief, runs, architect suggestions, prompt) when available,
+  // while keeping live active_run and freshness from the control-plane snapshot.
+  const rj = sharedJob && snapJob
+    ? { ...snapJob, ...sharedJob, active_run: snapJob.active_run || sharedJob.active_run || null }
+    : (sharedJob || snapJob);
   if (!rj) {
     return { title: "Remote job not found", sub: "", html: `<section class="card"><div class="empty">Could not find ${esc(jobId)} on ${esc(machine?.name || "that machine")}. <a href="#/">Back to jobs</a></div></section>` };
   }
+  const syncedAt = Math.max(Number(sharedRes?.synced_at || 0), Number(snapRes?.snapshot?.synced_at || 0)) || null;
   const machineLabel = machine?.name || "remote machine";
   const reachTag = machine?.reachable
     ? ""
@@ -6505,7 +6533,7 @@ pages["remote-job"] = async ([machineId, jobId]) => {
         ${rj.state?.reason ? `<p class="job-hero-reason">${esc(rj.state.reason)}</p>` : ""}
         ${rj.last_error && !rj.state?.reason ? `<p class="job-hero-reason muted">${esc(rj.last_error)}</p>` : ""}
         ${busy ? `<p class="job-hero-reason"><span class="pill working">Running</span> ${esc(busy)}</p>` : ""}
-        ${remoteFreshnessHtml(machine, machineLabel, snapRes?.snapshot?.synced_at, rj.record?.wip_backup)}
+        ${remoteFreshnessHtml(machine, machineLabel, syncedAt, rj.record?.wip_backup)}
         <div class="row gap-8 wrap">
           ${actionsHtml}
         </div>
@@ -6570,7 +6598,9 @@ function jobRunRow(r, hidden = false, attempt = null) {
   };
   const [label, tone] = taskStatus[attempt?.status] || RUN_STATUS[r.status] || RUN_STATUS.unknown;
   const detail = attempt ? attempt.detail : r.status === "running" && r.now ? `Now: ${r.now}` : r.headline || "";
-  const meta = [r.started ? ago(r.started) : "", runSeconds(r.seconds), detail].filter(Boolean);
+  const thisHost = typeof state !== "undefined" ? state.project?.computer?.name : "";
+  const hostNote = r.machine && r.machine !== thisHost ? `on ${r.machine}` : "";
+  const meta = [r.started ? ago(r.started) : "", runSeconds(r.seconds), hostNote, detail].filter(Boolean);
   return `<a${hidden ? " hidden" : ""} class="item job-run-row${r.side ? " is-side" : ""}" href="#/runs/${encodeURIComponent(r.id)}" data-run-row="${esc(r.id)}">
     <div class="main-col"><div class="title">${esc(r.label)}${r.side ? ` <span class="muted">(side errand)</span>` : ""}</div>
       <div class="meta">${meta.map(esc).join(" · ")}</div></div>
@@ -6586,8 +6616,10 @@ function jobRunTableRow(r, { hidden = false, number = null } = {}) {
     : r.phase ? `${r.phase[0].toUpperCase()}${r.phase.slice(1)}`
     : r.action ? `${r.action[0].toUpperCase()}${r.action.slice(1).replace(/_/g, " ")}`
     : "Run";
+  const thisHost = typeof state !== "undefined" ? state.project?.computer?.name : "";
   const metaParts = [
     runSeconds(r.seconds),
+    r.machine && r.machine !== thisHost ? `on ${r.machine}` : "",
     r.status === "running" && r.now ? `Now: ${r.now}` : (r.headline || ""),
   ].filter(Boolean);
   const metaHtml = metaParts.map(esc).join(" · ");
@@ -17618,41 +17650,7 @@ function wireRunTabs(id) {
 pages.run = async ([id]) => {
   let run = state.runs.find((r) => r.id === id);
   if (!run) { await refreshState(); run = state.runs.find((r) => r.id === id); } // opened before the list caught up
-  if (!run) {
-    const saved = state.you?.role === "member" ? null : ((await api("runs/history").catch(() => null))?.runs || []).find((r) => r.id === id);
-    if (saved) {
-      let logText = "";
-      try {
-        const fileData = await api(`file?path=${encodeURIComponent(saved.log)}`);
-        logText = fileData?.text || "";
-      } catch {}
-      const exitMatch = logText.match(/\[exited(?: with code (-?\d+))?\]/);
-      const exitCode = exitMatch ? parseInt(exitMatch[1] || "0", 10) : 1;
-      const wasStopped = exitCode === -15 || exitCode === -9 || exitCode === 143 || exitCode === 130;
-      const cleanLog = plainLog(logText);
-      const nonExitedLines = cleanLog.split(/\n/).map((l) => l.trim()).filter((l) => l && !l.startsWith("[exited") && !/build failed; skipping simulator launch/i.test(l));
-      const recentLines = nonExitedLines.slice(-40);
-      const errorCandidates = recentLines.filter((l) => /error|failed|fatal|exception|cannot|command not found|denied|locked|timed? ?out/i.test(l) && !/cleaned up|notification/i.test(l));
-      const extractedError = errorCandidates.length ? errorCandidates.slice(-3).join("\n") : recentLines.slice(-4).join("\n");
-
-      run = {
-        id: saved.id,
-        action: saved.action,
-        title: saved.title,
-        started: saved.started,
-        ended: saved.started,
-        running: false,
-        stopped: wasStopped,
-        exit_code: exitCode,
-        error_summary: exitCode !== 0 ? extractedError : "",
-        last_line: extractedError,
-        progress: {},
-        saved_log_text: logText,
-        is_saved: true,
-        job: saved.job || null, // kept when the run ended (orchestrator/job_runs.py), so an old run still says whose it is
-      };
-    }
-  }
+  if (!run) run = await loadSavedRun(id);
   if (!run) {
     return { title: "Run not found", html: `<div class="notice"><p>This run isn't running, and no saved log matches it.</p>
           <div class="row mt-8"><a class="btn small" href="#/activity">See earlier runs</a></div></div>` };
@@ -17689,8 +17687,8 @@ pages.run = async ([id]) => {
     after: () => {
       wireRunTabs(id);
       wireRunTimeline(id, { saved: Boolean(run.is_saved) });
-      if (run.is_saved && run.saved_log_text) {
-        attachSavedTerminal(run.saved_log_text, run.exit_code !== 0);
+      if (run.is_saved && (run.saved_log_text || run.remote_log)) {
+        attachSavedOrRemoteRun(run);
         wireRunGuidance($("#next-step"));
         void refreshRunPlanReview(run);
         cleanup.push(() => { document.body.classList.remove("run-failed"); });
@@ -17725,6 +17723,55 @@ pages.run = async ([id]) => {
     },
   };
 };
+
+async function loadSavedRun(id) {
+  const saved = state.you?.role === "member" ? null : ((await api("runs/history").catch(() => null))?.runs || []).find((r) => r.id === id);
+  if (!saved) return null;
+  let logText = "";
+  if (saved.log) {
+    try {
+      const fileData = await api(`file?path=${encodeURIComponent(saved.log)}`);
+      logText = fileData?.text || "";
+    } catch {}
+  }
+  const exitMatch = logText.match(/\[exited(?: with code (-?\d+))?\]/);
+  const exitCode = saved.exit_code != null ? saved.exit_code : (exitMatch ? parseInt(exitMatch[1] || "0", 10) : 1);
+  const wasStopped = Boolean(saved.stopped) || exitCode === -15 || exitCode === -9 || exitCode === 143 || exitCode === 130;
+  const cleanLog = plainLog(logText);
+  const nonExitedLines = cleanLog.split(/\n/).map((l) => l.trim()).filter((l) => l && !l.startsWith("[exited") && !/build failed; skipping simulator launch/i.test(l));
+  const recentLines = nonExitedLines.slice(-40);
+  const errorCandidates = recentLines.filter((l) => /error|failed|fatal|exception|cannot|command not found|denied|locked|timed? ?out/i.test(l) && !/cleaned up|notification/i.test(l));
+  const extractedError = errorCandidates.length ? errorCandidates.slice(-3).join("\n") : recentLines.slice(-4).join("\n");
+  return {
+    id: saved.id,
+    action: saved.action,
+    title: saved.title,
+    started: saved.started,
+    ended: saved.ended || saved.started,
+    running: false,
+    stopped: wasStopped,
+    exit_code: exitCode,
+    error_summary: exitCode !== 0 ? (extractedError || saved.headline || "") : "",
+    last_line: extractedError || saved.headline || "",
+    progress: saved.machine ? { machines: [saved.machine] } : {},
+    result: saved.headline ? { headline: saved.headline, tone: saved.tone || (exitCode === 0 ? "ok" : "bad") } : null,
+    machine: saved.machine || "",
+    remote_log: Boolean(saved.remote_log || !saved.log),
+    saved_log_text: logText,
+    is_saved: true,
+    job: saved.job || null, // kept when the run ended (orchestrator/job_runs.py), so an old run still says whose it is
+  };
+}
+
+function attachSavedOrRemoteRun(run) {
+  if (run.saved_log_text) {
+    attachSavedTerminal(run.saved_log_text, run.exit_code !== 0);
+    return;
+  }
+  const note = `Ran on ${run.machine || "another computer"} — the full terminal log stays on that computer.`;
+  if ($("#run-timeline")) $("#run-timeline").innerHTML = `<div class="empty">${esc(note)}</div>`;
+  if ($("#term")) $("#term").textContent = note;
+}
 
 const RUN_PLAN_ACTIONS = new Set(["new_job", "plan_epic", "answer", "revise", "approve", "refine"]);
 

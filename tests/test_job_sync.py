@@ -162,6 +162,123 @@ class JobSyncTests(TwoComputers):
             self.assertEqual(self.sync("studio")["outcome"], "pushed")
             self.assertEqual(self.remote_entry("job-1")["state"]["label"], "Paused")
 
+    def test_full_job_context_brief_verification_and_runs_sync_through_repo_not_firestore(self):
+        from orchestrator import job_runs
+        from orchestrator.web import server as web_server
+
+        studio_rt = self.root["studio"] / ".orchestrator"
+        laptop_rt = self.root["laptop"] / ".orchestrator"
+        brief_path = studio_rt / "output" / "job-1" / "brief.md"
+        brief_path.parent.mkdir(parents=True, exist_ok=True)
+        brief_path.write_text("# Feature brief\n\n## Summary\nDenser grass in Camelot Hills.\n", encoding="utf-8")
+
+        job = self.job(
+            "studio",
+            raw_input="Make Camelot Hills grass denser",
+            clarification_asker="architect",
+            clarification_asked_at="2026-11-26T12:00:00Z",
+            clarification_run_id="20261126-120000-abc123",
+            human_clarification_question="Architect raised concerns: Split helper.",
+            verification={"status": "concerns", "comments": "Split helper.", "suggested_additions": ["Add dotnet test"]},
+            spec={"summary": "Denser flora", "assumptions": ["Camelot Hills only"]},
+            risk_assessment={"level": "low"},
+            blocker={"kind": "env", "title": "Unity missing", "detail": "Install Unity"},
+        )
+        job_runs.record(studio_rt, {
+            "id": "20261126-120000-abc123",
+            "action": "new_job",
+            "title": "Plan feature",
+            "job": "job-1",
+            "started": 1795000000.0,
+            "ended": 1795000042.0,
+            "exit_code": 0,
+            "stopped": False,
+            "result": {"headline": "Plan updated — architect review needs attention", "tone": "warn"},
+            "machine": "Studio",
+        })
+
+        self.assertEqual(self.sync("studio")["outcome"], "pushed")
+        entry = self.remote_entry("job-1")
+
+        # Rich fields travel in refs/orchestrator/state, NOT Firestore account._job_entry
+        account_entry = account._job_entry(job, "job-1", self.root["studio"], None)
+        self.assertNotIn("extra", account_entry)
+        self.assertNotIn("brief_md", account_entry)
+        self.assertNotIn("runs", account_entry)
+        self.assertEqual(entry["verification"]["suggested_additions"], ["Add dotnet test"])
+        self.assertEqual(entry["extra"]["raw_input"], "Make Camelot Hills grass denser")
+        self.assertEqual(entry["extra"]["clarification_asker"], "architect")
+        self.assertIn("Denser grass in Camelot Hills.", entry["brief_md"])
+        self.assertEqual(len(entry["runs"]), 1)
+        self.assertEqual(entry["runs"][0]["machine"], "Studio")
+
+        # Laptop imports from shared-jobs and keeps full context, brief, and synced run history
+        web_server.import_remote_job(self.root["laptop"], {"job": entry, "source_machine_name": "Studio"})
+        imported, _ = self.read_job("laptop")
+        self.assertEqual(imported["raw_input"], "Make Camelot Hills grass denser")
+        self.assertEqual(imported["verification"]["suggested_additions"], ["Add dotnet test"])
+        self.assertEqual(imported["clarification_asker"], "architect")
+        self.assertEqual(imported["clarification_run_id"], "20261126-120000-abc123")
+        self.assertEqual(imported["spec"]["assumptions"], ["Camelot Hills only"])
+        self.assertEqual(imported["blocker"]["title"], "Unity missing")
+        self.assertIn("Denser grass in Camelot Hills.", (laptop_rt / "output" / "job-1" / "brief.md").read_text(encoding="utf-8"))
+
+        laptop_runs = job_runs.for_job(laptop_rt, "job-1", [])
+        self.assertEqual(len(laptop_runs), 1)
+        self.assertEqual(laptop_runs[0]["id"], "20261126-120000-abc123")
+        self.assertEqual(laptop_runs[0]["machine"], "Studio")
+        self.assertEqual(laptop_runs[0]["status"], "succeeded")
+
+        history = {r["id"]: r for r in web_server.run_history(self.root["laptop"])}
+        self.assertIn("20261126-120000-abc123", history)
+        self.assertTrue(history["20261126-120000-abc123"]["remote_log"])
+        self.assertEqual(history["20261126-120000-abc123"]["exit_code"], 0)
+        self.assertEqual(history["20261126-120000-abc123"]["machine"], "Studio")
+
+        # Laptop adds a second run and pushes; Studio merges both runs on sync
+        job_runs.record(laptop_rt, {
+            "id": "20261126-121000-def456",
+            "action": "schedule",
+            "title": "Build",
+            "job": "job-1",
+            "started": 1795000600.0,
+            "ended": 1795000720.0,
+            "exit_code": 0,
+            "stopped": False,
+            "result": {"headline": "Built cleanly", "tone": "ok"},
+            "machine": "Laptop",
+        })
+        self.assertEqual(self.sync("laptop")["outcome"], "pushed")
+        self.assertEqual({r["id"] for r in self.remote_entry("job-1")["runs"]},
+                         {"20261126-120000-abc123", "20261126-121000-def456"})
+        self.sync("studio")
+        self.assertEqual({r["id"] for r in job_runs.for_job(studio_rt, "job-1", [])},
+                         {"20261126-120000-abc123", "20261126-121000-def456"})
+
+    def test_multi_hop_move_updates_moved_to_on_original_computer(self):
+        self.job("studio", owner_epoch=1)
+        self.sync("studio")
+        self.job("laptop", owner_epoch=2, imported_from_machine="Studio", imported_at=1795000000)
+        self.sync("laptop")
+        self.assertEqual(self.sync("studio")["moved"], ["job-1"])
+        self.assertEqual(self.read_job("studio")[0]["moved_to"], "Laptop")
+
+        # A third computer takes over with epoch 3: Studio's moved_to should update from Laptop to Mini
+        mini = Path(self.tmp.name) / "mini"
+        mini.mkdir()
+        git(mini, "init", "-q", "-b", "main")
+        git(mini, "remote", "add", "origin", str(self.remote))
+        (mini / ".orchestrator" / "jobs" / "archive").mkdir(parents=True)
+        state_ref.set_consent(mini, True, "jobs")
+        (mini / ".orchestrator" / "jobs" / "job-1.json").write_text(json.dumps({
+            "job_id": "job-1", "title": "Make vegetation realistic", "type": "quick-fix", "status": "human-needed",
+            "owner_epoch": 3, "imported_from_machine": "Laptop", "imported_at": 1795000500,
+            "updated_at": "2026-11-20T12:00:00", "plan": {"summary": "Denser grass", "tasks": []},
+        }))
+        self.assertEqual(job_sync.sync_project(mini, name="Mini")["outcome"], "pushed")
+        self.assertEqual(self.sync("studio")["moved"], ["job-1"])
+        self.assertEqual(self.read_job("studio")[0]["moved_to"], "Mini")
+
 
 class SharedJobsApiTests(ServerTestCase):
     def test_the_web_app_can_ask_for_shared_jobs(self):

@@ -22,13 +22,36 @@ import time
 from pathlib import Path
 from typing import Any
 
-from orchestrator import account, model_outcomes, state_ref, sync_health
+from orchestrator import account, job_runs, model_outcomes, state_ref, sync_health
 
 CHECK_SECONDS = 60
 JOBS_DIR = "jobs/"
 EVENTS = "job-events.json"
 IGNORED_IN_COMPARISON = ("updated_at", "machine", "active_run")   # change by the minute without saying anything new
 _TASK_SCRATCH_RE = re.compile(r"_task_\d+$")
+MAX_BRIEF_CHARS = 64_000
+# Rich job fields shared through the project's git ref (refs/orchestrator/state) — never Firestore — so taking over a job
+# on another computer keeps its original prompt, Living Feature Spec, architect suggestions, question metadata, and context.
+EXTRA_JOB_FIELDS = (
+    "raw_input", "description", "prompt",
+    "clarification_asker", "clarification_asked_at", "clarification_run_id",
+    "spec", "risk_assessment", "design_spec",
+    "deferred_job_ids", "parent_job_id", "output_scope", "approach", "execution_strategy",
+    "experience_versions", "experience_iteration", "product_hypotheses",
+    "build_no_changes", "test_validation", "production_defects", "task_growth", "output_digests",
+    "is_orchestrator_improvement", "tag", "scope_accepted", "cruft_accepted",
+    "linked_issues", "jira", "linked_logs", "context_files",
+)
+
+
+def _trim_extra(value: Any, depth: int = 0) -> Any:
+    if isinstance(value, str):
+        return value[:16_000]
+    if isinstance(value, list):
+        return [_trim_extra(v, depth + 1) for v in value[:50]] if depth < 6 else []
+    if isinstance(value, dict):
+        return {str(k)[:120]: _trim_extra(v, depth + 1) for k, v in list(value.items())[:80]} if depth < 6 else {}
+    return value if isinstance(value, (int, float, bool)) or value is None else str(value)[:400]
 
 
 def _canonical(entry: dict[str, Any]) -> str:
@@ -42,7 +65,8 @@ def _rank(entry: dict[str, Any]) -> tuple[int, str]:
 def local_entries(root: Path, name: str, now: float | None = None) -> dict[str, dict[str, Any]]:
     """This computer's jobs as they would be shared: active ones, and those archived in the last 30 days."""
     now = time.time() if now is None else now
-    jobs = Path(root) / ".orchestrator" / "jobs"
+    runtime = Path(root) / ".orchestrator"
+    jobs = runtime / "jobs"
     paths = sorted(jobs.glob("*.json")) + [p for p in sorted((jobs / "archive").glob("*.json")) if now - p.stat().st_mtime < account.ARCHIVE_WINDOW]
     repo = account.project_repo(Path(root))
     out: dict[str, dict[str, Any]] = {}
@@ -58,6 +82,22 @@ def local_entries(root: Path, name: str, now: float | None = None) -> dict[str, 
         entry = account._job_entry(job, path.stem, Path(root), repo, None)
         entry.pop("active_run", None)
         entry.update(job_id=path.stem, machine=name)
+        if isinstance(job.get("verification"), dict) and job["verification"]:
+            entry["verification"] = _trim_extra(job["verification"])
+        extra = {k: _trim_extra(job[k]) for k in EXTRA_JOB_FIELDS if job.get(k) not in (None, [], {}, "")}
+        if extra:
+            entry["extra"] = extra
+        brief_path = runtime / "output" / path.stem / "brief.md"
+        if brief_path.is_file():
+            try:
+                brief_text = brief_path.read_text(encoding="utf-8", errors="replace").strip()
+                if brief_text:
+                    entry["brief_md"] = brief_text[:MAX_BRIEF_CHARS]
+            except OSError:
+                pass
+        runs = job_runs.export_for_sync(runtime, path.stem, machine=name)
+        if runs:
+            entry["runs"] = runs
         outcomes = model_outcomes.merge(job.get(model_outcomes.FIELD))
         if outcomes:
             entry[model_outcomes.FIELD] = outcomes
@@ -113,10 +153,16 @@ def sync_project(root: Path, *, name: str, running: set[str] | None = None) -> d
                 outcomes = model_outcomes.merge(theirs.get(model_outcomes.FIELD), entry.get(model_outcomes.FIELD))
                 if outcomes:
                     entry[model_outcomes.FIELD] = outcomes
+                merged_runs = job_runs.merge_synced(theirs.get("runs"), entry.get("runs"))
+                if merged_runs:
+                    entry["runs"] = merged_runs
+                if theirs.get("runs"):
+                    job_runs.import_synced(root / ".orchestrator", theirs.get("runs"),
+                                           default_machine=str(theirs.get("machine") or ""))
             if theirs is None or (_rank(entry) >= _rank(theirs) and _canonical(entry) != _canonical(theirs)
                                   and (_rank(entry) > _rank(theirs) or theirs.get("machine") == name)):
                 changes[f"{JOBS_DIR}{job_id}.json"] = json.dumps(entry, sort_keys=True, default=str).encode("utf-8")
-            elif account.job_epoch(theirs) > account.job_epoch(entry) and theirs.get("machine") not in ("", name) and not entry.get("moved_to"):
+            elif account.job_epoch(theirs) > account.job_epoch(entry) and theirs.get("machine") not in ("", name) and entry.get("moved_to") != theirs.get("machine"):
                 moves[job_id] = {"to": theirs["machine"], "epoch": account.job_epoch(theirs)}
         events = _merged_events(account.job_archive_events([root]), _remote_events(root, head))
         if events != _remote_events(root, head):

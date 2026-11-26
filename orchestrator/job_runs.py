@@ -85,6 +85,10 @@ def record(runtime: Path, run: dict[str, Any]) -> Path | None:
         data["task_refs"] = run["task_refs"]
     if run.get("task_attempts"):
         data["task_attempts"] = run["task_attempts"]
+    if run.get("machine"):
+        data["machine"] = str(run["machine"])[:120]
+    if run.get("remote_log"):
+        data["remote_log"] = True
     if run.get("running") and isinstance(run.get("pid"), int):
         data["running"] = True
         data["pid"] = run["pid"]
@@ -114,6 +118,117 @@ def recorded(runtime: Path, job_id: str | None = None) -> list[dict[str, Any]]:
         if isinstance(data, dict) and data.get("id") and (job_id is None or data.get("job") == job_id):
             out.append(data)
     return out
+
+
+SYNC_FIELDS = (
+    "id", "action", "title", "job", "started", "ended", "exit_code",
+    "stopped", "headline", "tone", "task_refs", "task_attempts", "machine",
+)
+RUN_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,120}$")
+
+
+def _clean_sync_run(run: dict[str, Any], default_machine: str = "") -> dict[str, Any] | None:
+    if not isinstance(run, dict):
+        return None
+    rid = str(run.get("id") or "").strip()
+    job = str(run.get("job") or run.get("result_job") or "").strip()
+    if not rid or not job or not RUN_ID_RE.fullmatch(rid):
+        return None
+    out: dict[str, Any] = {}
+    for key in SYNC_FIELDS:
+        val = run.get(key)
+        if val is not None and val != "" and val != {}:
+            out[key] = val
+    out["id"] = rid
+    out["job"] = job
+    if not out.get("machine") and default_machine:
+        out["machine"] = str(default_machine)[:120]
+    if isinstance(out.get("headline"), str):
+        out["headline"] = out["headline"][:400]
+    return out
+
+
+def export_for_sync(runtime: Path, job_id: str, machine: str = "", limit: int = 40) -> list[dict[str, Any]]:
+    """Compact finished-run summaries for one job, safe to share through refs/orchestrator/state."""
+    out: list[dict[str, Any]] = []
+    for run in recorded(runtime, job_id):
+        if run.get("running") and run.get("exit_code") is None and not run.get("stopped"):
+            continue
+        cleaned = _clean_sync_run(run, default_machine=machine)
+        if cleaned:
+            out.append(cleaned)
+        if len(out) >= limit:
+            break
+    out.sort(key=lambda r: float(r.get("started") or 0), reverse=True)
+    return out
+
+
+def merge_synced(a: list[dict[str, Any]] | None, b: list[dict[str, Any]] | None, limit: int = 50) -> list[dict[str, Any]]:
+    """Union two run summary lists by id, keeping the more complete record when both computers have the same run."""
+    by_id: dict[str, dict[str, Any]] = {}
+    for source in (a or [], b or []):
+        if not isinstance(source, list):
+            continue
+        for raw in source:
+            cleaned = _clean_sync_run(raw)
+            if not cleaned:
+                continue
+            rid = cleaned["id"]
+            prev = by_id.get(rid)
+            if prev is None:
+                by_id[rid] = cleaned
+                continue
+            merged = dict(prev)
+            for key, val in cleaned.items():
+                if key not in merged or merged[key] in (None, "", {}):
+                    merged[key] = val
+                elif key in ("ended", "exit_code", "stopped", "headline", "tone", "task_refs", "task_attempts") and prev.get("exit_code") is None and cleaned.get("exit_code") is not None:
+                    merged[key] = val
+            by_id[rid] = merged
+    return sorted(by_id.values(), key=lambda r: float(r.get("started") or 0), reverse=True)[:limit]
+
+
+def import_synced(runtime: Path, runs: list[dict[str, Any]] | None, *, default_machine: str = "") -> int:
+    """Write synced run sidecars into logs/ui/ when not already present locally, so run history travels across computers."""
+    if not isinstance(runs, list) or not runs:
+        return 0
+    folder = _dir(runtime)
+    written = 0
+    for raw in runs:
+        cleaned = _clean_sync_run(raw, default_machine=default_machine)
+        if not cleaned:
+            continue
+        rid = cleaned["id"]
+        path = folder / f"{rid}.json"
+        action = str(cleaned.get("action") or "")
+        local_log = folder / f"{rid}-{action}.log" if action else None
+        has_local_log = bool(local_log and local_log.is_file())
+        existing: dict[str, Any] = {}
+        if path.is_file():
+            try:
+                loaded = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    existing = loaded
+            except (OSError, ValueError):
+                existing = {}
+            if has_local_log or (existing.get("exit_code") is not None and existing.get("ended") is not None):
+                continue
+        payload = {**existing, **cleaned}
+        if has_local_log:
+            payload["log"] = f"{'/'.join(SIDECAR_DIR)}/{rid}-{action}.log"
+            payload.pop("remote_log", None)
+        else:
+            payload["log"] = ""
+            payload["remote_log"] = True
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+            os.replace(tmp, path)
+            written += 1
+        except OSError:
+            continue
+    return written
 
 
 def _pid_alive(pid: Any) -> bool:

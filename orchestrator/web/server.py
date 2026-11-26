@@ -291,8 +291,10 @@ class PtySession:
 
     def __init__(self, sid: str, action: str, title: str, argv: list[str], cwd: Path,
                  env: dict[str, str], transcript: Path | None = None, cols: int = 110, rows: int = 32,
-                 on_exit: Callable[[], None] | None = None, answer_queries: bool | None = None):
+                 on_exit: Callable[[], None] | None = None, answer_queries: bool | None = None,
+                 on_finish: Callable[["PtySession"], None] | None = None):
         self._on_exit = on_exit
+        self._on_finish = on_finish
         self._answer_queries = (action == "ai_connect") if answer_queries is None else answer_queries
         self._query_tail = b""
         self.id = sid
@@ -403,9 +405,16 @@ class PtySession:
             self._cond.notify_all()
         if self.job_id or self.result_job:  # so the job still lists this run after it's dropped from memory or the app restarts
             try:
-                job_runs.record(runtime_dir(self.cwd), self.summary())
+                summary = self.summary()
+                summary["machine"] = product_sync.computer_name()
+                job_runs.record(runtime_dir(self.cwd), summary)
             except Exception:
                 pass
+            if self._on_finish:
+                try:
+                    self._on_finish(self)
+                except Exception:
+                    pass
 
     def _reply_terminal_queries(self, chunk: bytes) -> None:
         """Answer terminal capability/cursor queries for headless TUI sign-ins (e.g. BubbleTea, agy) without a terminal emulator."""
@@ -679,8 +688,9 @@ def _display_argv(argv: list[str]) -> list[str]:
 
 
 class SessionManager:
-    def __init__(self, gate: ActivityGate | None = None) -> None:
+    def __init__(self, gate: ActivityGate | None = None, on_job_finish: Callable[[PtySession], None] | None = None) -> None:
         self.gate = gate or ActivityGate()
+        self._on_job_finish = on_job_finish
         self._sessions: dict[str, PtySession] = {}
         self._lock = threading.Lock()
 
@@ -694,7 +704,8 @@ class SessionManager:
         release = self.gate.hold()
         run_env = {**env, "ORCHESTRATOR_RUN_ID": sid}
         try:
-            session = PtySession(sid, action, title, argv, cwd, run_env, transcript, cols=cols, rows=rows, on_exit=release)
+            session = PtySession(sid, action, title, argv, cwd, run_env, transcript, cols=cols, rows=rows,
+                                 on_exit=release, on_finish=self._on_job_finish)
         except BaseException:
             release()
             raise
@@ -1887,21 +1898,42 @@ def with_plan_last_runs(root: Path, plans: list[Any]) -> list[dict[str, Any]]:
 
 
 def run_history(root: Path, limit: int = 50) -> list[dict[str, Any]]:
-    """Runs started from the web app, read back from their saved transcripts, so the list outlives a restart."""
+    """Runs started from the web app (and synced run summaries from other computers), so history outlives restarts and moves."""
     folder = runtime_dir(root) / "logs" / "ui"
     jobs_of = {r["id"]: r for r in job_runs.recorded(runtime_dir(root))}  # which job each run was for, kept when it ended
     runs = []
+    seen_ids: set[str] = set()
     for path in folder.glob("*.log") if folder.is_dir() else []:
         match = RUN_LOG.fullmatch(path.name)
         if not match:
             continue
         stamp, token, action = match.groups()
-        known = jobs_of.get(f"{stamp}-{token}") or {}
-        runs.append({"id": f"{stamp}-{token}", "action": action, "job": known.get("job"), "exit_code": known.get("exit_code"),
-                     "title": ACTIONS[action].title if action in ACTIONS else action.replace("_", " ").capitalize(),
-                     "started": datetime.strptime(stamp, "%Y%m%d-%H%M%S").timestamp(),
-                     "log": f"logs/ui/{path.name}", "size": path.stat().st_size})
-    return sorted(runs, key=lambda r: r["started"], reverse=True)[:limit]
+        rid = f"{stamp}-{token}"
+        seen_ids.add(rid)
+        known = jobs_of.get(rid) or {}
+        runs.append({
+            "id": rid, "action": action, "job": known.get("job"), "exit_code": known.get("exit_code"),
+            "stopped": bool(known.get("stopped")), "ended": known.get("ended"),
+            "headline": known.get("headline") or "", "tone": known.get("tone") or "",
+            "machine": known.get("machine") or "",
+            "title": known.get("title") or (ACTIONS[action].title if action in ACTIONS else action.replace("_", " ").capitalize()),
+            "started": known.get("started") or datetime.strptime(stamp, "%Y%m%d-%H%M%S").timestamp(),
+            "log": f"logs/ui/{path.name}", "size": path.stat().st_size,
+        })
+    for rid, known in jobs_of.items():
+        if rid in seen_ids:
+            continue
+        action = str(known.get("action") or "")
+        runs.append({
+            "id": rid, "action": action, "job": known.get("job"), "exit_code": known.get("exit_code"),
+            "stopped": bool(known.get("stopped")), "ended": known.get("ended"),
+            "headline": known.get("headline") or "", "tone": known.get("tone") or "",
+            "machine": known.get("machine") or "",
+            "title": known.get("title") or (ACTIONS[action].title if action in ACTIONS else action.replace("_", " ").capitalize() or "Run"),
+            "started": float(known.get("started") or 0),
+            "log": None, "remote_log": True, "size": 0,
+        })
+    return sorted(runs, key=lambda r: float(r.get("started") or 0), reverse=True)[:limit]
 
 
 def _sync_snapshot_async(root: Path) -> None:
@@ -2015,7 +2047,7 @@ def import_remote_job(root: Path, body: dict[str, Any]) -> dict[str, Any]:
             "is_yolo": yolo,
         }
         for key in ("branch", "base_branch", "branch_mode", "last_error", "requirements", "issue_number", "pr_number",
-                    "code_host", "approved", "test_status", "human_clarification_question"):
+                    "code_host", "approved", "test_status", "human_clarification_question", "verification", "blocker"):
             if raw.get(key) is not None:
                 doc[key] = raw[key]
         if isinstance(raw.get("completed_task_indices"), list):
@@ -2029,6 +2061,11 @@ def import_remote_job(root: Path, body: dict[str, Any]) -> dict[str, Any]:
         for key in account.RECORD_FIELDS:  # the job's history from the computer it came from (account.job_record)
             if record.get(key) not in (None, [], {}, ""):
                 doc[key] = record[key]
+        extra = raw.get("extra") if isinstance(raw.get("extra"), dict) else {}
+        for key in job_sync.EXTRA_JOB_FIELDS:  # full job context from refs/orchestrator/state or live peer handover
+            val = extra.get(key) if key in extra else raw.get(key)
+            if val not in (None, [], {}, ""):
+                doc[key] = val
         if isinstance(record.get("plan_extra"), dict) and "plan" in doc:
             doc["plan"].update({k: v for k, v in record["plan_extra"].items() if k in account.PLAN_FIELDS})
         if body.get("source_machine_name"):
@@ -2047,6 +2084,21 @@ def import_remote_job(root: Path, body: dict[str, Any]) -> dict[str, Any]:
         # the ownership number goes up: the account makes this copy the owner and tells the one it came from that it moved
         doc["owner_epoch"] = max(account.job_epoch(raw), account.job_epoch(read_json_file(target)) if taking_back else 0) + 1
         write_json_file(target, doc)
+        brief_md = raw.get("brief_md")
+        if isinstance(brief_md, str) and brief_md.strip():
+            brief_path = runtime_dir(root) / "output" / job_id / "brief.md"
+            if taking_back or not brief_path.is_file():
+                try:
+                    brief_path.parent.mkdir(parents=True, exist_ok=True)
+                    brief_path.write_text(brief_md, encoding="utf-8")
+                except OSError:
+                    pass
+    if isinstance(raw.get("runs"), list) and raw["runs"]:
+        job_runs.import_synced(
+            runtime_dir(root),
+            raw["runs"],
+            default_machine=str(body.get("source_machine_name") or raw.get("machine") or ""),
+        )
 
     branch = str(raw.get("branch") or "").strip()
     fetched = False
@@ -2132,17 +2184,20 @@ def apply_moved_jobs(moves: Any, roots: list[Path] | None = None) -> list[str]:
                 behind = account.job_epoch(local) <= epoch  # the owner's number is at least ours: this copy is stale
             else:  # a notice from before ownership numbers: by when it was continued
                 behind = float(local.get("imported_at") or 0) < float(move.get("imported_at") or 0)
-            if not local.get("moved_to") and behind and mark_job_moved(root, job_id, str(move.get("to") or "")):
+            target_machine = str(move.get("to") or "").strip()
+            was_moved = bool(local.get("moved_to"))
+            if target_machine and local.get("moved_to") != target_machine and behind and mark_job_moved(root, job_id, target_machine):
                 marked.append(job_id)
-                try:  # work this computer never uploaded: a side branch and a hidden ref, never lost, never forced in
-                    repo = Path(local["worktree"]) if local.get("worktree") and Path(local["worktree"]).is_dir() else root
-                    name = (account.load_machine() or {}).get("name") or socket.gethostname()
-                    if kept := wip_backup.keep_stranded(repo, job_id, local, str(name)):
-                        job = read_json_file(path)
-                        job["stranded"] = kept
-                        write_json_file(path, job)
-                except Exception:
-                    pass
+                if not was_moved:
+                    try:  # work this computer never uploaded: a side branch and a hidden ref, never lost, never forced in
+                        repo = Path(local["worktree"]) if local.get("worktree") and Path(local["worktree"]).is_dir() else root
+                        name = (account.load_machine() or {}).get("name") or socket.gethostname()
+                        if kept := wip_backup.keep_stranded(repo, job_id, local, str(name)):
+                            job = read_json_file(path)
+                            job["stranded"] = kept
+                            write_json_file(path, job)
+                    except Exception:
+                        pass
     return marked
 
 
@@ -6884,7 +6939,9 @@ class UIServer(ThreadingHTTPServer):
         self._used_tickets: dict[str, float] = {}
         self._ticket_lock = threading.Lock()
         self.gate = ActivityGate()
-        self.sessions = SessionManager(gate=self.gate)
+        self._state_sync_wake = threading.Event()
+        self.wake_state_sync: Callable[[], None] = self._state_sync_wake.set
+        self.sessions = SessionManager(gate=self.gate, on_job_finish=self._on_job_session_finish)
         self.tasks = BackgroundTasks(gate=self.gate)
         self.allowed_hosts = self._allowed_hosts()
         self._stopping = threading.Event()
@@ -6897,8 +6954,6 @@ class UIServer(ThreadingHTTPServer):
         self.connection_manager: Any = None
         self.on_reset_tunnel: Callable[[], bool] | None = None
         self.trigger_heartbeat: Callable[[], None] | None = None
-        self._state_sync_wake = threading.Event()
-        self.wake_state_sync: Callable[[], None] = self._state_sync_wake.set
         self._boot_commit = self_update.current_commit()
         from orchestrator.web.browser_grants import BrowserGrantStore
         self.browser_grants = BrowserGrantStore()
@@ -7193,6 +7248,16 @@ class UIServer(ThreadingHTTPServer):
         thread = threading.Thread(target=loop, daemon=True, name="heartbeat")
         thread.start()
         return thread
+
+    def _on_job_session_finish(self, session: PtySession) -> None:
+        """Push finished job and run state to refs/orchestrator/state and snapshot right away instead of waiting a minute."""
+        try:
+            _sync_snapshot_async(session.cwd)
+        except Exception:
+            pass
+        wake = getattr(self, "wake_state_sync", None)
+        if wake:
+            wake()
 
     def start_state_sync(self) -> threading.Thread:
         """Share each project's product requirements with the other computers working on it, through the project's own
@@ -8733,6 +8798,7 @@ class UIHandler(BaseHTTPRequestHandler):
             moved_now = mark_job_moved(root, parts[1], str(self._body().get("machine") or ""))
             if moved_now:
                 _sync_snapshot_async(root)
+                self.server.wake_state_sync()
             self._json({"moved": moved_now})
         elif method == "POST" and len(parts) == 3 and parts[0] == "jobs" and parts[2] == "scope":
             job_path = resolve_job_path(root, parts[1])
@@ -8792,6 +8858,7 @@ class UIHandler(BaseHTTPRequestHandler):
             job["wip_restored"] = {"commit": (job.get("wip_backup") or {}).get("commit"), "at": time.time()}
             write_json_file(job_path, job)
             _sync_snapshot_async(root)
+            self.server.wake_state_sync()
             self._json({"ok": True, "files": files})
         elif method == "POST" and len(parts) == 3 and parts[0] == "jobs" and parts[2] == "plan-tasks":
             job_path = resolve_job_path(root, parts[1])
@@ -8859,6 +8926,7 @@ class UIHandler(BaseHTTPRequestHandler):
                 brief_file.write_text(text, encoding="utf-8")
                 job["updated_at"] = datetime.now().isoformat()
                 write_json_file(job_path, job)
+                self.server.wake_state_sync()
             else:
                 text = (brief_file.read_text(encoding="utf-8", errors="replace")
                         if query.get("full") == ["1"] and brief_file.is_file() else read_limited(brief_file))
@@ -9156,6 +9224,7 @@ class UIHandler(BaseHTTPRequestHandler):
                 raise UIError("Choose the jobs to archive")
             archived = archive_jobs(root, ids, set(self.server.sessions.running_job_ids()))
             _sync_snapshot_async(root)
+            self.server.wake_state_sync()
             self._json({"archived": archived})
         elif method == "POST" and parts == ["jobs", "import-remote"]:
             self._require_owner("continue a job from another computer")
@@ -9176,6 +9245,7 @@ class UIHandler(BaseHTTPRequestHandler):
                 except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
                     result["restore_note"] = str(exc)
             _sync_snapshot_async(root)
+            self.server.wake_state_sync()
             self._json(result)
         elif method == "POST" and len(parts) == 3 and parts[0] == "jobs" and parts[2] == "feature":
             job_path = resolve_job_path(root, parts[1])
