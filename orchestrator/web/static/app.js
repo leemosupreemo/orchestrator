@@ -8719,14 +8719,13 @@ async function signingGetDialog(item, view) {
   await done;
 }
 
-async function confirmServerAction(action, server, whereLabel, view) {
+async function confirmServerAction(action, server, whereLabel) {
   const verb = { start: "Start", stop: "Stop", restart: "Restart" }[action];
   const command = { start: "docker compose up -d", stop: "docker compose stop", restart: "docker compose restart" }[action];
   const ports = server.ports.length ? `<p class="muted">Ports: ${server.ports.map((p) => `<code>${p}</code>`).join(", ")}</p>` : "";
   return formDialog(`${verb} ${server.name}?`, `<p>${verb} <strong>${esc(server.name)}</strong> on <strong>${esc(whereLabel)}</strong>.</p>
     <p class="muted">Runs <code>${esc(command)}</code> in <code>${esc(server.dir)}</code> (non-destructive).</p>
-    ${ports}${view.rule ? `<div class="notice stack gap-4"><span><strong>Project rule</strong> (${esc(view.rule.file)}): “${esc(view.rule.sentence)}”</span>
-      <span class="muted t-secondary">Reminder only (not enforced) — ${verb.toLowerCase()} only affects containers on ${esc(whereLabel)}.</span></div>` : ""}`, verb, { compact: true, danger: action === "stop" });
+    ${ports}`, verb, { compact: true, danger: action === "stop" });
 }
 
 // `onState({required, ready})`: required when builds are set to start it first, ready when it is running; null when there is no server.
