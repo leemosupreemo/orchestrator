@@ -8722,9 +8722,11 @@ async function signingGetDialog(item, view) {
 async function confirmServerAction(action, server, whereLabel) {
   const verb = { start: "Start", stop: "Stop", restart: "Restart" }[action];
   const command = { start: "docker compose up -d", stop: "docker compose stop", restart: "docker compose restart" }[action];
+  const target = server.dir === "." ? (server.file || "") : (server.file ? `${server.dir}/${server.file}` : server.dir);
+  const where = whereLabel === "This computer" ? "this computer" : whereLabel;
   const ports = server.ports.length ? `<p class="muted">Ports: ${server.ports.map((p) => `<code>${p}</code>`).join(", ")}</p>` : "";
-  return formDialog(`${verb} ${server.name}?`, `<p>${verb} <strong>${esc(server.name)}</strong> on <strong>${esc(whereLabel)}</strong>.</p>
-    <p class="muted">Runs <code>${esc(command)}</code> in <code>${esc(server.dir)}</code> (non-destructive).</p>
+  return formDialog(`${verb} server?`, `<p>Runs <code>${esc(command)}</code> on <strong>${esc(where)}</strong>${target ? ` (<code>${esc(target)}</code>)` : ""}.</p>
+    <p class="muted">Containers only — no data is deleted.</p>
     ${ports}`, verb, { compact: true, danger: action === "stop" });
 }
 
@@ -8746,7 +8748,7 @@ async function loadServerCard(box, canSend = false, onState = () => {}, { homeMo
       const server = view.servers.find((x) => x.id === btn.closest("[data-server]").dataset.server);
       const where = view.machines.find((m) => m.name === view.machine)?.label || "This computer";
       const actName = btn.dataset.serverAction;
-      if (await confirmServerAction(actName, server, where, view)) {
+      if (await confirmServerAction(actName, server, where)) {
         const verb = { start: "Starting", stop: "Stopping", restart: "Restarting" }[actName] || "Starting";
         await runAction(`server_${actName}`, { id: server.id, machine: view.machine }, {
           skipConfirm: true,

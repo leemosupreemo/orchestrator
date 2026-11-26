@@ -14,7 +14,9 @@ class ServerDialogRuleTests(unittest.TestCase):
         self.assertNotIn("view.rule", DIALOG)
 
     def test_it_says_what_the_action_does_and_where_succinctly(self):
-        self.assertIn("Runs <code>${esc(command)}</code> in <code>${esc(server.dir)}</code> (non-destructive).", DIALOG)
+        self.assertIn("`${verb} server?`", DIALOG)
+        self.assertIn("Runs <code>${esc(command)}</code> on <strong>${esc(where)}</strong>", DIALOG)
+        self.assertIn("Containers only — no data is deleted.", DIALOG)
         self.assertIn('verb, { compact: true, danger: action === "stop" })', DIALOG)
 
 
