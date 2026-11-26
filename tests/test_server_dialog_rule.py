@@ -19,6 +19,12 @@ class ServerDialogRuleTests(unittest.TestCase):
         self.assertIn("Containers only — no data is deleted.", DIALOG)
         self.assertIn('verb, { compact: true, danger: action === "stop" })', DIALOG)
 
+    def test_install_docker_modal_explains_missing_docker_and_size(self):
+        self.assertIn('if (action === "install_docker")', DIALOG)
+        self.assertIn("Docker isn't installed", DIALOG)
+        self.assertIn("Would you like to install it now?", DIALOG)
+        self.assertIn("~700 MB download", DIALOG)
+
 
 if __name__ == "__main__":
     unittest.main()

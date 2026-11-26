@@ -8727,8 +8727,8 @@ async function signingGetDialog(item, view) {
 async function confirmServerAction(action, server, whereLabel) {
   const where = whereLabel === "This computer" ? "this computer" : whereLabel;
   if (action === "install_docker") {
-    return formDialog("Install Docker?", `<p>Installs <strong>Colima</strong>, <strong>Docker CLI</strong>, and <strong>Docker Compose</strong> via Homebrew on <strong>${esc(where)}</strong>, then starts Docker.</p>
-      <p class="muted">Runs in the background — no Docker Desktop or password needed.</p>`, "Install Docker", { compact: true });
+    return formDialog("Docker isn't installed", `<p>Docker isn't installed on <strong>${esc(where)}</strong>, so this server can't start yet. Would you like to install it now?</p>
+      <p class="muted">Installs <strong>Colima</strong>, <strong>Docker CLI</strong>, and <strong>Docker Compose</strong> via Homebrew (~700 MB download, including the lightweight Linux VM) and starts Docker automatically — no Docker Desktop or password needed.</p>`, "Install Docker", { compact: true });
   }
   const verb = { start: "Start", stop: "Stop", restart: "Restart" }[action];
   const command = { start: "docker compose up -d", stop: "docker compose stop", restart: "docker compose restart" }[action];
@@ -8756,7 +8756,7 @@ async function loadServerCard(box, canSend = false, onState = () => {}, { homeMo
     box.querySelectorAll("[data-server-action]").forEach((btn) => btn.addEventListener("click", async () => {
       const server = view.servers.find((x) => x.id === btn.closest("[data-server]").dataset.server);
       const where = view.machines.find((m) => m.name === view.machine)?.label || "This computer";
-      const actName = btn.dataset.serverAction;
+      const actName = (btn.dataset.serverAction === "start" && view.docker_installed === false) ? "install_docker" : btn.dataset.serverAction;
       if (await confirmServerAction(actName, server, where)) {
         if (actName === "install_docker") {
           await runAction("server_install_docker", { machine: view.machine }, {
