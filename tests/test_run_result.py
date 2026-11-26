@@ -109,6 +109,45 @@ class PlanEpicTests(unittest.TestCase):
         out = rr.summarize("plan_epic", "PLANNING\n❌ Error: the planner timed out\n", 1, "x")
         self.assertEqual((out["headline"], out["tone"]), ("the planner timed out", "bad"))
 
+    def test_replan_with_architect_concerns_explains_nothing_was_built_and_strips_protocol_json(self):
+        output = (
+            "Answer recorded. Re-planning with it...\n"
+            "      - Updating existing job: 20261121-084115-feature-19\n"
+            "      - Verification complete: CONCERNS\n"
+            "Senior Architect raised concerns.\n"
+            '[gate] {"state": "Plan gate \\u00b7 architect review needs attention"}\n'
+            "      - Updated job file: .orchestrator/jobs/20261121-084115-feature-19.json\n"
+            "      - Updated issue: #19\n"
+            "[3/3] Skipping dispatch (--no-dispatch).\n"
+            "[exited]\n"
+        )
+        job = {
+            "status": "human-needed",
+            "verification": {"status": "concerns", "comments": "Keep vegetation density tuning in scope."},
+            "plan": {"tasks": [{"title": "Drop stale #18 remnants"}, {"title": "Tune Camelot Hills density"}]},
+        }
+        out = rr.summarize("answer", output, 0, job=job)
+        self.assertEqual(out["tone"], "warn")
+        self.assertEqual(out["headline"], "Plan updated — architect raised concerns (nothing built yet)")
+        self.assertIn("Planning only: no code files were changed yet.", out["details"])
+        self.assertTrue(any("Updated 2 tasks: Drop stale #18 remnants; Tune Camelot Hills density" in d for d in out["details"]))
+        self.assertTrue(any("Keep vegetation density tuning in scope." in d for d in out["details"]))
+        self.assertFalse(any(d.startswith("[gate]") for d in out["details"]))
+
+    def test_replan_ready_for_approval_explains_nothing_was_built_yet(self):
+        output = (
+            "Revising the plan with your feedback...\n"
+            "      - Updating existing job: 20261121-084115-feature-19\n"
+            "      - Updated job file: .orchestrator/jobs/20261121-084115-feature-19.json\n"
+            "[3/3] Skipping dispatch (--no-dispatch).\n"
+        )
+        job = {"status": "planned", "plan": {"tasks": [{"title": "Increase grassland density"}]}}
+        out = rr.summarize("revise", output, 0, job=job)
+        self.assertEqual(out["tone"], "warn")
+        self.assertEqual(out["headline"], "Plan updated — ready for approval (nothing built yet)")
+        self.assertIn("Planning only: no code files were changed yet.", out["details"])
+        self.assertTrue(any("Updated 1 task: Increase grassland density" in d for d in out["details"]))
+
 
 class GeneralTests(unittest.TestCase):
     def test_other_runs_lead_with_the_last_line_that_says_how_it_went(self):

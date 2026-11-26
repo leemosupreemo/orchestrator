@@ -16603,9 +16603,10 @@ function runStatus(r, vc = null) {
   const partial = Boolean(done && r.result?.partial); // the work is saved but the job stopped short of finishing it
   const flagged = Boolean(done && r.result?.tone && r.result.tone !== "ok"); // the process exited cleanly, but what it did needs a look
   const doneNext = done && r.result?.next?.action && r.result.next.label ? r.result.next : null; // the one thing to press next (a fix attempt that ended with the tests still failing)
-  const status = stopping ? "Stopping…" : r.waiting ? "Waiting for you" : r.running ? "Running" : failed ? "Failed" : done && r.action === "update_local" ? "Restarting UI" : partial ? "Partially complete" : doneNext ? "Needs your next step" : caveat || flagged ? "Completed with notes" : "Completed";
+  const planReviewWaiting = Boolean(done && r.result?.tone === "warn" && /nothing built yet|ready for approval|waiting on your answer|architect raised concerns/i.test(r.result?.headline || ""));
+  const status = stopping ? "Stopping…" : r.waiting ? "Waiting for you" : r.running ? "Running" : failed ? "Failed" : done && r.action === "update_local" ? "Restarting UI" : partial ? "Partially complete" : doneNext ? "Needs your next step" : planReviewWaiting ? "Needs review" : caveat || flagged ? "Completed with notes" : "Completed";
   const tone = stopping || r.waiting || caveat || flagged ? "attention" : r.running || (done && r.action === "update_local") ? "working" : failed ? "failed" : "done";
-  const numbered = (Number.isInteger(p.step) && Number.isInteger(p.total) && p.step > 0 && p.step <= p.total) || (done && r.action === "coverage");
+  const numbered = !planReviewWaiting && ((Number.isInteger(p.step) && Number.isInteger(p.total) && p.step > 0 && p.step <= p.total) || (done && r.action === "coverage"));
   const currentStep = done && numbered ? (p.total || 5) : (p.step || 1);
   const totalSteps = numbered ? (p.total || 5) : 1;
   const stepText = numbered ? `Step ${currentStep} of ${totalSteps}` : "";
@@ -16697,6 +16698,7 @@ function runStatus(r, vc = null) {
     : r.action === "plan_epic" && r.result_job ? `<a class="btn small primary" href="#/jobs/${encodeURIComponent(r.result_job)}">Review plan</a>` // the epic's waiting job is gone: planning replaced it
     : r.action === "logs_pull" ? `<a class="btn small" href="#/devlogs">See pulled logs</a>`
     : r.result_job && !r.job ? `<a class="btn small primary" href="#/jobs/${encodeURIComponent(r.result_job)}">Open job</a>`
+    : planReviewWaiting && (r.job || r.result_job) ? `<a class="btn small primary" href="#/jobs/${encodeURIComponent(r.job || r.result_job)}">Open job</a>`
     : doneNext ? `<button type="button" class="btn small primary" ${act(doneNext.action, doneNext.params || {})}>${esc(doneNext.label)}</button>`
     : "")
     : "";

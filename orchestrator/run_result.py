@@ -15,6 +15,7 @@ from typing import Any, Callable
 ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
 SPINNER = re.compile("[⠀-⣿]")
 EXIT_MARK = re.compile(r"^\[exited(?: with code \d+)?\]$")
+PROTOCOL_LINE = re.compile(r"^\[(?:gate|spec|experience|suites|task-attempt)\]\s*[\[{]")
 RULE = re.compile(r"^[=\-─━_*#\s]{4,}$")
 MARKS = ("✅", "❌", "⚠️", "⚠", "🟡", "✔", "✘", "🚀")
 OK_MARKS, BAD_MARKS, WARN_MARKS = ("✅", "✔"), ("❌", "✘"), ("⚠️", "⚠", "🟡")
@@ -23,7 +24,14 @@ MAX_LINE = 200
 
 def clean_lines(text: str) -> list[str]:
     text = SPINNER.sub("", ANSI.sub("", text)).replace("\r", "\n")
-    return [line.strip() for line in text.splitlines() if line.strip() and not EXIT_MARK.match(line.strip()) and not RULE.match(line.strip())]
+    return [
+        line.strip()
+        for line in text.splitlines()
+        if line.strip()
+        and not EXIT_MARK.match(line.strip())
+        and not RULE.match(line.strip())
+        and not PROTOCOL_LINE.match(line.strip())
+    ]
 
 
 def plain(line: str) -> str:
@@ -238,15 +246,62 @@ def ux_pass(lines: list[str], code: int | None) -> dict[str, Any] | None:
 
 def plan_epic(lines: list[str], code: int | None, job_title: str = "") -> dict[str, Any] | None:
     """Planning an epic makes a job (a plan, waiting for approval) and a GitHub issue; nothing is built or branched."""
-    if code or not any("Skipping dispatch" in l or "Created issue" in l for l in lines):
+    if code or not any("Skipping dispatch" in l or "Created issue" in l or "Updated issue" in l for l in lines):
         return None
-    issue = next((m.group(1) for m in (re.search(r"Created issue:\s*#(\d+)", l) for l in lines) if m), "")
+    issue = next((m.group(1) for m in (re.search(r"(?:Created|Updated) issue:\s*#(\d+)", l) for l in lines) if m), "")
     details = [f"Job: {job_title}"] if job_title else []
     details += ["Planned only: no code was written and no branch was created, so nothing has changed in your project.",
                 "Open the job to review the plan, then approve it to start building. It is also under Jobs on Home, and on the epic's row in Product."]
     if issue:
         details.append(f"GitHub issue #{issue} was created for it.")
     return _result("Plan ready to review", details)
+
+
+def planning_outcome(action: str, lines: list[str], code: int | None, job_title: str = "",
+                     job: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    """Plain-English summary for planning/re-planning runs (`answer`, `revise`, `approve`, `new_job`) that did not build code."""
+    if code or action not in ("answer", "revise", "approve", "new_job"):
+        return None
+    is_plan_only = any("Skipping dispatch" in l for l in lines)
+    if not is_plan_only:
+        return None
+    is_update = action in ("answer", "revise") or any("Updating existing job" in l or "Updated job file" in l for l in lines)
+    plan = (job or {}).get("plan") if isinstance((job or {}).get("plan"), dict) else {}
+    tasks = [t for t in (plan.get("tasks") or []) if isinstance(t, dict) and str(t.get("title") or "").strip()]
+    task_titles = [str(t["title"]).strip() for t in tasks]
+    verification = (job or {}).get("verification") if isinstance((job or {}).get("verification"), dict) else {}
+    v_status = str(verification.get("status") or "").lower()
+    architect_flagged = v_status in ("concerns", "rejected") or any(
+        "Senior Architect raised concerns" in l or "Senior Architect rejected" in l for l in lines
+    )
+    question = str((job or {}).get("human_clarification_question") or "").strip()
+    issue = next((m.group(1) for m in (re.search(r"(?:Created|Updated) issue:\s*#(\d+)", l) for l in lines) if m), "")
+
+    details: list[str] = ["Planning only: no code files were changed yet."]
+    if task_titles:
+        shown = "; ".join(task_titles[:3]) + (f" (+{len(task_titles) - 3} more)" if len(task_titles) > 3 else "")
+        details.append(f"{'Updated' if is_update else 'Planned'} {_plural(len(task_titles), 'task')}: {shown}")
+    if issue:
+        details.append(f"GitHub issue #{issue} {'updated' if is_update else 'created'}.")
+
+    if architect_flagged:
+        comments = " ".join(str(verification.get("comments") or "").split())
+        if comments:
+            details.append(f"Architect review: {comments}")
+        details.append("Open the job to review or accept the architect's suggestions, then approve to start building.")
+        headline = ("Plan updated — architect raised concerns (nothing built yet)"
+                    if is_update else "Plan created — architect raised concerns (nothing built yet)")
+        return _result(headline, details, "warn")
+
+    if (job or {}).get("status") == "human-needed" and question:
+        details.append(f"Question: {' '.join(question.split())}")
+        details.append("Open the job to answer so planning can continue.")
+        return _result("Plan paused — waiting on your answer (nothing built yet)", details, "warn")
+
+    details.append("Open the job to review and approve the plan so building can start.")
+    headline = ("Plan updated — ready for approval (nothing built yet)"
+                if is_update else "Plan ready for approval (nothing built yet)")
+    return _result(headline, details, "warn")
 
 
 # ---- a Tests job: the test files it added, how many tests are in them, and whether they were checked
@@ -487,7 +542,9 @@ def summarize(action: str, text: str, exit_code: int | None, job_title: str = ""
         fix = fix_attempt_outcome(job, text, action, exit_code) if job else None
         if fix:
             return fix
-        found = plan_epic(lines, exit_code, job_title) if action == "plan_epic" else reader(lines, exit_code) if reader else None
+        found = (plan_epic(lines, exit_code, job_title) if action == "plan_epic"
+                 else planning_outcome(action, lines, exit_code, job_title, job)
+                 or (reader(lines, exit_code) if reader else None))
         if found and exit_code and found["tone"] == "ok":
             found["tone"] = "bad"  # a reader found a good-looking line, but the run still failed
         return found or general(lines, exit_code)

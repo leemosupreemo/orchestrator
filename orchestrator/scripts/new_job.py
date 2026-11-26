@@ -1341,7 +1341,7 @@ def main(args_override: list[str] | None = None) -> None:
                             status_str = "rejected" if verification["status"] == "rejected" else "raised concerns"
                             print(f"\n\033[1;93mSenior Architect {status_str}.\033[0m")
                         
-                            if args.yolo:
+                            if yolo_enabled:
                                 print(f"\n\033[1;92mYOLO MODE: Automatically integrating Architect suggestions...\033[0m")
                                 # Construct feedback for recursive planning
                                 yolo_feedback = f"### ARCHITECT FEEDBACK ({verification['status'].upper()}) ###\n"
@@ -1468,6 +1468,8 @@ def main(args_override: list[str] | None = None) -> None:
                 final_gate_state = "Plan gate · replan invariant violation"
             elif risk_result.get("conflicts"):
                 final_gate_state = "Intent gate · conflicting requirements"
+            elif verification and verification.get("status") in ("rejected", "concerns"):
+                final_gate_state = "Plan gate · architect review needs attention"
             else:
                 final_gate_state = "Intent gate · waiting for clarification"
         elif gate_result.get("auto_pass"):
@@ -1622,9 +1624,10 @@ def main(args_override: list[str] | None = None) -> None:
     except ValueError:
         job_file_display = str(paths.job_file)
 
-    print(f"      - Created job file: {job_file_display}")
+    verb = "Updated" if existing_job else "Created"
+    print(f"      - {verb} job file: {job_file_display}")
     if issue_number:
-        print(f"      - Created issue: #{issue_number}")
+        print(f"      - {verb} issue: #{issue_number}")
 
     if not args.no_dispatch and status == "planned":
         print(f"[3/3] Scheduling job {job_id}...", flush=True)
