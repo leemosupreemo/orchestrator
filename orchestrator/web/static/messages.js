@@ -130,12 +130,38 @@
       box.textContent = "";
       for (const a of m.actions) {
         const control = a.href ? document.createElement("a") : document.createElement("button");
-        if (a.href) { control.href = a.href; control.addEventListener("click", () => { remove(m.id, false); if (a.after) a.after(); if (onNavigate) onNavigate(); }); }
-        else {
+        const runFn = typeof a.run === "function" ? a.run : (typeof a.onClick === "function" ? a.onClick : null);
+        if (a.href) {
+          control.href = a.href;
+          control.addEventListener("click", async (e) => {
+            if (e && (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || (typeof e.button === "number" && e.button !== 0))) {
+              if (a.after) a.after();
+              return;
+            }
+            const isHash = String(a.href).startsWith("#");
+            const sameHash = Boolean(isHash && typeof location !== "undefined" && location.hash === a.href);
+            if (runFn || isHash) {
+              if (e && typeof e.preventDefault === "function") e.preventDefault();
+              remove(m.id, false);
+              try {
+                if (runFn) await runFn();
+                else if (isHash && typeof location !== "undefined" && !sameHash) location.hash = a.href;
+                if (a.after) a.after();
+                if (onNavigate) onNavigate(a.href, { sameHash });
+              } catch (err) {
+                if (onActionError) onActionError(err);
+              }
+              return;
+            }
+            setTimeout(() => remove(m.id, false), 0);
+            if (a.after) a.after();
+            if (onNavigate) onNavigate(a.href, { sameHash: false });
+          });
+        } else {
           control.type = "button";
           control.addEventListener("click", async () => {
             remove(m.id, false);
-            try { if (a.run) await a.run(); if (a.after) a.after(); } catch (e) { if (onActionError) onActionError(e); }
+            try { if (runFn) await runFn(); if (a.after) a.after(); } catch (e) { if (onActionError) onActionError(e); }
           });
         }
         control.className = "msg-action";

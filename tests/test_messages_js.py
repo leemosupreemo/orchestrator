@@ -152,6 +152,120 @@ console.log(JSON.stringify({
         self.assertEqual(out["early"], [])
         self.assertEqual(out["late"], ["Draft cancelled"])
 
+    def test_mounted_href_and_run_actions_navigate_and_handle_same_hash_clicks(self):
+        out = self.run_js("""
+function makeEl(tag) {
+  const classes = new Set();
+  const listeners = {};
+  const el = {
+    tagName: tag.toUpperCase(),
+    dataset: {},
+    children: [],
+    parentNode: null,
+    hidden: false,
+    href: "",
+    textContent: "",
+    className: "",
+    classList: {
+      add: (c) => classes.add(c),
+      remove: (c) => classes.delete(c),
+      contains: (c) => classes.has(c),
+    },
+    setAttribute() {},
+    addEventListener(ev, fn) { (listeners[ev] ||= []).push(fn); },
+    remove() {
+      if (this.parentNode) this.parentNode.children = this.parentNode.children.filter((c) => c !== this);
+      this.parentNode = null;
+    },
+    append(...kids) {
+      for (const k of kids) { k.parentNode = el; el.children.push(k); }
+    },
+    insertBefore(node) { if (!el.children.includes(node)) { node.parentNode = el; el.children.push(node); } },
+    contains(target) { return target === el || el.children.some((c) => c.contains(target)); },
+    querySelector(sel) {
+      const cls = sel.startsWith(".") ? sel.slice(1) : "";
+      for (const c of el.children) {
+        if (cls && (c.className.split(/\\s+/).includes(cls) || c.classList.contains(cls))) return c;
+        const found = c.querySelector(sel);
+        if (found) return found;
+      }
+      return null;
+    },
+    activeAction() {
+      const active = el.children.find((c) => !c.classList.contains("msg-out"));
+      return active ? active.querySelector(".msg-action") : null;
+    },
+    async click(ev = {}) {
+      const e = { button: 0, prevented: false, preventDefault() { this.prevented = true; }, ...ev };
+      for (const fn of listeners.click || []) await fn(e);
+      return e;
+    },
+  };
+  return el;
+}
+global.document = {
+  createElement: makeEl,
+  addEventListener() {},
+  removeEventListener() {},
+};
+global.location = { hash: "#/runs/run-1" };
+const navEvents = [];
+const container = makeEl("div");
+const ui = M.mount(container, store, { onNavigate: (href, meta) => navEvents.push({ href, ...meta }) });
+
+let ran = 0, afterCount = 0, onClickCount = 0;
+store.push({
+  id: "q1", kind: "warning", text: "Question for you", sticky: true,
+  actions: [{ label: "Answer question", href: "#/jobs/j-19", run: () => { ran++; location.hash = "#/jobs/j-19"; }, after: () => { afterCount++; } }],
+});
+ui.render();
+const link = container.activeAction();
+(async () => {
+  const e1 = await link.click();
+  // Pure hash link while already on the same hash still notifies onNavigate({ sameHash: true }).
+  store.push({ id: "h1", kind: "info", text: "Open job", actions: [{ label: "Open", href: "#/jobs/j-19" }] });
+  ui.render();
+  const sameLink = container.activeAction();
+  const e2 = await sameLink.click();
+  // Button with legacy onClick callback still runs.
+  store.push({ id: "b1", kind: "info", text: "Updating", actions: [{ label: "View progress", onClick: () => { onClickCount++; } }] });
+  ui.render();
+  const btn = container.activeAction();
+  await btn.click();
+  ui.stop();
+  console.log(JSON.stringify({
+    tag: link.tagName,
+    href: link.href,
+    prevented1: e1.prevented,
+    prevented2: e2.prevented,
+    hash: location.hash,
+    ran,
+    afterCount,
+    onClickCount,
+    navEvents,
+    remaining: store.list().length,
+  }));
+})();
+""")
+        self.assertEqual(out["tag"], "A")
+        self.assertEqual(out["href"], "#/jobs/j-19")
+        self.assertTrue(out["prevented1"])
+        self.assertTrue(out["prevented2"])
+        self.assertEqual(out["hash"], "#/jobs/j-19")
+        self.assertEqual(out["ran"], 1)
+        self.assertEqual(out["afterCount"], 1)
+        self.assertEqual(out["onClickCount"], 1)
+        self.assertEqual(out["navEvents"], [
+            {"href": "#/jobs/j-19", "sameHash": False},
+            {"href": "#/jobs/j-19", "sameHash": True},
+        ])
+        self.assertEqual(out["remaining"], 0)
+
+    def test_question_toast_wires_answer_button_to_open_question_target(self):
+        app = (MODULE.parent / "app.js").read_text(encoding="utf-8")
+        self.assertIn("async function openQuestionTarget(targetHash, jobId = \"\")", app)
+        self.assertIn('actions: [{ label: "Answer question", href: targetHash, run: () => openQuestionTarget(targetHash, jobId), after: onSeen }]', app)
+
 
 if __name__ == "__main__":
     unittest.main()

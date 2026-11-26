@@ -276,7 +276,100 @@ class E2EWorkflowTests(unittest.TestCase):
         self.assertEqual((job["planner"], job["builder"], job["reviewer"]), (free, free, free))
         self.assertEqual(job["allowed_models"], [free])
         self.assertEqual(job["allowed_machines"], ["local"])
+        self.assertEqual(job["branch_mode"], "manual")
         self.assertEqual(seen, [(free, [free])])  # one call (verification skipped), and only the allowed model
+
+    def test_web_replan_reuses_saved_raw_input_and_settings_without_prompting(self):
+        # Answering a question from the web app runs new_job.py --update with ORCHESTRATOR_NONINTERACTIVE=1 and no --summary.
+        # It must reuse the saved raw_input and job settings instead of calling prompt_multiline (which raises EOFError).
+        from orchestrator.scripts import new_job
+        free = "opencode/nemotron-3-ultra-free"
+        prompts = []
+
+        def fake_llm(model, prompt, *a, **k):
+            prompts.append(prompt)
+            return (self.plan_json(self.SLICED), free, "sid")
+
+        jobs_dir = self.root / ".orchestrator" / "jobs"
+        jobs_dir.mkdir(parents=True, exist_ok=True)
+        path = jobs_dir / "20261121-084115-feature-19.json"
+        original_raw = "VISION: Add a rematch button that remembers the last board size."
+        path.write_text(json.dumps({
+            "job_id": "20261121-084115-feature-19",
+            "type": "feature-plan",
+            "issue_number": 19,
+            "title": "Add rematch",
+            "status": "human-needed",
+            "planner": free,
+            "builder": free,
+            "reviewer": free,
+            "allowed_models": [free],
+            "allowed_machines": ["local"],
+            "branch_mode": "current",
+            "branch": "feature/rematch",
+            "yolo": True,
+            "raw_input": original_raw,
+            "plan": {"title": "Add rematch", "summary": "Rematch button"},
+        }))
+        with patch.dict(os.environ, {"ORCHESTRATOR_NONINTERACTIVE": "1"}), \
+                patch("orchestrator.scripts.new_job.run_llm", side_effect=fake_llm), \
+                patch("orchestrator.scripts.new_job.ROOT", self.root), \
+                patch("orchestrator.scripts.new_job.gh_text", return_value=""), \
+                patch("orchestrator.scripts.new_job.make_job_paths", side_effect=self.make_job_paths):
+            new_job.main([
+                "feature", "--no-dispatch", "--update", str(path),
+                "--feedback", "### USER CLARIFICATION ###\nUse UserDefaults for persistence.",
+                "--skip-verify",
+            ])
+        job = json.loads(path.read_text())
+        self.assertEqual(len(prompts), 1)
+        self.assertIn(original_raw, prompts[0])
+        self.assertIn("Use UserDefaults for persistence.", prompts[0])
+        self.assertEqual(job["raw_input"], original_raw)
+        self.assertEqual(job["branch_mode"], "current")
+        self.assertEqual(job["branch"], "feature/rematch")
+        self.assertTrue(job["yolo"])
+
+    def test_web_replan_falls_back_when_existing_job_has_no_raw_input(self):
+        from orchestrator.scripts import new_job
+        free = "opencode/nemotron-3-ultra-free"
+        prompts = []
+
+        def fake_llm(model, prompt, *a, **k):
+            prompts.append(prompt)
+            return (self.plan_json(self.SLICED), free, "sid")
+
+        jobs_dir = self.root / ".orchestrator" / "jobs"
+        jobs_dir.mkdir(parents=True, exist_ok=True)
+        path = jobs_dir / "20261121-084116-feature-20.json"
+        path.write_text(json.dumps({
+            "job_id": "20261121-084116-feature-20",
+            "type": "feature-plan",
+            "issue_number": 20,
+            "title": "Legacy rematch",
+            "status": "human-needed",
+            "planner": free,
+            "builder": free,
+            "reviewer": free,
+            "allowed_models": [free],
+            "allowed_machines": ["local"],
+            "branch_mode": "new",
+            "plan": {"summary": "Allow instant rematch from game over"},
+        }))
+        with patch.dict(os.environ, {"ORCHESTRATOR_NONINTERACTIVE": "1"}), \
+                patch("orchestrator.scripts.new_job.run_llm", side_effect=fake_llm), \
+                patch("orchestrator.scripts.new_job.ROOT", self.root), \
+                patch("orchestrator.scripts.new_job.gh_text", return_value=""), \
+                patch("orchestrator.scripts.new_job.make_job_paths", side_effect=self.make_job_paths):
+            new_job.main([
+                "feature", "--no-dispatch", "--update", str(path),
+                "--feedback", "### USER CLARIFICATION ###\nReset the timer too.",
+                "--skip-verify",
+            ])
+        job = json.loads(path.read_text())
+        self.assertEqual(len(prompts), 1)
+        self.assertIn("Allow instant rematch from game over", prompts[0])
+        self.assertEqual(job["raw_input"], "Allow instant rematch from game over")
 
     def test_a_sliced_plan_costs_no_extra_model_call(self):
         prompts, job = self.run_planner([self.plan_json(self.SLICED)])

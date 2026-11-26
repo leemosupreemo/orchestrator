@@ -11,6 +11,7 @@ from pathlib import Path
 from common import (
     ensure_labels,
     interactive,
+    web_run,
     ROOT,
     PROMPTS_DIR,
     gh_text,
@@ -496,6 +497,22 @@ def fast_track_quick_plan(instructions: str, *, planner: str, allowed_models: li
     return fields, used, [{"id": sid, "model": used}], ""
 
 
+def existing_job_raw_input(job: dict | None, fallback_feedback: str = "") -> str:
+    """Recover the saved request text when re-planning an existing job (--update) so it never re-prompts."""
+    if not isinstance(job, dict):
+        return ""
+    raw = str(job.get("raw_input") or "").strip()
+    if raw:
+        return raw
+    spec = job.get("spec") if isinstance(job.get("spec"), dict) else {}
+    plan = job.get("plan") if isinstance(job.get("plan"), dict) else {}
+    for candidate in (spec.get("intent"), plan.get("summary"), plan.get("instructions"), job.get("title"), fallback_feedback):
+        text = str(candidate or "").strip()
+        if text:
+            return text
+    return ""
+
+
 def main(args_override: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("job_type", choices=["bug", "feature", "design", "coverage", "quick"])
@@ -558,6 +575,8 @@ def main(args_override: list[str] | None = None) -> None:
 
     planner, builder, reviewer = chosen("planner"), chosen("builder"), chosen("reviewer")
     freestyle = bool(args.freestyle or saved.get("freestyle"))  # kept through re-plans
+    yolo_enabled = bool(args.yolo or saved.get("yolo") or saved.get("is_yolo"))
+    existing_raw_input = existing_job_raw_input(existing_job, args.feedback or "")
 
     # Load spec from file or URL if provided
     file_spec_content = ""
@@ -637,7 +656,7 @@ def main(args_override: list[str] | None = None) -> None:
     auto_roles = [role for role, value in (("planner", planner), ("builder", builder), ("reviewer", reviewer)) if value == AUTO]
     auto_assignment = None
     if auto_roles:
-        profile = profile_job(args.job_type, f"{args.summary or ''}\n{file_spec_content}")
+        profile = profile_job(args.job_type, f"{args.summary or existing_raw_input}\n{file_spec_content}")
         picks = auto_assign_roles(allowed_models, profile)
         if not picks and args.free:
             print("\n\033[1;91m⚠️  ERROR: None of the free models can run on this computer right now.\033[0m")
@@ -693,7 +712,9 @@ def main(args_override: list[str] | None = None) -> None:
         print("\033[90m(Run with --allowed-machines <names> or select machines in the interactive prompt.)\033[0m")
         sys.exit(1)
 
-    branch_mode = args.branch_mode
+    branch_mode = args.branch_mode or saved.get("branch_mode")
+    if not branch_mode and existing_job and saved.get("branch"):
+        branch_mode = "current"
     if not branch_mode:
         if args.job_type == "coverage":
             branch_mode = "current"
@@ -706,7 +727,7 @@ def main(args_override: list[str] | None = None) -> None:
             branch_mode = prompt_radio("Branch selection:", labels, labels[0])
     branch_mode = normalize_branch_mode(branch_mode)
 
-    selected_branch = args.branch
+    selected_branch = args.branch or (saved.get("branch") if branch_mode == "current" else None)
     if branch_mode == "current" and not selected_branch:
         import subprocess
         selected_branch = subprocess.check_output(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=str(ROOT)).decode("utf-8").strip()
@@ -740,8 +761,8 @@ def main(args_override: list[str] | None = None) -> None:
         selected_branch = None
         print("      - No branch will be assigned (Builder will skip Git operations).")
     elif branch_mode == "new":
-        # Keep it None, the scheduler/builder will create one based on the job ID
-        selected_branch = None
+        # Keep an already-created branch on re-plan; otherwise the scheduler/builder creates one from the job ID.
+        selected_branch = saved.get("branch") if existing_job else None
         if args.no_dispatch:  # planning only: nothing is checked out or created yet
             print("      - No branch is created while planning; one is made when the job starts building.")
         else:
@@ -762,6 +783,8 @@ def main(args_override: list[str] | None = None) -> None:
         
         if args.summary:
             instructions = args.summary
+        elif existing_raw_input:
+            instructions = existing_raw_input
         else:
             flush_stdin()
             instructions = prompt_multiline("What would you like to change or improve?")
@@ -796,7 +819,7 @@ def main(args_override: list[str] | None = None) -> None:
             print(f"      - {fast_note}", flush=True)
 
         title = plan["title"]
-        body = build_quick_issue_body(plan, yolo=args.yolo)
+        body = build_quick_issue_body(plan, yolo=yolo_enabled)
         labels = ["job:quick", "status:planned"]
 
         # No verifier and no approval: the job and its one issue are created below and start right away.
@@ -814,6 +837,8 @@ def main(args_override: list[str] | None = None) -> None:
             print("\nSpec loaded successfully.")
             if args.summary:
                 raw_input_text = f"{file_spec_content}\n\n### ADDITIONAL CONTEXT / OVERRIDES ###\n{args.summary}"
+            elif existing_job or web_run():
+                raw_input_text = file_spec_content
             else:
                 flush_stdin()
                 additional = prompt_multiline("Additional Context / Overrides (optional):")
@@ -830,6 +855,8 @@ def main(args_override: list[str] | None = None) -> None:
                 raw_input_text = f"DESIGN VISION: {args.summary}\nPREFERRED VIBE: minimalist"
             else:
                 raw_input_text = f"VISION: {args.summary}"
+        elif existing_raw_input:
+            raw_input_text = existing_raw_input
         else:
             flush_stdin()
             if args.job_type == "bug":
@@ -1467,7 +1494,7 @@ def main(args_override: list[str] | None = None) -> None:
             "builder": builder,
             "reviewer": reviewer,
             "auto_assignment": auto_assignment or job.get("auto_assignment"),
-            "yolo": args.yolo,
+            "yolo": yolo_enabled,
             "branch_mode": branch_mode,
             "branch": selected_branch,
             "allowed_models": allowed_models,

@@ -353,7 +353,49 @@ async function confirmDuplicateJob(matches) {
 //   toast("Pick a platform first", "warning")   or "info"
 //   toast("Deleted", false, { label: "Undo", run })   success with an action
 const messageStore = Messages.createStore();
-const messageUi = Messages.mount($("#messages"), messageStore, { onActionError: (e) => toast(e.message, true) });
+const messageUi = Messages.mount($("#messages"), messageStore, {
+  onNavigate: (_href, { sameHash } = {}) => { if (sameHash) route(); },
+  onActionError: (e) => toast(e.message, true),
+});
+
+async function openQuestionTarget(targetHash, jobId = "") {
+  const hash = targetHash || (jobId ? `#/jobs/${encodeURIComponent(jobId)}` : "#/");
+  const focusClarify = () => {
+    const card = $("#clarify") || $("#clarify-reply")?.closest?.(".card");
+    const fold = card?.querySelector?.("details.fold");
+    if (fold) fold.open = true;
+    if (card) {
+      card.scrollIntoView?.({
+        behavior: window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches ? "instant" : "smooth",
+        block: "center",
+      });
+      card.classList?.add("highlight-flash");
+      setTimeout(() => card.classList?.remove("highlight-flash"), 1800);
+    }
+    const textarea = $("#clarify-reply textarea[name='answer']");
+    if (textarea) {
+      textarea.focus?.({ preventScroll: true });
+      return true;
+    }
+    return false;
+  };
+  if (location.hash === hash) {
+    if (!focusClarify()) {
+      await route();
+      if (!focusClarify() && jobId && dialogs.answer) await dialogs.answer({ job: jobId });
+    }
+    return;
+  }
+  const beforeToken = routeToken;
+  location.hash = hash;
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  if (routeToken === beforeToken) await route();
+  for (let i = 0; i < 20; i++) {
+    if (focusClarify()) return;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  if (jobId && current.page === "job" && dialogs.answer) await dialogs.answer({ job: jobId });
+}
 
 function notify(kind, text, options = {}) {
   const id = messageStore.push({ kind, text, ...options });
@@ -1544,7 +1586,7 @@ function checkRunnerVersion(runner) {
         notify("info", "Updating Orchestrator in the background… The UI will restart automatically when ready.", {
           id: "runner-old",
           sticky: true,
-          actions: run?.id ? [{ label: "View progress", onClick: () => { location.hash = `#/runs/${run.id}`; } }] : [],
+          actions: run?.id ? [{ label: "View progress", href: `#/runs/${encodeURIComponent(run.id)}`, run: () => { location.hash = `#/runs/${encodeURIComponent(run.id)}`; } }] : [],
         });
         void refreshState();
       })
@@ -1623,12 +1665,14 @@ async function refreshState({ opening = false, isCurrent = () => true, switching
       if (ev.title === "Question for you" && typeof notify === "function") {
         shownQuestions.add(ev.key);
         const targetHash = ev.hash || "#/";
+        const jobMatch = /^#\/jobs\/([^/?#]+)/.exec(targetHash);
+        const jobId = jobMatch ? decodeURIComponent(jobMatch[1]) : "";
         const onSeen = () => { shownQuestions.delete(ev.key); };
         notify("warning", `Question for you — ${ev.body}`, {
           id: `question:${ev.key}`,
           sticky: true,
           onDismiss: onSeen,
-          actions: [{ label: "Answer question", href: targetHash, after: onSeen }],
+          actions: [{ label: "Answer question", href: targetHash, run: () => openQuestionTarget(targetHash, jobId), after: onSeen }],
         });
       }
     }
