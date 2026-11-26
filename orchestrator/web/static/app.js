@@ -6039,22 +6039,107 @@ function wirePreview(view) {
 // The planner's questions and the person's answers, oldest first, read as a conversation.
 function clarificationThread(history) {
   const paragraphs = (text) => text.trim().split(/\n\s*\n/).map((part) => `<p>${esc(part)}</p>`).join("");
-  return (history || []).map((h) => {
-    const question = h.question || "";
+  const formatWhen = (raw) => {
+    if (!raw) return null;
+    const ms = typeof raw === "number" ? (raw > 1e12 ? raw : raw * 1000) : Date.parse(String(raw));
+    if (!Number.isFinite(ms)) return null;
+    const exact = new Date(ms).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+    const secs = Math.max(0, (Date.now() - ms) / 1000);
+    const rel = secs < 60 ? "just now"
+      : secs < 3600 ? `${Math.floor(secs / 60)}m ago`
+      : secs < 86400 ? `${Math.floor(secs / 3600)}h ago`
+      : exact;
+    return { rel, exact };
+  };
+  const splitNumbered = (text) => {
+    const matches = [...String(text || "").matchAll(/(?:^|\s)\((\d+)\)\s+/g)];
+    if (matches.length < 2) return null;
+    const lead = text.slice(0, matches[0].index).trim();
+    const items = matches.map((m, idx) => {
+      const start = m.index + m[0].length;
+      const end = idx + 1 < matches.length ? matches[idx + 1].index : text.length;
+      return text.slice(start, end).trim();
+    }).filter(Boolean);
+    let tail = "";
+    const last = items[items.length - 1] || "";
+    const tailMatch = /\s+(Test-case coverage is otherwise[\s\S]*|Overall,[\s\S]*|Otherwise,[\s\S]*)$/i.exec(last);
+    if (tailMatch && tailMatch.index > 30) {
+      items[items.length - 1] = last.slice(0, tailMatch.index).trim();
+      tail = tailMatch[1].trim();
+    }
+    return { lead, items, tail };
+  };
+  const formatQuestion = (h) => {
+    const question = String(h.question || "").trim();
     // The planner stores source conflicts as a numbered line, including in older jobs.
-    const conflict = /^(?:\d+\. )?Conflicting requirements between (.+?) and (.+?):\s*(.*?)\s*Which requirement should take precedence\?$/.exec(question.trim());
-    const questionHtml = conflict
-      ? `<p>These two sources disagree.</p><ul><li><code>${esc(conflict[1])}</code></li><li><code>${esc(conflict[2])}</code></li></ul>${conflict[3] ? paragraphs(conflict[3].replace(/\.{2,}$/, ".")) : ""}<p>Which requirement should take precedence?</p>`
-      : paragraphs(question);
+    const conflict = /^(?:\d+\. )?Conflicting requirements between (.+?) and (.+?):\s*(.*?)\s*Which requirement should take precedence\?$/.exec(question);
+    if (conflict) {
+      return `<p>These two sources disagree.</p><ul><li><code>${esc(conflict[1])}</code></li><li><code>${esc(conflict[2])}</code></li></ul>${conflict[3] ? paragraphs(conflict[3].replace(/\.{2,}$/, ".")) : ""}<p>Which requirement should take precedence?</p>`;
+    }
+    const archMatch = /^Architect\s+(raised concerns|rejected):\s*([\s\S]+)$/i.exec(question);
+    if (h.asker === "architect" || archMatch) {
+      const rejected = (archMatch?.[1] || h.verification?.status || "").toLowerCase().includes("reject");
+      const rawBody = (archMatch ? archMatch[2] : question).trim();
+      const numbered = splitNumbered(rawBody);
+      const suggested = Array.isArray(h.verification?.suggested_additions)
+        ? h.verification.suggested_additions.map((s) => String(s || "").trim()).filter(Boolean)
+        : [];
+      const points = numbered?.items?.length ? numbered.items : suggested;
+      const ask = rejected
+        ? "The architect rejected this plan before building. Accept its suggestions to re-plan, or reply below with how you'd like to proceed."
+        : points.length
+          ? `The architect flagged ${points.length} ${points.length === 1 ? "concern" : "concerns"} before building. Accept its suggestions to re-plan, or reply below with how you'd like to proceed.`
+          : "The architect raised concerns before building. Accept its suggestions to re-plan, or reply below with how you'd like to proceed.";
+      const bullets = points.length
+        ? `<ul class="clarify-points">${points.map((pt) => `<li>${esc(pt)}</li>`).join("")}</ul>`
+        : paragraphs(rawBody);
+      const extraNotes = points.length && (numbered?.lead?.length > 100 || rawBody.length > 260)
+        ? `<details class="fold clarify-context"><summary class="linklike muted">Full review notes</summary><div class="clarify-context-body">${paragraphs(rawBody)}</div></details>`
+        : "";
+      return `<p class="clarify-ask">${esc(ask)}</p>${bullets}${extraNotes}`;
+    }
+    const numbered = splitNumbered(question);
+    if (numbered && question.length > 240) {
+      return `${numbered.lead ? `<p class="clarify-ask">${esc(numbered.lead)}</p>` : ""}<ul class="clarify-points">${numbered.items.map((pt) => `<li>${esc(pt)}</li>`).join("")}</ul>${numbered.tail ? paragraphs(numbered.tail) : ""}`;
+    }
+    if (question.length > 320 && !question.includes("\n")) {
+      const sentences = question.split(/(?<=[.!?])\s+/).filter(Boolean);
+      const qIdx = sentences.findIndex((s) => s.endsWith("?"));
+      if (qIdx > 0) {
+        const askText = sentences.slice(qIdx).join(" ");
+        const ctxText = sentences.slice(0, qIdx).join(" ");
+        return `<p class="clarify-ask">${esc(askText)}</p><details class="fold clarify-context"><summary class="linklike muted">Context</summary><div class="clarify-context-body">${paragraphs(ctxText)}</div></details>`;
+      }
+    }
+    return paragraphs(question);
+  };
+  return (history || []).map((h) => {
+    const questionHtml = formatQuestion(h);
     const answer = h.auto
       ? (h.answer || "").replace(/(so decide for yourself\.)\s+/, "$1\n\n")
       : h.answer;
-    const who = h.asker === "builder" ? "Builder" : h.asker === "planner" ? "Planner" : "AI";
+    const who = h.asker === "architect" ? "Architect"
+      : h.asker === "builder" ? "Builder"
+      : h.asker === "debugger" ? "Debugger"
+      : h.asker === "planner" ? "Planner"
+      : "AI";
+    const when = formatWhen(h.asked_at || h.timestamp);
+    const runHtml = h.run_id
+      ? `<a class="clarify-meta-link" href="#/runs/${encodeURIComponent(h.run_id)}" title="Open the run that asked this">${esc(h.run_label ? `From ${h.run_label}` : `Run ${String(h.run_id).slice(-6)}`)} ↗</a>`
+      : "";
+    const blockHtml = typeof h.blocking === "boolean"
+      ? `<span class="pill ${h.blocking ? "attention" : "neutral"}" title="${h.blocking ? "Work is paused until you answer or approve" : "Optional — work can continue with defaults"}">${h.blocking ? "Blocking" : "Non-blocking"}</span>`
+      : "";
+    const whenHtml = when
+      ? `<span class="clarify-meta-time" title="${esc(when.exact)}">${esc(when.rel)}</span>`
+      : "";
     return `
     <div class="clarify-row is-ai">
-      <div class="row align-center gap-8">
+      <div class="clarify-meta">
         <span class="clarify-who">${who}</span>
-        ${typeof h.blocking === "boolean" ? `<span class="pill ${h.blocking ? "attention" : "neutral"}">${h.blocking ? "Blocking" : "Non-blocking"}</span>` : ""}
+        ${blockHtml}
+        ${whenHtml}
+        ${runHtml}
       </div>
       <div class="clarify-msg clarify-ai">${questionHtml}</div>
     </div>${answer ? `
@@ -7234,7 +7319,19 @@ pages.job = async ([id]) => {
   const heroTitleHtml = `<h2 class="job-hero-title">${(activeRun && !activeRun.waiting) || s.state.label === "Building" ? runningMark : ""}${esc(s.state.label || s.status)}</h2>`;
 
   const rawClarifyHistory = Array.isArray(job.clarification_history) ? job.clarification_history : [];
-  const answeredClarifications = rawClarifyHistory.filter((h) => h && h.answer && !h.auto);
+  const runById = new Map((jobRuns || []).map((r) => [r.id, r]));
+  const latestNonSideRun = (jobRuns || []).find((r) => !r.side) || null;
+  const runLabelFor = (runId) => {
+    const r = runId ? runById.get(runId) : null;
+    if (!r) return "";
+    return r.title || (r.action ? r.action.replace(/_/g, " ") : "");
+  };
+  const enrichQuestion = (entry) => {
+    const runId = entry.run_id || null;
+    const runLabel = runLabelFor(runId);
+    return { ...entry, ...(runLabel ? { run_label: runLabel } : {}) };
+  };
+  const answeredClarifications = rawClarifyHistory.filter((h) => h && h.answer && !h.auto).map(enrichQuestion);
   const visibleQuestions = [];
   const seenQuestions = new Set();
   for (const h of rawClarifyHistory) {
@@ -7246,17 +7343,25 @@ pages.job = async ([id]) => {
     }
     if (seenQuestions.has(qKey)) continue;
     seenQuestions.add(qKey);
-    visibleQuestions.push(h.answer ? h : { ...h, blocking: !h.auto && status === "human-needed" });
+    visibleQuestions.push(enrichQuestion(h.answer ? h : { ...h, blocking: !h.auto && status === "human-needed" }));
   }
   if (s.question) {
     const qKey = String(s.question).trim().toLowerCase();
     if (!seenQuestions.has(qKey)) {
       seenQuestions.add(qKey);
-      visibleQuestions.push({
+      const isArchQ = job.clarification_asker === "architect" || /^Architect\s+(?:raised concerns|rejected):/i.test(s.question);
+      const asker = isArchQ ? "architect"
+        : job.clarification_asker || (String(job.last_error || "").startsWith("Builder clarification needed") ? "builder" : String(job.last_error || "").startsWith("Debugger clarification needed") ? "debugger" : "planner");
+      const activeRunId = job.clarification_run_id || latestNonSideRun?.id || null;
+      const activeAskedAt = job.clarification_asked_at || job.updated_at || latestNonSideRun?.ended || latestNonSideRun?.started || null;
+      visibleQuestions.push(enrichQuestion({
         question: s.question,
-        asker: job.clarification_asker || (String(job.last_error || "").startsWith("Builder clarification needed") ? "builder" : String(job.last_error || "").startsWith("Debugger clarification needed") ? "debugger" : "planner"),
-        blocking: true,
-      });
+        asker,
+        blocking: status === "human-needed",
+        asked_at: activeAskedAt,
+        run_id: activeRunId,
+        ...(isArchQ && job.verification ? { verification: job.verification } : {}),
+      }));
     }
   }
   const totalQuestionsCount = answeredClarifications.length + visibleQuestions.length;

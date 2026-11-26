@@ -19,9 +19,9 @@ Your response MUST be a JSON object with the following structure:
 ```json
 {
   "status": "approved" | "concerns" | "rejected",
-  "comments": "Detailed architectural feedback grounded in codebase research...",
-  "suggested_additions": ["Specific step/file to add"],
-  "risks_identified": ["Specific technical risk based on existing code"]
+  "comments": "1-2 short, plain-English sentences summarizing the verdict and what needs to change (no file-by-file verification log).",
+  "suggested_additions": ["One short, concrete fix or step (at most 3 items)"],
+  "risks_identified": ["One short risk grounded in existing code (at most 3 items)"]
 }
 ```
-If the plan is rejected or has concerns, be specific about which files or architectural patterns were misunderstood.
+Write for a human skimming a card: lead with the bottom line, keep `comments` brief (under 280 characters), and put specific file/test fixes as crisp one-sentence bullets in `suggested_additions`. Do not recite every file that checked out.

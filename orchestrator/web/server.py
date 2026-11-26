@@ -692,8 +692,9 @@ class SessionManager:
             transcript_dir.mkdir(parents=True, exist_ok=True)
             transcript = transcript_dir / f"{sid}-{action}.log"
         release = self.gate.hold()
+        run_env = {**env, "ORCHESTRATOR_RUN_ID": sid}
         try:
-            session = PtySession(sid, action, title, argv, cwd, env, transcript, cols=cols, rows=rows, on_exit=release)
+            session = PtySession(sid, action, title, argv, cwd, run_env, transcript, cols=cols, rows=rows, on_exit=release)
         except BaseException:
             release()
             raise

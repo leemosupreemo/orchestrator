@@ -258,14 +258,22 @@ def record_clarification(job: dict[str, Any], question: str, answer: str) -> dic
     """Records a clarification Q&A entry into the job's persistent history and clears the active question."""
     if not isinstance(job, dict):
         return job
-    entry = {
+    entry: dict[str, Any] = {
         "question": question.strip() if isinstance(question, str) else str(question),
         "answer": answer.strip() if isinstance(answer, str) else str(answer),
         "timestamp": now_iso(),
     }
+    if job.get("clarification_asked_at"):
+        entry["asked_at"] = job["clarification_asked_at"]
+    if job.get("clarification_run_id"):
+        entry["run_id"] = job["clarification_run_id"]
+    if job.get("clarification_asker"):
+        entry["asker"] = job["clarification_asker"]
     history = job.setdefault("clarification_history", [])
     history.append(entry)
     job["human_clarification_question"] = None
+    job.pop("clarification_asked_at", None)
+    job.pop("clarification_run_id", None)
     job["last_error"] = None
     job["updated_at"] = now_iso()
     return job

@@ -1014,6 +1014,14 @@ details.raw pre { margin: 0; padding: 0 var(--container-pad-x) var(--container-p
 .clarify-you { align-self: flex-end; background: var(--chat-you-bg); border: 1px solid var(--chat-you-border); border-bottom-right-radius: 4px; }
 .clarify-auto { background: var(--panel-2); border-color: var(--border); border-style: dashed; }
 .clarify-who { font-size: var(--type-tag); font-weight: var(--weight-bold); color: var(--muted); text-transform: uppercase; letter-spacing: .04em; padding: 0 var(--space-1); }
+.clarify-meta { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
+.clarify-meta-time { font-size: var(--type-secondary); color: var(--muted); }
+.clarify-meta-link { font-size: var(--type-secondary); color: var(--accent); text-decoration: none; }
+.clarify-meta-link:hover { text-decoration: underline; }
+.clarify-ask { font-weight: var(--weight-medium); color: var(--text); }
+.clarify-points { display: flex; flex-direction: column; gap: var(--space-1-5); }
+.clarify-context { margin-top: var(--space-1); }
+.clarify-context-body { margin-top: var(--space-2); font-size: var(--type-secondary); color: var(--muted); }
 .clarify-reply { display: flex; flex-direction: column; gap: var(--space-2); }
 .clarify-input-row { display: flex; align-items: flex-end; gap: var(--space-2); width: 100%; }
 .clarify-input-row .field, .clarify-field { flex: 1 1 auto; margin: 0; min-width: 0; }

@@ -924,6 +924,25 @@ assert.match(answered, /README\.md.*World\/CamelotHills\/zone-manifest\.json/s);
 assert.match(answered, /<p>Use the verified folder\.<\/p>\s*<p>Which requirement should take precedence\?<\/p>/);
 assert.match(answered, /is-you[\s\S]*Answered for you \(YOLO\)/);
 assert.match(answered, /<\/p><p>Choose &lt;the right option&gt;\.<\/p>/);
+
+const arch = clarificationThread([{{
+  asker: "architect",
+  blocking: true,
+  asked_at: "2026-11-26T12:04:00Z",
+  run_id: "20261126-120000-abc123",
+  run_label: "Answer",
+  question: "Architect raised concerns: Plan's factual anchors check out against the repo and files exist across the tree with matching structure and hashes. However there are three concrete concerns: (1) FoliageViewComparison.cs is 499 lines and will cross the 500-line limit. (2) ZoneFloraProfileVerification.RunBatch does not exist. (3) No test case runs dotnet test on Daoc.Protocol.Tests. Test-case coverage is otherwise appropriate.",
+}}]);
+assert.match(arch, /<span class="clarify-who">Architect<\/span>/);
+assert.match(arch, /Blocking/);
+assert.match(arch, /href="#\/runs\/20261126-120000-abc123"/);
+assert.match(arch, /From Answer/);
+assert.match(arch, /clarify-meta-time/);
+assert.match(arch, /The architect flagged 3 concerns before building\./);
+assert.match(arch, /<li>FoliageViewComparison\.cs is 499 lines/);
+assert.match(arch, /<li>ZoneFloraProfileVerification\.RunBatch does not exist\.<\/li>/);
+assert.match(arch, /<li>No test case runs dotnet test on Daoc\.Protocol\.Tests\.<\/li>/);
+assert.match(arch, /Full review notes/);
 '''
         subprocess.run(["node", "-e", script], check=True)
         self.assertIn("${clarificationThread(visibleQuestions)}", app)

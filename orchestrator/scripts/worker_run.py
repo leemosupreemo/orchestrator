@@ -579,6 +579,10 @@ def prepare_git_branch(job: dict, issue_number: int | None) -> Tuple[str, str]:
 def mark_human_needed(job_path: Path, job: dict, question: str, task_index: Optional[int] = None) -> None:
     job["status"] = "human-needed"
     job["human_clarification_question"] = question
+    job["clarification_asker"] = "builder"
+    job["clarification_asked_at"] = now_iso()
+    if os.environ.get("ORCHESTRATOR_RUN_ID"):
+        job["clarification_run_id"] = os.environ["ORCHESTRATOR_RUN_ID"]
     job["last_error"] = f"Builder clarification needed: {question}"
     if task_index is not None:
         job["paused_at_task_index"] = task_index

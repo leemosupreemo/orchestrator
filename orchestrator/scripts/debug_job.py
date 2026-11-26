@@ -460,6 +460,9 @@ def run_propose(job: dict, job_path: Path, logs_path: str | None, feedback: str 
                 job["status"] = "human-needed"
                 job["human_clarification_question"] = question
                 job["clarification_asker"] = "debugger"
+                job["clarification_asked_at"] = now_iso()
+                if os.environ.get("ORCHESTRATOR_RUN_ID"):
+                    job["clarification_run_id"] = os.environ["ORCHESTRATOR_RUN_ID"]
                 job["last_error"] = f"Debugger clarification needed: {question[:200]}"
                 job["debug_phase"] = "paused"
                 job["debug_pause_reason"] = "Waiting for your answer"

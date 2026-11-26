@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import secrets
 import sys
@@ -1539,8 +1540,17 @@ def main(args_override: list[str] | None = None) -> None:
         
         if clarification:
             job["human_clarification_question"] = clarification
+            job["clarification_asked_at"] = now_iso()
+            job["clarification_run_id"] = os.environ.get("ORCHESTRATOR_RUN_ID") or job.get("clarification_run_id")
+            if verification and verification.get("status") in ("rejected", "concerns"):
+                job["clarification_asker"] = "architect"
+            else:
+                job["clarification_asker"] = "planner"
         else:
             job["human_clarification_question"] = None
+            job.pop("clarification_asked_at", None)
+            job.pop("clarification_run_id", None)
+            job.pop("clarification_asker", None)
             if job.get("auto_passed_gates") and not args.no_dispatch:
                 job["approved"] = True
                 try:
