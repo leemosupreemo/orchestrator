@@ -31,6 +31,34 @@ class JobActionsTests(unittest.TestCase):
         self.assertEqual(argv[2:6], ["bug", "--no-dispatch", "--update", str(path.resolve())])
         self.assertIn("Four players", argv[-1])
 
+    def test_answer_on_yolo_job_auto_approves_and_schedules_when_replan_is_clean(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "job.json"
+            path.write_text(json.dumps({
+                "status": "human-needed",
+                "type": "feature-plan",
+                "yolo": True,
+                "human_clarification_question": "Drop stale files?",
+            }))
+            calls = []
+
+            def fake_call(argv):
+                calls.append(argv)
+                if argv[1].endswith("new_job.py"):
+                    data = json.loads(path.read_text())
+                    data["status"] = "planned"
+                    data["human_clarification_question"] = None
+                    path.write_text(json.dumps(data))
+                return 0
+
+            with patch("job_actions.subprocess.call", side_effect=fake_call):
+                self.assertEqual(job_actions.main(["answer", str(path), "--answer", "Drop stale files"]), 0)
+            saved = json.loads(path.read_text())
+        self.assertTrue(saved["approved"])
+        self.assertEqual(len(calls), 2)
+        self.assertTrue(calls[0][1].endswith("new_job.py"))
+        self.assertTrue(calls[1][1].endswith("schedule_job.py"))
+
     def test_a_failed_replan_puts_the_question_back_so_the_job_is_not_stuck(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "job.json"
@@ -160,6 +188,35 @@ class ApproveReviseTests(unittest.TestCase):
         job = {"status": "human-needed", "type": "bug-fix", "verification": {"status": "concerns", "comments": "Add tests"}}
         _, _, argv, _ = self.run_action(job, "approve")
         self.assertIn("--skip-verify", argv)
+
+    def test_accepting_architect_suggestions_on_yolo_job_auto_approves_and_schedules(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "job.json"
+            path.write_text(json.dumps({
+                "status": "human-needed",
+                "type": "feature-plan",
+                "yolo": True,
+                "human_clarification_question": "Architect raised concerns: fix helper.",
+                "verification": {"status": "concerns", "comments": "Split helper"},
+            }))
+            calls = []
+
+            def fake_call(argv):
+                calls.append(argv)
+                if argv[1].endswith("new_job.py"):
+                    data = json.loads(path.read_text())
+                    data["status"] = "planned"
+                    data["human_clarification_question"] = None
+                    path.write_text(json.dumps(data))
+                return 0
+
+            with patch("job_actions.subprocess.call", side_effect=fake_call):
+                self.assertEqual(job_actions.main(["approve", str(path)]), 0)
+            saved = json.loads(path.read_text())
+        self.assertTrue(saved["approved"])
+        self.assertEqual(len(calls), 2)
+        self.assertIn("--skip-verify", calls[0])
+        self.assertTrue(calls[1][1].endswith("schedule_job.py"))
 
     def test_approve_refuses_other_states(self):
         code, _, argv, _ = self.run_action({"status": "completed"}, "approve")

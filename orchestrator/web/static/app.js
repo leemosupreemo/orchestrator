@@ -7015,8 +7015,9 @@ pages.job = async ([id]) => {
   // A Quick change skips the planner and can still show its requested scope.
   const quickNoPlan = job.type === "quick-fix" && !tasksTotal;
   const briefItems = planBriefItems(briefDoc.text, job.plan || {});
+  const shownBriefItems = briefItems.slice(0, 2);
   const planBriefHtml = `<div class="card-b plan-summary">
-    ${briefItems.length ? `<ul class="assumptions plan-brief-items">${briefItems.map((item) => `<li>${esc(item)}</li>`).join("")}</ul>` : ""}
+    ${shownBriefItems.length ? `<ul class="assumptions plan-brief-items">${shownBriefItems.map((item) => `<li>${esc(item)}</li>`).join("")}</ul>` : ""}
     <div class="row wrap gap-8">
       <button type="button" class="btn small ghost" data-brief-full>Full brief</button>
       <button type="button" class="btn small ghost" data-brief-edit ${activeRun ? 'disabled title="Pause the worker to edit the brief"' : 'title="Edit the brief"'}>Edit brief</button>
@@ -7120,7 +7121,7 @@ pages.job = async ([id]) => {
 
   // Approving (or starting) a plan: the plan is shown right under the decision, with what each task is done when,
   // the files it touches, and what the AI assumed. GitHub puts Approve beside the changes; this is the same idea.
-  const reviewingPlan = ["approve", "schedule"].includes(nextAction) && s.status !== "designing" && !activeRun && tasks.length > 0;
+  const reviewingPlan = ["approve", "schedule"].includes(nextAction) && s.status !== "designing" && !s.question && !activeRun && tasks.length > 0;
   const autoStopped = !activeRun && !isJobComplete && (
     status === "human-needed"
     || diskBlocked

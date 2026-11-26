@@ -136,6 +136,27 @@ def discard(path: Path, keep_changes: bool = False) -> int:
     return 0
 
 
+def _maybe_auto_schedule_yolo(path: Path) -> int:
+    """When a YOLO job finishes re-planning with a clean plan, approve and schedule it automatically instead of pausing."""
+    updated = read_json(path)
+    if not (updated.get("yolo") or updated.get("is_yolo")):
+        return 0
+    if updated.get("status") != "planned" or updated.get("human_clarification_question"):
+        return 0
+    updated["approved"] = True
+    try:
+        from orchestrator import living_spec
+        rt_dir = path.parent.parent if path.parent.name == "jobs" else Path(".orchestrator")
+        created_deferred = living_spec.create_deferred_backlog_jobs(rt_dir, updated)
+        if created_deferred:
+            print(f"Queued {len(created_deferred)} deferred story slice(s) in the backlog.")
+    except Exception:
+        pass
+    write_json(path, updated)
+    print("YOLO mode active: plan auto-approved. Scheduling...\n", flush=True)
+    return run_script("schedule_job.py", [str(path)])
+
+
 def answer(path: Path, text: str) -> int:
     job = read_json(path)
     question = job.get("human_clarification_question")
@@ -164,6 +185,8 @@ def answer(path: Path, text: str) -> int:
         print("Answer recorded. Re-planning with it...\n")
         code = run_script("new_job.py", [replan_type(job), "--no-dispatch", "--update", str(path),
                                          "--feedback", f"### USER CLARIFICATION ###\n{text}"])
+        if code == 0:
+            code = _maybe_auto_schedule_yolo(path)
     if code != 0:
         # The follow-up failed. Put the question back so the job isn't left "waiting" on nothing and can be answered again.
         current = read_json(path)
@@ -185,7 +208,8 @@ def approve(path: Path) -> int:
     if feedback:
         print("Integrating the architect's suggestions and re-planning...\n")
         # The person has accepted the architect's input; asking the architect again would only raise fresh concerns, forever.
-        return run_script("new_job.py", [replan_type(job), "--no-dispatch", "--update", str(path), "--feedback", feedback, "--skip-verify"])
+        code = run_script("new_job.py", [replan_type(job), "--no-dispatch", "--update", str(path), "--feedback", feedback, "--skip-verify"])
+        return _maybe_auto_schedule_yolo(path) if code == 0 else code
     if job.get("status") == "designing":
         print("Design approved. Generating implementation tasks from it...\n")
         apply_design_approval(job)

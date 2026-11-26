@@ -8337,6 +8337,7 @@ after();
     def test_a_plan_waiting_for_approval_is_shown_under_the_decision(self):
         self.assertIn('id="plan-section"', self.source)
         self.assertIn('${reviewingPlan ? tasksCardHtml + planCardHtml : ""}', self.job_page)
+        self.assertIn("&& !s.question && !activeRun", self.job_page)
         self.assertIn('data-scroll-to="#plan-section">the plan below</button>', self.job_page)
         self.assertIn("!ctx.planShown &&", self.source)  # no second Revise plan in More while the card offers it
         self.assertNotIn('fold("Tasks"', self.job_page)
