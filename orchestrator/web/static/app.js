@@ -8489,6 +8489,7 @@ function serverCardHtml(view, canSend, open = false, { homeMode = false } = {}) 
   const sv = view.servers.find((x) => x.id === serverPick) || view.servers[0];
   const machines = view.machines || [];
   const dockerOff = view.docker === false;
+  const dockerMissing = view.docker_installed === false;
   const st = sv.status || { state: "unreachable", containers: [] };
   const [label, tone] = dockerOff ? ["Offline", ""] : (SERVER_STATE[st.state] || [st.state, ""]);
   const up = !dockerOff && ["running", "starting", "partial", "unhealthy"].includes(st.state);
@@ -8513,13 +8514,17 @@ function serverCardHtml(view, canSend, open = false, { homeMode = false } = {}) 
     portsToShow.length ? portsToShow.map((p) => `<code class="mono">localhost:${p}</code>`).join(" ") : "",
     machines.length > 1 ? esc(whereLabel) : "",
   ].filter(Boolean);
-  const hint = dockerOff
-    ? (view.machine === "local" ? "No server is online. Docker is off — Launch server opens it first." : "No server is online. Docker is off on that computer.")
-    : (!up ? (st.message || "No server is online right now.") : (st.message || ""));
+  const hint = dockerMissing
+    ? (view.machine === "local" ? "Docker isn't installed on this computer." : "Docker isn't installed on that computer.")
+    : dockerOff
+      ? (view.machine === "local" ? "No server is online. Docker is off — Launch server opens it first." : "No server is online. Docker is off on that computer.")
+      : (!up ? (st.message || "No server is online right now.") : (st.message || ""));
   const actionButtons = owner
-    ? (up
-      ? `<button type="button" class="btn small" data-server-action="restart">Restart</button><button type="button" class="btn small icon-only danger" data-server-action="stop" aria-label="Stop server" title="Stop server"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-stop"/></svg></button>`
-      : `<button type="button" class="btn small primary" data-server-action="start">Launch server</button>`)
+    ? (dockerMissing
+      ? `<button type="button" class="btn small primary" data-server-action="install_docker">Install Docker</button>`
+      : up
+        ? `<button type="button" class="btn small" data-server-action="restart">Restart</button><button type="button" class="btn small icon-only danger" data-server-action="stop" aria-label="Stop server" title="Stop server"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-stop"/></svg></button>`
+        : `<button type="button" class="btn small primary" data-server-action="start">Launch server</button>`)
     : "";
   return `<div class="server-card-wrap" data-server="${esc(sv.id)}">
     <div class="card-h">
@@ -8720,10 +8725,14 @@ async function signingGetDialog(item, view) {
 }
 
 async function confirmServerAction(action, server, whereLabel) {
+  const where = whereLabel === "This computer" ? "this computer" : whereLabel;
+  if (action === "install_docker") {
+    return formDialog("Install Docker?", `<p>Installs <strong>Colima</strong>, <strong>Docker CLI</strong>, and <strong>Docker Compose</strong> via Homebrew on <strong>${esc(where)}</strong>, then starts Docker.</p>
+      <p class="muted">Runs in the background — no Docker Desktop or password needed.</p>`, "Install Docker", { compact: true });
+  }
   const verb = { start: "Start", stop: "Stop", restart: "Restart" }[action];
   const command = { start: "docker compose up -d", stop: "docker compose stop", restart: "docker compose restart" }[action];
   const target = server.dir === "." ? (server.file || "") : (server.file ? `${server.dir}/${server.file}` : server.dir);
-  const where = whereLabel === "This computer" ? "this computer" : whereLabel;
   const ports = server.ports.length ? `<p class="muted">Ports: ${server.ports.map((p) => `<code>${p}</code>`).join(", ")}</p>` : "";
   return formDialog(`${verb} server?`, `<p>Runs <code>${esc(command)}</code> on <strong>${esc(where)}</strong>${target ? ` (<code>${esc(target)}</code>)` : ""}.</p>
     <p class="muted">Containers only — no data is deleted.</p>
@@ -8749,6 +8758,14 @@ async function loadServerCard(box, canSend = false, onState = () => {}, { homeMo
       const where = view.machines.find((m) => m.name === view.machine)?.label || "This computer";
       const actName = btn.dataset.serverAction;
       if (await confirmServerAction(actName, server, where)) {
+        if (actName === "install_docker") {
+          await runAction("server_install_docker", { machine: view.machine }, {
+            skipConfirm: true,
+            button: btn,
+            optimisticRunTitle: "Installing Docker…",
+          });
+          return;
+        }
         const verb = { start: "Starting", stop: "Stopping", restart: "Restarting" }[actName] || "Starting";
         await runAction(`server_${actName}`, { id: server.id, machine: view.machine }, {
           skipConfirm: true,
@@ -16597,6 +16614,7 @@ function runStatus(r, vc = null) {
     : r.action === "server_start" ? "Server started"
     : r.action === "server_stop" ? "Server stopped"
     : r.action === "server_restart" ? "Server restarted"
+    : r.action === "server_install_docker" ? "Docker installed"
     : r.action === "coverage" ? "Coverage measurement complete"
     : r.action === "logs_pull" ? "Logs pulled"
     : r.action === "plan_epic" ? "Plan ready to review"
@@ -16620,7 +16638,7 @@ function runStatus(r, vc = null) {
     "console", "distribute", "deliver"
   ]);
   const omitModelsActions = new Set([
-    "server_start", "server_stop", "server_restart",
+    "server_start", "server_stop", "server_restart", "server_install_docker",
     "signing_import", "signing_secure", "signing_copy",
     "update_local", "update_fleet",
   ]);
@@ -16684,7 +16702,7 @@ function runStatus(r, vc = null) {
     : "";
   const found = !r.running && r.result?.headline ? r.result : null; // what the run found, read from its output
   const showFound = Boolean(found && !guidance?.fromResult && (done || !guidance || found.details?.length)); // failed tests are already in the summary on top // a failure with guidance and nothing more to add would only repeat it
-  const isServerAction = ["server_start", "server_stop", "server_restart"].includes(r.action);
+  const isServerAction = ["server_start", "server_stop", "server_restart", "server_install_docker"].includes(r.action);
   const rawHeaderText = showFound && found?.headline ? found.headline : headlineLabel;
   const headerText = isServerAction ? String(rawHeaderText).replace(/^(?:Done|Not done):\s*/i, "").replace(/\.$/, "") : rawHeaderText;
   const foundDetails = showFound && Array.isArray(found?.details)

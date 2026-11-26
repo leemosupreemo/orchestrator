@@ -301,6 +301,50 @@ class ChangeTests(unittest.TestCase):
         self.assertEqual((result["ok"], result["state"]), (False, "docker-off"))
         self.assertIn("can't be started from here", result["message"])
 
+    def test_install_docker_uses_homebrew_colima_links_compose_and_starts_it(self):
+        seen: list[str] = []
+        ready = {"up": False}
+
+        class InstallShell:
+            def run(self, cmd, cwd, timeout):
+                seen.append(cmd)
+                if cmd == "docker info":
+                    return (0, "", False) if ready["up"] else (1, "Cannot connect", False)
+                if "command -v brew" in cmd:
+                    return (0, "/opt/homebrew/bin/brew\n", False)
+                if "brew install docker docker-compose colima" in cmd:
+                    return (0, "Installed colima\n", False)
+                if "cli-plugins/docker-compose" in cmd:
+                    return (0, "", False)
+                if "colima start" in cmd:
+                    ready["up"] = True
+                    return (0, "INFO done\n", False)
+                return (0, "", False)
+
+        said, say = self.say_into()
+        ticks = iter(range(0, 1000, 5))
+        res = servers.install_docker(InstallShell(), say, sleep=lambda s: None, clock=lambda: next(ticks))
+        self.assertEqual((res["ok"], res["state"]), (True, "running"))
+        self.assertTrue(any("brew install docker docker-compose colima" in c for c in seen))
+        self.assertTrue(any("cli-plugins/docker-compose" in c for c in seen))
+        self.assertTrue(any("colima start" in c for c in seen))
+
+        # Without Homebrew, install_docker reports a clear message instead of crashing.
+        class NoBrewShell:
+            def run(self, cmd, cwd, timeout):
+                return (1, "", False)
+
+        res2 = servers.install_docker(NoBrewShell(), lambda _: None)
+        self.assertEqual((res2["ok"], res2["state"]), (False, "docker-missing"))
+        self.assertIn("Homebrew isn't installed", res2["message"])
+
+    def test_server_install_docker_action_is_owner_only_and_builds_safe_argv(self):
+        from orchestrator.web import server as ui
+        self.assertIn("server_install_docker", ui.OWNER_ONLY_ACTIONS)
+        self.assertEqual(ui.ACTIONS["server_install_docker"].build({}, Path("."))[-2:], ["server", "install-docker"])
+        self.assertEqual(ui.ACTIONS["server_install_docker"].build({"machine": "air"}, Path("."))[-4:],
+                         ["server", "install-docker", "--machine", "air"])
+
 
 class RemoteTests(unittest.TestCase):
     def test_another_computer_is_reached_over_ssh_in_its_copy_of_the_project(self):

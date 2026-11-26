@@ -256,6 +256,15 @@ def docker_ready(shell: Shell) -> bool:
     return code == 0
 
 
+def docker_installed(shell: Shell, *, docker: bool | None = None) -> bool:
+    """Whether any Docker runtime (or CLI) is installed on `shell`."""
+    if docker is True:
+        return True
+    if docker is None and docker_ready(shell):
+        return True
+    return _docker_launch_command(shell) is not None
+
+
 def parse_ps(output: str) -> list[dict[str, Any]]:
     """Containers from `docker compose ps --format json`, which is one JSON array or one object per line."""
     text = output.strip()
@@ -441,7 +450,10 @@ def ensure_docker(shell: Shell, say: Callable[[str], None], *, sleep: Callable[[
     else:
         launcher = _docker_launch_command(shell)
     if not launcher:
-        say("Docker isn't running, and it can't be started from here. Start Docker on that computer and try again.")
+        if can_launch is False:
+            say("Docker isn't running, and it can't be started from here. Start Docker on that computer and try again.")
+        else:
+            say("Docker isn't installed on this computer, so it can't be started from here. Click Install Docker (or run `orchestrator server install-docker`) to set it up automatically.")
         return False
     label, command = launcher
     say(f"Docker isn't running: starting {label} …")
@@ -474,6 +486,87 @@ def ensure_docker(shell: Shell, say: Callable[[str], None], *, sleep: Callable[[
         return True
     say(f"Docker didn't start within {DOCKER_WAIT} seconds.")
     return False
+
+
+_SSH_BREW_PATH = 'PATH="$PATH:/opt/homebrew/bin:/usr/local/bin:$HOME/.orbstack/bin:$HOME/.rd/bin:/Applications/Docker.app/Contents/Resources/bin"'
+
+
+def _has_brew(shell: Shell) -> bool:
+    if isinstance(shell, LocalShell):
+        return bool(_which("brew"))
+    if isinstance(shell, SshShell):
+        code, _, timed_out = shell.run(f"{_SSH_BREW_PATH} command -v brew >/dev/null 2>&1", ".", 15)
+        return not timed_out and code == 0
+    code, _, timed_out = shell.run("command -v brew >/dev/null 2>&1", ".", 15)
+    return not timed_out and code == 0
+
+
+def install_docker(shell: Shell, say: Callable[[str], None] = lambda s: None, *,
+                   sleep: Callable[[float], None] = time.sleep,
+                   clock: Callable[[], float] = time.monotonic) -> dict[str, Any]:
+    """Install a headless Docker runtime (Colima + Docker CLI + Docker Compose via Homebrew) and start it.
+    Needs no sudo password or Docker Desktop GUI prompt, so it works from the web app and over SSH."""
+    if docker_ready(shell):
+        say("Docker is already installed and running.")
+        return {"ok": True, "state": "running", "message": "Docker is already running."}
+    if _docker_launch_command(shell) is not None:
+        notes: list[str] = []
+
+        def _capture(line: str) -> None:
+            notes.append(line.strip())
+            say(line)
+
+        if ensure_docker(shell, _capture, sleep=sleep, clock=clock):
+            return {"ok": True, "state": "running", "message": "Docker is running."}
+        return {"ok": False, "state": "docker-off", "message": notes[-1] if notes else "Docker is installed but didn't start."}
+    if not _has_brew(shell):
+        msg = "Homebrew isn't installed, so Docker can't be installed automatically. Install Homebrew (https://brew.sh) or Docker Desktop (https://www.docker.com/products/docker-desktop/) and try again."
+        say(msg)
+        return {"ok": False, "state": "docker-missing", "message": msg}
+
+    prefix = f"{_SSH_BREW_PATH} " if isinstance(shell, SshShell) else ""
+    say("Installing Docker CLI, Docker Compose, and Colima via Homebrew …")
+    code, output, timed_out = shell.run(f"{prefix}HOMEBREW_NO_AUTO_UPDATE=1 brew install docker docker-compose colima", ".", 600)
+    tail = "\n".join(output.strip().splitlines()[-8:])
+    if tail:
+        say(tail)
+    if timed_out or code != 0:
+        reason = "brew install timed out" if timed_out else f"brew install exited with {code}"
+        detail = (output.strip().splitlines() or [""])[-1][:200]
+        return {"ok": False, "state": "error", "message": reason + (f": {detail}" if detail else "")}
+
+    say("Linking Docker Compose plugin …")
+    link_cmd = (
+        f'{prefix}sh -c \'PREFIX="$(brew --prefix)"; mkdir -p "$HOME/.docker/cli-plugins"; '
+        'if [ -x "$PREFIX/opt/docker-compose/bin/docker-compose" ]; then '
+        'ln -sfn "$PREFIX/opt/docker-compose/bin/docker-compose" "$HOME/.docker/cli-plugins/docker-compose"; '
+        'elif command -v docker-compose >/dev/null 2>&1; then '
+        'ln -sfn "$(command -v docker-compose)" "$HOME/.docker/cli-plugins/docker-compose"; fi\''
+    )
+    shell.run(link_cmd, ".", 30)
+
+    say("Starting Colima (first start downloads the Linux VM image and can take a minute) …")
+    code, output, timed_out = shell.run(f"{prefix}colima start", ".", 300)
+    tail = "\n".join(output.strip().splitlines()[-8:])
+    if tail:
+        say(tail)
+    if timed_out or code != 0:
+        reason = "colima start timed out" if timed_out else f"colima start exited with {code}"
+        detail = (output.strip().splitlines() or [""])[-1][:200]
+        return {"ok": False, "state": "docker-off", "message": reason + (f": {detail}" if detail else "")}
+
+    deadline = clock() + DOCKER_WAIT
+    while clock() < deadline:
+        if docker_ready(shell):
+            say("Docker is installed and running.")
+            return {"ok": True, "state": "running", "message": "Docker is installed and running."}
+        sleep(3)
+    if docker_ready(shell):
+        say("Docker is installed and running.")
+        return {"ok": True, "state": "running", "message": "Docker is installed and running."}
+    msg = f"Colima finished starting, but Docker didn't respond within {DOCKER_WAIT} seconds."
+    say(msg)
+    return {"ok": False, "state": "docker-off", "message": msg}
 
 
 def wait_until_up(server: dict[str, Any], shell: Shell, say: Callable[[str], None], *, wait: int = HEALTHY_WAIT,

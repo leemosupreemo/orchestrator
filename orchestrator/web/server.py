@@ -130,7 +130,7 @@ HOSTED_ORIGINS = account.HOSTED_ORIGINS
 # change who has access, see or change secrets and credentials, add folders from the disk, or run free-form tools.
 OWNER_SOURCES = ("git", "account", "environment")
 OWNER_ONLY_CONFIG = {"keys", "email", "analytics", "webhook", "desktop", "allowed-email", "firebase", "fleet", "role-prompts"}
-OWNER_ONLY_ACTIONS = {"server_start", "server_stop", "server_restart", "signing_import", "signing_secure", "signing_copy", "console", "wizard", "config_menu", "ai_connect", "package_update", "worker_install", "sync_fleet", "fleet_llm_check", "update_local",
+OWNER_ONLY_ACTIONS = {"server_start", "server_stop", "server_restart", "server_install_docker", "signing_import", "signing_secure", "signing_copy", "console", "wizard", "config_menu", "ai_connect", "package_update", "worker_install", "sync_fleet", "fleet_llm_check", "update_local",
                       "update_fleet", "test_email", "logs_setup", "deliver", "distribute", "ai_review_terminal"}  # it bills the owner's Claude account
 SIGN_IN_TTL_SECONDS = 30 * 24 * 3600
 SNAPSHOT_CHECK_SECONDS = 10  # how soon other computers see a job here change (snapshot_sync)
@@ -4948,7 +4948,7 @@ def build_dev_preview(params: dict[str, Any], root: Path) -> list[str]:
 
 
 def build_server_argv(action: str, params: dict[str, Any]) -> list[str]:
-    argv = orchestrator_argv("server", action, _name(params, "id"))
+    argv = orchestrator_argv("server", action) if action == "install-docker" else orchestrator_argv("server", action, _name(params, "id"))
     machine = _text(params, "machine", limit=100)
     if machine and machine != "local":
         argv += ["--machine", _name({"m": machine}, "m")]
@@ -5032,11 +5032,13 @@ def servers_view(root: Path, machine: str | None) -> dict[str, Any]:
     shell = servers.shell_for(root, chosen)
     found = servers.find(root)[:8]
     docker = servers.docker_ready(shell) if found else True
+    docker_installed = servers.docker_installed(shell, docker=docker) if found else True
     rows = [{**s, "status": servers.status(s, shell, docker=docker), "version": servers.version_info(root, s)} for s in found]
     online_count = sum(1 for r in rows if docker and r["status"].get("state") == "running")
     selection = servers.parse_selection(read_json_file(runtime_dir(root) / "project.json").get("servers_for_app"), found,
                                         [m["name"] for m in server_machines(root)])[0]
     return {"servers": rows, "machines": server_machines(root), "machine": machine or "local", "docker": docker,
+            "docker_installed": docker_installed,
             "any_online": online_count > 0, "online_count": online_count,
             "rule": servers.protected_rule(root), "app": selection}
 
@@ -6666,6 +6668,7 @@ ACTIONS: dict[str, Action] = {
     "server_start": Action("Start server", lambda p, r: build_server_argv("start", p), fields=["id", "machine"]),
     "server_stop": Action("Stop server", lambda p, r: build_server_argv("stop", p), fields=["id", "machine"]),
     "server_restart": Action("Restart server", lambda p, r: build_server_argv("restart", p), fields=["id", "machine"]),
+    "server_install_docker": Action("Install Docker", lambda p, r: build_server_argv("install-docker", p), fields=["machine"]),
     "signing_import": Action("Set up the signing key", lambda p, r: build_signing_argv("import-ios", p), fields=["file", "issuer", "replace"]),
     "signing_secure": Action("Make the signing key private", lambda p, r: build_signing_argv("secure-ios", p)),
     "signing_copy": Action("Copy the signing key", lambda p, r: build_signing_argv("copy", p),

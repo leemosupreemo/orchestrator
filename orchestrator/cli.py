@@ -2281,14 +2281,20 @@ def server_command(args: argparse.Namespace) -> int:
     from orchestrator import servers
 
     config = load_project_config()
-    found = servers.find(config.root)
-    if not found:
-        print("No Docker compose file was found in this project.")
-        return 2
     try:
         shell = servers.shell_for(config.root, _machine_named(config, args.machine))
     except ValueError as exc:
         print(str(exc))
+        return 2
+    if args.action == "install-docker":
+        where = f" on {args.machine}" if args.machine and args.machine != "local" else ""
+        print(f"Install Docker{where} …", flush=True)
+        result = servers.install_docker(shell, lambda line: print(f"  {line}", flush=True))
+        print(("Done: " if result["ok"] else "Not done: ") + f"Docker is {result['state']}." + (f" {result['message']}" if result["message"] else ""))
+        return 0 if result["ok"] else 1
+    found = servers.find(config.root)
+    if not found:
+        print("No Docker compose file was found in this project.")
         return 2
     chosen = [s for s in found if s["id"] == args.server] if args.server else (found if args.action == "status" else found if len(found) == 1 else [])
     if not chosen:
@@ -2829,8 +2835,8 @@ def _main(argv: list[str] | None = None) -> int:
     check_parser.add_argument("--project", help="Recent project name or project root path")
     check_config_parser = subparsers.add_parser("check-config")
     check_config_parser.add_argument("--project", help="Recent project name or project root path")
-    server_parser = subparsers.add_parser("server", help="Docker servers: status, start, stop, restart or logs, here or on another computer")
-    server_parser.add_argument("action", choices=["status", "start", "stop", "restart", "logs"])
+    server_parser = subparsers.add_parser("server", help="Docker servers: status, start, stop, restart, logs or install-docker, here or on another computer")
+    server_parser.add_argument("action", choices=["status", "start", "stop", "restart", "logs", "install-docker"])
     server_parser.add_argument("server", nargs="?", help="Server id (see `server status`); optional when the project has one")
     server_parser.add_argument("--machine", help="A computer from machines.json (default: this one)")
     server_parser.add_argument("--project", help="Recent project name or project root path")
