@@ -114,6 +114,7 @@ from orchestrator.project_config import (
     project_display_name,
     remember_project,
     safe_resolve,
+    save_recent_projects,
     user_state_dir,
 )
 
@@ -4469,7 +4470,8 @@ def auto_discover_local_projects() -> None:
 def project_state(root: Path) -> dict[str, Any]:
     config = _safe_read_json_file(runtime_dir(root) / "project.json")
     status = git(root, "status", "--porcelain", timeout=2.0)
-    recent = load_recent_projects().get("projects", [])
+    saved = load_recent_projects()
+    recent = saved.get("projects", [])
     machines = [m for m in _safe_read_json_file(runtime_dir(root) / "config" / "machines.json").get("machines", []) if isinstance(m, dict)]
     root_source_type, root_source_label, root_github_repo = detect_project_source(root, config)
     root_languages = get_project_languages(root, root_github_repo if root_source_type == "github" else None)
@@ -4486,6 +4488,10 @@ def project_state(root: Path) -> dict[str, Any]:
             p_r = None
 
         if p_r and p_r == active_resolved:
+            kind = project_kind(root, config)
+            if kind and p.get("kind") != kind:  # saved with the entry: the picker still labels it while another project is open
+                p["kind"] = kind
+                save_recent_projects(saved)
             recent_entries.append({
                 "name": p.get("name") or project_display_name(root),
                 "root": str(p_r),
@@ -4493,7 +4499,7 @@ def project_state(root: Path) -> dict[str, Any]:
                 "source_label": root_source_label,
                 "github_repo": root_github_repo,
                 "languages": root_languages,
-                "kind": project_kind(root, config),
+                "kind": kind,
             })
         else:
             # The project picker inspects full metadata on demand. Opening the workspace only needs saved entries.

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import tempfile
 import unittest
@@ -191,7 +192,20 @@ class ProjectKindTests(unittest.TestCase):
         self.assertIn('<div class="project-card-badges">\n          ${kindPill(p.kind)}', app)
         self.assertIn('<span id="project-kind"></span>', (static / "index.html").read_text())
         server = (PACKAGE_ROOT / "orchestrator" / "web" / "server.py").read_text()
-        self.assertGreaterEqual(server.count('"kind": project_kind('), 5)  # active project, picker entries, project cards
+        self.assertGreaterEqual(server.count('"kind": project_kind('), 3)  # the open project and the project cards
+
+    def test_a_project_keeps_its_label_in_the_picker_while_another_is_open(self):
+        web, other = self.root / "site", self.root / "other"
+        for folder in (web, other):
+            (folder / ".orchestrator").mkdir(parents=True)
+        (web / ".orchestrator" / "project.json").write_text(json.dumps({"project_kind": "web"}))
+        with patch.dict(os.environ, {"ORCHESTRATOR_USER_STATE_DIR": str(self.root / "state")}), \
+             patch.object(ui, "github_repos", return_value={"repos": []}):
+            ui.remember_project(web)
+            ui.remember_project(other)
+            ui.project_state(web)  # opening it records what it is
+            entry = next(p for p in ui.project_state(other)["recent"] if p["name"] == "site")
+        self.assertEqual(entry["kind"], "web")
 
     def test_home_names_the_project_larger_and_switches_it_like_the_sidebar(self):
         static = PACKAGE_ROOT / "orchestrator" / "web" / "static"
