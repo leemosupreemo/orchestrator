@@ -1005,6 +1005,11 @@ def job_state(job: dict[str, Any], root: Path | None = None, *, active_run: dict
         return state("needs_you", "attention", "Tests passed, not committed",
                      f"The work is done and its tests passed ({plural_count(files, 'file')} changed), but saving it to git failed"
                      f"{': ' + error if error else ''}. Resume commits it; nothing is built again.", "resume", "Commit the work")
+    from orchestrator import run_result
+    if unconfirmed := run_result.unconfirmed_task(job):  # nothing failed: the run didn't cover the task's planned tests
+        return state("needs_you", "attention", "Tests passed, task not confirmed",
+                     f"The build and tests passed, but they don't confirm {unconfirmed.get('label')}. {unconfirmed.get('detail')}",
+                     "resume", "Resume")
     if status == "human-needed":
         question = str(job.get("human_clarification_question") or "").strip()
         if question and question_is_blocker(question):

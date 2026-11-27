@@ -208,6 +208,27 @@ class GeneralTests(unittest.TestCase):
         self.assertEqual(out["tone"], "bad")
 
 
+class UnconfirmedTaskTests(unittest.TestCase):
+    JOB = {"job_id": "job-1", "status": "human-needed", "last_error": "Task 1: omitted",
+           "unverified_task": {"label": "Task 1", "detail": "The run used unrelated tests or omitted planned tests: test_a", "error": "Task 1: omitted"}}
+
+    def test_a_paused_unconfirmed_task_says_the_tests_passed_and_offers_resume(self):
+        found = rr.summarize("debug", "      - Tests passed.\n", 0, job=self.JOB)
+        self.assertEqual(found["headline"], "Tests passed, but Task 1 is not confirmed")
+        self.assertIn("test_a", found["details"][0])
+        self.assertEqual(found["next"], {"label": "Resume", "action": "resume", "params": {"job": "job-1"}})
+
+    def test_the_marker_stops_counting_once_the_job_moves_on(self):
+        for change in ({"status": "debugging"}, {"last_error": "something newer"}, {"human_clarification_question": "Which?"}):
+            with self.subTest(change=change):
+                self.assertIsNone(rr.unconfirmed_task({**self.JOB, **change}))
+
+    def test_the_job_page_says_the_same(self):
+        from orchestrator.web import server
+        state = server.job_state({**self.JOB, "plan": {"tasks": [{"title": "t"}]}})
+        self.assertEqual((state["label"], state["next"]["action"]), ("Tests passed, task not confirmed", "resume"))
+
+
 class OpenQuestionTests(unittest.TestCase):
     LOG = ("❓ Debugger needs your input: Should I leave it unverified?\n"
            "      - Skipped email notification (no recipient emails configured in settings.json).\n")

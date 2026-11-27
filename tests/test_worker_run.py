@@ -46,6 +46,7 @@ class WorkerRunTests(unittest.TestCase):
                 'interactive': {'return_value': interactive},
                 'get_repo_state': {'side_effect': states or [{'modified': [], 'untracked': []}, {'modified': ['app.py'], 'untracked': []}] * 10},  # the builder changed a file
                 'run_builder': {'side_effect': results or [(True, True, Path('summary'), {'summary': 'Done', 'hypothesis': 'Cause'})]},
+                'run_build_and_tests': {'return_value': (True, True)},  # the project's own tests, run to confirm a task
             }.items():
                 mocks[name] = stack.enter_context(patch.object(worker, name, **kwargs))
             mocks['analytics'] = stack.enter_context(patch('orchestrator.analytics.track_job_run'))
@@ -345,7 +346,68 @@ class WorkerRunTests(unittest.TestCase):
                 self.assertEqual(job['completed_task_indices'], [])
                 if error:
                     self.assertIn(error, job['last_error'])
-                calls['debug'].assert_called_once_with(path)
+                if success:  # nothing failed: say so and wait, rather than "fixing" passing code
+                    self.assertEqual((job['status'], job['unverified_task']['label']), ('human-needed', 'Task 1'))
+                    calls['debug'].assert_not_called()
+                    calls['push_branch_for_review'].assert_not_called()
+                    self.assertIn('Nothing failed, so no fix attempt is started', self.output.getvalue())
+                    self.assertNotIn('Build did not pass', self.output.getvalue())
+                else:
+                    calls['debug'].assert_called_once_with(path)
+                    self.assertNotIn('unverified_task', job)
+                calls['run_build_and_tests'].assert_not_called()
+
+    def test_a_fix_attempt_that_passes_without_the_planned_tests_is_recorded_as_passing(self):
+        feature = {**self.feature_job(), 'status': 'debugging', 'debug_history': [{'result': 'pending'}]}
+        feature['plan']['tasks'][0]['tests'] = ['test_screen']
+        command = 'pytest test_other'
+        output = {'action': 'patch', '_test_execution': {'command': command, 'full_suite': False}}
+        with self.pipeline(feature, results=[(True, True, Path('summary'), output)], states=self.EDITED) as (path, calls), \
+             patch.dict(os.environ, {'AI_DEBUG_CHILD': '1'}):
+            worker.execute_job(path)
+            job = worker.read_json(path)
+            self.assertEqual(job['status'], 'human-needed')
+            result = job['debug_history'][-1]['result']
+            self.assertEqual((result['build_ok'], result['tests_ok']), (True, True))
+            self.assertIn('test_screen', result['notes'])
+            self.assertNotIn('tests still fail', self.output.getvalue())
+
+    def test_planned_tests_left_out_by_the_ai_are_confirmed_by_the_projects_own_tests(self):
+        for passing in (True, False):
+            feature = self.feature_job()
+            feature['plan']['tasks'][0]['tests'] = ['test_screen']
+            command = 'pytest test_other'
+            output = {'action': 'patch', 'test_command': command, '_test_execution': {'command': command, 'full_suite': False}}
+
+            def project_tests(job, summary_file, passing=passing):
+                self.assertIsNone(job['test_command_override'])  # the project's command, not the AI's
+                job['_test_execution'] = {'command': 'all tests', 'full_suite': True}
+                return True, passing
+
+            with self.subTest(passing=passing), \
+                 self.pipeline(feature, results=[(True, True, Path('summary'), output)], states=self.EDITED) as (path, calls), \
+                 patch.object(worker, 'checkpoint_task'):
+                calls['run_build_and_tests'].side_effect = project_tests
+                worker.execute_job(path)
+                job = worker.read_json(path)
+                calls['run_build_and_tests'].assert_called_once()
+                self.assertNotIn('unverified_task', job)
+                if passing:
+                    self.assertEqual(job['completed_task_indices'], [0])
+                    calls['debug'].assert_not_called()
+                else:  # a real failure: that is what a fix attempt is for
+                    self.assertEqual((job['completed_task_indices'], job['status']), ([], 'debugging'))
+                    calls['debug'].assert_called_once_with(path)
+
+    def test_planned_tests_chained_with_and_count_but_other_joins_do_not(self):
+        task = {'title': 't', 'likely_files': ['app.py'], 'tests': ['pytest test_a', 'test ! -e old && ! grep -q gone notes']}
+        def status(command):
+            output = {'action': 'patch', '_test_execution': {'command': command, 'full_suite': False}}
+            return worker.task_validation(task, [], ['app.py'], output, True, True)[0]
+        self.assertEqual(status('pytest test_a && test ! -e old && ! grep -q gone notes'), 'passed')
+        for joined in ('||', ';', '|', '&'):
+            with self.subTest(joined=joined):
+                self.assertEqual(status(f'pytest test_a {joined} test ! -e old && ! grep -q gone notes'), 'incomplete')
 
     def test_batch_keeps_verified_task_and_resumes_only_the_unfinished_one(self):
         from orchestrator.web.run_timeline import RunTimeline
@@ -374,6 +436,7 @@ class WorkerRunTests(unittest.TestCase):
             self.assertEqual(attempts[first_id]['status'], 'passed')
             self.assertEqual(attempts[second_id]['status'], 'incomplete')
             self.assertIn('test_edge', attempts[second_id]['detail'])
+            self.assertEqual(job['unverified_task']['label'], 'Task 2')
 
             states = [{'modified': [], 'untracked': []}, {'modified': ['second.py'], 'untracked': []},
                       {'modified': [], 'untracked': []}]
@@ -382,6 +445,7 @@ class WorkerRunTests(unittest.TestCase):
             self.assertEqual(calls['run_builder'].call_count, 2)
             self.assertTrue(calls['run_builder'].call_args.args[0].stem.endswith('_task_2'))
             self.assertEqual(worker.read_json(path)['completed_task_indices'], [0, 1])
+            self.assertNotIn('unverified_task', worker.read_json(path))  # confirmed now
 
     def test_shared_files_and_a_green_suite_cannot_verify_two_tasks(self):
         first, second = self.two_task_job()['plan']['tasks']

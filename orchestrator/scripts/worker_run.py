@@ -58,7 +58,7 @@ from common import (
 )
 from open_or_update_pr import open_or_update_pr, push_branch_for_review
 from run_builder import BuilderClarificationNeeded, run_builder
-from run_build_and_tests import DiskFullError, require_build_space
+from run_build_and_tests import DiskFullError, require_build_space, run_build_and_tests
 from llm import extract_json_block
 from orchestrator.project_config import PROJECT_CONFIG
 from orchestrator import blockers, builder_check, job_runs, model_outcomes, reuse_brief, scope_check, task_growth
@@ -1001,6 +1001,9 @@ def link_run_to_tasks(job_path: Path, job: dict, tasks: list, indices: list[int]
     print(job_runs.task_marker(job["job_id"], members), flush=True)
 
 
+MISSING_TESTS = "The run used unrelated tests or omitted planned tests"  # the project's own tests can settle this one
+
+
 def task_validation(task: dict, peers: list[dict], files: list[str], output: dict,
                     build_ok: bool, test_ok: bool) -> tuple[str, str]:
     if not build_ok or not test_ok:
@@ -1026,15 +1029,16 @@ def task_validation(task: dict, peers: list[dict], files: list[str], output: dic
     configured = " ".join((PROJECT_CONFIG.test_command or "").split())
     command = execution.get("command", "") if execution is not None else requested
     full_suite = execution.get("full_suite", False) if execution is not None else not requested or requested == configured
-    # A selected test name must stand on its own. Exclusion selectors cannot prove coverage.
-    excluded = re.search(r"\bnot\b|--(?:skip|exclude|ignore)|-skip-testing|[#;&|]", command, re.IGNORECASE)
+    # A selected test name must stand on its own. Exclusion selectors cannot prove coverage. Steps chained with && do count:
+    # the run passed, so every one of them did. Other joins (;, ||, |, &) can hide a step that failed or never ran.
+    excluded = re.search(r"\bnot\b|--(?:skip|exclude|ignore)|-skip-testing|[#;&|]", command.replace("&&", " "), re.IGNORECASE)
 
     def selected(test: str) -> bool:
         return not excluded and bool(re.search(r"(?<![\w-])" + re.escape(test) + r"(?![\w-])", command))
 
     missing = [test for test in expected_tests if not full_suite and not selected(test)]
     if missing:
-        return "incomplete", "The run used unrelated tests or omitted planned tests: " + ", ".join(missing)
+        return "incomplete", f"{MISSING_TESTS}: " + ", ".join(missing)
 
     if peers:
         peer_files = [name for peer in peers for name in (peer.get("likely_files") or [])]
@@ -1052,6 +1056,40 @@ def task_validation(task: dict, peers: list[dict], files: list[str], output: dic
     if command and not full_suite and expected_tests:
         evidence += " · " + ", ".join(expected_tests)
     return "passed", evidence
+
+
+def confirm_with_project_tests(task_job: dict, summary_file: Path, output: dict) -> tuple[bool, bool, dict]:
+    """The AI's test command left out planned tests: run the project's own test command over the same work instead of
+    asking anyone. Returns the new build and test results, and the output describing what ran."""
+    print("\n      - The AI's test command left out some of this task's planned tests. Running the project's own tests to confirm it...",
+          flush=True)
+    check = {**task_job, "test_command_override": None}
+    build_ok, test_ok = run_build_and_tests(check, summary_file)
+    return build_ok, test_ok, {**output, "_test_execution": check.get("_test_execution") or {}}
+
+
+def note_unconfirmed(job: dict, outcomes: dict[int, tuple[str, str]]) -> None:
+    """Marks the job when its build and tests passed but tasks still lack evidence (nothing failed, so nothing to fix)."""
+    open_tasks = {index: detail for index, (status, detail) in outcomes.items() if status != "passed"}
+    if not open_tasks or any(status == "failed" for status, _ in outcomes.values()):
+        return
+    numbers = [str(index + 1) for index in sorted(open_tasks)]
+    job["unverified_task"] = {"label": ("Task " if len(numbers) == 1 else "Tasks ") + ", ".join(numbers),
+                              "detail": " ".join(dict.fromkeys(open_tasks.values())), "error": job.get("last_error")}
+
+
+def pause_unconfirmed(job_path: Path, job: dict, issue_number: Optional[int]) -> None:
+    note = job["unverified_task"]
+    said = f"The build and tests passed, but {note['label']} {'are' if note['label'].startswith('Tasks') else 'is'} not confirmed."
+    print(f"\n⏸️  {said} {note['detail']}\n      - Nothing failed, so no fix attempt is started. The changes are kept; "
+          "the job waits for you.")
+    history = job.get("debug_history")
+    if history and history[-1].get("result") == "pending":
+        history[-1]["result"] = {"build_ok": True, "tests_ok": True, "notes": f"{said} {note['detail']}"}
+    job.update(status="human-needed", worker_pid=None, updated_at=now_iso())
+    write_json(job_path, job)
+    update_issue_status(issue_number, "status:human-needed", ["status:executing"])
+    send_notifications(job, "Job Paused: a task isn't confirmed", f"{said}\nTitle: {job['title']}")
 
 
 def report_task_attempt(job: dict, task: dict, status: str, detail: str) -> None:
@@ -1092,6 +1130,7 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
     job["worker_host"] = socket.gethostname()  # a process id only means something on the machine that wrote it
     job["updated_at"] = now_iso()
     job.pop("last_error", None)  # stale error from a prior run shouldn't mask this run's outcome
+    job.pop("unverified_task", None)
     if "completed_task_indices" not in job:
         job["completed_task_indices"] = []
     if job.pop("task_growth", None):
@@ -1382,6 +1421,10 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
                                          files_touched, task_output, build_ok, test_ok)
                     for idx in active_indices
                 }
+                if (not is_batched and PROJECT_CONFIG.test_command and (task_output or {}).get("_test_execution")
+                        and outcomes[i][1].startswith(MISSING_TESTS)):
+                    build_ok, test_ok, task_output = confirm_with_project_tests(task_job, _summary_path, task_output)
+                    outcomes = {i: task_validation(tasks[i], [], files_touched, task_output, build_ok, test_ok)}
                 passed = [idx for idx, (status, _) in outcomes.items() if status == "passed"]
 
                 if is_batched and build_ok and test_ok and len(passed) < len(active_indices):
@@ -1395,6 +1438,7 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
                     pending = ", ".join(str(idx + 1) for idx in active_indices if idx not in passed)
                     job.update(status="human-needed", worker_pid=None, updated_at=now_iso(),
                                last_error=f"Task evidence is incomplete for {pending}. Resume to check the remaining work individually.")
+                    note_unconfirmed(job, outcomes)
                     write_json(job_path, job)
                     print(f"      - {job['last_error']}")
                     for idx, (status, detail) in outcomes.items():
@@ -1453,6 +1497,7 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
                     job["status"] = "human-needed"
                     job["last_error"] = f"Task {i+1}{model_tag}: {outcomes[i][1]}{note_tag}"
                     print(f"      - {job['last_error']}")
+                    note_unconfirmed(job, outcomes)
                     write_json(job_path, job)
                     report_task_attempt(job, task, *outcomes[i])
                     all_ok = False
@@ -1591,6 +1636,10 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
             if quick_tasks and build_ok and test_ok:
                 job["completed_task_indices"] = list(range(len(quick_tasks)))
             write_json(job_path, job)
+
+        if job.get("unverified_task"):
+            pause_unconfirmed(job_path, job, issue_number)
+            return
 
         # Commit changes if any
         if build_ok and test_ok and (ai_modified or ai_untracked):
@@ -2449,6 +2498,7 @@ def execute_parallel_task_wave(
 
     wave_touched: set[str] = set(shared_touched)
     wave_ok = True
+    outcomes: dict[int, tuple[str, str]] = {}
 
     for idx in wave_indices:
         task = tasks[idx]
@@ -2523,6 +2573,7 @@ def execute_parallel_task_wave(
             task_files = matched_planned or list(shared_touched)
 
         status, detail = task_validation(task, [], task_files, t_out, b_ok, t_ok)
+        outcomes[idx] = (status, detail)
         if status == "passed":
             if idx not in job["completed_task_indices"]:
                 job["completed_task_indices"].append(idx)
@@ -2547,6 +2598,7 @@ def execute_parallel_task_wave(
             print(f"!!! Sub-task {idx + 1} failed validation in parallel wave.")
             wave_ok = False
 
+    note_unconfirmed(job, outcomes)  # only when no task in the wave really failed
     return wave_ok, wave_touched, False
 
 

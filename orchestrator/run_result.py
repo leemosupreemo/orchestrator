@@ -545,6 +545,30 @@ def question_outcome(job: dict[str, Any], lines: list[str], action: str, code: i
     return result
 
 
+def unconfirmed_task(job: dict[str, Any]) -> dict[str, Any] | None:
+    """The task a job is paused on because its build and tests passed but didn't cover the task's planned tests (worker_run).
+    The marker only counts while the job still stands where the worker left it."""
+    note = job.get("unverified_task")
+    if (not isinstance(note, dict) or job.get("status") != "human-needed" or job.get("human_clarification_question")
+            or note.get("error") != job.get("last_error")):
+        return None
+    return note
+
+
+def unconfirmed_outcome(job: dict[str, Any], action: str, code: int | None) -> dict[str, Any] | None:
+    note = unconfirmed_task(job)
+    if code or action not in FIX_RUNS or not note or not job.get("job_id"):
+        return None
+    detail = str(note.get("detail") or "")
+    if len(detail) > MAX_LINE:
+        detail = detail[:MAX_LINE - 1].rsplit(" ", 1)[0] + "…"  # the whole list is on the job and in the log
+    label = str(note.get("label") or "a task")
+    result = _result(f"Tests passed, but {label} {'are' if label.startswith('Tasks') else 'is'} not confirmed",
+                     [detail, "Nothing failed, so no fix attempt was started. The job waits for you."], "warn")
+    result["next"] = {"label": "Resume", "action": "resume", "params": {"job": job["job_id"]}}
+    return result
+
+
 def summarize(action: str, text: str, exit_code: int | None, job_title: str = "", job: dict[str, Any] | None = None,
               root: Path | None = None) -> dict[str, Any] | None:
     """{headline, details, tone} for a finished run, or None when its output says nothing. `job_title` names the job a run made;
@@ -552,7 +576,7 @@ def summarize(action: str, text: str, exit_code: int | None, job_title: str = ""
     lines = clean_lines(text)
     reader = READERS.get(action)
     try:
-        asked = question_outcome(job, lines, action, exit_code) if job else None
+        asked = (question_outcome(job, lines, action, exit_code) or unconfirmed_outcome(job, action, exit_code)) if job else None
         if asked:
             return asked
         outcome = job_outcome(job, root) if job and root else None

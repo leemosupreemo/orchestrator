@@ -741,11 +741,11 @@ class BuilderTestCommandTests(unittest.TestCase):
         self.assertEqual(job["status"], "review-needed", job.get("last_error"))
         self.assertEqual(job["completed_task_indices"], [0])
 
-    def test_running_only_an_unrelated_test_is_still_caught(self):
+    def test_running_only_an_unrelated_test_makes_the_worker_run_the_projects_tests(self):
         project, job = self.run_with("narrow_tests")
-        self.assertIn("omitted planned tests", self.output)
-        self.assertEqual(job.get("completed_task_indices"), [], "the task was counted as done without its tests being run")
-        self.assertFalse(project.gh()["prs"], "a pull request was opened for work that was not verified")
+        self.assertIn("Running the project's own tests to confirm it", self.output)  # never counted on the unrelated test alone
+        self.assertEqual(job["status"], "review-needed", job.get("last_error"))
+        self.assertEqual(job["completed_task_indices"], [0])
 
 
 if __name__ == "__main__":
