@@ -105,6 +105,16 @@ class RunProgress:
     TASK_MILESTONES = {
         "BUILDING": 0.5, "SKIPPING IOS BUILD": 0.5, "TESTING": 0.75, "SKIPPING TESTS": 0.75, "VERIFICATION": 0.9,
     }
+    # The headers that say which part of a plan task is running.
+    TASK_STAGES = {"IMPLEMENTATION": "implement", "BUILDING": "build", "TESTING": "test"}
+    # The worker's own "[1/4] Preparing…" lines: setup and wrap-up around the tasks, whose numbers skip and would read as
+    # more steps of the same job. They name what is happening without a count.
+    WORKER_LINES = (
+        (re.compile(r"Preparing (?:current |git )?branch|Manual branch mode"), "Preparing git branch"),
+        (re.compile(r"Committing finished work"), "Committing finished work"),
+        (re.compile(r"Implementation successful"), "Creating pull request"),
+        (re.compile(r"Triggering local AI review"), "Reviewing changes"),
+    )
     # A label from before any real work was announced: once a model call starts, say what is being waited on instead.
     IDLE_LABELS = {"", "Scheduling worker", "Starting execution", "Updating job status", "Preparing git branch", "Working with AI"}
     ANSI = re.compile(rb"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[()][AB0-2]|[78=>cM])")
@@ -117,6 +127,8 @@ class RunProgress:
         self.total: int | None = None
         self.step_fraction = 0.0
         self._step_kind = ""
+        self.step_through: int | None = None  # last task of a batch built in one pass ("Tasks 1-2 of 3")
+        self.stage = ""               # "implement" | "build" | "test" while a plan task runs
         self.models: list[str] = []
         self.active: list[str] = []
         self.is_coverage = False
@@ -135,14 +147,20 @@ class RunProgress:
         self.activity = ""            # latest meaningful agent/tool activity line (never clobbered by spinners)
         self._activity_ticks = 0      # distinct observed activity updates within the current phase
 
-    def _start_step(self, step: int, total: int, description: str, kind: str) -> None:
+    def _start_step(self, step: int, total: int, description: str, kind: str, through: int | None = None) -> None:
         if (step, total, kind) != (self.step, self.total, self._step_kind):
             self.step_fraction = 0.0
             self._activity_ticks = 0
         self.step, self.total, self._step_kind = step, total, kind
+        self.step_through = through
+        self.stage = "implement" if kind == "task" else ""
         self.task = description.capitalize()
         self.label = self.task or "Running step"
         self.activity = ""
+
+    def _end_steps(self) -> None:
+        self.step = self.total = self.step_through = None
+        self._step_kind, self.stage, self.step_fraction = "", "", 0.0
 
     def _advance_planning(self, label: str) -> None:
         if self._step_kind == "planning":
@@ -170,11 +188,13 @@ class RunProgress:
                 task = re.fullmatch(r"(SUB[- ]TASK|STEP)\s*(\d+)(?:-(\d+))?/(\d+)(?::\s*(.*))?", title, re.I)
                 if task and 0 < int(task[2]) <= int(task[3] or task[2]) <= int(task[4]):
                     kind = "task" if task[1].upper().startswith("SUB") else "step"
-                    self._start_step(int(task[2]), int(task[4]), (task[5] or "").strip(), kind)
+                    self._start_step(int(task[2]), int(task[4]), (task[5] or "").strip(), kind,
+                                     int(task[3]) if task[3] else None)
                 else:
                     phase, _, detail = title.partition(":")
                     phase = phase.strip().replace("_", " ").upper()
                     if self._step_kind == "task":
+                        self.stage = self.TASK_STAGES.get(phase, self.stage)
                         milestone = self.TASK_MILESTONES.get(phase, 0)
                         if milestone > self.step_fraction:
                             self.step_fraction = milestone
@@ -204,8 +224,7 @@ class RunProgress:
                         elif phase == "REVERTING":
                             self.spec_stage = "Experience loop · Reverting"
                         if phase not in self.TASK_PHASES:
-                            self.step = self.total = None
-                            self._step_kind, self.step_fraction = "", 0.0
+                            self._end_steps()
                             self.task = detail.strip().capitalize()
             else:
                 in_sub_runner = self.is_coverage or self.label in (
@@ -214,8 +233,13 @@ class RunProgress:
                     "Building project",
                 )
                 bracket = re.fullmatch(r"\[(\d+)/(\d+)\]\s*(.*)", line)
-                if bracket and not in_sub_runner and 0 < int(bracket[1]) <= int(bracket[2]):
+                # Inside a plan task, a "[3/10]" is a tool's own count, not the job's.
+                if bracket and not in_sub_runner and self._step_kind != "task" and 0 < int(bracket[1]) <= int(bracket[2]):
                     desc = bracket[3].strip()
+                    if around := next((label for pattern, label in self.WORKER_LINES if pattern.match(desc)), ""):
+                        self._end_steps()
+                        self.label, self.task, self.activity = around, "", ""
+                        continue
                     kind = "planning" if bracket[1] == "1" and desc.startswith(("Planning ", "Fast-tracking a plan")) else "step"
                     self._start_step(int(bracket[1]), int(bracket[2]), desc, kind)
 
@@ -370,6 +394,7 @@ class RunProgress:
 
     def _base(self, active: list[str]) -> dict:
         out = {"label": self.label, "task": self.task, "step": self.step, "total": self.total, "step_fraction": self.step_fraction,
+               "step_kind": self._step_kind, "step_through": self.step_through, "stage": self.stage,
                "notice": self.notice, "machines": list(self.machines), "suites": list(self.suites), "suite": self.suite,
                "models": list(self.models), "active_models": list(dict.fromkeys(active)), "agents": len(active)}
         if self.spec_stage:

@@ -3798,7 +3798,8 @@ function liveRunCard(r, { onJobPage = false } = {}) {
   const p = r.progress || {};
   const numbered = Number.isInteger(p.step) && Number.isInteger(p.total) && p.step > 0 && p.step <= p.total;
   const facts = [
-    numbered ? `Step ${p.step} of ${p.total}` : "",
+    numbered ? `${p.step_kind !== "task" ? `Step ${p.step}` : p.step_through > p.step ? `Tasks ${p.step}–${p.step_through}` : `Task ${p.step}`} of ${p.total}` : "",
+    numbered ? { implement: "Implementing", build: "Building", test: "Testing" }[p.stage] || "" : "",
     p.experience_version ? `Version ${p.experience_version}` : "",
     p.spec_stage ? `${p.spec_stage}${p.planning_depth ? ` (${p.planning_depth})` : ""}` : "",
     p.feedback_impact || "",
@@ -3815,7 +3816,7 @@ function liveRunCard(r, { onJobPage = false } = {}) {
     <a class="main-col" href="#/runs/${encodeURIComponent(r.id)}">
       <div class="live-run-head"><span class="title">${esc(r.title)}</span>${runPill(r)}</div>
       <div class="meta">${facts.map(esc).join(" · ")}</div>
-      ${numbered ? `<progress class="live-run-progress" value="${p.step - 1}" max="${p.total}" aria-label="Completed steps: ${p.step - 1} of ${p.total}"></progress>` : ""}
+      ${numbered ? `<progress class="live-run-progress" value="${p.step - 1}" max="${p.total}" aria-label="Completed ${p.step_kind === "task" ? "tasks" : "steps"}: ${p.step - 1} of ${p.total}"></progress>` : ""}
       ${doing ? `<div class="live-run-doing">${esc(doing)}</div>` : lastLine ? `<div class="last-line mono">${esc(lastLine)}</div>` : ""}
     </a>
     <div class="row">
@@ -16955,7 +16956,16 @@ function runStatus(r, vc = null) {
   const numbered = !planReviewWaiting && ((Number.isInteger(p.step) && Number.isInteger(p.total) && p.step > 0 && p.step <= p.total) || (done && r.action === "coverage"));
   const currentStep = done && numbered ? (p.total || 5) : (p.step || 1);
   const totalSteps = numbered ? (p.total || 5) : 1;
-  const stepText = numbered ? `Step ${currentStep} of ${totalSteps}` : "";
+  // A job's plan tasks are counted as tasks, with the stage of the current one; other numbered runs have steps.
+  const inTask = numbered && p.step_kind === "task";
+  const counter = !numbered ? "" : `${!inTask ? `Step ${currentStep}` : p.step_through > currentStep ? `Tasks ${currentStep}–${p.step_through}` : `Task ${currentStep}`} of ${totalSteps}`;
+  // The job's own name for this run ("Fix attempt 6"), once its history has loaded.
+  const runLabel = typeof runHeader === "function" ? runHeader.families?.get(r.id)?.job_runs?.find((x) => x.id === r.id)?.label || "" : "";
+  const stepText = [/^Fix attempt/.test(runLabel) ? runLabel : "", counter].filter(Boolean).join(" · ");
+  const stageList = r.running && inTask && p.stage
+    ? `<ol class="run-status-stages" aria-label="Stages of this task">${[["implement", "Implement"], ["build", "Build"], ["test", "Test"]]
+      .map(([key, label]) => `<li${key === p.stage ? ' aria-current="step"' : ""}>${label}</li>`).join("")}</ol>`
+    : "";
   const completionLabel = r.action === "update_local"
     ? (pendingUpdate ? "Orchestrator updated — restarting UI to continue your job…" : "Orchestrator updated — restarting UI…")
     : r.action === "server_start" ? "Server started"
@@ -16978,7 +16988,7 @@ function runStatus(r, vc = null) {
   const transientLabel = /^(Scheduling worker|Waiting for |Reading the model|Starting execution|Updating job status|Preparing git branch|Synthesizing feature spec|Assessing ambiguity & risk|Evaluating intent gate|Planning execution tasks|Validating plan gate|Replanning remaining tasks|Generating interactive preview|Analyzing feedback impact|Refining from user feedback|Consolidating & refactoring|Reverting last iteration|(?:\[\d+\/\d+\]\s*)?Updating (?:GitHub )?issue)/i.test(p.label || ""); // where it was, not what it did
   const headlineLabel = done ? (r.action === "coverage" ? "Coverage measurement complete" : r.action === "plan_epic" ? completionLabel : partial ? "Paused: the work is saved, but the job isn't finished" : doneNext ? "Not finished: the job needs another fix attempt" : flagged ? "Finished, needs your attention" : (p.label && !transientLabel ? p.label : completionLabel))
     : failed ? (p.label ? p.label.replace(/\s+failed$/i, "") : actionName)
-    : (p.label || r.title || "Starting run");
+    : ((inTask && p.task) || p.label || r.title || "Starting run"); // in a task, its title: the stages below say what is happening
   const nonAiActions = new Set([
     "coverage", "build", "test", "test_suite", "test_plan",
     "git_pull", "git_push", "git_checkout", "stash_checkout", "git_new_branch",
@@ -17119,6 +17129,7 @@ function runStatus(r, vc = null) {
       </div>
       <span class="pill ${tone}">${esc(status)}</span>
     </div>
+    ${stageList}
     ${foundBlock}
     <dl class="run-status-details">
       ${summaryItem}

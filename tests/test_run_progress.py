@@ -41,6 +41,32 @@ class RunProgressTests(unittest.TestCase):
         progress.feed(b"=== SUB-TASK 2/2: Add tests ===\n")
         self.assertEqual((progress.snapshot()["step"], progress.snapshot()["step_fraction"]), (2, 0))
 
+    def test_plan_tasks_say_so_and_which_stage_they_are_in(self):
+        progress = RunProgress()
+        counts = lambda: {k: progress.snapshot()[k] for k in ("step_kind", "step", "total", "step_through", "stage")}
+        progress.feed(b"=== SUB-TASK 1/2: Add login ===\n=== IMPLEMENTATION ===\n")
+        self.assertEqual(counts(), {"step_kind": "task", "step": 1, "total": 2, "step_through": None, "stage": "implement"})
+        progress.feed(b"=== BUILDING ===\n[3/10] Compiling shaders\n")
+        self.assertEqual((counts()["step"], counts()["total"], counts()["stage"]), (1, 2, "build"))
+        progress.feed(b"=== TESTING ===\n=== AI THINKING ===\n")
+        self.assertEqual(counts()["stage"], "test")
+        progress.feed(b"=== IMPLEMENTATION ===\n")  # a failed build or test sends the task back
+        self.assertEqual(counts()["stage"], "implement")
+        progress.feed(b"=== SUB-TASK 1-2/3: Shared files ===\n")
+        self.assertEqual((counts()["step"], counts()["step_through"], counts()["total"]), (1, 2, 3))
+        progress.feed(b"=== PULL REQUEST ===\n")
+        self.assertEqual(counts(), {"step_kind": "", "step": None, "total": None, "step_through": None, "stage": ""})
+
+    def test_the_workers_setup_and_wrap_up_lines_are_not_counted_as_steps(self):
+        for line, label in ((b"[1/4] Preparing current branch: codex/x...", "Preparing git branch"),
+                            (b"[1/4] Committing finished work on x (no checkout).", "Committing finished work"),
+                            (b"[4/4] Implementation successful. Opening/updating Pull Request...", "Creating pull request"),
+                            (b"[5/5] Triggering local AI review for PR #3...", "Reviewing changes")):
+            progress = RunProgress()
+            progress.feed(line + b"\n")
+            snapshot = progress.snapshot()
+            self.assertEqual((snapshot["step"], snapshot["total"], snapshot["label"]), (None, None, label))
+
     def test_observed_ai_activity_advances_step_fraction_monotonically_within_phase(self):
         progress = RunProgress()
         progress.feed(b"=== SUB-TASK 1/2: Tune habitats ===\n=== AI THINKING ===\n")
@@ -409,6 +435,44 @@ globalThis.setHeader = globalThis.hydrateAuthImages = globalThis.wireImagePrevie
   assert.equal(keys.hidden, true);
   assert.equal(input.hidden, true);
 })().catch(e => { console.error(e); process.exit(1); });
+"""
+        result = subprocess.run(["node", "-e", script, str(source)], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_banner_and_running_card_count_tasks_and_mark_the_stage(self):
+        source = Path(__file__).resolve().parents[1] / "orchestrator/web/static/app.js"
+        script = r"""
+const fs = require('fs'), assert = require('node:assert/strict');
+const source = fs.readFileSync(process.argv[1], 'utf8');
+for (const name of ['runFailureGuidance', 'runDuration', 'runStatus', 'elapsed', 'liveRunCard']) {
+  const start = source.indexOf(`function ${name}(`);
+  assert(start >= 0, `Missing function ${name}`);
+  const end = source.indexOf('\n}', start) + 2;
+  eval(source.slice(start, end).replace(`function ${name}`, `globalThis.${name} = function`));
+}
+require(require('path').join(require('path').dirname(process.argv[1]), 'html.js'));
+globalThis.esc = Html.escape;
+globalThis.plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+globalThis.act = (action) => `data-action="${action}"`;
+globalThis.stoppingRuns = new Set();
+globalThis.runPill = () => '';
+globalThis.state = {};
+Date.now = () => 1000000;
+const progress = {step_kind: 'task', step: 1, total: 2, stage: 'build', task: 'Add <login>', label: 'Building project'};
+const run = {id: 'r1', job: 'job-1', running: true, started: 875, action: 'debug', title: 'Run fix', progress};
+const banner = runStatus(run);
+assert.match(banner, /<strong class="run-status-step">Task 1 of 2<\/strong>/);
+assert.match(banner, /run-status-stage">Add &lt;login&gt;</);
+assert.match(banner, /<li>Implement<\/li><li aria-current="step">Build<\/li><li>Test<\/li>/);
+assert.doesNotMatch(runStatus({...run, running: false, exit_code: 0, ended: 900}), /run-status-stages/);
+assert.match(runStatus({...run, progress: {...progress, step_through: 2, total: 3}}), /Tasks 1–2 of 3/);
+globalThis.runHeader = Object.assign(() => ({}), {families: new Map([['r1', {job_runs: [{id: 'r1', label: 'Fix attempt 6'}]}]])});
+assert.match(runStatus(run), /Fix attempt 6 · Task 1 of 2/);
+assert.match(runStatus({...run, progress: {}}), /<strong class="run-status-step">Fix attempt 6<\/strong>/);
+assert.match(runStatus({...run, progress: {step: 2, total: 5}}), /Fix attempt 6 · Step 2 of 5/);
+const card = liveRunCard(run);
+for (const part of ['Task 1 of 2', 'Building', 'Completed tasks: 0 of 2']) assert(card.includes(part), part);
+assert.match(liveRunCard({...run, progress: {step: 2, total: 5}}), /Step 2 of 5/);
 """
         result = subprocess.run(["node", "-e", script, str(source)], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
