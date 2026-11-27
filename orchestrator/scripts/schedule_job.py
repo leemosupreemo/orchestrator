@@ -450,7 +450,7 @@ def sync_code_to_remote(machine: dict[str, Any], local_state: dict[str, Any], re
     try:
         subprocess.run(["git", "push", "origin", local_state["branch"]], check=True, capture_output=True)
         print(f"      - Pulling on {machine['name']}...")
-        remote_cmd = f"cd '{remote_repo}' && git fetch origin && git checkout -f '{local_state['branch']}' && git pull origin '{local_state['branch']}'"
+        remote_cmd = f"cd '{remote_repo}' && git fetch origin && git checkout '{local_state['branch']}' && git pull origin '{local_state['branch']}'"
         subprocess.run(["ssh", ssh_target, remote_cmd], check=True, capture_output=True)
         print(f"      - Git sync successful.")
         return True

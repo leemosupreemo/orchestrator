@@ -526,6 +526,30 @@ def _pull_branch_with_recovery(branch: str, *, allow_missing_remote: bool = Fals
         ) from exc
 
 
+def keep_unfinished_work(job: dict, branch: str) -> bool:
+    """Uncommitted changes to tracked files must survive branch preparation: `git checkout -f` throws them away, even on the
+    branch they were made on. True when they're on `branch` already, so nothing may be checked out; otherwise they're set
+    aside in a stash before anything is."""
+    status = subprocess.run(["git", "status", "--porcelain", "--untracked-files=no", "--ignore-submodules=all"],
+                            cwd=str(ROOT), capture_output=True, text=True, check=False)
+    changed = [line for line in str(getattr(status, "stdout", "") or "").splitlines() if line.strip()]
+    if not changed:
+        return False
+    current = current_git_branch()
+    if current == branch:
+        return True
+    files = f"{len(changed)} uncommitted file{'' if len(changed) == 1 else 's'}"
+    label = f"orchestrator-kept-{job.get('job_id') or 'job'}-{int(time.time())}"
+    stashed = subprocess.run(["git", "stash", "push", "-m", label], cwd=str(ROOT), capture_output=True, text=True, check=False)
+    if stashed.returncode != 0:
+        raise RuntimeError(f"This project has {files} on '{current}', and they couldn't be set aside before switching to "
+                           f"'{branch}': {(stashed.stderr or stashed.stdout).strip()[-300:]}\n\n"
+                           "How to fix:\n- Commit or stash them, then run the job again.")
+    print(f"      - Set aside {files} from '{current}' in a git stash named {label}. `git stash list` shows it; "
+          "`git stash pop` brings it back.")
+    return False
+
+
 def prepare_git_branch(job: dict, issue_number: int | None) -> Tuple[str, str]:
     base_branch = job.get("base_branch") or os.environ.get("BASE_BRANCH", PROJECT_CONFIG.base_branch)
     generated_branch = job_branch_name(job, issue_number)
@@ -536,6 +560,16 @@ def prepare_git_branch(job: dict, issue_number: int | None) -> Tuple[str, str]:
         print(f"\n[1/4] Manual branch mode. Using current branch metadata: {branch}")
         print("      - Branch mode is 'manual'. Skipping git operations.")
         return branch, base_branch
+
+    target = job.get("branch") or (current_git_branch() if branch_mode == "current" else generated_branch)
+    if keep_unfinished_work(job, target):  # an earlier attempt's work, waiting here for this one
+        print(f"\n[1/4] Staying on {target}: it has unfinished changes, which checking it out again would discard.")
+        run(["git", "fetch", "origin"], cwd=ROOT, check=False)
+        pulled = run(["git", "pull", "--ff-only", "origin", target], cwd=ROOT, check=False)  # refuses to overwrite them
+        if pulled.returncode != 0:
+            print(f"      - Couldn't update from origin/{target}; carrying on with what is here.")
+        job["branch"] = target
+        return target, base_branch
 
     if branch_mode == "current":
         branch = job.get("branch") or current_git_branch()
@@ -1571,10 +1605,12 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
         post_state = get_repo_state()
 
         # Identify files changed/added by AI (never sweep .claude/, .orchestrator/, .worktrees/ tool state into commits).
-        # Also include untracked files already recorded as belonging to this job from an earlier aborted run so commits
-        # don't reference missing files (e.g. a .csproj referencing a previously created source file).
+        # Also include files already recorded as belonging to this job from an earlier attempt, still uncommitted, so commits
+        # don't reference missing work (e.g. a .csproj referencing a previously created source file).
         prior_job_untracked = set(job.get("ai_untracked_files") or [])
-        ai_modified = [f for f in post_state["modified"] if f not in pre_state["modified"] and not builder_check.is_ignored_tool_path(f)]
+        carried = {f for f in set(job.get("ai_modified_files") or []) & set(pre_state["modified"])}
+        ai_modified = [f for f in post_state["modified"]
+                       if (f not in pre_state["modified"] or f in carried) and not builder_check.is_ignored_tool_path(f)]
         ai_untracked = [
             f for f in post_state["untracked"]
             if (f not in pre_state["untracked"] or f in prior_job_untracked) and not builder_check.is_ignored_tool_path(f)
@@ -1601,7 +1637,8 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
         # A build that changed nothing hasn't built anything, whatever its tests say: stop here rather than verify untouched code
         # or start a fix loop that can't help (the usual cause is the AI's tool refusing file edits, which a fix attempt hits too).
         changed_now = sorted(
-            f for f in (set(ai_modified) | set(ai_untracked) | touched_this_run | set(files_changed_between(pre_hashes, dirty_file_hashes(ROOT))))
+            f for f in ((set(ai_modified) - carried) | set(ai_untracked) | touched_this_run  # carried work isn't this run's change
+                        | set(files_changed_between(pre_hashes, dirty_file_hashes(ROOT))))
             if not builder_check.is_ignored_tool_path(f)
         )
         # The project's own config (a test command) lives in ignored tool state but is a real change when the builder edits it.

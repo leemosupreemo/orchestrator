@@ -80,6 +80,14 @@ class WorkerRunTests(unittest.TestCase):
             self.assertEqual(calls['run_builder'].call_count, 2)
             self.assertFalse(calls['run_builder'].call_args.kwargs['resume'])
 
+    def test_an_earlier_attempts_uncommitted_work_is_committed_with_the_fix(self):
+        states = [{'modified': ['earlier.py', 'user.py'], 'untracked': []},
+                  {'modified': ['earlier.py', 'user.py', 'app.py'], 'untracked': []}]
+        with self.pipeline({'ai_modified_files': ['earlier.py']}, states=states) as (path, calls):
+            worker.execute_job(path)
+            staged = [c.args[0] for c in calls['run_shell'].call_args_list if c.args[0].startswith('git add')]
+            self.assertEqual(sorted(staged), ['git add -- app.py', 'git add -- earlier.py'])  # never user.py: not the job's
+
     def test_completed_feature_tasks_do_not_require_a_builder_result(self):
         task = {'title': 'Finished', 'description': 'done', 'acceptance_criteria': [], 'likely_files': []}
         with self.pipeline({'type': 'feature-plan', 'approved': True, 'plan': {'tasks': [task]}, 'completed_task_indices': [0]}) as (path, calls):
@@ -751,6 +759,35 @@ class WorkerRunTests(unittest.TestCase):
                 with self.assertRaises(RuntimeError) as err:
                     worker._git_commit_step("git add a.txt")
             self.assertIn("its tests passed, but committing it failed", str(err.exception))
+
+    def test_preparing_the_branch_never_discards_unfinished_work(self):
+        import subprocess as sp
+        config = SimpleNamespace(base_branch='main', git_remote=None)
+        with tempfile.TemporaryDirectory() as tmp:
+            origin, root = Path(tmp) / 'origin.git', Path(tmp) / 'project'
+            sp.run(['git', 'init', '-q', '--bare', '-b', 'main', str(origin)], check=True)
+            sp.run(['git', 'clone', '-q', str(origin), str(root)], check=True, capture_output=True)
+            git = lambda *a: sp.run(['git', *a], cwd=root, check=True, capture_output=True, text=True).stdout.strip()  # noqa: E731
+            git('config', 'user.email', 't@t'); git('config', 'user.name', 't')
+            work = root / 'app.py'
+            work.write_text('done\n'); git('add', '.'); git('commit', '-qm', 'base'); git('push', '-q', 'origin', 'HEAD:main')
+            git('checkout', '-qb', 'feature'); git('push', '-q', 'origin', 'feature')
+            with patch.object(worker, 'ROOT', root), patch.object(worker, 'PROJECT_CONFIG', config), \
+                 patch('orchestrator.setup_checklist.ensure_gh_git_credentials'):
+                for mode in ('current', 'new'):  # the next attempt on the same branch keeps what the last one wrote
+                    with self.subTest(mode=mode):
+                        work.write_text('unfinished\n')
+                        job = {'job_id': 'id-1', 'title': 'Demo', 'branch': 'feature', 'branch_mode': mode}
+                        self.assertEqual(worker.prepare_git_branch(job, None), ('feature', 'main'))
+                        self.assertEqual(work.read_text(), 'unfinished\n')
+                        self.assertEqual(git('stash', 'list'), '')
+                # Switching away: the changes are set aside, not thrown away
+                job = {'job_id': 'id-2', 'title': 'Demo', 'branch': 'main', 'branch_mode': 'current'}
+                self.assertEqual(worker.prepare_git_branch(job, None), ('main', 'main'))
+                self.assertEqual((git('branch', '--show-current'), work.read_text()), ('main', 'done\n'))
+                self.assertIn('orchestrator-kept-id-2', git('stash', 'list'))
+                self.assertEqual(git('show', 'stash@{0}:app.py'), 'unfinished')
+        self.assertIn('Set aside 1 uncommitted file', self.output.getvalue())
 
     def test_prepare_git_branch_autocorrects_checkout_failures(self):
         config = SimpleNamespace(base_branch='main', git_remote=None)
