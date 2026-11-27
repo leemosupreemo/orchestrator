@@ -817,6 +817,32 @@ class EpicsJiraTests(ServerTestCase):
         with self.assertRaises(ui.UIError):
             ui.build_plan_epic({"epic": "ep-gone"}, self.root)
 
+    def test_a_planning_run_moves_to_the_planned_job_and_cannot_plan_it_twice(self):
+        rt, old, new = ui.runtime_dir(self.root), self.approved["job"], "20990101-000000-feature-9"
+        stand_in = (  # what new_job.py --epic does: write the planned job, then take the waiting one's place
+            f"import json, sys; sys.path.insert(0, {str(PACKAGE_ROOT)!r}); from pathlib import Path; from orchestrator import epics; "
+            f"rt = Path({str(rt)!r}); (rt / 'jobs' / '{new}.json').write_text(json.dumps("
+            f"{{'job_id': '{new}', 'title': 'Planned round', 'type': 'feature-plan', 'status': 'planned', 'epic': sys.argv[2]}})); "
+            f"epics.attach_job(rt, sys.argv[2], '{new}'); print('Skipping dispatch')")
+        real = self.server.sessions.start
+        with patch.object(self.server.sessions, "start", side_effect=lambda action, title, argv, *a, **k: real(
+                action, title, [sys.executable, "-c", stand_in, "--epic", argv[argv.index("--epic") + 1]], *a, **k)):
+            res, data = self.request("POST", "/api/runs", {"action": "plan_epic", "params": {"job": old}}, headers=UI_HEADERS)
+        self.assertEqual(res.status, 201, data)
+        session = self.server.sessions.get(data["run"]["id"])
+        recorded = []
+        for _ in range(200):
+            recorded = [r for r in ui.job_runs.recorded(rt) if r["id"] == session.id]
+            if recorded and not session.running:
+                break
+            time.sleep(0.05)
+        self.assertEqual([r["job"] for r in recorded], [new])  # the saved history is the planned job's
+        run = session.summary()
+        self.assertEqual((run["job"], run["result_job"], run["replaced_job"], run["job_title"]), (new, new, old, "Planned round"))
+        for params in ({"job": new}, {"epic": self.approved["id"]}):
+            with self.subTest(params=params), self.assertRaisesRegex(ui.UIError, "already planned"):
+                ui.build_plan_epic(params, self.root)
+
 
 class SignOutTests(unittest.TestCase):
     def test_the_sidebar_offers_sign_out_not_a_session_lock(self):
@@ -8077,8 +8103,25 @@ class PlanEpicRunPageTests(unittest.TestCase):
         app = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
         status = app[app.index("function runStatus("):app.index("function wireKeychainUnlock(")]
         self.assertIn('r.action === "plan_epic" && r.result_job ? `<a class="btn small primary" href="#/jobs/${encodeURIComponent(r.result_job)}">Review plan</a>`', status)
-        self.assertIn('const targetJob = r.action === "plan_epic" && r.result_job ? r.result_job : r.job || r.result_job;', status)
         self.assertIn('r.action === "plan_epic" ? "Plan ready to review"', status)  # not the last step's "Skipping dispatch"
+        self.assertEqual(status.count("planMade(r) && target"), 1)  # a stopped run that made its job offers the plan, not Resume
+        self.assertIn('const replaced = state.runs.find((r) => r.replaced_job === id);', app)  # the waiting job's page follows
+
+    def test_planning_that_made_its_job_offers_no_rerun(self):
+        script = """
+const code = require('fs').readFileSync(process.argv[1], 'utf8'), assert = require('assert');
+const grab = (n) => code.slice(code.indexOf('function ' + n + '('), code.indexOf('\\n}', code.indexOf('function ' + n + '(')) + 2);
+globalThis.esc = (s) => s; globalThis.act = (a) => `data-action="${a}"`;
+globalThis.current = {page: 'run'}; globalThis.stoppingRuns = new Set(); globalThis.state = {};
+eval(grab('planMade') + grab('splitJobTitle') + grab('runHeader'));
+const run = (extra) => runHeader({id: 'r1', action: 'plan_epic', running: false, job: 'job-9', title: 'Plan epic', ...extra}).actions;
+assert(!run({exit_code: 0, result_job: 'job-9'}).includes('data-action="plan_epic"'));
+assert(!run({exit_code: 0}).includes('data-action="plan_epic"'), 'a saved run has no result_job');
+assert(!run({exit_code: 1, result_job: 'job-9'}).includes('data-action="plan_epic"'));
+assert(run({exit_code: 1}).includes('data-action="plan_epic"'), 'planning that made nothing can be run again');
+"""
+        result = subprocess.run(["node", "-e", script, str(PACKAGE_ROOT / "orchestrator/web/static/app.js")], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_planning_only_does_not_promise_a_branch(self):
         script = (PACKAGE_ROOT / "orchestrator" / "scripts" / "new_job.py").read_text()
@@ -9487,7 +9530,8 @@ globalThis.act = (action, obj) => `data-action="${action}" data-params='${JSON.s
 globalThis.esc = (s) => s;
 globalThis.current = { page: 'run' };
 globalThis.stoppingRuns = new Set();
-eval(code.slice(code.indexOf('function runHeader'), code.indexOf('function openImageModal')));
+eval(code.slice(code.indexOf('function splitJobTitle'), code.indexOf('\\n}', code.indexOf('function splitJobTitle')) + 2));
+eval(code.slice(code.indexOf('function planMade'), code.indexOf('function openImageModal')));
 eval(code.slice(code.indexOf('function runFailureGuidance'), code.indexOf('function runStatus')));
 
 const hdr1 = runHeader({ id: 'r1', running: false, job: 'job-123', action: 'execute', title: 'Build' });

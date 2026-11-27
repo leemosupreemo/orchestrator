@@ -317,6 +317,7 @@ class PtySession:
         self.job_id: str | None = None
         self.job_title = ""  # what the run page names the job by: its title, not an ID like "job-1"
         self.result_job: str | None = None
+        self.replaced_job = None  # a waiting epic job this run's planning swapped for the planned one
         self.started = time.time()
         self.last_output = self.started
         self.ended: float | None = None
@@ -562,7 +563,26 @@ class PtySession:
 
         threading.Thread(target=escalate, daemon=True).start()
 
+    replaced_job: str | None = None  # also a class default: tests build sessions without __init__
+
+    def _follow_planned_epic(self) -> None:
+        """Planning an epic replaces the waiting job its run was started on with the planned one (epics.attach_job). The run
+        belongs to the planned job from then on; otherwise its links and saved history point at a job that is gone."""
+        if (self.action != "plan_epic" or not self.job_id or "--epic" not in self.argv
+                or (jobs_dir(self.cwd) / f"{self.job_id}.json").exists()):
+            return
+        try:
+            epic_id = self.argv[self.argv.index("--epic") + 1]
+            planned = str(epic_store.get(runtime_dir(self.cwd), epic_id).get("job") or "")
+        except (IndexError, epic_store.EpicError):
+            return
+        path = jobs_dir(self.cwd) / f"{planned}.json"
+        if planned and planned != self.job_id and path.is_file():
+            self.replaced_job, self.job_id, self.result_job = self.job_id, planned, planned
+            self.job_title = job_summary(path, read_json_file(path))["title"]
+
     def summary(self) -> dict[str, Any]:
+        self._follow_planned_epic()
         idle = time.time() - self.last_output if self.running else 0
         with self._cond:
             progress = self._progress.snapshot(running=self.running)
@@ -621,7 +641,7 @@ class PtySession:
             "command": " ".join(_display_argv(self.argv)), "started": self.started,
             "ended": self.ended, "running": self.running, "exit_code": self.exit_code,
             "stopped": self.stopped,
-            "job": self.job_id, "job_title": self.job_title, "result_job": self.result_job,
+            "job": self.job_id, "job_title": self.job_title, "result_job": self.result_job, "replaced_job": self.replaced_job,
             # Quiet for a while with a prompt-shaped last line: probably waiting on you.
             "waiting": self.running and idle > IDLE_PROMPT_SECONDS and self._looks_like_prompt(),
             "last_line": self._last_line(), "error_summary": self._error_summary(), "idle": int(idle), "result": self.result,
@@ -5006,6 +5026,13 @@ def build_plan_epic(params: dict[str, Any], root: Path) -> list[str]:
         raise UIError(str(exc))
     if epic["status"] != "approved":
         raise UIError("Approve the epic before planning it.")
+    for job_id in dict.fromkeys([str(params.get("job") or ""), str(epic.get("job") or "")]):
+        existing = jobs_dir(root) / f"{job_id}.json"
+        if not re.fullmatch(r"[A-Za-z0-9._-]+", job_id) or not existing.is_file():
+            continue
+        data = read_json_file(existing)
+        if data.get("status") != "backlog" and (job_id == epic.get("job") or data.get("epic") == epic["id"]):
+            raise UIError("This epic is already planned. Open its job to review the plan.", HTTPStatus.CONFLICT)  # no second plan
     summary = epic["name"] + (f": {epic['summary']}" if epic.get("summary") else "")
     return build_new_job({"type": "feature", "summary": summary[:500], "feature": epic.get("feature") or "", "epic": epic["id"],
                           "branch_mode": "new", "no_dispatch": True}, root)

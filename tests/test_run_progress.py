@@ -482,7 +482,7 @@ assert.match(liveRunCard({...run, progress: {step: 2, total: 5}}), /Step 2 of 5/
         script = r"""
 const fs = require('fs'), assert = require('node:assert/strict');
 const source = fs.readFileSync(process.argv[1], 'utf8');
-for (const name of ['runFailureGuidance', 'runDuration', 'runStatus', 'updateRunStatus', 'nextStep', 'suiteGroupsHtml', 'runHeader']) {
+for (const name of ['runFailureGuidance', 'runDuration', 'runStatus', 'updateRunStatus', 'nextStep', 'suiteGroupsHtml', 'splitJobTitle', 'planMade', 'runHeader']) {
   const start = source.indexOf(`function ${name}(`);
   assert(start >= 0, `Missing function ${name}`);
   const end = source.indexOf('\n}', start) + 2;

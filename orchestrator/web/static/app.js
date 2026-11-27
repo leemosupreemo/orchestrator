@@ -6857,7 +6857,15 @@ function planBriefItems(markdown, plan = {}) {
 
 pages.job = async ([id]) => {
   if (!aiAbilities.loaded) aiAbilities = { ...(await api("ai/abilities").catch(() => ({}))), loaded: true };
-  const data = await api(`jobs/${encodeURIComponent(id)}`);
+  let data;
+  try {
+    data = await api(`jobs/${encodeURIComponent(id)}`);
+  } catch (error) {
+    const replaced = state.runs.find((r) => r.replaced_job === id); // planning an epic swaps its waiting job for the planned one
+    if (!replaced) throw error;
+    location.replace(`#/jobs/${encodeURIComponent(replaced.job)}`);
+    return { stale: true };
+  }
   const { summary: s, job, outputs, runs, docs, changes, links, test_summary: testSummary, pipeline: pipe, tasks: jobTasks, completed_tasks: jobCompleted, next_task: jobNextTask } = data;
   if (job.moved_to) { // an older copy: the job lives on where it was last worked on, so show that one (and pick it up from there)
     const owner = await findJobElsewhere(id, job.moved_to);
@@ -16170,6 +16178,11 @@ function runFamilyHtml(r, family) {
   return `<span class="status-line run-family"><span>${where}</span></span>`;
 }
 
+// Planning that made its job is finished: running it again would plan the epic a second time, so "Review plan" is what's left.
+function planMade(r) {
+  return r.action === "plan_epic" && Boolean(r.result_job || (!r.running && r.exit_code === 0));
+}
+
 function runHeader(r, family = null) {
   // run id -> its job's runs, kept on the function so a header redrawn while the run goes on keeps saying whose run it is
   const families = (runHeader.families ||= new Map());
@@ -16183,7 +16196,7 @@ function runHeader(r, family = null) {
   const rerunAction = jobId
     ? (r.action && r.action !== "console" && r.action !== "new_job" ? r.action : "execute")
     : (r.action && r.action !== "console" && r.action !== "new_job" ? r.action : "");
-  const rerunBtn = !r.running && rerunAction
+  const rerunBtn = !r.running && rerunAction && !planMade(r)
     ? `<button type="button" class="btn icon-only" ${act(rerunAction, jobId ? { job: jobId } : undefined)} aria-label="${jobId ? "Rerun job" : "Rerun"}" title="${jobId ? "Rerun job" : "Rerun"}"><svg class="icon" aria-hidden="true"><use href="#i-refresh"/></svg></button>`
     : "";
   const { title: cleanRunTitle, task: runTaskSub } = splitJobTitle(
@@ -16832,7 +16845,9 @@ function runStatus(r, vc = null) {
     const target = r.result_job || r.job;
     const named = ["test_suite", "test_plan", "test_command"].includes(r.action) && r.command ? { name: r.command.trim().split(/\s+/).pop() } : undefined;
     const canResume = r.action && r.action !== "console" && r.action !== "new_job" && (!["test_suite", "test_plan", "test_command"].includes(r.action) || named?.name);
-    const resume = target
+    const resume = planMade(r) && target
+      ? `<a class="btn small primary" href="#/jobs/${encodeURIComponent(target)}">Review plan</a>`
+      : target
       ? `<button type="button" class="btn small primary" ${act(canResume ? r.action : "execute", { job: target })}><svg class="icon icon-sm" aria-hidden="true"><use href="#i-play"/></svg> Resume</button>`
       : canResume
         ? `<button type="button" class="btn small primary" ${act(r.action, named)}><svg class="icon icon-sm" aria-hidden="true"><use href="#i-play"/></svg> Resume</button>`
@@ -17650,7 +17665,9 @@ function nextStep(r) {
     const target = r.result_job || r.job;
     const named = ["test_suite", "test_plan", "test_command"].includes(r.action) && r.command ? { name: r.command.trim().split(/\s+/).pop() } : undefined;
     const canResume = r.action && r.action !== "console" && r.action !== "new_job" && (!["test_suite", "test_plan", "test_command"].includes(r.action) || named?.name);
-    const resume = target
+    const resume = planMade(r) && target
+      ? `<a class="btn small primary" href="#/jobs/${encodeURIComponent(target)}">Review plan</a>`
+      : target
       ? `<button type="button" class="btn small primary" ${act(canResume ? r.action : "execute", { job: target })}><svg class="icon icon-sm" aria-hidden="true"><use href="#i-play"/></svg> Resume</button>`
       : canResume
         ? `<button type="button" class="btn small primary" ${act(r.action, named)}><svg class="icon icon-sm" aria-hidden="true"><use href="#i-play"/></svg> Resume</button>`
