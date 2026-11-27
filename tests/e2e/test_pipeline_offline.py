@@ -461,7 +461,7 @@ class BlockedJobRecoveryTests(unittest.TestCase):
         cls.resume_runs = []
 
         def start(key, title, argv, root, env, logs, **kw):
-            cls.resume_runs.append(subprocess.run(argv, cwd=root, env=p.env(), capture_output=True, text=True, timeout=600))
+            cls.resume_runs.append(subprocess.run(argv, cwd=root, env={**p.env(), **(env or {}), "ORCHESTRATOR_NONINTERACTIVE": "1"}, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=600))
             return SimpleNamespace()
 
         server = SimpleNamespace(sessions=SimpleNamespace(running_job_ids=lambda: set(), start=start), _publishing_jobs=set(),

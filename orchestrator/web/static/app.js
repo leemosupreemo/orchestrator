@@ -6351,77 +6351,6 @@ function jobPlanNotes(groups) {
     <div class="card-b stack">${sections}</div></details>`;
 }
 
-function installToolButtonHtml(tool, { primary = false, jobId = "" } = {}) {
-  if (!tool?.installable || state.you?.role === "member") return "";
-  return `<button type="button" class="btn small${primary ? " primary" : ""}" data-install-tool="${esc(tool.id)}" data-install-tool-info="${esc(JSON.stringify(tool))}"${jobId ? ` data-job="${esc(jobId)}"` : ""}>Install ${esc(tool.name)}…</button>`;
-}
-
-function setupEnvironmentButtonHtml(envSetup, { primary = false, jobId = "" } = {}) {
-  if (!envSetup || envSetup.ready || !envSetup.auto_steps?.length || state.you?.role === "member") return "";
-  const label = envSetup.button_label || (envSetup.auto_steps.length === 1 ? `Install ${envSetup.auto_steps[0].name}…` : "Set up environment…");
-  return `<button type="button" class="btn small${primary ? " primary" : ""}" data-setup-env="1" data-setup-env-info="${esc(JSON.stringify(envSetup))}"${jobId ? ` data-job="${esc(jobId)}"` : ""}>${esc(label)}</button>`;
-}
-
-async function promptEnvironmentSetup(envSetup, { jobId = "", button = null } = {}) {
-  if (!envSetup?.auto_steps?.length) return;
-  const host = state.project?.computer?.name || "this computer";
-  const steps = envSetup.auto_steps;
-  const manuals = Array.isArray(envSetup.manual_items) ? envSetup.manual_items : [];
-  const title = steps.length === 1 && !manuals.length ? `${steps[0].name} isn't set up` : `Set up environment on ${host}`;
-  const confirmLabel = steps.length === 1 ? `Install ${steps[0].name}` : "Set up environment";
-  const autoList = `<ul class="assumptions">${steps.map((s) => `<li><strong>${esc(s.name)}</strong> — ${esc(s.summary || "")}${s.size_hint ? ` <span class="muted">(${esc(s.size_hint)})</span>` : ""}</li>`).join("")}</ul>`;
-  const manualList = manuals.length
-    ? `<p class="muted mt-8">Manual steps still needed after automatic setup:</p><ul class="assumptions">${manuals.map((m) => `<li><strong>${esc(m.name)}</strong> — ${esc(m.hint || m.detail || "")}</li>`).join("")}</ul>`
-    : "";
-  const confirmed = await formDialog(
-    title,
-    `<p>${esc(envSetup.detail || `Install the missing build and test dependencies on ${host} in one pass?`)}</p>${autoList}${manualList}`,
-    confirmLabel,
-    { compact: true },
-  );
-  if (!confirmed) return;
-  await runAction("setup_environment", { ...(jobId ? { job: jobId } : {}) }, {
-    skipConfirm: true,
-    button,
-    optimisticRunTitle: steps.length === 1 ? `Installing ${steps[0].name}…` : "Setting up environment…",
-  });
-}
-
-async function promptInstallTool(tool, { jobId = "", button = null } = {}) {
-  if (!tool?.id) return;
-  const host = state.project?.computer?.name || "this computer";
-  const roles = Array.isArray(tool.needed_by) && tool.needed_by.length ? ` by this project's ${tool.needed_by.join(" and ")} command` : " by this project";
-  const confirmed = await formDialog(
-    `${tool.name} isn't installed`,
-    `<p><strong>${esc(tool.name)}</strong> is needed${esc(roles)}, and it isn't installed on <strong>${esc(host)}</strong>. Would you like to install it now?</p>
-     <p class="muted">${esc(tool.summary || "")}${tool.size_hint ? ` (${esc(tool.size_hint)})` : ""}</p>`,
-    `Install ${tool.name}`,
-    { compact: true },
-  );
-  if (!confirmed) return;
-  await runAction("install_tool", { tool: tool.id, ...(jobId ? { job: jobId } : {}) }, {
-    skipConfirm: true,
-    button,
-    optimisticRunTitle: `Installing ${tool.name}…`,
-  });
-}
-
-document.addEventListener("click", (e) => {
-  const envBtn = e.target.closest?.("[data-setup-env]");
-  if (envBtn) {
-    let envSetup = null;
-    try { envSetup = JSON.parse(envBtn.dataset.setupEnvInfo || "null"); } catch { envSetup = null; }
-    if (envSetup) promptEnvironmentSetup(envSetup, { jobId: envBtn.dataset.job || "", button: envBtn });
-    return;
-  }
-  const btn = e.target.closest?.("[data-install-tool]");
-  if (!btn) return;
-  let tool = null;
-  try { tool = JSON.parse(btn.dataset.installToolInfo || "null"); } catch { tool = null; }
-  if (!tool?.id) tool = { id: btn.dataset.installTool, name: btn.dataset.installTool, installable: true };
-  promptInstallTool(tool, { jobId: btn.dataset.job || "", button: btn });
-});
-
 function jobStartBlockers(blockers, canRecheck = true, jobId = "", envSetup = null) {
   if (!blockers?.length) return "";
   const reasons = {
@@ -9013,6 +8942,77 @@ async function signingGetDialog(item, view) {
   wire();
   await done;
 }
+
+function installToolButtonHtml(tool, { primary = false, jobId = "" } = {}) {
+  if (!tool?.installable || state.you?.role === "member") return "";
+  return `<button type="button" class="btn small${primary ? " primary" : ""}" data-install-tool="${esc(tool.id)}" data-install-tool-info="${esc(JSON.stringify(tool))}"${jobId ? ` data-job="${esc(jobId)}"` : ""}>Install ${esc(tool.name)}…</button>`;
+}
+
+function setupEnvironmentButtonHtml(envSetup, { primary = false, jobId = "" } = {}) {
+  if (!envSetup || envSetup.ready || !envSetup.auto_steps?.length || state.you?.role === "member") return "";
+  const label = envSetup.button_label || (envSetup.auto_steps.length === 1 ? `Install ${envSetup.auto_steps[0].name}…` : "Set up environment…");
+  return `<button type="button" class="btn small${primary ? " primary" : ""}" data-setup-env="1" data-setup-env-info="${esc(JSON.stringify(envSetup))}"${jobId ? ` data-job="${esc(jobId)}"` : ""}>${esc(label)}</button>`;
+}
+
+async function promptEnvironmentSetup(envSetup, { jobId = "", button = null } = {}) {
+  if (!envSetup?.auto_steps?.length) return;
+  const host = state.project?.computer?.name || "this computer";
+  const steps = envSetup.auto_steps;
+  const manuals = Array.isArray(envSetup.manual_items) ? envSetup.manual_items : [];
+  const title = steps.length === 1 && !manuals.length ? `${steps[0].name} isn't set up` : `Set up environment on ${host}`;
+  const confirmLabel = steps.length === 1 ? `Install ${steps[0].name}` : "Set up environment";
+  const autoList = `<ul class="assumptions">${steps.map((s) => `<li><strong>${esc(s.name)}</strong> — ${esc(s.summary || "")}${s.size_hint ? ` <span class="muted">(${esc(s.size_hint)})</span>` : ""}</li>`).join("")}</ul>`;
+  const manualList = manuals.length
+    ? `<p class="muted mt-8">Manual steps still needed after automatic setup:</p><ul class="assumptions">${manuals.map((m) => `<li><strong>${esc(m.name)}</strong> — ${esc(m.hint || m.detail || "")}</li>`).join("")}</ul>`
+    : "";
+  const confirmed = await formDialog(
+    title,
+    `<p>${esc(envSetup.detail || `Install the missing build and test dependencies on ${host} in one pass?`)}</p>${autoList}${manualList}`,
+    confirmLabel,
+    { compact: true },
+  );
+  if (!confirmed) return;
+  await runAction("setup_environment", { ...(jobId ? { job: jobId } : {}) }, {
+    skipConfirm: true,
+    button,
+    optimisticRunTitle: steps.length === 1 ? `Installing ${steps[0].name}…` : "Setting up environment…",
+  });
+}
+
+async function promptInstallTool(tool, { jobId = "", button = null } = {}) {
+  if (!tool?.id) return;
+  const host = state.project?.computer?.name || "this computer";
+  const roles = Array.isArray(tool.needed_by) && tool.needed_by.length ? ` by this project's ${tool.needed_by.join(" and ")} command` : " by this project";
+  const confirmed = await formDialog(
+    `${tool.name} isn't installed`,
+    `<p><strong>${esc(tool.name)}</strong> is needed${esc(roles)}, and it isn't installed on <strong>${esc(host)}</strong>. Would you like to install it now?</p>
+     <p class="muted">${esc(tool.summary || "")}${tool.size_hint ? ` (${esc(tool.size_hint)})` : ""}</p>`,
+    `Install ${tool.name}`,
+    { compact: true },
+  );
+  if (!confirmed) return;
+  await runAction("install_tool", { tool: tool.id, ...(jobId ? { job: jobId } : {}) }, {
+    skipConfirm: true,
+    button,
+    optimisticRunTitle: `Installing ${tool.name}…`,
+  });
+}
+
+document.addEventListener("click", (e) => {
+  const envBtn = e.target.closest?.("[data-setup-env]");
+  if (envBtn) {
+    let envSetup = null;
+    try { envSetup = JSON.parse(envBtn.dataset.setupEnvInfo || "null"); } catch { envSetup = null; }
+    if (envSetup) promptEnvironmentSetup(envSetup, { jobId: envBtn.dataset.job || "", button: envBtn });
+    return;
+  }
+  const btn = e.target.closest?.("[data-install-tool]");
+  if (!btn) return;
+  let tool = null;
+  try { tool = JSON.parse(btn.dataset.installToolInfo || "null"); } catch { tool = null; }
+  if (!tool?.id) tool = { id: btn.dataset.installTool, name: btn.dataset.installTool, installable: true };
+  promptInstallTool(tool, { jobId: btn.dataset.job || "", button: btn });
+});
 
 async function confirmServerAction(action, server, whereLabel) {
   const where = whereLabel === "This computer" ? "this computer" : whereLabel;

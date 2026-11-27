@@ -102,7 +102,15 @@ def run_suite(root: Path, *, only: list[str] | None = None, log: Path | None = N
     The result is empty when the runner died before finishing; the output goes to `log` either way."""
     with tempfile.TemporaryDirectory() as scratch:
         result_file = Path(scratch) / "result.json"
-        res = run([sys.executable, "-c", RUNNER, str(result_file), *(only or [])], cwd=str(root), capture_output=True, text=True, check=False)
+        res = run(
+            [sys.executable, "-c", RUNNER, str(result_file), *(only or [])],
+            cwd=str(root),
+            stdin=subprocess.DEVNULL,
+            start_new_session=True,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
         if log:
             log.write_text(f"{res.stdout or ''}{res.stderr or ''}", encoding="utf-8")
         try:

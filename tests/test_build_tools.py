@@ -337,9 +337,9 @@ class ServerWorkerAndUiIntegrationTests(unittest.TestCase):
         self.assertIn("const machineBlocker = diskBlocked || (typeof toolBlocked !== \"undefined\" && toolBlocked) ||", app_js)
 
         # Verify jobStartBlockers emits ONE catch-all button even when 3 tools/manifests fail
-        fn_start = app_js.index("function installToolButtonHtml(")
-        fn_end = app_js.index("function strandedNote(")
-        snippet = app_js[fn_start:fn_end]
+        helpers_src = app_js[app_js.index("function installToolButtonHtml("):app_js.index("async function confirmServerAction(")]
+        blockers_src = app_js[app_js.index("function jobStartBlockers("):app_js.index("function strandedNote(")]
+        snippet = f"{helpers_src}\n{blockers_src}"
         script = f"""
 {html_js}
 {home_js}
