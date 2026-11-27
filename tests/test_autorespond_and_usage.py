@@ -51,6 +51,19 @@ class UsageLimitTests(StateDirCase):
         self.assertEqual(usage_limits.until("usage limit reached", now), now + usage_limits.DEFAULT_USAGE_HOLD)
         self.assertEqual(usage_limits.until("429 Too Many Requests", now), now + usage_limits.DEFAULT_RATE_HOLD)
 
+    def test_a_reset_on_another_day_is_read_with_its_date(self):
+        now = datetime(2026, 11, 26, 20, 52).timestamp()
+        codex = ("You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit "
+                 "https://chatgpt.com/settings/usage to purchase more credits or try again at Nov 27th, 2026 1:41 AM.")
+        self.assertEqual(usage_limits.until(codex, now), datetime(2026, 11, 27, 1, 41).timestamp())
+        self.assertEqual(usage_limits.until("Your limit will reset at Nov 30, 3pm.", now), datetime(2026, 11, 30, 15).timestamp())
+        self.assertEqual(usage_limits.until("Weekly limit reached. Resets December 1 at 12am", now), datetime(2026, 12, 1).timestamp())
+        new_year = datetime(2026, 12, 31, 23).timestamp()
+        self.assertEqual(usage_limits.until("resets Jan 2, 9am", new_year), datetime(2027, 1, 2, 9).timestamp())
+        self.assertEqual(usage_limits.until("try again at Dec 25th, 2026 1:00 PM", now), now + usage_limits.MAX_HOLD)
+        for unreadable in ("try again at Nov 31st, 2026 1:00 PM", "try again at Nov 20th, 2026 1:00 PM"):  # no such day; gone by
+            self.assertEqual(usage_limits.until(unreadable, now), now + usage_limits.DEFAULT_USAGE_HOLD, unreadable)
+
     def test_the_whole_tool_is_set_aside_until_it_resets_then_comes_back(self):
         now = time.time()
         hold = project_chat.record_out_of_usage(CLAUDE, LIMIT, now=now)
@@ -148,6 +161,27 @@ class SignInFallbackTests(StateDirCase):
         codex_env = patch.dict(os.environ, {"CODEX_HOME": str(Path(self.tmp.name) / "no-codex")})
         codex_env.start()
         self.addCleanup(codex_env.stop)
+        no_wait = patch.object(llm, "SIGN_IN_RETRY_AFTER", 0)
+        no_wait.start()
+        self.addCleanup(no_wait.stop)
+
+    def test_a_sign_in_that_renews_itself_keeps_the_same_model(self):
+        with patch.object(llm, "_run_llm_single", side_effect=[RuntimeError(self.AUTH_EXPIRED), '{"summary": "ok"}']) as call:
+            _, used, _ = llm.run_llm(OTHER_CLAUDE, "BUILD IT", allowed_models=[OTHER_CLAUDE], role=ModelRole.BUILDER)
+
+        self.assertEqual(used, OTHER_CLAUDE)
+        self.assertEqual([c.args[0] for c in call.call_args_list], [OTHER_CLAUDE, OTHER_CLAUDE])
+        self.assertFalse(project_chat.is_model_blocked(OTHER_CLAUDE))
+
+    def test_an_expired_sign_in_comes_back_far_sooner_than_a_rejected_key(self):
+        now = time.time()
+        later = now + project_chat.FAIL_HOLD + 5
+        project_chat.record_model_failure(OTHER_CLAUDE, "expired", key_rejected=True, expired=True, now=now)
+        self.assertTrue(project_chat.is_model_blocked(CLAUDE, now=now + 60))
+        self.assertFalse(project_chat.is_model_blocked(CLAUDE, now=later))
+        self.assertFalse(project_chat.is_model_blocked(OTHER_CLAUDE, now=later))
+        project_chat.record_model_failure(OTHER_CLAUDE, "401 Invalid API key", key_rejected=True, now=now)
+        self.assertTrue(project_chat.is_model_blocked(CLAUDE, now=later))
 
     def test_expired_claude_login_falls_back_to_ready_antigravity_claude_and_blocks_cli_siblings(self):
         import json
@@ -180,7 +214,7 @@ class SignInFallbackTests(StateDirCase):
             out, used, _ = llm.run_llm(OTHER_CLAUDE, "FIX IT", allowed_models=[OTHER_CLAUDE], role=ModelRole.BUILDER)
 
         self.assertEqual(used, "claude-sonnet-5-5-high")
-        self.assertEqual(tried, [OTHER_CLAUDE, "claude-sonnet-5-5-high"])
+        self.assertEqual(tried, [OTHER_CLAUDE, OTHER_CLAUDE, "claude-sonnet-5-5-high"])  # asked twice, then moved on
         self.assertIn("fixed via agy", out)
         # Sibling Claude CLI models are blocked too, while Antigravity-hosted Claude stays usable.
         self.assertTrue(project_chat.is_model_blocked(OTHER_CLAUDE))
@@ -211,7 +245,7 @@ class SignInFallbackTests(StateDirCase):
             _, used, _ = llm.run_llm(OTHER_CLAUDE, "BUILD IT", allowed_models=[OTHER_CLAUDE, CLAUDE], role=ModelRole.BUILDER)
 
         self.assertEqual(used, OPENAI)
-        self.assertEqual(tried, [OTHER_CLAUDE, OPENAI])  # CLAUDE skipped without calling it
+        self.assertEqual(tried, [OTHER_CLAUDE, OTHER_CLAUDE, OPENAI])  # CLAUDE skipped without calling it
 
     def test_free_only_allowlist_never_escapes_to_paid_models_on_auth_error(self):
         from orchestrator import project_setup
@@ -228,7 +262,7 @@ class SignInFallbackTests(StateDirCase):
             with self.assertRaises(RuntimeError):
                 llm.run_llm(free_model, "BUILD IT", allowed_models=[free_model], role=ModelRole.BUILDER)
 
-        self.assertEqual(tried, [free_model])
+        self.assertEqual(tried, [free_model, free_model])
 
     def test_non_auth_error_never_escapes_allowlist(self):
         from orchestrator import project_setup

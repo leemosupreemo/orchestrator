@@ -178,6 +178,16 @@ def is_unusable_model_error(error_msg: str) -> tuple[bool, bool]:
     return False, False
 
 
+SIGN_IN_RETRY_AFTER = 4.0  # an expired token is often renewed by the tool's next call, so the model is asked once more
+
+
+def is_expired_sign_in(error_msg: str) -> bool:
+    """True when the sign-in's token ran out, which may mend itself, unlike a rejected key."""
+    target = summarize_cli_error(error_msg) if "\n" in error_msg else error_msg
+    norm = target.lower().replace("-", " ").replace("_", " ")
+    return any(m in norm for m in ("token has expired", "oauth session expired"))
+
+
 HANDOFF = ("\n\n### HANDOFF ###\nAnother model ({model}) was doing this task and stopped partway because it ran out of its usage "
            "limit. Anything it changed is already in the files. Start by reading `git status` and `git diff`, keep what is right, "
            "and finish the task from where it stopped rather than starting over.\n")
@@ -329,6 +339,7 @@ def run_llm(model: str, prompt: str, cwd: Path | None = None, timeout: int = 300
     edits_files = role in (ModelRole.BUILDER, ModelRole.DEBUGGER)
     handoff = ""  # set when a model ran out of usage partway: the next one is told the work is already started
     failed_auth_clis: set[str] = set()
+    retested_sign_ins: set[str] = set()
     attempted_models: list[str] = []
     attempt_errors: list[tuple[str, str]] = []
     auth_failed_count = 0
@@ -440,11 +451,19 @@ def run_llm(model: str, prompt: str, cwd: Path | None = None, timeout: int = 300
                 last_error = exc
                 continue
             unusable, key_rejected = is_unusable_model_error(err_str)
+            expired = key_rejected and is_expired_sign_in(err_str)
+            if expired and current_model not in retested_sign_ins:
+                retested_sign_ins.add(current_model)
+                print(f"🔁 {current_model}'s sign-in had expired. Trying it once more...", flush=True)
+                time.sleep(SIGN_IN_RETRY_AFTER)
+                attempted_models.pop()
+                idx -= 1
+                continue
             if unusable:
                 provider_blocked_count += 1
                 try:
                     from orchestrator.project_chat import record_model_failure
-                    record_model_failure(current_model, summary, key_rejected=key_rejected)
+                    record_model_failure(current_model, summary, key_rejected=key_rejected, expired=expired)
                 except Exception:
                     pass
                 if key_rejected:

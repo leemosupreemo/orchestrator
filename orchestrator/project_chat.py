@@ -166,7 +166,13 @@ def load_checks() -> dict[str, dict[str, Any]]:
         return dict(parsed)
 
 
-def record_check(model: str, ok: bool, reason: str = "", now: float | None = None) -> None:
+def _key_hold(check: dict[str, Any]) -> int:
+    """How long a refused sign-in or key leaves its models out. An expired token isn't a rejected key (the tool often
+    renews it itself), so it is only left out for FAIL_HOLD."""
+    return FAIL_HOLD if check.get("expired") else KEY_HOLD
+
+
+def record_check(model: str, ok: bool, reason: str = "", now: float | None = None, *, expired: bool = False) -> None:
     global _CHECKS_MEMO
     if not model:
         return
@@ -174,6 +180,8 @@ def record_check(model: str, ok: bool, reason: str = "", now: float | None = Non
         path = checks_path()
         data = _read_checks_unlocked(path)
         data[model] = {"ok": bool(ok), "reason": "" if ok else (reason or "didn't answer")[:200], "at": now or time.time()}
+        if expired and not ok:
+            data[model]["expired"] = True
         path.parent.mkdir(parents=True, exist_ok=True)
         fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".checks-")
         with os.fdopen(fd, "w") as f:
@@ -285,7 +293,7 @@ def rejected_clis(checks: dict[str, dict[str, Any]] | None = None, now: float | 
             continue
         if str(check.get("reason") or "") != KEY_REJECTED:
             continue
-        if now - at >= KEY_HOLD:
+        if now - at >= _key_hold(check):
             continue
         if cli not in latest_fail or at > float(latest_fail[cli].get("at") or 0):
             latest_fail[cli] = {**check, "model": model, "cli": cli}
@@ -333,7 +341,7 @@ def rejected_providers(checks: dict[str, dict[str, Any]], now: float | None = No
         if not provider:
             continue
         at = float(check.get("at") or 0)
-        if now - at >= KEY_HOLD or changed > at:
+        if now - at >= _key_hold(check) or changed > at:
             continue
         if check.get("ok"):
             ok_providers.add(provider)
@@ -352,10 +360,10 @@ def rejected_providers(checks: dict[str, dict[str, Any]], now: float | None = No
     return found
 
 
-def record_model_failure(model_id: str, reason: str = "", *, key_rejected: bool = False, now: float | None = None) -> None:
+def record_model_failure(model_id: str, reason: str = "", *, key_rejected: bool = False, expired: bool = False, now: float | None = None) -> None:
     """Record a persistent model/provider failure so broken OpenCode/CLI models are weeded out automatically."""
     msg = KEY_REJECTED if key_rejected else (f"{MODEL_UNAVAILABLE}: {reason}" if reason else MODEL_UNAVAILABLE)
-    record_check(model_id, False, msg, now=now)
+    record_check(model_id, False, msg, now=now, expired=expired)
 
 
 def is_model_blocked(model_id: str, checks: dict[str, dict[str, Any]] | None = None, now: float | None = None) -> bool:
@@ -378,7 +386,7 @@ def is_model_blocked(model_id: str, checks: dict[str, dict[str, Any]] | None = N
     reason = str(entry.get("reason") or "")
     if _is_transient_reason(reason):
         return False
-    hold = KEY_HOLD if (reason == KEY_REJECTED or "deactivated" in reason.lower()) else FAIL_HOLD
+    hold = _key_hold(entry) if (reason == KEY_REJECTED or "deactivated" in reason.lower()) else FAIL_HOLD
     at = float(entry.get("at") or 0)
     if reason == KEY_REJECTED and cli and _cli_signed_in_at(cli) > at:
         return False

@@ -86,6 +86,7 @@ class JsonRetryTests(unittest.TestCase):
                 with patch.object(llm, "LOGS_DIR", logs), patch.object(llm, "runnable_here", return_value=True), \
                      patch.object(llm, "get_prioritized_models", return_value=[MODEL]), \
                      patch.object(llm, "_auth_fallback_models", return_value=[]), \
+                     patch.object(llm, "SIGN_IN_RETRY_AFTER", 0), \
                      patch.object(llm, "_run_llm_single", side_effect=error):
                     with self.assertRaisesRegex(RuntimeError, "No model could answer"):
                         llm.run_llm(MODEL, "PRIVATE BRIEF", allowed_models=[MODEL],

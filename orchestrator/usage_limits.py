@@ -22,6 +22,13 @@ IN_TIME = re.compile(
     re.I,
 )
 AT_TIME = re.compile(r"(?:reset|resets|try again|available again)\D{0,20}?\bat\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?", re.I)
+ON_DATE = re.compile(  # a limit that ends another day: "try again at Nov 27th, 2026 1:41 AM", "resets Nov 30, 3pm"
+    r"(?:resets?|try again|available again)(?:\s+(?:at|on))?\s+"
+    r"(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+"
+    r"(?:(\d{4}),?\s+)?(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b",
+    re.I,
+)
+MONTHS = ("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec")
 DEFAULT_USAGE_HOLD = 60 * 60
 DEFAULT_RATE_HOLD = 5 * 60
 MAX_HOLD = 7 * 24 * 3600
@@ -37,6 +44,28 @@ def detect(message: str) -> str:
     return ""
 
 
+def _hour24(hour: int, half: str | None) -> int:
+    half = (half or "").lower()
+    if half == "pm" and hour < 12:
+        return hour + 12
+    if half == "am" and hour == 12:
+        return 0
+    return hour
+
+
+def _on_date(match: re.Match[str], now: float) -> float | None:
+    """The moment a dated reset names, or None when it isn't a real date still to come."""
+    month_name, day, year, hour, minute, half = match.groups()
+    month, local = MONTHS.index(month_name.lower()) + 1, datetime.fromtimestamp(now)
+    # Without a year, a month long gone by means next year's ("Jan 2" read in December).
+    full_year = int(year) if year else local.year + (month < local.month - 6)
+    try:
+        at = datetime(full_year, month, int(day), _hour24(int(hour), half), int(minute or 0)).timestamp()
+    except ValueError:
+        return None
+    return at if at > now else None
+
+
 def until(message: str, now: float | None = None) -> float:
     """When the tool can be asked again, read from its message; else an hour for a used-up allowance, minutes for a rate limit."""
     now = time.time() if now is None else now
@@ -44,12 +73,10 @@ def until(message: str, now: float | None = None) -> float:
     if (match := IN_TIME.search(text)) and (match.group(1) or match.group(2) or match.group(3)):
         seconds = int(match.group(1) or 0) * 3600 + int(match.group(2) or 0) * 60 + int(match.group(3) or 0)
         return now + min(seconds, MAX_HOLD)
+    if (match := ON_DATE.search(text)) and (at := _on_date(match, now)):
+        return min(at, now + MAX_HOLD)
     if match := AT_TIME.search(text):
-        hour, minute, half = int(match.group(1)), int(match.group(2) or 0), (match.group(3) or "").lower()
-        if half == "pm" and hour < 12:
-            hour += 12
-        if half == "am" and hour == 12:
-            hour = 0
+        hour, minute = _hour24(int(match.group(1)), match.group(3)), int(match.group(2) or 0)
         if 0 <= hour < 24 and 0 <= minute < 60:
             local = datetime.fromtimestamp(now)
             at = local.replace(hour=hour, minute=minute, second=0, microsecond=0)
