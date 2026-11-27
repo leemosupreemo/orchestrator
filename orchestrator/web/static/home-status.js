@@ -51,6 +51,8 @@
       : g.kind === "git_lock" ? `<button type="button" class="btn small ghost" data-clear-git-lock>Clear lock</button>`
       : g.kind === "sign_in" && g.provider && g.provider !== "ai"
         ? `<button type="button" class="btn small ghost" data-action="ai_connect" data-params="${esc(JSON.stringify({ provider: g.provider, name: g.name }))}">Sign in to ${esc(g.name)}</button>`
+      : g.kind === "tool" && g.tool?.installable
+        ? `<button type="button" class="btn small ghost" data-install-tool="${esc(g.tool.id)}" data-install-tool-info="${esc(JSON.stringify(g.tool))}">Install ${esc(g.tool.name)}…</button>`
       : "";
     return `<div class="home-status-blocker" title="${esc(g.detail || "")}"><span>${esc(g.title || "Blocked")}${waiting ? ` <span class="muted">· ${waiting}</span>` : ""}</span>${fix}</div>`;
   }

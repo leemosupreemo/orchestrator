@@ -130,7 +130,7 @@ HOSTED_ORIGINS = account.HOSTED_ORIGINS
 # change who has access, see or change secrets and credentials, add folders from the disk, or run free-form tools.
 OWNER_SOURCES = ("git", "account", "environment")
 OWNER_ONLY_CONFIG = {"keys", "email", "analytics", "webhook", "desktop", "allowed-email", "firebase", "fleet", "role-prompts"}
-OWNER_ONLY_ACTIONS = {"server_start", "server_stop", "server_restart", "server_install_docker", "signing_import", "signing_secure", "signing_copy", "console", "wizard", "config_menu", "ai_connect", "package_update", "worker_install", "sync_fleet", "fleet_llm_check", "update_local",
+OWNER_ONLY_ACTIONS = {"server_start", "server_stop", "server_restart", "server_install_docker", "install_tool", "setup_environment", "signing_import", "signing_secure", "signing_copy", "console", "wizard", "config_menu", "ai_connect", "package_update", "worker_install", "sync_fleet", "fleet_llm_check", "update_local",
                       "update_fleet", "test_email", "logs_setup", "deliver", "distribute", "ai_review_terminal"}  # it bills the owner's Claude account
 SIGN_IN_TTL_SECONDS = 30 * 24 * 3600
 SNAPSHOT_CHECK_SECONDS = 10  # how soon other computers see a job here change (snapshot_sync)
@@ -403,6 +403,8 @@ class PtySession:
             self.ended = time.time()
             self._timeline.finish(code)
             self._cond.notify_all()
+        if self.action in {"install_tool", "setup_environment", "server_install_docker", "server_start"}:
+            _PREFLIGHT_CACHE.pop(str(self.cwd), None)
         if self.job_id or self.result_job:  # so the job still lists this run after it's dropped from memory or the app restarts
             try:
                 summary = self.summary()
@@ -977,7 +979,13 @@ def job_state(job: dict[str, Any], root: Path | None = None) -> dict[str, Any]:
                          f"{blocker.get('title')} has been addressed. Resume carries on from where it stopped.", "resume", "Resume")
         blocked = state("needs_you", "failed", str(blocker.get("title") or "Blocked"), str(blocker.get("detail") or ""), "resume", "Try again")
         sign_in = {"provider": blocker.get("provider"), "name": blocker.get("name")} if blocker.get("kind") == "sign_in" and blocker.get("provider") != "ai" else None
-        return {**blocked, "steps": blockers.steps(blocker, root or Path(".")), "sign_in": sign_in, "blocker_kind": blocker.get("kind")}
+        extra_blocker: dict[str, Any] = {}
+        if blocker.get("kind") == "tool":
+            from orchestrator import build_tools
+            tool_info = blocker.get("tool") if isinstance(blocker.get("tool"), dict) else build_tools.describe_tool(str(blocker.get("key") or ""))
+            extra_blocker["tool"] = tool_info
+            extra_blocker["missing_tools"] = blocker.get("missing_tools") if isinstance(blocker.get("missing_tools"), list) and blocker.get("missing_tools") else [tool_info]
+        return {**blocked, "steps": blockers.steps(blocker, root or Path(".")), "sign_in": sign_in, "blocker_kind": blocker.get("kind"), **extra_blocker}
     if status == "human-needed" and isinstance(job.get("passed_uncommitted"), dict):
         # The work is done and tested; only saving it to git failed (worker_run). Resume commits it without building again.
         files = len(job["passed_uncommitted"].get("files") or [])
@@ -1073,10 +1081,43 @@ def job_state(job: dict[str, Any], root: Path | None = None) -> dict[str, Any]:
                          "No pull request was opened, so there is nothing to merge.", "complete", "Mark complete")
         return state("needs_you", "attention", "Ready for review", "Changes are ready. No pull request was opened, so there is nothing to merge here. Mark it complete when you're happy.", "complete", "Mark complete")
     if status == "debugging":
-        if tests in FAILING_TEST_STATUSES:
-            label = "Build failing" if tests == "build-failed" else "Tests failing"
-            return state("needs_you", "failed", label, "Run a fix attempt, optionally with fresh device logs.", "debug", "Run fix")
-        return state("needs_you", "attention", "Needs a fix", "Run a fix attempt, optionally with fresh device logs.", "debug", "Run fix")
+        from orchestrator import job_problem
+        last_res = job_problem.last_debug_entry(job).get("result")
+        if job_problem.last_fix_passed(job):
+            if pr:
+                return state("needs_you", "attention", "Ready to merge",
+                             f"The latest fix passed checks and updated PR #{pr}. Review and merge, or request another change below.",
+                             "merge", "Merge & complete")
+            if job.get("code_host") == "git" and job.get("branch"):
+                return state("needs_you", "attention", "Ready to merge",
+                             f"The latest fix passed checks on {job['branch']}. Merge & complete merges it into {job.get('base_branch') or 'the base branch'} "
+                             "on this computer, or request another change below.", "merge", "Merge & complete")
+            return state("needs_you", "attention", "Ready for review",
+                         "The latest fix passed checks. Mark it complete when you're happy, or request another change below.",
+                         "complete", "Mark complete")
+        last_build_failed = isinstance(last_res, dict) and last_res.get("build_ok") is False
+        last_tests_failed = isinstance(last_res, dict) and last_res.get("tests_ok") is False
+        if job.get("debug_phase") == "paused":
+            pause_reason = str(job.get("debug_pause_reason") or "").strip()
+            failed_tone = tests in FAILING_TEST_STATUSES or last_build_failed or last_tests_failed
+            return state("needs_you", "failed" if failed_tone else "attention", "Auto-fix paused",
+                         pause_reason or "Automatic fixing paused. Add guidance below (optional) or click Run fix to try again.",
+                         "debug", "Run fix")
+        if tests == "build-failed" or last_build_failed:
+            return state("needs_you", "failed", "Build failing",
+                         "The last attempt couldn't build. Add guidance below (optional) or click Run fix to try again.",
+                         "debug", "Run fix")
+        if tests in FAILING_TEST_STATUSES or last_tests_failed:
+            return state("needs_you", "failed", "Tests failing",
+                         "Tests didn't pass on the last attempt. Add guidance below (optional) or click Run fix to try again.",
+                         "debug", "Run fix")
+        if last_res == "pending" or (isinstance(last_res, dict) and last_res.get("aborted")):
+            return state("needs_you", "attention", "Fix stopped",
+                         "The last fix attempt stopped before finishing. Add guidance below (optional) or click Run fix to try again.",
+                         "debug", "Run fix")
+        return state("needs_you", "attention", "Needs a fix",
+                     "Waiting for you to run a fix. Add guidance below (optional) or click Run fix to let the AI try again.",
+                     "debug", "Run fix")
     if status == "backlog":
         if job.get("deferred_from"):
             return state("backlog", "idle", "Deferred slice · no plan yet",
@@ -2441,10 +2482,41 @@ def preflight_overview(root: Path, refresh: bool = False) -> list[dict[str, str]
         plugin_findings = claude_plugins.findings(root)
     except Exception:
         plugin_findings = []
-    items = preflight.checks(config, machines, is_apple_app(root, config), free, run, lambda t: shutil.which(t, path=search_path) is not None,
-                             model_clis, github=github, env=os.environ, claude_plugin_findings=plugin_findings)
+    from orchestrator import build_tools
+    items = preflight.checks(config, machines, is_apple_app(root, config), free, run,
+                             lambda t: shutil.which(t, path=search_path) is not None or ("/" in t and Path(t).is_file() and os.access(t, os.X_OK)),
+                             model_clis, github=github, env=os.environ, claude_plugin_findings=plugin_findings, root=root)
     _PREFLIGHT_CACHE[key] = (time.time(), items)
     return items
+
+
+def environment_setup_for(root: Path, *, refresh: bool = False) -> dict[str, Any]:
+    from orchestrator import manifest_deps
+    return manifest_deps.summarize_environment_setup(preflight_overview(root, refresh=refresh))
+
+
+def missing_tools_for_job(root: Path, job: dict[str, Any], *, refresh: bool = False) -> list[dict[str, Any]]:
+    """Missing build/test executables on this computer for a locally runnable job."""
+    status = str(job.get("status") or "")
+    if status in {"completed", "archived"} or job.get("moved_to") or assigned_ssh_machine(root, job):
+        return []
+    if job.get("type") in {"design", "feature-design", "bug-investigate"}:
+        return []
+    seen: dict[str, dict[str, Any]] = {}
+    for item in preflight.failures(preflight_overview(root, refresh=refresh)):
+        if item.get("id") not in {"build-tool", "test-tool"}:
+            continue
+        role = "build" if item.get("id") == "build-tool" else "test"
+        for tool in item.get("missing_tools") or []:
+            if not isinstance(tool, dict):
+                continue
+            tid = str(tool.get("id") or tool.get("binary") or "")
+            if not tid:
+                continue
+            entry = seen.setdefault(tid, {**tool, "needed_by": []})
+            if role not in entry["needed_by"]:
+                entry["needed_by"].append(role)
+    return list(seen.values())
 
 
 def assigned_ssh_machine(root: Path, job: dict[str, Any]) -> str:
@@ -2489,7 +2561,10 @@ def job_blockers(root: Path, job: dict[str, Any], *, refresh: bool = False) -> l
         for item in preflight.failures(preflight_overview(root, refresh=refresh)):
             if item["id"] != "disk" and item["id"] not in have:  # disk is already said, with this job's numbers
                 hint = "" if item["route"] or not item["fix"] else f" {item['fix']}."
-                found.append({"id": item["id"], "text": f"{item['title']}. {item['detail']}{hint}", "fix": item["fix"] if item["route"] else "", "route": item["route"]})
+                entry: dict[str, Any] = {"id": item["id"], "text": f"{item['title']}. {item['detail']}{hint}", "fix": item["fix"] if item["route"] else "", "route": item["route"]}
+                if item.get("missing_tools"):
+                    entry["missing_tools"] = item["missing_tools"]
+                found.append(entry)
     return found
 
 
@@ -2919,6 +2994,14 @@ def job_detail(root: Path, job_id: str) -> dict[str, Any]:
         "parent": job_stub(root, job.get("parent_job_id")),
         "pipeline": pipeline,
         "blockers": job_blockers(root, job),
+        "missing_tools": missing_tools_for_job(root, job),
+        "environment_setup": (
+            environment_setup_for(root)
+            if str(job.get("status") or "") not in {"completed", "archived"}
+            and not assigned_ssh_machine(root, job)
+            and job.get("type") not in {"design", "feature-design", "bug-investigate"}
+            else {"ready": True, "auto_steps": [], "manual_items": []}
+        ),
         "remote_machine": assigned_ssh_machine(root, job) or "",
         "startup_recheck": True,
         "overlaps": job_overlap.file_overlaps(path.stem, job, all_jobs),
@@ -5003,6 +5086,20 @@ def build_dev_preview(params: dict[str, Any], root: Path) -> list[str]:
     return orchestrator_argv("script", "dev_preview.py", "--branch", branch, "--root", str(root))
 
 
+def build_install_tool(params: dict[str, Any], root: Path) -> list[str]:
+    from orchestrator import build_tools
+    tool = _text(params, "tool", required=True, limit=80)
+    if not build_tools.is_valid_install_id(tool):
+        raise UIError(f"Automatic installation isn't supported for '{tool}'.")
+    _PREFLIGHT_CACHE.pop(str(root), None)
+    return orchestrator_argv("install-tool", tool)
+
+
+def build_setup_environment(params: dict[str, Any], root: Path) -> list[str]:
+    _PREFLIGHT_CACHE.pop(str(root), None)
+    return orchestrator_argv("setup-environment")
+
+
 def build_server_argv(action: str, params: dict[str, Any]) -> list[str]:
     argv = orchestrator_argv("server", action) if action == "install-docker" else orchestrator_argv("server", action, _name(params, "id"))
     machine = _text(params, "machine", limit=100)
@@ -6725,6 +6822,8 @@ ACTIONS: dict[str, Action] = {
     "server_stop": Action("Stop server", lambda p, r: build_server_argv("stop", p), fields=["id", "machine"]),
     "server_restart": Action("Restart server", lambda p, r: build_server_argv("restart", p), fields=["id", "machine"]),
     "server_install_docker": Action("Install Docker", lambda p, r: build_server_argv("install-docker", p), fields=["machine"]),
+    "install_tool": Action("Install build tool", build_install_tool, fields=["tool", "job"]),
+    "setup_environment": Action("Set up environment", build_setup_environment, fields=["job"]),
     "signing_import": Action("Set up the signing key", lambda p, r: build_signing_argv("import-ios", p), fields=["file", "issuer", "replace"]),
     "signing_secure": Action("Make the signing key private", lambda p, r: build_signing_argv("secure-ios", p)),
     "signing_copy": Action("Copy the signing key", lambda p, r: build_signing_argv("copy", p),
@@ -8505,7 +8604,9 @@ class UIHandler(BaseHTTPRequestHandler):
             else:
                 raise UIError("Not found", HTTPStatus.NOT_FOUND)
         elif method == "GET" and parts == ["preflight"]:
-            self._json({"items": preflight_overview(root, refresh=bool(query.get("refresh")))})
+            items = preflight_overview(root, refresh=bool(query.get("refresh")))
+            from orchestrator import manifest_deps
+            self._json({"items": items, "environment_setup": manifest_deps.summarize_environment_setup(items)})
         elif method == "GET" and parts == ["delivery"]:
             self._json(delivery_overview(root, branch=(query.get("branch") or [None])[0]))
         elif parts == ["delivery", "release"] and method in {"GET", "POST"}:

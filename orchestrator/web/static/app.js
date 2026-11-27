@@ -595,6 +595,12 @@ async function findReadyFailoverMachine(project) {
       return (myRepo && r) ? r === myRepo : (myName && String(pp.name || "").toLowerCase() === myName);
     }) || (peerState?.project && ((myRepo && normRepoKey(peerState.project.repo || peerState.project.github_repo || "") === myRepo) || String(peerState.project.name || "").toLowerCase() === myName) ? peerState.project : null);
     if (!match?.root) return null;
+    if (peerState?.project?.root && peerState.project.root === match.root) {
+      const peerPre = await peerApi(session, "preflight", null, "GET").catch(() => null);
+      if (Array.isArray(peerPre?.items) && peerPre.items.some((i) => i.status === "fail" && i.id !== "github")) {
+        return null;
+      }
+    }
     const busy = Array.isArray(peerState?.runs) && peerState.runs.some((r) => r.running);
     return { ...session, projectRoot: match.root, activeRoot: peerState?.project?.root || "", busy };
   }));
@@ -6345,12 +6351,84 @@ function jobPlanNotes(groups) {
     <div class="card-b stack">${sections}</div></details>`;
 }
 
-function jobStartBlockers(blockers, canRecheck = true, jobId = "") {
+function installToolButtonHtml(tool, { primary = false, jobId = "" } = {}) {
+  if (!tool?.installable || state.you?.role === "member") return "";
+  return `<button type="button" class="btn small${primary ? " primary" : ""}" data-install-tool="${esc(tool.id)}" data-install-tool-info="${esc(JSON.stringify(tool))}"${jobId ? ` data-job="${esc(jobId)}"` : ""}>Install ${esc(tool.name)}…</button>`;
+}
+
+function setupEnvironmentButtonHtml(envSetup, { primary = false, jobId = "" } = {}) {
+  if (!envSetup || envSetup.ready || !envSetup.auto_steps?.length || state.you?.role === "member") return "";
+  const label = envSetup.button_label || (envSetup.auto_steps.length === 1 ? `Install ${envSetup.auto_steps[0].name}…` : "Set up environment…");
+  return `<button type="button" class="btn small${primary ? " primary" : ""}" data-setup-env="1" data-setup-env-info="${esc(JSON.stringify(envSetup))}"${jobId ? ` data-job="${esc(jobId)}"` : ""}>${esc(label)}</button>`;
+}
+
+async function promptEnvironmentSetup(envSetup, { jobId = "", button = null } = {}) {
+  if (!envSetup?.auto_steps?.length) return;
+  const host = state.project?.computer?.name || "this computer";
+  const steps = envSetup.auto_steps;
+  const manuals = Array.isArray(envSetup.manual_items) ? envSetup.manual_items : [];
+  const title = steps.length === 1 && !manuals.length ? `${steps[0].name} isn't set up` : `Set up environment on ${host}`;
+  const confirmLabel = steps.length === 1 ? `Install ${steps[0].name}` : "Set up environment";
+  const autoList = `<ul class="assumptions">${steps.map((s) => `<li><strong>${esc(s.name)}</strong> — ${esc(s.summary || "")}${s.size_hint ? ` <span class="muted">(${esc(s.size_hint)})</span>` : ""}</li>`).join("")}</ul>`;
+  const manualList = manuals.length
+    ? `<p class="muted mt-8">Manual steps still needed after automatic setup:</p><ul class="assumptions">${manuals.map((m) => `<li><strong>${esc(m.name)}</strong> — ${esc(m.hint || m.detail || "")}</li>`).join("")}</ul>`
+    : "";
+  const confirmed = await formDialog(
+    title,
+    `<p>${esc(envSetup.detail || `Install the missing build and test dependencies on ${host} in one pass?`)}</p>${autoList}${manualList}`,
+    confirmLabel,
+    { compact: true },
+  );
+  if (!confirmed) return;
+  await runAction("setup_environment", { ...(jobId ? { job: jobId } : {}) }, {
+    skipConfirm: true,
+    button,
+    optimisticRunTitle: steps.length === 1 ? `Installing ${steps[0].name}…` : "Setting up environment…",
+  });
+}
+
+async function promptInstallTool(tool, { jobId = "", button = null } = {}) {
+  if (!tool?.id) return;
+  const host = state.project?.computer?.name || "this computer";
+  const roles = Array.isArray(tool.needed_by) && tool.needed_by.length ? ` by this project's ${tool.needed_by.join(" and ")} command` : " by this project";
+  const confirmed = await formDialog(
+    `${tool.name} isn't installed`,
+    `<p><strong>${esc(tool.name)}</strong> is needed${esc(roles)}, and it isn't installed on <strong>${esc(host)}</strong>. Would you like to install it now?</p>
+     <p class="muted">${esc(tool.summary || "")}${tool.size_hint ? ` (${esc(tool.size_hint)})` : ""}</p>`,
+    `Install ${tool.name}`,
+    { compact: true },
+  );
+  if (!confirmed) return;
+  await runAction("install_tool", { tool: tool.id, ...(jobId ? { job: jobId } : {}) }, {
+    skipConfirm: true,
+    button,
+    optimisticRunTitle: `Installing ${tool.name}…`,
+  });
+}
+
+document.addEventListener("click", (e) => {
+  const envBtn = e.target.closest?.("[data-setup-env]");
+  if (envBtn) {
+    let envSetup = null;
+    try { envSetup = JSON.parse(envBtn.dataset.setupEnvInfo || "null"); } catch { envSetup = null; }
+    if (envSetup) promptEnvironmentSetup(envSetup, { jobId: envBtn.dataset.job || "", button: envBtn });
+    return;
+  }
+  const btn = e.target.closest?.("[data-install-tool]");
+  if (!btn) return;
+  let tool = null;
+  try { tool = JSON.parse(btn.dataset.installToolInfo || "null"); } catch { tool = null; }
+  if (!tool?.id) tool = { id: btn.dataset.installTool, name: btn.dataset.installTool, installable: true };
+  promptInstallTool(tool, { jobId: btn.dataset.job || "", button: btn });
+});
+
+function jobStartBlockers(blockers, canRecheck = true, jobId = "", envSetup = null) {
   if (!blockers?.length) return "";
   const reasons = {
     "low-disk": "Low disk space",
     "build-tool": "Build command unavailable",
     "test-tool": "Test command unavailable",
+    "manifest-deps": "Project packages missing",
     "no-machine": "No worker set up",
     "machine-not-allowed": "No eligible worker",
     "model-not-on-machine": "No compatible model",
@@ -6362,10 +6440,26 @@ function jobStartBlockers(blockers, canRecheck = true, jobId = "") {
   };
   const summary = [...new Set(blockers.map(b => reasons[b.id] || "Project setup needs attention"))].join(" · ");
   const details = blockers.map(b => `<li>${esc(b.text)}${b.route ? ` <a href="${esc(b.route)}">${esc(b.fix)}</a>` : ""}</li>`).join("");
+  const seenTools = new Set();
+  const uniqueTools = blockers.flatMap(b => Array.isArray(b.missing_tools) ? b.missing_tools : [])
+    .filter(t => t?.installable && !seenTools.has(t.id) && seenTools.add(t.id));
+  const catchAllBtn = envSetup?.auto_steps?.length
+    ? setupEnvironmentButtonHtml(envSetup, { jobId })
+    : uniqueTools.length === 1
+      ? installToolButtonHtml(uniqueTools[0], { jobId })
+      : uniqueTools.length > 1
+        ? setupEnvironmentButtonHtml({
+            ready: false,
+            button_label: "Set up environment…",
+            detail: `Install ${uniqueTools.map((t) => t.name).join(", ")} on this computer?`,
+            auto_steps: uniqueTools.map((t) => ({ kind: "tool", id: t.id, name: t.name, summary: t.summary, size_hint: t.size_hint })),
+            manual_items: [],
+          }, { jobId })
+        : "";
   return `<section class="notice warn mb-16 wrap-anywhere" id="job-startup">
     <strong>This job can't start yet</strong>
     <div class="t-secondary">${esc(summary)}</div>
-    ${blockers.some(b => b.id === "low-disk") ? `<button type="button" class="btn small" data-disk-space data-job="${esc(jobId)}">Free up space</button>` : ""}
+    ${blockers.some(b => b.id === "low-disk") || catchAllBtn ? `<div class="row wrap gap-8">${blockers.some(b => b.id === "low-disk") ? `<button type="button" class="btn small" data-disk-space data-job="${esc(jobId)}">Free up space</button>` : ""}${catchAllBtn}</div>` : ""}
     <details class="fold">
       <summary class="linklike">Startup details</summary>
       <ul class="assumptions wrap-anywhere">${details}</ul>
@@ -6948,6 +7042,37 @@ pages.job = async ([id]) => {
     : `${signInAction}${diskBlocked ? `<button type="button" class="btn small primary" data-disk-space data-job="${esc(id)}">Free up space</button>` : ""}${showNextAction ? `<button class="${nextBtnClass}" ${act(next.action, { job: s.id, ...(next.params || {}) })}${overlapHold ? ` disabled data-why="Wait for ${esc(overlapHold.title)} to finish building first."` : ""}>${esc(next.label)}</button>` : ""}${showNextAction && job.task_growth && data.undoable_task === job.task_growth.task
       ? `<button class="btn small" data-undo-task="${job.task_growth.task}" title="Reverts what that task changed. Then revise the plan to make it smaller.">Undo task ${job.task_growth.task + 1}</button>` : ""}`;
 
+  const envSetup = data.environment_setup && data.environment_setup.ready === false ? data.environment_setup : null;
+  const missingTools = !activeRun && !job.moved_to && !data.remote_machine && !["completed", "archived"].includes(s.status)
+    ? (Array.isArray(data.missing_tools) && data.missing_tools.length ? data.missing_tools
+      : (s.state.blocker_kind === "tool" && Array.isArray(s.state.missing_tools) ? s.state.missing_tools
+        : s.state.blocker_kind === "tool" && s.state.tool ? [s.state.tool] : []))
+    : [];
+  const effectiveEnvSetup = envSetup || (missingTools.length ? {
+    ready: false,
+    title: missingTools.length === 1 ? `${missingTools[0].name} isn't installed` : `${missingTools.length} dependencies needed on this computer`,
+    detail: `This project needs ${missingTools.map((t) => t.name).join(" and ")} before builds and tests can run here.`,
+    button_label: missingTools.filter((t) => t.installable).length === 1 && missingTools.length === 1 ? `Install ${missingTools[0].name}…` : "Set up environment…",
+    auto_steps: missingTools.filter((t) => t.installable).map((t) => ({ kind: "tool", id: t.id, name: t.name, summary: t.summary, size_hint: t.size_hint })),
+    manual_items: missingTools.filter((t) => !t.installable).map((t) => ({ id: t.id, name: t.name, detail: t.summary, hint: t.manual_hint })),
+  } : null);
+  const toolBlocked = !diskBlocked && !activeRun && !job.moved_to && !data.remote_machine && !["completed", "archived"].includes(s.status) && Boolean(effectiveEnvSetup);
+  const toolBlockedTitle = effectiveEnvSetup?.title || "Dependencies needed on this computer";
+  const toolBlockedReason = effectiveEnvSetup?.detail || "";
+  const toolBlockedActions = (() => {
+    if (!toolBlocked || !effectiveEnvSetup) return "";
+    const catchAll = typeof setupEnvironmentButtonHtml === "function"
+      ? setupEnvironmentButtonHtml(effectiveEnvSetup, { primary: true, jobId: id })
+      : (effectiveEnvSetup.auto_steps?.length === 1 && typeof installToolButtonHtml === "function"
+        ? installToolButtonHtml({ ...effectiveEnvSetup.auto_steps[0], installable: true }, { primary: true, jobId: id })
+        : "");
+    return catchAll || `<button type="button" class="btn small" id="job-tool-recheck">Check again</button>`;
+  })();
+  const toolBlockedSteps = (effectiveEnvSetup?.manual_items || []).map((m) => m.hint || m.detail).filter(Boolean);
+  const movedMissingNote = job.moved_to && envSetup
+    ? `<p class="job-hero-reason muted">This computer is missing dependencies needed by this project (${esc(envSetup.title)}). Keep working on ${esc(job.moved_to)}, or set up this computer first.</p>${typeof setupEnvironmentButtonHtml === "function" && envSetup.auto_steps?.length ? `<div>${setupEnvironmentButtonHtml(envSetup, { jobId: id })}</div>` : ""}`
+    : "";
+
   // 5-Phase Agile Lifecycle determination (Plan -> [Build -> Verify -> Document -> Finalize] loop)
   const status = s.status || "";
   const docFilesChanged = allFiles.filter((f) => /(?:^|\/)(?:readme|contributing|changelog|architecture|agents|claude)\.md$/i.test(f) || /^docs\/.*\.md$/i.test(f));
@@ -6969,7 +7094,7 @@ pages.job = async ([id]) => {
     currentPhase = "review";
   } else if (status === "completed" || status === "archived") {
     currentPhase = "review";
-  } else if (status === "review-needed") {
+  } else if (status === "review-needed" || ["merge", "complete"].includes(s.state.next?.action)) {
     currentPhase = "review";
   } else if (status === "debugging") {
     currentPhase = ["propose", "implement"].includes(job.debug_phase) ? "build" : "verify";
@@ -7157,6 +7282,7 @@ pages.job = async ([id]) => {
   const autoStopped = !activeRun && !isJobComplete && (
     status === "human-needed"
     || diskBlocked
+    || toolBlocked
     || Boolean(s.state.blocker)
     || Boolean(s.state.blocker_kind)
     || nextAction === "resume"
@@ -7168,7 +7294,8 @@ pages.job = async ([id]) => {
     : isJobComplete ? { mode: "fix", button: "Reopen and change", hint: "Reopens this job with your note and builds it.", required: true }
     : ["merge", "complete"].includes(nextAction) ? { mode: "iterate", button: "Request changes", required: true, hint: "" }
     : hasBuildWork || ["debugging", "failed"].includes(status) ? { mode: "debug", button: "Run fix", required: false,
-      primary: nextAction === "debug" && !signIn && !diskBlocked, hint: "" }
+      primary: nextAction === "debug" && !signIn && !diskBlocked,
+      hint: "Nothing is running. Leave blank to let the AI try again, or add notes to guide the next fix." }
     : ["planned", "designing", "scheduled"].includes(status) ? { mode: "revise", button: "Re-plan", required: true,
       hint: "Re-plans the job with this; you approve the new plan before anything is built." }
     : null;
@@ -7307,7 +7434,7 @@ pages.job = async ([id]) => {
   const effectiveHeroReason = (!problem?.summary && unreportedHeadline && /^The worker stopped unexpectedly|^Stopped before it finished/i.test(rawHeroReason))
     ? unreportedHeadline
     : rawHeroReason;
-  const conciseReasonText = (raw) => {
+  const conciseReasonText = (raw, max = 140) => {
     let text = raw
       .replace(/^Paused:\s*[^.\n]+\.\s*It stopped with an error:\s*/i, "")
       .replace(/^(?:It stopped|Stopped) with an error:\s*/i, "")
@@ -7315,9 +7442,12 @@ pages.job = async ([id]) => {
       .replace(/^Paused:\s*/i, "")
       .trim();
     const firstLine = (text.split(/\r?\n/)[0] || "").trim();
+    if (firstLine.length <= max) return firstLine;
     const dotIdx = firstLine.indexOf(". ");
-    const sentence = dotIdx >= 20 ? firstLine.slice(0, dotIdx + 1) : firstLine;
-    return sentence.length > 140 ? `${sentence.slice(0, 137).trimEnd()}…` : sentence;
+    const sentence = dotIdx >= 20 && dotIdx < max ? firstLine.slice(0, dotIdx + 1) : firstLine;
+    if (sentence.length <= max) return sentence;
+    const cut = sentence.slice(0, max - 1).replace(/\s+\S*$/, "").replace(/[,;:\s-]+$/, "") || sentence.slice(0, max - 1).trimEnd();
+    return `${cut}…`;
   };
   const architectConcerns = s.question && /architect/i.test(s.question) && /architect/i.test(rawHeroReason);
   const shortReason = problem?.sign_in
@@ -7328,6 +7458,7 @@ pages.job = async ([id]) => {
   const heroReason = architectConcerns ? "The architect raised concerns (below). Answer them, or accept its suggestions and re-plan."
     : reviewingPlan ? `Review <button type="button" class="linklike" data-scroll-to="#plan-section">the plan below</button> (${plural(tasks.length, "task")}) and ${nextAction === "approve" ? "approve or revise." : "start when ready."}`
     : s.status === "designing" && nextAction === "approve" ? `Review <button type="button" class="linklike" data-scroll-to="#plan-section">the design</button>, then approve or request changes.`
+    : problem && !problem.sign_in ? (typeof clamped === "function" ? clamped(effectiveHeroReason, 240) : esc(effectiveHeroReason))
     : esc(shortReason);
   const problemHtml = problem?.lines?.length
     ? `<details class="hero-error-details"><summary class="linklike muted">Details (${problem.lines.length})</summary><ul class="hero-problem">${problem.lines.map((l) => `<li>${esc(l)}</li>`).join("")}</ul></details>`
@@ -7577,12 +7708,20 @@ pages.job = async ([id]) => {
         </div>
         <div class="job-hero-action">${heroAction}</div>
         ${machineDiskLineHtml}
+      </section>` : toolBlocked ? `<section id="job-hero" tabindex="-1" class="job-hero tone-failed">
+        <div class="job-hero-main">
+          <h2 class="job-hero-title">${esc(toolBlockedTitle)}</h2>
+          <p class="job-hero-reason">${esc(toolBlockedReason)}</p>
+          ${toolBlockedSteps.map((step) => `<p class="job-hero-reason muted">${esc(step)}</p>`).join("")}
+        </div>
+        <div class="job-hero-action">${toolBlockedActions}</div>
       </section>` : `<section id="job-hero" tabindex="-1" class="job-hero tone-${esc(heroTone)}${(activeRun && !activeRun.waiting) || s.state.label === "Building" ? " is-running" : ""}">
         ${copyFailureBtnHtml ? `<div class="job-hero-head">${heroTitleHtml}${copyFailureBtnHtml}</div>` : ""}
         <div class="job-hero-main">
           ${copyFailureBtnHtml ? "" : heroTitleHtml}
           <p class="job-hero-reason">${heroReason}</p>
           ${heroReasonDetails}
+          ${movedMissingNote}
           ${autoStopped ? "" : wipRestoreNote(job, !activeRun)}
           ${autoStopped ? "" : strandedNote(job)}
           ${autoStopped ? "" : backupNote(job)}
@@ -7604,7 +7743,7 @@ pages.job = async ([id]) => {
 
       ${unvalidatedTestsHtml}
       ${defectsHtml}
-      ${jobStartBlockers(data.blockers, data.startup_recheck && state.you?.role !== "member", id)}
+      ${jobStartBlockers(toolBlocked ? (data.blockers || []).filter((b) => !["build-tool", "test-tool", "manifest-deps"].includes(b.id) && !String(b.id || "").startsWith("version-") && !String(b.id || "").startsWith("req-") && !String(b.id || "").startsWith("android-") && !String(b.id || "").startsWith("unity-")) : data.blockers, data.startup_recheck && state.you?.role !== "member", id, effectiveEnvSetup)}
 
       ${clarifyCardHtml}
 
@@ -7683,7 +7822,7 @@ pages.job = async ([id]) => {
       hydrateAuthImages(); // the UX and design check's screenshots
       wireImagePreviews(view);
       // 1-click failover (and opt-in automatic handoff) when this computer hits a machine-local blocker.
-      const machineBlocker = diskBlocked || ["disk_full", "sign_in", "tool", "simulator"].includes(s.state.blocker_kind);
+      const machineBlocker = diskBlocked || (typeof toolBlocked !== "undefined" && toolBlocked) || ["disk_full", "sign_in", "tool", "simulator"].includes(s.state.blocker_kind);
       const failoverAction = next?.action === "debug" ? "debug" : "resume";
       if (machineBlocker && !activeRun && !job.moved_to && state.you?.role !== "member" && typeof Account !== "undefined" && Account.active?.()) {
         const heroActionBox = view.querySelector("#job-hero .job-hero-action");
@@ -7721,6 +7860,19 @@ pages.job = async ([id]) => {
         }).catch(() => {});
       }
       const recheck = view.querySelector("#job-startup-recheck");
+      const toolRecheck = view.querySelector("#job-tool-recheck");
+      toolRecheck?.addEventListener("click", async () => {
+        toolRecheck.disabled = true;
+        toolRecheck.textContent = "Checking…";
+        try {
+          await api(`jobs/${encodeURIComponent(id)}/startup-check`, { method: "POST", body: {} });
+          if (toolRecheck.isConnected) await route();
+        } catch (error) {
+          if (toolRecheck.isConnected) toast(error.message, true);
+        } finally {
+          if (toolRecheck.isConnected) { toolRecheck.disabled = false; toolRecheck.textContent = "Check again"; }
+        }
+      });
       recheck?.addEventListener("click", async () => {
         recheck.disabled = true;
         recheck.textContent = "Checking…";
@@ -10391,9 +10543,13 @@ pages.checkup = async () => {
   const count = (items) => `${items.filter((i) => i.status === "ok").length} of ${items.length} configured`;
   const group = (title, items, description) => `<section class="card mb-16"><div class="card-h"><h2>${title}</h2><span class="count">${count(items)}</span></div><div class="card-b muted card-note">${description}</div>
     <div class="list onboarding-list">${items.map((i) => i.setup ? setupItem(i) : `<div class="item"><span class="pill ${i.status === "ok" ? "done" : i.status === "todo" || i.status === "warn" ? "attention" : ""}">${i.status === "ok" ? "Configured" : i.status === "unknown" ? "Status unavailable" : i.status === "warn" ? "Needs attention" : "Needs setup"}</span><div class="main-col"><div class="title">${esc(i.title)}</div><div class="meta">${esc(i.detail)}</div></div><div class="side">${action(i)}</div></div>`).join("") || `<div class="empty">No additional prerequisites reported for this project.</div>`}</div></section>`;
+  const envCatchAllBtn = preflight?.environment_setup?.auto_steps?.length
+    ? setupEnvironmentButtonHtml(preflight.environment_setup, { primary: true })
+    : "";
   const environmentRow = (i) => {
     const icon = {ok: `<span class="setup-icon done" aria-label="fine">✓</span>`, warn: `<span class="pill attention">Maybe</span>`, fail: `<span class="pill failed">Blocks</span>`, todo: `<span class="pill failed">Blocks</span>`};
-    return `<div class="item">${icon[i.status] || `<span class="pill">Status unavailable</span>`}<div class="main-col"><div class="title">${esc(i.title)}</div><div class="meta">${codeSpans(i.detail)}${i.fix && !i.route ? ` · ${codeSpans(i.fix)}` : ""}</div></div>${i.route && i.status !== "ok" ? `<div class="side"><a class="btn small" href="${esc(i.route)}">${esc(i.label || "Review setup")}</a></div>` : ""}</div>`;
+    const sideHtml = i.route && i.status !== "ok" ? `<a class="btn small" href="${esc(i.route)}">${esc(i.label || "Review setup")}</a>` : "";
+    return `<div class="item">${icon[i.status] || `<span class="pill">Status unavailable</span>`}<div class="main-col"><div class="title">${esc(i.title)}</div><div class="meta">${codeSpans(i.detail)}${i.fix && !i.route ? ` · ${codeSpans(i.fix)}` : ""}</div></div>${sideHtml ? `<div class="side row wrap gap-8">${sideHtml}</div>` : ""}</div>`;
   };
   const environmentHtml = (items, available = Boolean(preflight)) => items.length ? items.map(environmentRow).join("") : `<div class="empty">${available ? "No build or machine checks are needed for this project." : "Environment checks are unavailable. Try again."}</div>`;
   const next = required.find((i) => i.status !== "ok") || workflows.find((i) => i.status !== "ok") || environmentChecks.find((i) => i.status !== "ok" && i.route);
@@ -10405,7 +10561,7 @@ pages.checkup = async () => {
       ${group("Required to run jobs", required, "Project, Git, an AI model, and an enabled machine.")}
       ${group("Required for selected workflows", workflows, "Applies when using GitHub, building or testing this app, or distributing builds.")}
       <section class="card mb-16"><div class="card-h"><h2>Tools and environment</h2></div><div class="card-b muted card-note">Build tools on this computer, remote worker access, sign-ins, and project checks.</div>
-        <div class="card-h"><h3>Will this computer build it?</h3><button type="button" class="btn small" id="preflight-refresh">Check again</button></div>
+        <div class="card-h"><h3>Will this computer build it?</h3><div class="row gap-8"><span id="preflight-setup-slot">${envCatchAllBtn}</span><button type="button" class="btn small" id="preflight-refresh">Check again</button></div></div>
         <div class="list" id="preflight-list">${environmentHtml(environmentChecks)}</div>
         <div class="card-h"><h3>Run a check</h3></div><div class="list">${READINESS_CHECKS.filter(([a]) => ConfigurationPages.canRunAction(a, state)).map(([a, title, hint]) =>
           `<div class="item"><div class="main-col"><div class="title">${esc(title)}</div><div class="meta">${esc(hint)}</div></div><div class="side"><button type="button" class="btn small" ${act(a)}>Run</button></div></div>`).join("")}</div></section>
@@ -10414,9 +10570,11 @@ pages.checkup = async () => {
     after: () => {
       const paintPreflight = async (refresh) => {
         const box = $("#preflight-list");
+        const slot = $("#preflight-setup-slot");
         try {
           const result = refresh ? await api("preflight?refresh=1") : preflight;
           box.innerHTML = environmentHtml((result?.items || []).map((i) => ({...i, status: i.status === "fail" ? "todo" : i.status, route: i.route, label: i.route ? i.fix || "Review setup" : "Review setup"})), Boolean(result));
+          if (slot) slot.innerHTML = result?.environment_setup?.auto_steps?.length ? setupEnvironmentButtonHtml(result.environment_setup, { primary: true }) : "";
         } catch (error) { box.innerHTML = `<div class="empty">${esc(error.message)}</div>`; }
       };
       $("#preflight-refresh")?.addEventListener("click", () => paintPreflight(true));
@@ -16754,6 +16912,8 @@ function runStatus(r, vc = null) {
     : r.action === "server_stop" ? "Server stopped"
     : r.action === "server_restart" ? "Server restarted"
     : r.action === "server_install_docker" ? "Docker installed"
+    : r.action === "install_tool" ? "Tool installed"
+    : r.action === "setup_environment" ? "Environment ready"
     : r.action === "coverage" ? "Coverage measurement complete"
     : r.action === "logs_pull" ? "Logs pulled"
     : r.action === "plan_epic" ? "Plan ready to review"
@@ -16777,7 +16937,7 @@ function runStatus(r, vc = null) {
     "console", "distribute", "deliver"
   ]);
   const omitModelsActions = new Set([
-    "server_start", "server_stop", "server_restart", "server_install_docker",
+    "server_start", "server_stop", "server_restart", "server_install_docker", "install_tool", "setup_environment",
     "signing_import", "signing_secure", "signing_copy",
     "update_local", "update_fleet",
   ]);
@@ -16832,6 +16992,7 @@ function runStatus(r, vc = null) {
   const duration = runDuration(r.started, r.ended);
   const actionBtn = done ? (r.action === "update_local"
     ? `<button type="button" class="btn small primary" data-update-reconnect>${pendingUpdate ? "Reconnect & continue" : "Reconnect"}</button>`
+    : ["install_tool", "setup_environment"].includes(r.action) && r.job ? `<a class="btn small primary" href="#/jobs/${encodeURIComponent(r.job)}">Back to job</a>`
     : r.action === "coverage" ? `<a class="btn small primary" href="#/tests">View coverage</a>`
     : r.action === "plan_epic" && r.result_job ? `<a class="btn small primary" href="#/jobs/${encodeURIComponent(r.result_job)}">Review plan</a>` // the epic's waiting job is gone: planning replaced it
     : r.action === "logs_pull" ? `<a class="btn small" href="#/devlogs">See pulled logs</a>`
@@ -16842,7 +17003,7 @@ function runStatus(r, vc = null) {
     : "";
   const found = !r.running && r.result?.headline ? r.result : null; // what the run found, read from its output
   const showFound = Boolean(found && !guidance?.fromResult && (done || !guidance || found.details?.length)); // failed tests are already in the summary on top // a failure with guidance and nothing more to add would only repeat it
-  const isServerAction = ["server_start", "server_stop", "server_restart", "server_install_docker"].includes(r.action);
+  const isServerAction = ["server_start", "server_stop", "server_restart", "server_install_docker", "install_tool", "setup_environment"].includes(r.action);
   const rawHeaderText = showFound && found?.headline ? found.headline : headlineLabel;
   const headerText = isServerAction ? String(rawHeaderText).replace(/^(?:Done|Not done):\s*/i, "").replace(/\.$/, "") : rawHeaderText;
   const foundDetails = showFound && Array.isArray(found?.details)

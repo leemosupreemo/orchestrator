@@ -80,7 +80,7 @@ MISSING_NEEDS = {"npm": "Node.js (download the LTS version from nodejs.org)", "b
 # Where the installers put their tools: OpenCode's in ~/.opencode/bin, Claude's, Poolside's and Antigravity's in ~/.local/bin,
 # Homebrew's in /opt/homebrew/bin or /usr/local/bin. A server started from the Dock or launchd has none of these on its PATH,
 # and an installer's edit to the shell profile only reaches new terminals, so tools are looked for (and run) with them added.
-TOOL_DIRS = [Path(".opencode/bin"), Path(".local/bin"), Path("/opt/homebrew/bin"), Path("/usr/local/bin")]
+TOOL_DIRS = [Path(".opencode/bin"), Path(".local/bin"), Path("/opt/homebrew/bin"), Path("/usr/local/bin"), Path("/usr/local/share/dotnet"), Path(".dotnet")]
 
 
 def tool_path(base: str | None = None) -> str:

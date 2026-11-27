@@ -507,7 +507,7 @@ def server_change(lines: list[str], code: int | None) -> dict[str, Any] | None:
 
 READERS: dict[str, Callable[[list[str], int | None], dict[str, Any] | None]] = {
     "package_update": package_update,
-    "server_start": server_change, "server_stop": server_change, "server_restart": server_change, "server_install_docker": server_change,
+    "server_start": server_change, "server_stop": server_change, "server_restart": server_change, "server_install_docker": server_change, "install_tool": server_change, "setup_environment": server_change,
     "sync_fleet": sync_fleet, "fleet_llm_check": fleet_llm_check, "worker_check": worker_check,
     "test": tests, "test_suite": tests, "test_plan": tests, "coverage": coverage, "visual_check": visual_check, "ux_pass": ux_pass,
 }

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import glob
+import json
 import os
 import tempfile
 import unittest
@@ -128,6 +129,68 @@ class DescribeTests(unittest.TestCase):
         self.assertEqual(failed["label"], "Failed")
         self.assertIn("Missing Unity license", failed["reason"])
 
+    def test_debugging_states_are_specific_and_long_diagnosis_is_not_cut_off(self):
+        from orchestrator.web import server as web_server
+        long_hyp = (
+            "Task 1 is already implemented in the working tree and passing all locally runnable Python checks, "
+            "while Task 2 still needs the Swift client endpoint wiring, retry handling, and offline unit tests "
+            "before the branch is ready to merge."
+        )
+        # 1. Passing fix attempt in debugging status is ready to merge/review, not "Needs a fix"
+        passed_job = {
+            "job_id": "j-pass",
+            "status": "debugging",
+            "pr_number": 42,
+            "debug_history": [{"iteration": 1, "hypothesis": long_hyp, "result": {"build_ok": True, "tests_ok": True}}],
+        }
+        self.assertTrue(job_problem.last_fix_passed(passed_job))
+        self.assertIsNone(job_problem.describe(passed_job, self.out))
+        st_pass = web_server.job_state(passed_job)
+        self.assertEqual((st_pass["label"], st_pass["next"]["action"]), ("Ready to merge", "merge"))
+
+        # 2. Paused auto-fix leads with pause reason and keeps the full diagnosis without cutting at 240 chars
+        paused_job = {
+            "job_id": "j-pause",
+            "status": "debugging",
+            "debug_phase": "paused",
+            "debug_pause_reason": "Loop/Stall detected: repeated hypothesis",
+            "debug_history": [{"iteration": 2, "hypothesis": long_hyp, "result": {"build_ok": True, "tests_ok": False}}],
+        }
+        st_pause = web_server.job_state(paused_job)
+        self.assertEqual((st_pause["label"], st_pause["tone"], st_pause["next"]["action"]), ("Auto-fix paused", "failed", "debug"))
+        prob_pause = job_problem.describe(paused_job, self.out)
+        self.assertTrue(prob_pause["summary"].startswith("Automatic fixing paused:"))
+        self.assertIn(long_hyp, " ".join(prob_pause["lines"]))
+
+        # 3. Interrupted/pending fix attempt says it stopped before finishing and keeps the full diagnosis
+        pending_job = {
+            "job_id": "j-pend",
+            "status": "debugging",
+            "debug_history": [{"iteration": 1, "hypothesis": long_hyp, "result": "pending"}],
+        }
+        st_pend = web_server.job_state(pending_job)
+        self.assertEqual((st_pend["label"], st_pend["tone"], st_pend["next"]["action"]), ("Fix stopped", "attention", "debug"))
+        prob_pend = job_problem.describe(pending_job, self.out)
+        self.assertEqual(prob_pend["summary"], "The last fix attempt stopped before finishing.")
+        self.assertIn(long_hyp, " ".join(prob_pend["lines"]))
+
+        # 4. Build/test failure recorded in debug_history (without test_status) still surfaces clear labels
+        build_fail = web_server.job_state({
+            "status": "debugging",
+            "debug_history": [{"iteration": 1, "hypothesis": long_hyp, "result": {"build_ok": False, "tests_ok": False}}],
+        })
+        self.assertEqual((build_fail["label"], build_fail["tone"]), ("Build failing", "failed"))
+        test_fail = web_server.job_state({
+            "status": "debugging",
+            "debug_history": [{"iteration": 1, "hypothesis": long_hyp, "result": {"build_ok": True, "tests_ok": False}}],
+        })
+        self.assertEqual((test_fail["label"], test_fail["tone"]), ("Tests failing", "failed"))
+
+        # 5. Hypothesis-only debugging job explains what happened and never truncates at 240 chars
+        hyp_only = job_problem.describe({"status": "debugging", "debug_history": [{"hypothesis": long_hyp}]}, self.out)
+        self.assertIn("didn't finish", hyp_only["summary"])
+        self.assertIn(long_hyp, hyp_only["summary"])
+
 
 class WiringTests(unittest.TestCase):
     def test_the_job_page_shows_the_problem_and_fix_runs_directly(self):
@@ -141,6 +204,34 @@ class WiringTests(unittest.TestCase):
         self.assertIn('runAction(action, params, { button: el });', app)
         server = Path(glob.glob(str(ROOT / "orchestrator" / "web" / "ser*.py"))[0]).read_text()
         self.assertIn('"problem": job_problem_for(job, out_dir)', server)
+
+    def test_hero_reason_clamps_long_problem_with_show_more_and_debug_steer_has_hint(self):
+        import subprocess
+        app = (STATIC / "app.js").read_text(encoding="utf-8")
+        self.assertIn('hint: "Nothing is running. Leave blank to let the AI try again, or add notes to guide the next fix."', app)
+        self.assertIn('problem && !problem.sign_in ? (typeof clamped === "function" ? clamped(effectiveHeroReason, 240) : esc(effectiveHeroReason))', app)
+        # Verify in Node that clamped + conciseReasonText never cut mid-word and always keep full text accessible.
+        clamp_start = app.index("function clamped(")
+        clamp_src = app[clamp_start:app.index("document.addEventListener", clamp_start)]
+        concise_start = app.index("const conciseReasonText = ")
+        concise_src = app[concise_start:app.index("const architectConcerns =", concise_start)]
+        script = f"""
+const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+{clamp_src}
+{concise_src}
+const longText = "The last fix attempt didn't finish. Its diagnosis: Task 1 is already implemented in the working tree and passing all locally runnable Python checks, while Task 2 still needs the Swift client endpoint wiring, retry handling, and offline unit tests.";
+const rendered = clamped(longText, 240);
+const short = conciseReasonText(longText, 140);
+const twoSentences = "The latest fix passed checks and updated PR #12. Review and merge, or request another change below.";
+console.log(JSON.stringify({{ rendered, short, twoSentencesOut: conciseReasonText(twoSentences, 140) }}));
+"""
+        out = json.loads(subprocess.run(["node", "-e", script], capture_output=True, text=True, check=True).stdout)
+        self.assertIn("Show more", out["rendered"])
+        self.assertIn("data-clamp-full hidden", out["rendered"])
+        self.assertIn("offline unit tests.", out["rendered"])
+        self.assertNotIn("Tas…", out["rendered"])
+        self.assertNotIn("Tas…", out["short"])
+        self.assertEqual(out["twoSentencesOut"], "The latest fix passed checks and updated PR #12. Review and merge, or request another change below.")
 
 
 if __name__ == "__main__":

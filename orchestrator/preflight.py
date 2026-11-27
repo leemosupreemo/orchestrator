@@ -19,8 +19,8 @@ Run = Callable[[list[str]], tuple[int, str]]   # argv -> (exit code, combined ou
 Which = Callable[[str], bool]
 
 
-def _item(id_: str, status: str, title: str, detail: str, fix: str = "", route: str = "") -> dict[str, str]:
-    return {"id": id_, "status": status, "title": title, "detail": detail, "fix": fix, "route": route}
+def _item(id_: str, status: str, title: str, detail: str, fix: str = "", route: str = "", **extra: Any) -> dict[str, Any]:
+    return {"id": id_, "status": status, "title": title, "detail": detail, "fix": fix, "route": route, **extra}
 
 
 def command_tools(command: str | None) -> list[str]:
@@ -49,24 +49,158 @@ def _resolve_tool(tool: str, env: Mapping[str, str]) -> str | None:
     return None if "$" in tool or "`" in tool else tool
 
 
+def _project_requires_checks(
+    root: Path,
+    config: Mapping[str, Any],
+    run: Run,
+    which: Which,
+    env: Mapping[str, str],
+) -> list[dict[str, Any]]:
+    """Evaluate top-level `requires` and `per-job` `test_commands` `requires` in preflight."""
+    from orchestrator import build_tools, servers
+
+    reqs: list[str] = []
+    top = config.get("requires")
+    if isinstance(top, list):
+        reqs.extend(r for r in top if isinstance(r, str))
+    for entry in config.get("test_commands") or []:
+        if isinstance(entry, dict) and str(entry.get("tier") or "per-job") == "per-job":
+            for r in entry.get("requires") or []:
+                if isinstance(r, str) and r not in reqs:
+                    reqs.append(r)
+    if not reqs:
+        return []
+
+    out: list[dict[str, Any]] = []
+    docker_checked = False
+    docker_up = False
+    compose_servers: list[dict[str, Any]] | None = None
+
+    def is_docker_up() -> bool:
+        nonlocal docker_checked, docker_up
+        if not docker_checked:
+            docker_checked = True
+            docker_up = which("docker") and run(["docker", "info"])[0] == 0
+        return docker_up
+
+    def get_servers() -> list[dict[str, Any]]:
+        nonlocal compose_servers
+        if compose_servers is None:
+            try:
+                compose_servers = servers.find(root)
+            except Exception:
+                compose_servers = []
+        return compose_servers
+
+    seen_ids: set[str] = set()
+    for req in reqs:
+        kind, _, val = req.partition(":")
+        if kind == "command" and val:
+            if not which(val):
+                t_info = build_tools.describe_tool(val)
+                iid = f"req-cmd-{t_info['id']}"
+                if iid not in seen_ids:
+                    seen_ids.add(iid)
+                    out.append(_item(iid, "fail", f"{t_info['name']} isn't installed",
+                                     f"Project requirement `command:{val}` isn't available on this computer.",
+                                     t_info["manual_hint"], missing_tools=[t_info]))
+        elif kind == "docker":
+            if not which("docker"):
+                iid = "req-docker"
+                if iid not in seen_ids:
+                    seen_ids.add(iid)
+                    d_info = build_tools.describe_tool("docker")
+                    out.append(_item(iid, "fail", "Docker isn't installed",
+                                     "This project requires Docker, which isn't installed on this computer.",
+                                     d_info["manual_hint"], missing_tools=[d_info]))
+            elif not is_docker_up():
+                iid = "req-docker"
+                if iid not in seen_ids:
+                    seen_ids.add(iid)
+                    srvs = get_servers()
+                    out.append(_item(iid, "fail", "Docker isn't running",
+                                     "This project requires Docker, and the Docker daemon isn't running.",
+                                     "Start Docker or click Set up environment",
+                                     **({"start_servers": srvs[:1]} if srvs else {"missing_tools": [build_tools.describe_tool("docker")]})))
+        elif kind == "container" and val:
+            if not which("docker"):
+                if "req-docker" not in seen_ids:
+                    seen_ids.add("req-docker")
+                    d_info = build_tools.describe_tool("docker")
+                    out.append(_item("req-docker", "fail", "Docker isn't installed",
+                                     f"Container `{val}` requires Docker, which isn't installed on this computer.",
+                                     d_info["manual_hint"], missing_tools=[d_info]))
+            else:
+                code, c_out = run(["docker", "inspect", "--format", "{{.State.Running}}", val])
+                if code != 0 or c_out.strip() != "true":
+                    iid = f"req-container-{val}"
+                    if iid not in seen_ids:
+                        seen_ids.add(iid)
+                        srvs = get_servers()
+                        out.append(_item(iid, "fail", f"Container `{val}` isn't running",
+                                         f"Tests require the `{val}` Docker container to be up.",
+                                         "Start the project server before running tests",
+                                         **({"start_servers": srvs} if srvs else {})))
+        elif kind == "env" and val:
+            if not env.get(val):
+                iid = f"req-env-{val}"
+                if iid not in seen_ids:
+                    seen_ids.add(iid)
+                    out.append(_item(iid, "fail", f"Environment variable `{val}` isn't set",
+                                     f"This project requires `{val}` in the environment.",
+                                     f"Export `{val}` or configure it in `.env` before running jobs"))
+        elif kind == "path" and val:
+            if not (root / val).exists():
+                iid = f"req-path-{val}"
+                if iid not in seen_ids:
+                    seen_ids.add(iid)
+                    out.append(_item(iid, "fail", f"Required path `{val}` is missing",
+                                     f"`{val}` doesn't exist in this checkout yet.",
+                                     f"Prepare `{val}` before running builds or tests"))
+        elif kind == "device" and val == "ios":
+            code, d_out = run(["xcrun", "xctrace", "list", "devices"]) if which("xcrun") else (127, "")
+            has_ios = False
+            if code == 0:
+                in_devs = False
+                for line in d_out.splitlines():
+                    s = line.strip()
+                    if s.startswith("== Devices =="):
+                        in_devs = True
+                    elif s.startswith("=="):
+                        in_devs = False
+                    elif in_devs and s and "Mac" not in s and "Simulator" not in s:
+                        has_ios = True
+                        break
+            if not has_ios and "req-device-ios" not in seen_ids:
+                seen_ids.add("req-device-ios")
+                out.append(_item("req-device-ios", "fail", "No physical iOS device is connected",
+                                 "This project requires a connected, unlocked iPhone or iPad.",
+                                 "Connect and unlock an iOS device over USB, or run on a Mac with one paired"))
+    return out
+
+
 def checks(config: dict[str, Any], machines: list[dict[str, Any]], is_apple_app: bool, disk_free_gb: float | None,
            run: Run, which: Which, model_clis: Callable[[str], list[str]] = lambda m: [],
            github: bool = True, *, env: Mapping[str, str] | None = None,
-           claude_plugin_findings: list[dict[str, str]] | None = None) -> list[dict[str, str]]:
+           claude_plugin_findings: list[dict[str, str]] | None = None,
+           root: Any = None) -> list[dict[str, Any]]:
     """`github`: the project uses GitHub issues and pull requests (code_host); plain git needs no GitHub check.
     `claude_plugin_findings`: project-scoped Claude Code plugins in a macOS-protected folder (`claude_plugins.findings`)."""
     out: list[dict[str, str]] = []
 
     # 1. The programs the build and test commands start.
+    from orchestrator import build_tools
     for label, command in (("build", config.get("build_command")), ("test", config.get("test_command"))):
         if not command:
             continue
         tools = [_resolve_tool(tool, env or {}) for tool in command_tools(command)]
         missing = [t for t in dict.fromkeys(tools) if t and not t.startswith(("./", "../")) and not which(t)]
         if missing:
+            tool_infos = [build_tools.describe_tool(t) for t in missing]
             out.append(_item(f"{label}-tool", "fail", f"The {label} command can't run",
                              f"This computer couldn't find an executable for {', '.join(missing)}.",
-                             f"Install the tool or update `{label}_command` in `.orchestrator/project.json`"))
+                             f"Install the tool or update `{label}_command` in `.orchestrator/project.json`",
+                             missing_tools=tool_infos))
         elif None in tools:
             out.append(_item(f"{label}-tool", "warn", f"The {label} command uses a dynamic executable",
                              "The shell chooses the executable when the command runs."))
@@ -122,7 +256,17 @@ def checks(config: dict[str, Any], machines: list[dict[str, Any]], is_apple_app:
         if local and not any(m.get("supports_xcode") for m in local) and not any(m.get("execution_mode") == "remote" and m.get("supports_xcode") for m in machines):
             out.append(_item("xcode-machine", "fail", "No machine is marked as able to build with Xcode", "Jobs for this project will have nowhere to run.", "Open Machines", "#/config/fleet"))
 
-    # 5. Claude Code plugins that can make `claude -p` wait for a macOS permission question nobody can answer.
+    # 5. Repository-level version pins, manifest lockfiles, platform SDKs, and declarative `requires` (when root is supplied).
+    if root is not None:
+        from pathlib import Path as _Path
+        from orchestrator import manifest_deps
+        root_path = _Path(root)
+        out.extend(build_tools.check_toolchain_versions(root_path, run, which))
+        out.extend(manifest_deps.preflight_items_for_manifests(root_path, config, which=which))
+        out.extend(build_tools.check_platform_sdks(root_path, config, which, env=env))
+        out.extend(_project_requires_checks(root_path, config, run, which, env or {}))
+
+    # 6. Claude Code plugins that can make `claude -p` wait for a macOS permission question nobody can answer.
     if claude_plugin_findings:
         folders = sorted({f["folder"] for f in claude_plugin_findings})
         out.append(_item("claude-plugins", "warn", "A Claude Code plugin may make Claude calls hang",

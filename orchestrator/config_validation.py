@@ -44,6 +44,7 @@ def validate_project_config(config: ProjectConfig) -> list[str]:
     except (OSError, ValueError):
         raw_project = {}
     errors += platform_view.parse(raw_project.get("platforms"), config.root)[1]
+    errors += test_commands.parse_requires(raw_project.get("requires"), "requires")[1]
     for key in ("build_timeout", "test_timeout"):
         value = getattr(config, key, None)
         if value is not None and (isinstance(value, bool) or not isinstance(value, int) or value < 0):

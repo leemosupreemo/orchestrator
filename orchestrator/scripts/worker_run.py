@@ -947,6 +947,38 @@ def other_job_in_folder(job_path: Path) -> Optional[dict]:
         return None  # can't tell: carry on as before rather than stop every job
 
 
+def missing_build_tool_blocker(job: dict) -> Optional[dict]:
+    """Check before starting work whether this computer is missing a tool required by build_command/test_command."""
+    if os.environ.get("ORCHESTRATOR_SKIP_TOOL_PREFLIGHT") == "1":
+        return None
+    if job.get("passed_uncommitted") or job.get("type") in ("design", "feature-design", "bug-investigate"):
+        return None
+    cfg_path = ROOT / ".orchestrator" / "project.json"
+    if not cfg_path.is_file():
+        return None
+    try:
+        from orchestrator import build_tools, manifest_deps
+        cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+        if not isinstance(cfg, dict):
+            return None
+        missing = build_tools.missing_project_tools(cfg)
+        if missing:
+            return blockers.missing_tool_blocker(missing)
+        unhydrated = manifest_deps.unhydrated_manifests(ROOT, cfg)
+        if unhydrated:
+            names = ", ".join(m["name"] for m in unhydrated)
+            return {
+                "kind": "tool",
+                "scope": "project",
+                "key": unhydrated[0]["tool"],
+                "title": "Project packages aren't installed yet",
+                "detail": f"Found lockfiles without local packages installed ({names}). Click Set up environment to install them.",
+            }
+        return None
+    except Exception:
+        return None
+
+
 def pause_on_blocker(job_path: Path, job: dict, blocker: dict, issue_number: Optional[int]) -> None:
     print(f"\n⚠️ {blocker['title']}. {blocker['detail']} This isn't a code problem, so no fix attempt is started; "
           "the job resumes once it's cleared.")
@@ -1090,6 +1122,9 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
 
     try:
         require_build_space()
+        if missing_tool := missing_build_tool_blocker(job):
+            pause_on_blocker(job_path, job, missing_tool, issue_number)
+            return
         print_phase("git_prep")
         status_bar.render()
         if other := other_job_in_folder(job_path):

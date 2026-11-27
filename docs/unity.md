@@ -13,6 +13,11 @@ Orchestrator works on Unity projects in three ways: it builds and tests them, it
 
 Both call the editor as `"${UNITY_PATH:-<Hub default for the project's version>}"`. Set `UNITY_PATH` to the `Unity` binary on any computer that keeps the editor somewhere else. The computer needs an active Unity licence for batchmode to start.
 
+Preflight checks verify three Unity prerequisites before starting a job on a Mac:
+1. **Editor binary** (`unity:<version>`): if Unity Hub is installed in `/Applications/Unity Hub.app`, **Set up environment…** (or `orchestrator install-tool unity:<version>`) installs the exact editor version headlessly.
+2. **Playback build modules** (`unity-module:ios:<version>`, `unity-module:android:<version>`): checked automatically when `build_command`, `delivery_build_command`, or `delivery_artifact` targets `.ipa` / `.apk` / `.aab`, and installable headlessly via Unity Hub.
+3. **Active license**: warns upfront if neither a local `.ulf` file nor a signed-in Unity Hub profile is present on the host.
+
 Single test suites run with `-testFilter`, on PlayMode when the file sits under a `Runtime` or `PlayMode` folder and on EditMode otherwise. Edit `build_command` and `test_command` in `.orchestrator/project.json` for a custom build method or for PlayMode tests (`orchestrator check-config` after).
 
 ## Unity Build Automation (Unity Cloud builds)

@@ -1194,6 +1194,23 @@ shows the command to run in **Your computers**.
 
 For developers: a change is breaking when it raises `breaking` in `orchestrator/release.json` (see AGENTS.md).
 
+## Build & Test Dependency Readiness
+
+Before running a job or fix attempt, Orchestrator checks five layers of build and test readiness on the active computer (`orchestrator/preflight.py`, `orchestrator/build_tools.py`, `orchestrator/manifest_deps.py`):
+
+1. **Host toolchains & version pins**: executables invoked by `build_command` and `test_command` (including `/opt/homebrew/bin`, `/usr/local/share/dotnet`, and `~/.dotnet`), plus pinned versions in `global.json` (`.NET`), `.nvmrc` / `.node-version` / `package.json` `engines.node`, `.python-version` / `pyproject.toml`, `go.mod`, `rust-toolchain.toml`, and `.ruby-version`.
+2. **Project lockfiles & packages**: unhydrated lockfiles (`package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`, `bun.lock`, `uv.lock`, `Podfile.lock`, `pubspec.lock`, or `.venv` `requirements.txt`) when local package directories (`node_modules`, `.venv`, `Pods`, `.dart_tool`) are missing or out of sync.
+3. **Platform SDKs, licenses & modules**: Xcode selection, first-launch setup, and CoreSimulator health on Apple apps; Unity editor, local license presence, and required iOS/Android playback modules (`PlaybackEngines/iOSSupport`, `AndroidPlayer`); and JDK + Android SDK / license checks on Android projects.
+4. **Services, env & fixtures (`requires`)**: top-level `"requires"` in `.orchestrator/project.json` and `"per-job"` entries in `test_commands` (`docker`, `container:<name>`, `command:<name>`, `path:<path>`, `env:<NAME>`, `device:ios`).
+5. **Capability-aware peer failover**: when a computer lacks required dependencies or disk space, **Run on `<Peer>`** checks online peers' preflight status and only offers computers that satisfy the project's requirements.
+
+Instead of showing separate buttons for each missing dependency, the Web UI consolidates everything into a single **Set up environment…** (or **Install `<Tool>`…** when only one item is missing) action on the Job hero, Startup card, and Readiness page, backed by:
+
+```bash
+orchestrator setup-environment       # installs missing toolchains, hydrates lockfiles, and starts required Docker servers
+orchestrator install-tool dotnet     # installs a single curated tool or Unity module (e.g. unity:6000.6.6f1, unity-module:ios:6000.6.6f1)
+```
+
 ## Troubleshooting
 
 Run both checks first:

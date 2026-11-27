@@ -19,7 +19,7 @@ from typing import Any
 
 from orchestrator import builder_check, run_result
 
-MAX_LINE = 240
+MAX_LINE = 1200
 _AUTH = re.compile(r"oauth|\b401\b|authenticate|unauthori[sz]ed|sign[- ]?in|session expired|token (?:has )?expired|api key|credentials", re.I)
 _TOOLS = (("claude", "Claude", re.compile(r"claude|anthropic", re.I)), ("codex", "Codex", re.compile(r"codex|openai", re.I)),
           ("agy", "Antigravity", re.compile(r"antigravity|\bagy\b", re.I)), ("pool", "Pool", re.compile(r"\bpool\b|poolside", re.I)))
@@ -78,7 +78,10 @@ def _latest(folder: Path, pattern: str) -> Path | None:
 
 def _clip(text: str, n: int = MAX_LINE) -> str:
     text = re.sub(r"\s+", " ", text or "").strip()
-    return text if len(text) <= n else text[: n - 1].rstrip() + "…"
+    if len(text) <= n:
+        return text
+    cut = text[: n - 1].rsplit(" ", 1)[0].rstrip(" ,;:-") or text[: n - 1].rstrip()
+    return cut + "…"
 
 
 def _top_blocker(analysis: str) -> str:
@@ -104,9 +107,24 @@ def _test_problem(job: dict[str, Any], out_dir: Path) -> str:
     return top or ("The tests didn't pass. The test log in the job's output has the details." if log or job.get("test_status") else "")
 
 
+def last_debug_entry(job: dict[str, Any]) -> dict[str, Any]:
+    history = job.get("debug_history") if isinstance(job.get("debug_history"), list) else []
+    return history[-1] if history and isinstance(history[-1], dict) else {}
+
+
+def last_fix_passed(job: dict[str, Any]) -> bool:
+    """True when a debugging job's latest fix attempt passed build & tests and is ready for review."""
+    if job.get("status") != "debugging" or job.get("debug_phase") == "paused":
+        return False
+    if job.get("test_status") in ("tests-failed", "build-failed", "failed") or str(job.get("last_error") or "").strip():
+        return False
+    res = last_debug_entry(job).get("result")
+    return isinstance(res, dict) and res.get("build_ok") is True and res.get("tests_ok") is True
+
+
 def describe(job: dict[str, Any], out_dir: Path) -> dict[str, Any] | None:
     """The problem behind a job in "debugging" or "failed", or None for a job in any other state."""
-    if job.get("status") not in ("debugging", "failed"):
+    if job.get("status") not in ("debugging", "failed") or last_fix_passed(job):
         return None
     out_dir = Path(out_dir)
     summary, lines, sign_in = "", [], None
@@ -133,10 +151,25 @@ def describe(job: dict[str, Any], out_dir: Path) -> dict[str, Any] | None:
     add(_test_problem(job, out_dir))
     if error and not (sign_in or _AUTH.search(error)):
         add(f"The last attempt stopped with an error: {_clip(error)}")
-    history = job.get("debug_history") if isinstance(job.get("debug_history"), list) else []
-    diagnosis = _clip(str(history[-1].get("hypothesis") or "")) if history and isinstance(history[-1], dict) else ""
-    if diagnosis:
-        add(f"The last attempt's diagnosis: {diagnosis}")
     if job.get("debug_phase") == "paused" and job.get("debug_pause_reason"):
         add(f"Automatic fixing paused: {_clip(str(job['debug_pause_reason']))}")
+    last = last_debug_entry(job)
+    last_result = last.get("result")
+    if not summary:
+        if last_result == "pending":
+            add("The last fix attempt stopped before finishing.")
+        elif isinstance(last_result, dict):
+            if last_result.get("aborted"):
+                notes = _clip(str(last_result.get("notes") or ""))
+                add(f"The last fix attempt stopped early: {notes}" if notes else "The last fix attempt stopped before finishing.")
+            elif last_result.get("build_ok") is False:
+                add("The last fix attempt didn't build.")
+            elif last_result.get("tests_ok") is False:
+                add("The last fix attempt's tests didn't pass.")
+    diagnosis = _clip(str(last.get("hypothesis") or ""))
+    if diagnosis:
+        if summary:
+            add(f"Last attempt's diagnosis: {diagnosis}")
+        else:
+            add(f"The last fix attempt didn't finish. Its diagnosis: {diagnosis}")
     return {"summary": summary or "The build or tests didn't pass.", "lines": lines[:4], "sign_in": sign_in}

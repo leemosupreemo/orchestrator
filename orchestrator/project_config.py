@@ -372,6 +372,7 @@ class ProjectConfig:
     code_host: str = "auto"
     # Extra test commands run after test_command passes; see orchestrator/test_commands.py.
     test_commands: list[Any] = field(default_factory=list)
+    requires: list[str] = field(default_factory=list)
     verification_mode: str = "off"
     # Seconds the main build and test command may run before they are stopped; None is the default, 0 means no limit.
     build_timeout: int | None = None
@@ -548,6 +549,7 @@ def load_project_config(root: Path | None = None) -> ProjectConfig:
         remote_logs=data.get("remote_logs") or {},
         code_host=str(data.get("code_host") or "auto"),
         test_commands=data.get("test_commands") or [],
+        requires=data.get("requires") or [],
         verification_mode=data.get("verification_mode", "off"),
         build_timeout=data.get("build_timeout"),
         test_timeout=data.get("test_timeout"),

@@ -259,6 +259,36 @@ def run_debug_iteration(
         job["last_blocker"] = job.pop("blocker")
         write_json(job_path, job)
 
+    if os.environ.get("ORCHESTRATOR_SKIP_TOOL_PREFLIGHT") != "1" and job.get("type") not in ("design", "feature-design", "bug-investigate"):
+        try:
+            cfg_path = ROOT / ".orchestrator" / "project.json"
+            if cfg_path.is_file():
+                from orchestrator import blockers as _blockers, build_tools as _build_tools, manifest_deps as _manifest_deps
+                cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+                if isinstance(cfg, dict):
+                    missing_tool = _blockers.missing_tool_blocker(_build_tools.missing_project_tools(cfg))
+                    if not missing_tool:
+                        unhydrated = _manifest_deps.unhydrated_manifests(ROOT, cfg)
+                        if unhydrated:
+                            names = ", ".join(m["name"] for m in unhydrated)
+                            missing_tool = {
+                                "kind": "tool",
+                                "scope": "project",
+                                "key": unhydrated[0]["tool"],
+                                "title": "Project packages aren't installed yet",
+                                "detail": f"Found lockfiles without local packages installed ({names}). Click Set up environment to install them.",
+                            }
+                    if missing_tool:
+                        print(f"\n⚠️ {missing_tool['title']}. {missing_tool['detail']} Stopping before calling the AI so you can set it up or run on another computer.")
+                        _blockers.record(job, missing_tool)
+                        job["status"] = "human-needed"
+                        job["last_error"] = f"{missing_tool['title']}. {missing_tool['detail']}"
+                        job["updated_at"] = now_iso()
+                        write_json(job_path, job)
+                        return
+        except Exception:
+            pass
+
     job["iteration"] += 1
     iteration = job["iteration"]
     

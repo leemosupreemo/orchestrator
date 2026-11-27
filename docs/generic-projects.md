@@ -38,4 +38,13 @@ take precedence; update custom SwiftUI prompts when adapting another stack.
 
 The orchestrator automatically detects common stacks (Rust, Python, Node/TypeScript, Go, Unity, and Swift SPM/Xcode) when running `orchestrator init` or `orchestrator wizard`. The wizard automatically adapts its prompts to configure `build_command` and `test_command` for non-Xcode projects, bypassing Xcode scheme and signing setup. Unity projects (`ProjectSettings/ProjectVersion.txt` plus `Assets/`) are detected too. The build command imports the project in batchmode, which fails on script compile errors; the test command runs the EditMode tests of the Unity Test Framework. Both call the editor as `"${UNITY_PATH:-<Hub default for the project's version>}"`, so set `UNITY_PATH` on each machine that keeps the editor somewhere else. Single suites run with `-testFilter`, on PlayMode when they sit under a `Runtime` or `PlayMode` folder. A Unity license must be active on the machine for batchmode to start. See `docs/unity.md` for the Unity Cloud connection and the Editor plugin.
 
-Multi-language test discovery automatically catalogs test suites across Python, Rust, Go, JavaScript/TypeScript, and Swift for agent context. Remote worker probes and visual simulator checks remain Apple-focused.
+Multi-language test discovery automatically catalogs test suites across Python, Rust, Go, JavaScript/TypeScript, C#/.NET, Kotlin/Java, and Swift for agent context.
+
+## Dependency & Environment Readiness
+
+Preflight and worker startup automatically verify non-Xcode dependencies before starting a build or fix run:
+
+- **Toolchains & version files**: executables in `build_command` / `test_command` (searching `/opt/homebrew/bin`, `/usr/local/share/dotnet`, `~/.dotnet`, `~/.local/bin`) plus pinned versions in `global.json`, `.nvmrc` / `.node-version` / `package.json`, `.python-version` / `pyproject.toml`, `go.mod`, `rust-toolchain.toml`, and `.ruby-version`.
+- **Manifest lockfile hydration**: detects unhydrated `package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`, `bun.lock`, `uv.lock`, `Podfile.lock`, and `pubspec.lock` checkouts.
+- **Declarative `requires`**: add `"requires": ["docker", "container:db", "command:dotnet", "path:.local/seed", "env:API_KEY", "device:ios"]` at the top level of `.orchestrator/project.json` (or on `per-job` `test_commands` entries) to enforce runtime prerequisites upfront.
+- **1-click setup**: run `orchestrator setup-environment` (or click **Set up environment…** in the Web UI) to install missing Homebrew toolchains, hydrate locked packages, and start Docker Compose services in one pass.

@@ -2276,6 +2276,21 @@ def _known_machine_names(config: Any) -> list[str]:
     return [m["name"] for m in machines if isinstance(m, dict) and m.get("name")]
 
 
+def install_tool_command(args: argparse.Namespace) -> int:
+    """Install a curated missing build/test tool (e.g. dotnet, gh, node, unity:6000.6.6f1)."""
+    from orchestrator import build_tools
+    result = build_tools.install_tool(args.tool, lambda line: print(line, flush=True))
+    return 0 if result["ok"] else 1
+
+
+def setup_environment_command(args: argparse.Namespace) -> int:
+    """Run all automatic dependency setup steps (toolchains, manifest lockfiles, Docker servers) for this project."""
+    from orchestrator import manifest_deps
+    config = load_project_config()
+    result = manifest_deps.setup_environment(config.root, _project_json_dict(config), lambda line: print(line, flush=True))
+    return 0 if result["ok"] else 1
+
+
 def server_command(args: argparse.Namespace) -> int:
     """Docker servers: see whether they are up, start, stop or restart them here or on another computer, read the logs."""
     from orchestrator import servers
@@ -2840,6 +2855,11 @@ def _main(argv: list[str] | None = None) -> int:
     server_parser.add_argument("server", nargs="?", help="Server id (see `server status`); optional when the project has one")
     server_parser.add_argument("--machine", help="A computer from machines.json (default: this one)")
     server_parser.add_argument("--project", help="Recent project name or project root path")
+    install_tool_parser = subparsers.add_parser("install-tool", help="Install a missing build or test tool on this computer (e.g. dotnet, gh, node, unity:6000.6.6f1)")
+    install_tool_parser.add_argument("tool", help="Tool identifier (e.g. dotnet, gh, node, docker, unity:6000.6.6f1)")
+    install_tool_parser.add_argument("--project", help="Recent project name or project root path")
+    setup_env_parser = subparsers.add_parser("setup-environment", help="Install missing toolchains, hydrate project lockfiles, and start required Docker servers")
+    setup_env_parser.add_argument("--project", help="Recent project name or project root path")
     signing_parser = subparsers.add_parser(
         "signing", help="Signing keys for iOS and Android builds: where they are, import an Apple key, or copy one between your computers")
     signing_parser.add_argument("action", choices=["status", "import-ios", "secure-ios", "copy"])
@@ -3017,6 +3037,14 @@ def _main(argv: list[str] | None = None) -> int:
         if args.project and apply_project_env(args.project):
             return 1
         return server_command(args)
+    if args.command == "install-tool":
+        if args.project and apply_project_env(args.project):
+            return 1
+        return install_tool_command(args)
+    if args.command == "setup-environment":
+        if args.project and apply_project_env(args.project):
+            return 1
+        return setup_environment_command(args)
     if args.command == "signing":
         if args.project and apply_project_env(args.project):
             return 1

@@ -159,6 +159,20 @@ def clear_git_lock(root: Path, now: float | None = None) -> bool:
     return True
 
 
+def missing_tool_blocker(missing: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Build a structured machine-scoped `tool` blocker from `build_tools.missing_project_tools` output."""
+    if not missing:
+        return None
+    first = missing[0]
+    names = ", ".join(m.get("name") or m.get("binary") or "tool" for m in missing)
+    roles = sorted({r for m in missing for r in (m.get("needed_by") or [])})
+    role_text = " and ".join(roles) if roles else "build/test"
+    title = f"{first.get('name') or first.get('binary')} isn't installed" if len(missing) == 1 else f"Missing build tools: {names}"
+    detail = f"This project's {role_text} command needs {names}, which isn't installed on this computer."
+    return _make("tool", "machine", str(first.get("binary") or first.get("id") or ""), title, detail,
+                 tool=first, missing_tools=missing)
+
+
 def is_cleared(blocker: dict[str, Any], root: Path) -> bool | None:
     """True when the blocker is gone, False when it's still there, None when this can't be checked (Xcode, the simulator)."""
     kind = blocker.get("kind")
@@ -168,7 +182,11 @@ def is_cleared(blocker: dict[str, Any], root: Path) -> bool | None:
     if kind == "sign_in":
         return job_problem.signed_in_at(str(blocker.get("provider") or "")) > float(blocker.get("detected_at") or 0)
     if kind == "tool":
-        return shutil.which(str(blocker.get("key") or "")) is not None
+        from orchestrator import build_tools
+        listed = blocker.get("missing_tools")
+        if isinstance(listed, list) and listed:
+            return all(build_tools.default_which(str(t.get("binary") or t.get("id") or "")) for t in listed if isinstance(t, dict))
+        return build_tools.default_which(str(blocker.get("key") or ""))
     if kind == "disk_full":
         needed = disk_space.status(root)["needed_bytes"]
         return needed == 0 if needed is not None else None
@@ -190,7 +208,12 @@ def steps(blocker: dict[str, Any], root: Path) -> list[str]:
     if kind == "sign_in":
         return [f"Sign in to {blocker.get('name') or 'the AI tool'}; waiting jobs then resume."]
     if kind == "tool":
-        return [f"Install {blocker.get('key')}; waiting jobs then resume."]
+        from orchestrator import build_tools
+        info = blocker.get("tool") if isinstance(blocker.get("tool"), dict) else build_tools.describe_tool(str(blocker.get("key") or ""))
+        if info.get("installable"):
+            return [f"Click Install {info.get('name') or blocker.get('key')} to install it automatically ({info.get('method')}, {info.get('size_hint')}).",
+                    "Waiting jobs resume once it is installed."]
+        return [info.get("manual_hint") or f"Install {blocker.get('key')}; waiting jobs then resume."]
     if kind == "disk_full":
         report = disk_space.status(root)
         req_gb = f"{report['required_bytes'] / disk_space.GIB:g} GB"
@@ -222,9 +245,13 @@ def groups(root: Path, jobs: list[tuple[str, dict[str, Any]]]) -> list[dict[str,
         blocker = job.get("blocker")
         if job.get("status") != "human-needed" or not isinstance(blocker, dict) or not blocker.get("kind"):
             continue
+        extra = {}
+        if blocker["kind"] == "tool":
+            from orchestrator import build_tools
+            extra["tool"] = blocker.get("tool") if isinstance(blocker.get("tool"), dict) else build_tools.describe_tool(str(blocker.get("key") or ""))
         group = out.setdefault((blocker["kind"], str(blocker.get("key") or "")),
                                {**{k: blocker.get(k) for k in ("kind", "scope", "key", "title", "detail", "provider", "name", "until")},
-                                "cleared": is_cleared(blocker, root), "steps": steps(blocker, root), "jobs": []})
+                                **extra, "cleared": is_cleared(blocker, root), "steps": steps(blocker, root), "jobs": []})
         group["jobs"].append({"id": job_id, "title": job.get("title") or job_id,
                               "auto_resume": due_for_auto_resume(blocker)})
     return list(out.values())

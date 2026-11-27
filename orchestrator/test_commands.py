@@ -41,7 +41,7 @@ TIERS = ("per-job", "nightly", "manual")
 DEFAULT_TIMEOUT = 30 * 60
 TIMEOUT_EXIT_CODE = 124  # what `timeout(1)` uses
 KILL_GRACE_SECONDS = 10
-REQUIREMENT_KINDS = ("docker", "container", "command", "path", "env")
+REQUIREMENT_KINDS = ("docker", "container", "command", "path", "env", "device")
 
 
 @dataclass(frozen=True)
@@ -60,12 +60,24 @@ class ExtraTestCommand:
 def _requirement_error(requirement: str) -> str | None:
     kind, _, value = requirement.partition(":")
     if kind not in REQUIREMENT_KINDS:
-        return f'unknown requirement "{requirement}" (use docker, container:<name>, command:<name>, path:<path> or env:<NAME>)'
+        return f'unknown requirement "{requirement}" (use docker, container:<name>, command:<name>, path:<path>, env:<NAME> or device:ios)'
     if kind == "docker" and value:
         return 'requirement "docker" takes no value'
     if kind != "docker" and not value:
         return f'requirement "{requirement}" needs a value, like {kind}:<value>'
+    if kind == "device" and value not in ("ios",):
+        return f'requirement "{requirement}" must be device:ios'
     return None
+
+
+def parse_requires(raw: Any, label: str = "requires") -> tuple[tuple[str, ...], list[str]]:
+    """Validate a `requires` list from `project.json` or a `test_commands` entry."""
+    if raw in (None, [], ()):
+        return (), []
+    if not isinstance(raw, list) or not all(isinstance(r, str) for r in raw):
+        return (), [f"{label}: must be a list of strings."]
+    errors = [f"{label}: {err}." for r in raw if (err := _requirement_error(r))]
+    return (() if errors else tuple(raw)), errors
 
 
 def parse(raw: Any, root: Path | None = None) -> tuple[list[ExtraTestCommand], list[str]]:
@@ -181,10 +193,35 @@ def container_running(name: str) -> bool:
     return done.returncode == 0 and done.stdout.strip() == "true"
 
 
+def ios_device_connected() -> bool:
+    """Whether a physical iOS device (not Simulator, not offline) is connected to this Mac."""
+    if not shutil.which("xcrun"):
+        return False
+    try:
+        res = subprocess.run(["xcrun", "xctrace", "list", "devices"], capture_output=True, text=True, timeout=10, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    if res.returncode != 0:
+        return False
+    in_devices = False
+    for line in res.stdout.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("== Devices =="):
+            in_devices = True
+            continue
+        if stripped.startswith("=="):
+            in_devices = False
+            continue
+        if in_devices and stripped and "Mac" not in stripped and "Simulator" not in stripped:
+            return True
+    return False
+
+
 def unmet_requirements(requires: tuple[str, ...] | list[str], root: Path, *,
                        which: Callable[[str], str | None] = shutil.which,
                        docker: Callable[[], bool] = docker_ready,
                        container: Callable[[str], bool] = container_running,
+                       device: Callable[[], bool] = ios_device_connected,
                        environ: dict[str, str] | None = None) -> list[str]:
     """What is missing, in words a person can act on. Empty when the command can run."""
     environ = os.environ if environ is None else environ
@@ -201,6 +238,8 @@ def unmet_requirements(requires: tuple[str, ...] | list[str], root: Path, *,
             missing.append(f"{value} doesn't exist (a local file this test needs)")
         elif kind == "env" and not environ.get(value):
             missing.append(f"{value} isn't set")
+        elif kind == "device" and value == "ios" and not device():
+            missing.append("no physical iOS device is connected and unlocked")
     return missing
 
 

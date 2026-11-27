@@ -20,8 +20,8 @@ When the build or tests fail, or the worker raises, the job ends up in one of th
 
 | Cause | Recorded as | Job page | Next |
 |---|---|---|---|
-| Build or tests fail (the code) | `status: debugging` | Needs a fix | An initial repair may run automatically. Further failed repairs wait for **Run another fix**. |
-| Something outside the code: a git lock, an expired sign-in, a missing tool, a full disk, an AI usage/rate limit, Xcode or the simulator | `status: human-needed`, `blocker: {...}` (`orchestrator/blockers.py`) | The blocker's title, checked now | Steps to clear it, then **Try again**; resumes by itself once cleared |
+| Build or tests fail (the code) | `status: debugging` | **Build failing**, **Tests failing**, **Auto-fix paused**, **Fix stopped**, **Ready to merge / review** (when the latest fix passed checks), or **Needs a fix** | An initial repair may run automatically. Further repairs wait for **Run fix** (with optional guidance). Long diagnoses expand inline via **Show more**. |
+| Something outside the code: a git lock, an expired sign-in, missing toolchains or project packages, a full disk, an AI usage/rate limit, Xcode or the simulator | `status: human-needed`, `blocker: {...}` (`orchestrator/blockers.py`) | The blocker's title, checked now (or consolidated **Set up environment…** on missing local dependencies) | 1-click **Set up environment…** / **Install `<Tool>`…**, **Run on `<Peer>`** (verified against peer preflight), or manual steps + **Try again**; resumes automatically once cleared |
 | The AI asks a question | `human_clarification_question` | Question for you | **Answer** |
 | The AI's "question" is really a blocker ("rerun with write access") | `human_clarification_question`, classified by `classify_clarification` | The AI couldn't continue (`orchestrator/blocker_fix.py`) | The one fix that applies, e.g. **Plan again** telling the planner it plans only |
 | The work passed its tests but the commit failed | `passed_uncommitted: {files}` | Tests passed, not committed | **Commit the work**: Resume commits those files without building again, and without checking anything out (a forced checkout would throw the uncommitted work away) |
@@ -44,8 +44,7 @@ The job's **Runs** section shows each attempt's logs and result. The job record 
 so a failure in the code is never taken for one. Each blocker has a `scope` (`project` or `machine`) and a `key`, so
 Home's **Blocked** card shows it once with every job it holds up.
 
-- **Where they are recorded.** `worker_run.py` checks the run's `build.log`, `test.log` and `environment_failure.md` before
-  it would start a fix attempt (`blocker_in_logs`, `pause_on_blocker`), and checks the exception in its catch-all. `debug_job.py`
+- **Where they are recorded.** Both `worker_run.py` and `debug_job.py` run a startup dependency gate (`missing_build_tool_blocker`: missing `build_command`/`test_command` executables in `build_tools.py` and unhydrated lockfiles in `manifest_deps.py`) **before** calling any LLM, pausing immediately with a structured `tool` blocker instead of burning tokens on an unconfigured host. During and after execution, `worker_run.py` checks the run's `build.log`, `test.log` and `environment_failure.md` before it would start a fix attempt (`blocker_in_logs`, `pause_on_blocker`), and checks the exception in its catch-all. `debug_job.py`
   also catches LLM failures in `run_propose`, rolls back the unused iteration increment, and records any detected blocker so
   expired sign-ins and environment issues trigger 1-click sign-in + auto-retry and automatic server resumption. Prior fix
   attempts, ruled-out hypotheses, failing tests, and touched feature files are passed forward in a compact **Iteration Ledger**
