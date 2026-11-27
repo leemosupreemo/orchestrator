@@ -370,7 +370,7 @@ class RunStatusRenderingTests(unittest.TestCase):
         script = r"""
 const fs = require('fs'), assert = require('node:assert/strict');
 const source = fs.readFileSync(process.argv[1], 'utf8');
-for (const name of ['testsClass', 'jobTableRow', 'liveRunCard', 'elapsed', 'runPill']) {
+for (const name of ['testsClass', 'splitJobTitle', 'jobTableRow', 'liveRunCard', 'elapsed', 'runPill']) {
   const start = source.indexOf(`function ${name}(`);
   assert(start >= 0, `Missing function ${name}`);
   const end = source.indexOf('\n}', start) + 2;
@@ -495,6 +495,9 @@ globalThis.act = (action) => `data-action="${action}"`;
 globalThis.stoppingRuns = new Set();
 globalThis.wireRunGuidance = () => {};
 globalThis.current = {page: 'run', args: ['r1']};
+globalThis.state = {};
+globalThis.refreshRunPlanReview = () => {};
+globalThis.setHeader = () => {};
 Date.now = () => 1000000;
 const run = {id: 'r1', running: true, started: 875, action: 'execute', title: 'Build', command: 'orchestrator build',
   progress: {label: 'Implementing changes', task: 'Add <login>', step: 2, total: 10,

@@ -326,7 +326,7 @@ class PreviewWiringTests(unittest.TestCase):
     def test_previews_are_errands_that_dont_make_the_job_busy(self):
         self.assertIn("web_preview", server.SIDE_ACTIONS)
         self.assertIn("dev_preview", server.SIDE_ACTIONS)
-        self.assertEqual(server.AUTO_PREVIEW_AFTER, {"execute", "resume", "debug"})
+        self.assertEqual(server.AUTO_PREVIEW_AFTER, {"execute", "resume", "debug", "refine"})
         self.assertIn("dev_preview.py", " ".join(server.build_dev_preview({"branch": "feature/x"}, Path("/tmp"))))
         with self.assertRaises(server.UIError):
             server.build_dev_preview({"branch": "--help"}, Path("/tmp"))

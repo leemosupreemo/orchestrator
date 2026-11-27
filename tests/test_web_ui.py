@@ -4938,7 +4938,7 @@ class AccessibilityStaticTests(unittest.TestCase):
         for jargon in ("Next execution", "Pending execution", "Decomposed", "Parallel subtask", "AI Worker active",
                        "Your action needed", "Phase: ", "Tracked Projects", "Open Dashboard", "PRD · ", "Something went wrong"):
             self.assertNotIn(jargon, app, jargon)
-        counted = r"\b(?:job|test|suite|file|feature|build|item|case|KPI|machine|model|run|task|change|project)\(s\)"
+        counted = r"(?<!\.)\b(?:job|test|suite|file|feature|build|item|case|KPI|machine|model|run|task|change|project)\(s\)"
         self.assertEqual(re.findall(counted, re.sub(r"//[^\n]*", "", app)), [], "write the plural, not (s)")
         self.assertNotIn("confirm(", app, "use formDialog with a specific verb, not OK/Cancel")
         labels = re.findall(r'label: "([^"]+)"', config)
@@ -6241,7 +6241,8 @@ class PackagesApiTests(ServerTestCase):
         self.research([answer])
         self.assertFalse(self.request("GET", "/api/packages")[1]["review_due"])  # reviewed, and nothing changed since
         app = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
-        self.assertIn('class="btn${data.review_due ? " primary" : ""}" id="pkg-review"', app)
+        self.assertIn('<summary class="btn${data.review_due ? " primary" : ""} icon-only" aria-label="Package actions"', app)
+        self.assertIn('id="pkg-review">Recommend packages</button>', app)
 
     def test_it_says_when_the_model_could_not_search_and_retries_once_on_a_bad_answer(self):
         self.write_prd()

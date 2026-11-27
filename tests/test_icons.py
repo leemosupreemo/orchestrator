@@ -27,9 +27,9 @@ class IconTests(unittest.TestCase):
         app = (STATIC / "app.js").read_text()
         start = app.index("function runHeader(")
         header = app[start:start + 2500]
-        self.assertIn('<summary class="btn icon-only" aria-label="Export log"', header)
+        self.assertIn('<summary class="btn icon-only" aria-label="Share log"', header)
         self.assertIn('class="btn icon-only danger" data-stop', header)
-        self.assertIn('#i-download', header)  # export is a download, not the up arrow that means send/share
+        self.assertIn('#i-share', header)  # the menu both copies and exports the log
 
 
 if __name__ == "__main__":

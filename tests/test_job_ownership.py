@@ -69,8 +69,8 @@ class BackupPushTests(unittest.TestCase):
 
     def test_each_task_and_the_final_commit_are_backed_up(self):
         source = (ROOT / "orchestrator" / "scripts" / "worker_run.py").read_text(encoding="utf-8")
-        self.assertIn('print(f"      - Task {index + 1} committed ({sha[:7]}).")\n    backup_push(job)', source)
-        self.assertIn('_git_commit_step(f"git commit -m {shlex.quote(commit_msg)}")\n            backup_push(job)', source)
+        self.assertIn('print(f"      - Task {label} committed ({sha[:7]}).")\n    backup_push(job)', source)
+        self.assertIn('commit_job_files(ai_modified + ai_untracked, commit_msg)\n            backup_push(job)', source)
 
 
 class OwnershipTests(unittest.TestCase):

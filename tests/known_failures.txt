@@ -2,22 +2,4 @@
 # One test id per line, then `#` and why. Remove a line when its test passes again (the script says when). Do not add a line
 # to get a deploy through unless the failure is understood and acceptable: say why.
 #
-# All of these failed on a clean checkout of web-ui on 2026-11-19 (checked in a separate worktree), before the work on that day.
-# None has been investigated yet.
-test_worker_run.WorkerRunTests.test_single_builder_clarification_pause_headless_yolo_and_input_errors  # failing at HEAD, cause unknown
-test_icons.IconTests.test_icon_only_buttons_are_square_and_the_run_header_uses_them  # failing at HEAD, cause unknown
-test_job_ownership.BackupPushTests.test_each_task_and_the_final_commit_are_backed_up  # failing at HEAD, cause unknown
-test_passed_uncommitted.PassedUncommittedTests.test_the_worker_records_the_pass_before_committing_and_resume_skips_the_builder  # asserts UI text 'Next:</span> commit the finished work' that app.js no longer has
-test_previews.PreviewWiringTests.test_previews_are_errands_that_dont_make_the_job_busy  # failing at HEAD, cause unknown
-test_web_ui.AccessibilityStaticTests.test_design_tokens_hold  # failing at HEAD, cause unknown
-test_web_ui.AccessibilityStaticTests.test_text_uses_the_type_roles  # failing at HEAD, cause unknown
-test_web_ui.PackagesApiTests.test_recommending_is_the_blue_button_only_when_there_are_requirements_to_review  # failing at HEAD, cause unknown
-test_llm_json_retry.JsonRetryTests.test_shadow_can_recommend_another_model_without_changing_the_live_pick  # pre-existing on web-ui branch: recommends opencode/nemotron-3-ultra-free instead of gpt-6.2-astra
-test_run_progress.RunStatusRenderingTests.test_home_job_row_has_no_status_container_and_running_now_shows_step_and_elapsed  # pre-existing on web-ui branch
-test_run_progress.RunStatusRenderingTests.test_live_panel_details_elapsed_waiting_and_terminal_states  # pre-existing on web-ui branch
-test_web_preview.JobNamedByTitleTests.test_runs_carry_the_job_title_and_the_page_shows_it  # pre-existing on web-ui branch: runStatus no longer uses targetJob === r.job expression
-test_web_preview.ProjectKindTests.test_the_label_shows_in_the_sidebar_picker_phone_header_and_project_cards  # pre-existing on web-ui branch: server.py has 4 kind= calls instead of 5
-test_web_ui.AccessibilityStaticTests.test_copy_stays_plain_and_consistent  # pre-existing on web-ui branch: comment in app.js mentions "test(s)"
-test_web_ui.KeychainUnlockTests.test_run_failure_guidance_evaluates_keychain_and_job_preservation  # pre-existing on web-ui branch
-test_web_ui.PlanEpicRunPageTests.test_after_planning_an_epic_the_run_page_leads_to_the_plan_not_the_job_planning_replaced  # pre-existing on web-ui branch
-test_worktrees.WorktreeTests.test_nothing_else_makes_its_own_worktrees  # pre-existing on web-ui branch: verification_candidate.py uses git worktree add
+test_worktrees.WorktreeTests.test_nothing_else_makes_its_own_worktrees  # verification_candidate.py runs git worktree add itself; move it to worktrees.py or allow it

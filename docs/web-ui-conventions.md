@@ -112,7 +112,7 @@ the checks that can be automated live in `tests/test_web_ui.py`.
 |---|---|
 | Spacing | `--space-0` 2, `--space-1` 4, `--space-1-5` 6, `--space-2` 8, `--space-2-5` 10, `--space-3` 12, `--space-4` 16, `--space-5` 20, `--space-6` 24, `--space-7` 32, `--space-8` 40 |
 | Type size | `--type-display` 24, `--type-page` 18, `--type-section` 16, `--type-body` 14, `--type-secondary` 12, `--type-tag` 11 |
-| Type weight | `--weight-regular` 400, `--weight-medium` 550, `--weight-bold` 650 |
+| Type weight | `--weight-regular` 400, `--weight-medium` 550, `--weight-semibold` 600, `--weight-bold` 650 |
 | Radius | `--r-xs` 4, `--r-sm` 6, `--r-md` 8, `--r-lg` 12 (cards; `--radius`), `--r-pill` |
 | Control height | `--control-xs` 28 (inline), `--control-sm` 32 (small buttons), `--control-md` 38 (default), `--control-lg` 44 (touch), `--control-xl` 48 |
 | Shadow | `--shadow` (cards), `--shadow-2` (menus, popovers), `--shadow-3` (dialogs, drawers) |

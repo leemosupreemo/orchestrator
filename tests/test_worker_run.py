@@ -495,13 +495,21 @@ class WorkerRunTests(unittest.TestCase):
 
     def test_single_builder_clarification_pause_headless_yolo_and_input_errors(self):
         for active, extra, answer in ((False, {}, None), (True, {'headless': True}, None),
-                                     (True, {'is_yolo': True}, None), (True, {}, ''), (True, {}, KeyboardInterrupt())):
+                                     (True, {'is_yolo': True, 'clarification_history': [{'auto': True}] * 3}, None), (True, {}, ''), (True, {}, KeyboardInterrupt())):
             with self.subTest(extra=extra, active=active), \
                  self.pipeline(extra, results=[BuilderClarificationNeeded('Which?')], interactive=active) as (path, calls):
                 with patch('builtins.input', side_effect=answer if isinstance(answer, BaseException) else [answer]):
                     worker.execute_job(path)
                 self.assertEqual(worker.read_json(path)['status'], 'human-needed')
                 calls['debug'].assert_not_called()
+
+    def test_yolo_answers_the_builders_question_and_carries_on(self):
+        with self.pipeline({'is_yolo': True}, results=[BuilderClarificationNeeded('Which?'),
+                           (True, True, Path('summary'), {})]) as (path, calls):
+            worker.execute_job(path)
+            self.assertEqual(calls['run_builder'].call_count, 2)
+            answered = worker.read_json(path)['clarification_history'][-1]
+            self.assertEqual((answered['question'], answered['auto'], answered['asker']), ('Which?', True, 'builder'))
 
     def test_validation_failure_debug_child_and_history_updates(self):
         for child, history in ((True, []), (False, [{'result': 'pending'}]), (False, [{'result': 'done'}])):

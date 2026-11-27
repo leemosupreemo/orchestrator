@@ -51,6 +51,7 @@
   --type-tag: 11px;       /* small upper-case labels */
   --weight-regular: 400;
   --weight-medium: 550;
+  --weight-semibold: 600;
   --weight-bold: 650;
   --leading-tight: 1.2;
   --leading-body: 1.45;
@@ -2540,7 +2541,7 @@ dialog h2 {
   background: var(--accent-soft);
   color: var(--accent);
 }
-.job-iter-icon { font-size: 12px; line-height: 1; }
+.job-iter-icon { font-size: var(--type-secondary); line-height: 1; }
 .job-loop-arc {
   flex: 1 0 100%;
   display: flex;

@@ -293,7 +293,7 @@ class JobNamedByTitleTests(unittest.TestCase):
         self.assertIn('"job": self.job_id, "job_title": self.job_title,', server)
         self.assertIn('session.job_title = job_title if job_id else ""', server)
         app = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text()
-        self.assertIn("${esc((targetJob === r.job && r.job_title) || targetJob)}", app)
+        self.assertIn("r.job_title || family?.job?.title", app)
         export = (PACKAGE_ROOT / "orchestrator" / "scripts" / "export_job.py").read_text()
         self.assertIn('print_phase("exporting", subtext=job.get("title") or job.get("summary") or job_id)', export)
 

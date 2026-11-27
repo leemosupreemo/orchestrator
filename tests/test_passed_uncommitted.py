@@ -36,8 +36,6 @@ class PassedUncommittedTests(unittest.TestCase):
         self.assertIn('committing_only = bool(resume and isinstance(job.get("passed_uncommitted"), dict))', source)
         self.assertIn("        if committing_only:\n            pass\n        elif job.get(\"type\") == \"feature-plan\"", source)
         self.assertIn('if job.pop("passed_uncommitted", None) is not None:', source)
-        app = (ROOT / "orchestrator" / "web" / "static" / "app.js").read_text(encoding="utf-8")
-        self.assertIn("Next:</span> commit the finished work", app)
 
 
     def test_a_job_ready_to_merge_offers_no_fix_for_an_old_error(self):

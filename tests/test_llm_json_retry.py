@@ -54,7 +54,7 @@ class JsonRetryTests(unittest.TestCase):
         self.assertEqual(len(prompts), 1)
 
     def test_a_job_logs_format_failure_and_the_actual_fallback(self):
-        fallback = "gpt-6.2-astra"
+        fallback = "gpt-5.5"  # shipped with the app, so the test doesn't depend on this computer's sign-ins
         logs = Path(self.tmp.name)
         with patch.object(llm, "LOGS_DIR", logs), patch.object(llm, "runnable_here", return_value=True), \
              patch.object(llm, "model_usable", return_value=True), \
@@ -98,7 +98,7 @@ class JsonRetryTests(unittest.TestCase):
                 self.assertNotIn(str(error), raw)
 
     def test_shadow_can_recommend_another_model_without_changing_the_live_pick(self):
-        fallback = "gpt-6.2-astra"
+        fallback = "gpt-5.5"  # shipped with the app, so the test doesn't depend on this computer's sign-ins
         logs = Path(self.tmp.name)
         path = logs / "model-attempts.jsonl"
         audit = llm.AttemptAudit(path, ModelRole.PLANNER, "feature", [MODEL, fallback])
