@@ -2,4 +2,3 @@
 # One test id per line, then `#` and why. Remove a line when its test passes again (the script says when). Do not add a line
 # to get a deploy through unless the failure is understood and acceptable: say why.
 #
-test_worktrees.WorktreeTests.test_nothing_else_makes_its_own_worktrees  # verification_candidate.py runs git worktree add itself; move it to worktrees.py or allow it

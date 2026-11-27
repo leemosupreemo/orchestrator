@@ -218,6 +218,13 @@ class UnconfirmedTaskTests(unittest.TestCase):
         self.assertIn("test_a", found["details"][0])
         self.assertEqual(found["next"], {"label": "Resume", "action": "resume", "params": {"job": "job-1"}})
 
+    def test_failed_project_tests_are_not_reported_as_passing(self):
+        note = {**self.JOB["unverified_task"], "project_tests_failed": True}
+        found = rr.summarize("debug", "!!! Tests failed.\n", 0, job={**self.JOB, "unverified_task": note})
+        self.assertEqual(found["headline"], "Paused: the project's own tests failed, so Task 1 is not confirmed")
+        self.assertIn("may not come from this job", found["details"][1])
+        self.assertEqual(found["next"]["action"], "resume")
+
     def test_the_marker_stops_counting_once_the_job_moves_on(self):
         for change in ({"status": "debugging"}, {"last_error": "something newer"}, {"human_clarification_question": "Which?"}):
             with self.subTest(change=change):

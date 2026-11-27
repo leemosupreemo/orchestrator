@@ -58,8 +58,11 @@ class WorktreeTests(unittest.TestCase):
         self.assertIsNone(worktrees.checked_out_in(self.repo, "feature"))
 
     def test_nothing_else_makes_its_own_worktrees(self):
+        # verification_candidate.py is the one exception: it checks the exact commit and tree it was sent, and refuses
+        # checkouts that need submodules or Git LFS files, around its own `worktree add`. The shared helper does neither.
+        allowed = {"worktrees.py", "verification_candidate.py"}
         for path in (ROOT / "orchestrator").rglob("*.py"):
-            if path.name != "worktrees.py" and "__pycache__" not in path.parts:
+            if path.name not in allowed and "__pycache__" not in path.parts:
                 self.assertNotIn('"worktree", "add"', path.read_text(encoding="utf-8"), path)
 
 

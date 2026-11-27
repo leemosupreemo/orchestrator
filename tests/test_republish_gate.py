@@ -29,8 +29,7 @@ class BaselineTests(unittest.TestCase):
 
     def test_the_checked_in_baseline_lists_real_tests_in_the_canonical_form(self):
         known = gate.read_baseline(ROOT / gate.BASELINE_FILE)
-        self.assertGreaterEqual(len(known), 1)
-        for test_id in known:
+        for test_id in known:  # empty is fine: nothing is allowed to fail
             self.assertEqual(len(test_id.split(".")), 3, test_id)        # module.Class.test
             self.assertFalse(test_id.startswith("tests."), test_id)
             self.assertTrue((ROOT / "tests" / f"{test_id.split('.')[0]}.py").is_file(), test_id)

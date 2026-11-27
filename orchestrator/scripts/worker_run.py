@@ -1002,6 +1002,8 @@ def link_run_to_tasks(job_path: Path, job: dict, tasks: list, indices: list[int]
 
 
 MISSING_TESTS = "The run used unrelated tests or omitted planned tests"  # the project's own tests can settle this one
+PROJECT_TESTS_FAILED = ("The project's own tests, run to check this, failed. The failure may not come from this job: "
+                        "see the test log in the job's output.")
 
 
 def task_validation(task: dict, peers: list[dict], files: list[str], output: dict,
@@ -1074,18 +1076,23 @@ def note_unconfirmed(job: dict, outcomes: dict[int, tuple[str, str]]) -> None:
     if not open_tasks or any(status == "failed" for status, _ in outcomes.values()):
         return
     numbers = [str(index + 1) for index in sorted(open_tasks)]
+    detail = " ".join(dict.fromkeys(open_tasks.values()))
     job["unverified_task"] = {"label": ("Task " if len(numbers) == 1 else "Tasks ") + ", ".join(numbers),
-                              "detail": " ".join(dict.fromkeys(open_tasks.values())), "error": job.get("last_error")}
+                              "detail": detail, "error": job.get("last_error")}
+    if PROJECT_TESTS_FAILED in detail:
+        job["unverified_task"]["project_tests_failed"] = True
 
 
 def pause_unconfirmed(job_path: Path, job: dict, issue_number: Optional[int]) -> None:
     note = job["unverified_task"]
-    said = f"The build and tests passed, but {note['label']} {'are' if note['label'].startswith('Tasks') else 'is'} not confirmed."
-    print(f"\n⏸️  {said} {note['detail']}\n      - Nothing failed, so no fix attempt is started. The changes are kept; "
-          "the job waits for you.")
+    unconfirmed = f"{note['label']} {'are' if note['label'].startswith('Tasks') else 'is'} not confirmed"
+    failed = bool(note.get("project_tests_failed"))
+    said = f"{unconfirmed}: the project's own tests failed." if failed else f"The build and tests passed, but {unconfirmed}."
+    why = "No fix attempt is started on a failure that may not be this job's." if failed else "Nothing failed, so no fix attempt is started."
+    print(f"\n⏸️  {said} {note['detail']}\n      - {why} The changes are kept; the job waits for you.")
     history = job.get("debug_history")
     if history and history[-1].get("result") == "pending":
-        history[-1]["result"] = {"build_ok": True, "tests_ok": True, "notes": f"{said} {note['detail']}"}
+        history[-1]["result"] = {"build_ok": True, "tests_ok": not failed, "notes": f"{said} {note['detail']}"}
     job.update(status="human-needed", worker_pid=None, updated_at=now_iso())
     write_json(job_path, job)
     update_issue_status(issue_number, "status:human-needed", ["status:executing"])
@@ -1423,8 +1430,12 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
                 }
                 if (not is_batched and PROJECT_CONFIG.test_command and (task_output or {}).get("_test_execution")
                         and outcomes[i][1].startswith(MISSING_TESTS)):
-                    build_ok, test_ok, task_output = confirm_with_project_tests(task_job, _summary_path, task_output)
-                    outcomes = {i: task_validation(tasks[i], [], files_touched, task_output, build_ok, test_ok)}
+                    confirmed_build, confirmed_tests, confirmed_output = confirm_with_project_tests(task_job, _summary_path, task_output)
+                    if confirmed_build and confirmed_tests:
+                        task_output = confirmed_output
+                        outcomes = {i: task_validation(tasks[i], [], files_touched, task_output, build_ok, test_ok)}
+                    else:  # it may have been failing before this job: show it and wait, don't set the AI on it
+                        outcomes = {i: ("incomplete", f"{outcomes[i][1]}. {PROJECT_TESTS_FAILED}")}
                 passed = [idx for idx, (status, _) in outcomes.items() if status == "passed"]
 
                 if is_batched and build_ok and test_ok and len(passed) < len(active_indices):

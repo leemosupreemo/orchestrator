@@ -391,13 +391,18 @@ class WorkerRunTests(unittest.TestCase):
                 worker.execute_job(path)
                 job = worker.read_json(path)
                 calls['run_build_and_tests'].assert_called_once()
-                self.assertNotIn('unverified_task', job)
                 if passing:
+                    self.assertNotIn('unverified_task', job)
                     self.assertEqual(job['completed_task_indices'], [0])
                     calls['debug'].assert_not_called()
-                else:  # a real failure: that is what a fix attempt is for
-                    self.assertEqual((job['completed_task_indices'], job['status']), ([], 'debugging'))
-                    calls['debug'].assert_called_once_with(path)
+                else:  # it may have failed before this job: pause and show it, don't set the AI on it
+                    self.assertEqual((job['completed_task_indices'], job['status']), ([], 'human-needed'))
+                    self.assertTrue(job['unverified_task']['project_tests_failed'])
+                    self.assertIn("project's own tests, run to check this, failed", job['unverified_task']['detail'])
+                    self.assertIn("the project's own tests failed", self.output.getvalue())
+                    self.assertNotIn('Nothing failed', self.output.getvalue())
+                    calls['debug'].assert_not_called()
+                    calls['push_branch_for_review'].assert_not_called()
 
     def test_planned_tests_chained_with_and_count_but_other_joins_do_not(self):
         task = {'title': 't', 'likely_files': ['app.py'], 'tests': ['pytest test_a', 'test ! -e old && ! grep -q gone notes']}

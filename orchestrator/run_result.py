@@ -563,8 +563,14 @@ def unconfirmed_outcome(job: dict[str, Any], action: str, code: int | None) -> d
     if len(detail) > MAX_LINE:
         detail = detail[:MAX_LINE - 1].rsplit(" ", 1)[0] + "…"  # the whole list is on the job and in the log
     label = str(note.get("label") or "a task")
-    result = _result(f"Tests passed, but {label} {'are' if label.startswith('Tasks') else 'is'} not confirmed",
-                     [detail, "Nothing failed, so no fix attempt was started. The job waits for you."], "warn")
+    unconfirmed = f"{label} {'are' if label.startswith('Tasks') else 'is'} not confirmed"
+    if note.get("project_tests_failed"):  # the end of the detail says so; it must survive a long list of test names
+        headline = f"Paused: the project's own tests failed, so {unconfirmed}"
+        why = "The failure may not come from this job, so no fix attempt was started. The test log in the job's output has the details."
+    else:
+        headline = f"Tests passed, but {unconfirmed}"
+        why = "Nothing failed, so no fix attempt was started. The job waits for you."
+    result = _result(headline, [detail, why], "warn")
     result["next"] = {"label": "Resume", "action": "resume", "params": {"job": job["job_id"]}}
     return result
 
