@@ -16,7 +16,7 @@ import uuid
 from pathlib import Path
 
 from common import CONFIG_DIR, LOGS_DIR, ROOT, append_log, ProgressIndicator, colorize_diff_line, LoopTroubleDetector
-from model_registry import get_model, ModelTier, get_all_models, preferred_cli, summarize_cli_error, model_usable, model_substitute, runnable_here
+from model_registry import get_model, ModelTier, get_all_models, get_free_models, preferred_cli, summarize_cli_error, model_usable, model_substitute, runnable_here
 from model_router import get_prioritized_models, ModelRole, ROLE_REQUIREMENTS
 from orchestrator import usage_limits
 from orchestrator.model_attempts import AttemptAudit
@@ -216,6 +216,33 @@ def _is_free_only_allowlist(allowed_models: list[str] | None) -> bool:
     return bool(metas) and all(m.cost_factor == 0.0 for m in metas)
 
 
+FREE_ONLY_ENV = "ORCHESTRATOR_FREE_ONLY"
+
+
+def free_only_testing() -> bool:
+    """A testing switch for this computer (ORCHESTRATOR_FREE_ONLY=1): every model call uses free or local models only."""
+    return os.environ.get(FREE_ONLY_ENV, "").strip() == "1"
+
+
+def _free_only_choice(model: str, allowed_models: list[str] | None, role: str | None) -> tuple[str, list[str]]:
+    """The model to ask first and the models that may stand in, all free: the job's own free picks when it has any."""
+    from orchestrator.project_setup import models_ready_here
+    ready = set(models_ready_here(ROOT))
+    edits = role in (ModelRole.BUILDER, ModelRole.DEBUGGER)
+    free = [m.id for m in get_free_models() if m.id in ready and model_usable(m)
+            and not (edits and m.family in {"ollama", "qwen"})]  # text-only local CLIs can't change files
+    if not free:
+        raise RuntimeError(f"No model could answer: {FREE_ONLY_ENV} is on and no free model is ready for this step.")
+    resolve = lambda mid: meta.id if (meta := get_model(mid)) else mid
+    asked = {resolve(mid) for mid in allowed_models or []}
+    allowed = [mid for mid in free if mid in asked] or free
+    primary = resolve(model)
+    if primary not in allowed:
+        primary = get_prioritized_models(role=role, allowed_models=allowed)[0]
+        print(f"🆓 Free-only testing: using {primary} instead of {model}.", flush=True)
+    return primary, allowed
+
+
 def _cheapest_adequate_first(candidates: list[str], role: str | None, primary_id: str) -> list[str]:
     """Order sign-in fallbacks so the work moves to the cheapest model that is still up to it, instead of to the strongest.
 
@@ -286,6 +313,10 @@ def _auth_fallback_models(
 
 def run_llm(model: str, prompt: str, cwd: Path | None = None, timeout: int = 300, allowed_models: list[str] | None = None, role: str | None = None, session_id: str | None = None, stream: bool = False, images: list[Path] | None = None, protected_paths: list[Path] | None = None, web: bool = False, raw: bool = False, on_chunk: Callable[[str | None], None] | None = None, *, job_type: str | None = None, job_id: str | None = None) -> tuple[str, str, str]:
     """`raw` returns the whole answer. Otherwise only its JSON part comes back, which cuts prose and links from a conversational answer."""
+    from orchestrator.project_chat import PROBE
+    if free_only_testing() and prompt != PROBE:  # "does this model answer?" is only worth asking of that model
+        model, allowed_models = _free_only_choice(model, allowed_models, role)
+
     # Resolve actual model ID if it's an alias or generic name
     resolved_model = get_model(model)
     primary_id = resolved_model.id if resolved_model else model

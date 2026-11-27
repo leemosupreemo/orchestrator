@@ -34,7 +34,7 @@ from common import (
     auto_answer,
     can_autorespond,
 )
-from llm import run_llm, SUPPORTED_MODELS, DEFAULT_FALLBACKS, extract_json_block
+from llm import run_llm, SUPPORTED_MODELS, DEFAULT_FALLBACKS, extract_json_block, free_only_testing
 from model_router import AUTO, ModelRole, auto_assign_roles, get_prioritized_models, profile_job
 from model_registry import get_model, ModelTier
 from probe_machine import load_machines
@@ -611,6 +611,7 @@ def main(args_override: list[str] | None = None) -> None:
     all_models = sorted(list(SUPPORTED_MODELS))
     from orchestrator.project_setup import models_ready_here, refresh_ready_models
     refresh_ready_models(ROOT)  # the computer set up in the app follows the AI tools ready on it
+    args.free = args.free or free_only_testing()
     if args.free:
         from model_registry import get_free_models
         ready_here = set(models_ready_here(ROOT))  # installed isn't enough: a signed-out tool would only fail

@@ -153,6 +153,42 @@ class SwitchingTests(StateDirCase):
         self.assertAlmostEqual(blocker["until"], time.time() + 2.5 * 3600, delta=2)
 
 
+class FreeOnlyTestingTests(StateDirCase):
+    FREE, LOCAL = "opencode/nemotron-3-ultra-free", "qwen2.5-coder"
+
+    def ask(self, role, ready, allowed=None, replies=('{"summary": "ok"}',)):
+        from orchestrator import project_setup
+
+        with patch.dict(os.environ, {llm.FREE_ONLY_ENV: "1"}), \
+             patch.object(project_setup, "models_ready_here", return_value=ready), \
+             patch.object(llm, "model_usable", return_value=True), \
+             patch.object(llm, "_run_llm_single", side_effect=list(replies)) as call:
+            llm.run_llm(CLAUDE, "DO IT", allowed_models=allowed or [CLAUDE], role=role)
+        return [c.args[0] for c in call.call_args_list]
+
+    def test_a_paid_pick_is_replaced_by_a_free_model(self):
+        self.assertEqual(self.ask(ModelRole.BUILDER, [CLAUDE, OPENAI, self.FREE]), [self.FREE])
+
+    def test_text_only_local_models_plan_but_do_not_edit_files(self):
+        self.assertEqual(self.ask(ModelRole.PLANNER, [CLAUDE, self.LOCAL]), [self.LOCAL])
+        with self.assertRaisesRegex(RuntimeError, "no free model is ready"):
+            self.ask(ModelRole.BUILDER, [CLAUDE, self.LOCAL])
+
+    def test_a_failing_free_model_never_falls_back_to_a_paid_one(self):
+        with self.assertRaisesRegex(RuntimeError, "No model could answer"):
+            self.ask(ModelRole.BUILDER, [CLAUDE, OPENAI, self.FREE], replies=[RuntimeError(LIMIT)])
+
+    def test_a_connection_check_still_asks_the_model_being_checked(self):
+        with patch.dict(os.environ, {llm.FREE_ONLY_ENV: "1"}), \
+             patch.object(llm, "_run_llm_single", return_value="OK") as call:
+            llm.run_llm(CLAUDE, project_chat.PROBE, allowed_models=[CLAUDE], role=ModelRole.REVIEWER, raw=True)
+        self.assertEqual([c.args[0] for c in call.call_args_list], [CLAUDE])
+
+    def test_off_unless_the_switch_is_set(self):
+        with patch.dict(os.environ, {llm.FREE_ONLY_ENV: ""}):
+            self.assertFalse(llm.free_only_testing())
+
+
 class SignInFallbackTests(StateDirCase):
     AUTH_EXPIRED = "Failed to authenticate. API Error: 401 OAuth access token has expired. Re-authenticate to continue."
 
