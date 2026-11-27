@@ -2305,7 +2305,8 @@ def server_command(args: argparse.Namespace) -> int:
         where = f" on {args.machine}" if args.machine and args.machine != "local" else ""
         print(f"Install Docker{where} …", flush=True)
         result = servers.install_docker(shell, lambda line: print(f"  {line}", flush=True))
-        print(("Done: " if result["ok"] else "Not done: ") + f"Docker is {result['state']}." + (f" {result['message']}" if result["message"] else ""))
+        msg = (result.get("message") or f"Docker is {result['state']}.").strip()
+        print(("Done: " if result["ok"] else "Not done: ") + msg)
         return 0 if result["ok"] else 1
     found = servers.find(config.root)
     if not found:

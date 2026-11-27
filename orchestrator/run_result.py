@@ -482,9 +482,9 @@ def server_change(lines: list[str], code: int | None) -> dict[str, Any] | None:
         if not line:
             continue
         if line.startswith("Done: "):
-            headline = line[len("Done: "):].strip().rstrip(".")
+            headline = re.sub(r"^Docker is [a-z-]+\.\s+(?=Docker\b)", "", line[len("Done: "):].strip()).rstrip(".")
         elif line.startswith("Not done: "):
-            headline = line[len("Not done: "):].strip().rstrip(".")
+            headline = re.sub(r"^Docker is [a-z-]+\.\s+", "", line[len("Not done: "):].strip()).rstrip(".")
             tone = "bad"
         elif line == "Docker is running.":
             docker_started = True
@@ -495,7 +495,7 @@ def server_change(lines: list[str], code: int | None) -> dict[str, Any] | None:
     if not headline and not containers and not error_lines:
         return None
     details: list[str] = []
-    if docker_started:
+    if docker_started and not headline.lower().startswith("docker "):
         details.append("Docker started automatically")
     for name, state in containers.items():
         details.append(f"{name} — {state}")

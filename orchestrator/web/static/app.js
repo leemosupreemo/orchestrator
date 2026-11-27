@@ -16225,8 +16225,17 @@ async function getVisualCheckForRun(r) {
 }
 
 function runDuration(started, ended) {
-  const finish = (ended && Number(ended) > 0) ? Number(ended) : Date.now() / 1000;
-  const seconds = Math.max(0, Math.floor(finish - started));
+  const parseTs = (v) => {
+    const n = Number(v);
+    if (Number.isFinite(n) && n > 0) return n;
+    const ms = typeof v === "string" ? Date.parse(v) : NaN;
+    return Number.isFinite(ms) && ms > 0 ? ms / 1000 : NaN;
+  };
+  const start = parseTs(started);
+  if (!Number.isFinite(start)) return "—";
+  const finishTs = parseTs(ended);
+  const finish = Number.isFinite(finishTs) ? finishTs : Date.now() / 1000;
+  const seconds = Math.max(0, Math.floor(finish - start));
   return seconds < 60 ? `${seconds}s` : seconds < 3600 ? `${Math.floor(seconds / 60)}m ${seconds % 60}s`
     : `${Math.floor(seconds / 3600)}h ${Math.floor(seconds % 3600 / 60)}m`;
 }
@@ -17005,7 +17014,12 @@ function runStatus(r, vc = null) {
   const showFound = Boolean(found && !guidance?.fromResult && (done || !guidance || found.details?.length)); // failed tests are already in the summary on top // a failure with guidance and nothing more to add would only repeat it
   const isServerAction = ["server_start", "server_stop", "server_restart", "server_install_docker", "install_tool", "setup_environment"].includes(r.action);
   const rawHeaderText = showFound && found?.headline ? found.headline : headlineLabel;
-  const headerText = isServerAction ? String(rawHeaderText).replace(/^(?:Done|Not done):\s*/i, "").replace(/\.$/, "") : rawHeaderText;
+  const headerText = isServerAction
+    ? String(rawHeaderText)
+      .replace(/^(?:Done|Not done):\s*/i, "")
+      .replace(/^Docker is [a-z-]+\.\s+(?=Docker\b)/i, "")
+      .replace(/\.$/, "")
+    : rawHeaderText;
   const foundDetails = showFound && Array.isArray(found?.details)
     ? found.details
       .filter((d) => !(isServerAction && done && /^Waiting for every service\b|^Running:\s*docker compose\b|^(?:starting|stopping|restarting)\s*[…\.]/i.test(String(d).trim())))

@@ -380,6 +380,65 @@ console.log(JSON.stringify({{ startupHtml, homeHtml }}));
         self.assertIn("Set up environment…", out["startupHtml"])
         self.assertIn("Install .NET SDK…", out["homeHtml"])
 
+    def test_docker_install_run_status_deduplicates_headline_and_stretches_banner(self):
+        # 1. Backend summarizer strips duplicated 'Docker is running.' prefix and omits redundant auto-start sub-bullet
+        summary = run_result.summarize(
+            "server_install_docker",
+            "Install Docker …\n  Docker is running.\nDone: Docker is running. Docker is installed and running.\n",
+            0,
+        )
+        self.assertEqual(summary["headline"], "Docker is installed and running")
+        self.assertEqual(summary["details"], [])
+
+        # 2. CSS stretches .banner.run-status full width rather than centering flex-column items
+        css = (STATIC / "style.css").read_text(encoding="utf-8")
+        self.assertIn(".banner.run-status { align-items: stretch; flex-wrap: nowrap; }", css)
+        self.assertIn("width: 100%;", css[css.index(".run-status-details {"):css.index(".run-status-details {") + 260])
+
+        # 3. Frontend runStatus cleans legacy saved headlines and handles missing/ISO timestamps cleanly
+        app_js = (STATIC / "app.js").read_text(encoding="utf-8")
+        html_js = (STATIC / "html.js").read_text(encoding="utf-8")
+        dur_start = app_js.index("function runDuration(")
+        dur_src = app_js[dur_start:app_js.index("function runFailureGuidance(", dur_start)]
+        rs_start = app_js.index("function runStatus(")
+        rs_src = app_js[rs_start:app_js.index("function wireKeychainUnlock(", rs_start)]
+        script = f"""
+{html_js}
+const esc = globalThis.Html.escape;
+const plural = (n, w) => `${{n}} ${{n === 1 ? w : w + "s"}}`;
+const act = (a) => `data-action="${{a}}"`;
+const stoppingRuns = new Set();
+const state = {{ disk_low: false, disk_free_bytes: 50 * (1024 ** 3) }};
+const pendingUpdate = false;
+const runFailureGuidance = () => null;
+{dur_src}
+{rs_src}
+const html = runStatus({{
+  id: "r-dock",
+  action: "server_install_docker",
+  running: false,
+  exit_code: 0,
+  started: 1000,
+  ended: 1018,
+  progress: {{ machines: ["MacBook-Air-6"] }},
+  result: {{ headline: "Docker is running. Docker is installed and running.", details: [], tone: "ok" }},
+}});
+const htmlNoTs = runStatus({{
+  id: "r-nots",
+  action: "server_install_docker",
+  running: false,
+  exit_code: 0,
+  progress: {{ machines: ["MacBook-Air-6"] }},
+  result: {{ headline: "Docker is installed and running", details: [], tone: "ok" }},
+}});
+console.log(JSON.stringify({{ html, htmlNoTs }}));
+"""
+        out = json.loads(subprocess.run(["node", "-e", script], capture_output=True, text=True, check=True).stdout)
+        self.assertIn('<strong class="run-status-stage">Docker is installed and running</strong>', out["html"])
+        self.assertNotIn("Docker is running. Docker", out["html"])
+        self.assertIn("<dd data-run-elapsed>18s</dd>", out["html"])
+        self.assertIn("<dd data-run-elapsed>—</dd>", out["htmlNoTs"])
+
 
 if __name__ == "__main__":
     unittest.main()
