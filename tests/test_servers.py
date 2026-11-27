@@ -598,3 +598,144 @@ class PageBehaviourTests(unittest.TestCase):
         form = app[app.index("const withServers = Boolean(d.servers_for_app?.length);"):][:1300]
         self.assertIn("with_servers: true", form)
         self.assertIn("Start and send", form)
+
+    def test_parameterized_compose_ports_labeled_containers_smart_default_and_port_conflict_copy(self):
+        from orchestrator import cli, run_result
+
+        # 1. Parameterized ${VAR:-default} ports are parsed without reading environment secrets.
+        profile_yml = (
+            "services:\n"
+            "  db:\n"
+            "    image: mariadb:10.6\n"
+            "    environment:\n"
+            "      MYSQL_PASSWORD: ${DB_PASSWORD}\n"
+            "  server:\n"
+            "    image: daoc-profile:latest\n"
+            "    ports:\n"
+            '      - "${DOCKER_BIND_IP:-127.0.0.1}:${PORT_GAME:-11300}:${PORT_GAME:-11300}/tcp"\n'
+            '      - "${DOCKER_BIND_IP:-127.0.0.1}:${PORT_REGION:-11400}:${PORT_REGION:-11400}/udp"\n'
+            "    volumes:\n"
+            "      - ${NAVMESH_DIR}:/app/navmesh:ro\n"
+        )
+        svcs, ports = servers.parse_compose(profile_yml)
+        self.assertEqual(svcs, ["db", "server"])
+        self.assertEqual(ports, [11300, 11400])
+
+        # 2. Labeled containers fallback handles unset deploy-time env vars, custom `-p` project names, and APFS case differences.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "Projects" / "DAoC-Mobile"
+            write(root, "server/compose.profile.yml", profile_yml)
+            found = servers.find(root)
+            self.assertEqual(len(found), 1)
+            srv = found[0]
+            self.assertEqual(srv["ports"], [11300, 11400])
+
+            apfs_lower_dir = str(root / "server").lower()
+            container_ls = "\n".join([
+                json.dumps({
+                    "Names": "daoc-two-faction-db",
+                    "Image": "mariadb:10.6",
+                    "State": "running",
+                    "Status": "Up 18 minutes (healthy)",
+                    "HealthStatus": "healthy",
+                    "Ports": "3306/tcp",
+                    "Labels": f"com.docker.compose.project=daoc-two-faction,com.docker.compose.project.config_files={apfs_lower_dir}/compose.profile.yml,com.docker.compose.project.working_dir={apfs_lower_dir},com.docker.compose.service=db",
+                }),
+                json.dumps({
+                    "Names": "daoc-two-faction-server",
+                    "Image": "daoc-profile:instant-horse",
+                    "State": "running",
+                    "Status": "Up 18 minutes",
+                    "HealthStatus": "none",
+                    "Ports": "127.0.0.1:11300->11300/tcp, 127.0.0.1:11400->11400/udp",
+                    "Labels": f"com.docker.compose.project=daoc-two-faction,com.docker.compose.project.config_files={apfs_lower_dir}/compose.profile.yml,com.docker.compose.project.working_dir={apfs_lower_dir},com.docker.compose.service=server",
+                }),
+            ])
+
+            class LabeledShell(servers.LocalShell):
+                def __init__(self, r: Path):
+                    super().__init__(r)
+                    self.seen: list[str] = []
+
+                def run(self, command: str, cwd: str, timeout: int):
+                    self.seen.append(command)
+                    if command == "docker info":
+                        return 0, "", False
+                    if command.startswith("docker compose -f compose.profile.yml"):
+                        return 1, "invalid spec: :/app/navmesh:ro: empty section between colons", False
+                    if command.startswith("docker container ls -a"):
+                        return 0, container_ls, False
+                    if command.startswith("docker restart "):
+                        return 0, "daoc-two-faction-db\ndaoc-two-faction-server\n", False
+                    if command.startswith("docker logs "):
+                        return 0, "Server ready!\n", False
+                    return 0, "", False
+
+            l_shell = LabeledShell(root)
+            st = servers.status(srv, l_shell)
+            self.assertEqual(st["state"], "running")
+            self.assertEqual([c["service"] for c in st["containers"]], ["db", "server"])
+            self.assertEqual(st["containers"][0]["health"], "healthy")
+            self.assertEqual(st["containers"][1]["ports"], [11300, 11400])
+
+            restarted = servers.change(srv, "restart", l_shell, sleep=lambda _: None)
+            self.assertTrue(restarted["ok"])
+            self.assertTrue(any(c.startswith("docker restart ") for c in l_shell.seen))
+            self.assertIn("Server ready!", servers.logs(srv, l_shell))
+
+            # 3. Port-conflict explanation + CLI/run_result copy replaces "is error" with clear human diagnostics.
+            class ConflictShell(servers.LocalShell):
+                def run(self, command: str, cwd: str, timeout: int):
+                    if command.startswith("lsof -nP -iUDP:10400"):
+                        return 0, "COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME\nPython 1518 me 10u IPv4 0x1 0t0 UDP 192.168.1.100:10400\n", False
+                    if command.startswith("ps -p 1518"):
+                        return 0, "Python /Users/me/tools/daoc_interface_relay.py --legacy-ports\n", False
+                    return 0, "", False
+
+            msg = servers._explain_compose_failure(
+                "Error response from daemon: ports are not available: exposing port UDP 0.0.0.0:10400 -> 127.0.0.1:0: listen udp 0.0.0.0:10400: bind: address already in use",
+                1,
+                False,
+                ConflictShell(root),
+            )
+            self.assertIn("UDP port 10400 is already in use on this computer by daoc_interface_relay.py", msg)
+            summary = run_result.summarize(
+                "server_start",
+                f"Start OpenDAoC-Core …\n  Docker is running.\n  Error response from daemon: ports are not available: bind: address already in use\nNot done: OpenDAoC-Core couldn't start — {msg}\n",
+                1,
+            )
+            self.assertIn("OpenDAoC-Core couldn't start — UDP port 10400 is already in use", summary["headline"])
+            self.assertNotIn("is error", summary["headline"])
+            self.assertEqual(summary["details"], ["Docker started automatically"])
+
+        # 4. Homescreen card defaults to running/app server instead of alphabetical stopped upstream compose file.
+        app_js = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "app.js").read_text(encoding="utf-8")
+        html_js = (PACKAGE_ROOT / "orchestrator" / "web" / "static" / "html.js").read_text(encoding="utf-8")
+        card_src = app_js[app_js.index("const SERVER_STATE ="):app_js.index("// ---------------------------------------------------------------- signing keys")]
+        node_script = f"""
+{html_js}
+const esc = globalThis.Html.escape;
+const state = {{ you: {{ role: "owner" }} }};
+{card_src}
+const view = {{
+  docker: true,
+  docker_installed: true,
+  machine: "local",
+  machines: [{{ name: "local", label: "This computer" }}],
+  app: [],
+  servers: [
+    {{ id: "opendaoc-core-default", name: "OpenDAoC-Core", dir: "OpenDAoC-Core", file: null, services: ["db", "gameserver"], ports: [10300, 10400], status: {{ state: "stopped", containers: [] }} }},
+    {{ id: "server-compose-profile-yml", name: "server (compose.profile.yml)", dir: "server", file: "compose.profile.yml", services: ["db", "server"], ports: [11300, 11400], status: {{ state: "running", containers: [{{ service: "db", state: "running", health: "healthy", status: "Up 20m", ports: [] }}, {{ service: "server", state: "running", health: "", status: "Up 20m", image: "daoc-profile:1", ports: [11300, 11400] }}] }} }},
+  ],
+}};
+const defaultHtml = serverCardHtml(view, false, false, {{ homeMode: true }});
+serverPick = "opendaoc-core-default";
+const switchedHtml = serverCardHtml(view, false, false, {{ homeMode: true }});
+console.log(JSON.stringify({{ defaultHtml, switchedHtml }}));
+"""
+        rendered = json.loads(subprocess.run(["node", "-e", node_script], capture_output=True, text=True, check=True).stdout)
+        self.assertIn('data-server="server-compose-profile-yml"', rendered["defaultHtml"])
+        self.assertIn("Online", rendered["defaultHtml"])
+        self.assertNotIn("Launch server", rendered["defaultHtml"])
+        self.assertIn("server (compose.profile) is already online", rendered["switchedHtml"])
+        self.assertNotIn("No server is online right now.", rendered["switchedHtml"])

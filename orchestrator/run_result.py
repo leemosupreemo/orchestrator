@@ -500,6 +500,8 @@ def server_change(lines: list[str], code: int | None) -> dict[str, Any] | None:
     for name, state in containers.items():
         details.append(f"{name} — {state}")
     for err in error_lines:
+        if "already in use" in headline.lower() and ("ports are not available" in err.lower() or "address already in use" in err.lower()):
+            continue
         if err != headline and err not in details:
             details.append(err)
     return _result(headline or (error_lines[-1] if error_lines else "Server action complete"), details, tone)

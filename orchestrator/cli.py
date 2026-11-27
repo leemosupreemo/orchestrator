@@ -2332,7 +2332,21 @@ def server_command(args: argparse.Namespace) -> int:
         else:
             print(f"{args.action.capitalize()} {server['name']}{where} …", flush=True)
             result = servers.change(server, args.action, shell, lambda line: print(f"  {line}", flush=True))
-            print(("Done: " if result["ok"] else "Not done: ") + f"{server['name']} is {result['state']}." + (f" {result['message']}" if result["message"] else ""))
+            verb = {"start": "start", "stop": "stop", "restart": "restart"}.get(args.action, args.action)
+            state_phrase = {
+                "running": "is running",
+                "stopped": "is stopped",
+                "starting": "is still starting",
+                "partial": "is only partly running",
+                "unhealthy": "is unhealthy",
+                "docker-off": "couldn't start because Docker isn't running",
+                "unreachable": "couldn't be reached",
+                "error": f"couldn't {verb}",
+            }.get(result["state"], f"is {result['state']}")
+            msg = (result.get("message") or "").strip()
+            sep = " — " if not result["ok"] and msg and result["state"] == "error" else (" " if msg else "")
+            base = f"{server['name']} {state_phrase}" if (not result["ok"] and msg and result["state"] == "error") else f"{server['name']} {state_phrase}."
+            print(("Done: " if result["ok"] else "Not done: ") + base + (f"{sep}{msg}" if msg else ""))
             code = code or (0 if result["ok"] else 1)
     return code
 

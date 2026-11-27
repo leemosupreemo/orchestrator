@@ -34,7 +34,12 @@ SKIP_DIRS = {".git", "node_modules", "bin", "obj", "Library", "Temp", "Logs", "P
 COMPOSE_FILE = re.compile(r"^(?:docker-)?compose(?:[.-][\w.-]+)?\.ya?ml$", re.I)
 DEFAULT_FILES = ("docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml")
 OVERRIDE_FILES = ("docker-compose.override.yml", "docker-compose.override.yaml", "compose.override.yml", "compose.override.yaml")
-HOST_PORT = re.compile(r"""^\s*-\s*["']?(?:\d{1,3}(?:\.\d{1,3}){3}:)?(\d+)(?:-\d+)?:\d+""", re.M)
+HOST_PORT = re.compile(
+    r"""^\s*-\s*["']?(?:(?:\d{1,3}(?:\.\d{1,3}){3}|\$\{[A-Za-z0-9_]+(?::-?[^}]*)?\}):)?"""
+    r"""(?:\$\{[A-Za-z0-9_]+:-(\d+)\}|(\d+))(?:-\d+)?"""
+    r""":(?:\d+|\$\{[A-Za-z0-9_]+:-\d+\})""",
+    re.M,
+)
 ACTIONS = ("start", "stop", "restart")
 MAX_DEPTH = 4
 LOG_LINES = 80
@@ -141,8 +146,10 @@ def parse_compose(text: str) -> tuple[list[str], list[int]]:
         if match:
             services.append(match.group(1))
         port = HOST_PORT.match(line)
-        if port and int(port.group(1)) not in ports:
-            ports.append(int(port.group(1)))
+        if port:
+            port_num = int(port.group(1) or port.group(2))
+            if port_num not in ports:
+                ports.append(port_num)
     return services, ports
 
 
@@ -329,6 +336,140 @@ def summarize(expected: list[str], containers: list[dict[str, Any]]) -> str:
     return "running"
 
 
+_LABEL_PAIR = re.compile(r"([A-Za-z0-9_./-]+)=(.*?)(?=,[A-Za-z0-9_./-]+=|$)")
+_PUBLISHED_PORT = re.compile(r":(\d+)->")
+_PORT_CONFLICT = re.compile(
+    r"(?:exposing port\s+(tcp|udp)\s+[\d.*:]+:(\d+)\b|"
+    r"listen\s+(tcp\d*|udp\d*)\s+[\d.*:]+:(\d+):\s*bind:\s*address already in use|"
+    r"Bind for [\d.*:]+:(\d+)\s+failed:\s*port is already allocated)",
+    re.I,
+)
+
+
+def _parse_labels(raw: Any) -> dict[str, str]:
+    if isinstance(raw, dict):
+        return {str(k): str(v) for k, v in raw.items()}
+    if not isinstance(raw, str) or not raw:
+        return {}
+    return {m.group(1): m.group(2) for m in _LABEL_PAIR.finditer(raw)}
+
+
+def _shell_root(shell: Shell) -> str:
+    if isinstance(shell, LocalShell):
+        return shell.root.as_posix().rstrip("/")
+    if isinstance(shell, SshShell):
+        return shell.repo_path.rstrip("/")
+    return ""
+
+
+def _labeled_containers(server: dict[str, Any], shell: Shell) -> list[dict[str, Any]]:
+    """Containers Docker already stamped with compose labels for `server`, even when started under `-p <name>` or with
+    deploy-time env vars not present in the current shell."""
+    if getattr(shell, "ps_sequence", None) is not None:
+        return []
+    code, output, timed_out = shell.run("docker container ls -a --filter label=com.docker.compose.project --format json", ".", 20)
+    if timed_out or code != 0 or not output.strip():
+        return []
+    base = _shell_root(shell)
+    rel_dir = str(server.get("dir") or ".")
+    expected_dir = (base if rel_dir in ("", ".") else f"{base}/{rel_dir}").rstrip("/").lower() if base else ""
+    primary_file = (server.get("file") or next(iter(server.get("files") or []), "") or "").lower()
+    matched: list[dict[str, Any]] = []
+    for line in output.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(row, dict):
+            continue
+        labels = _parse_labels(row.get("Labels"))
+        if labels.get("com.docker.compose.oneoff", "").lower() == "true":
+            continue
+        work_dir = labels.get("com.docker.compose.project.working_dir", "").rstrip("/").lower()
+        cfg_files = [p.strip().lower() for p in labels.get("com.docker.compose.project.config_files", "").split(",") if p.strip()]
+        cfg_basenames = {Path(p).name for p in cfg_files}
+        if expected_dir:
+            if work_dir != expected_dir:
+                continue
+        elif rel_dir not in ("", ".") and not work_dir.endswith(f"/{rel_dir.lower()}"):
+            continue
+        if server.get("file"):
+            if server["file"].lower() not in cfg_basenames:
+                continue
+        elif cfg_basenames and primary_file and primary_file not in cfg_basenames:
+            if not (cfg_basenames & {f.lower() for f in DEFAULT_FILES}):
+                continue
+        raw_health = str(row.get("HealthStatus") or row.get("Health") or "").lower()
+        status_str = str(row.get("Status") or "")
+        if raw_health in ("", "none"):
+            if "(healthy)" in status_str.lower():
+                raw_health = "healthy"
+            elif "(unhealthy)" in status_str.lower():
+                raw_health = "unhealthy"
+            elif "health: starting" in status_str.lower():
+                raw_health = "starting"
+            else:
+                raw_health = ""
+        ports_str = str(row.get("Ports") or "")
+        ports = sorted({int(m.group(1)) for m in _PUBLISHED_PORT.finditer(ports_str)})
+        name = str(row.get("Names") or "").lstrip("/")
+        matched.append({
+            "service": labels.get("com.docker.compose.service") or name or "?",
+            "container_name": name,
+            "compose_project": labels.get("com.docker.compose.project") or "",
+            "state": str(row.get("State") or "").lower(),
+            "health": raw_health,
+            "status": status_str,
+            "image": str(row.get("Image") or ""),
+            "ports": ports,
+        })
+    return sorted(matched, key=lambda r: r["service"])
+
+
+def _port_owner(port: int, proto: str, shell: Shell) -> str:
+    """Best-effort read-only lookup of what local process holds `port` so port-conflict messages name the culprit."""
+    if not isinstance(shell, LocalShell):
+        return ""
+    flag = f"-iUDP:{port}" if proto.upper().startswith("UDP") else f"-iTCP:{port} -sTCP:LISTEN"
+    code, out, timed_out = shell.run(f"lsof -nP {flag}", ".", 3)
+    if timed_out or code != 0 or not out.strip():
+        return ""
+    for line in out.splitlines()[1:]:
+        parts = line.split()
+        if len(parts) >= 2 and parts[1].isdigit():
+            pid = int(parts[1])
+            _, ps_out, _ = shell.run(f"ps -p {pid} -o args=", ".", 3)
+            cmdline = ps_out.strip()
+            if cmdline:
+                tokens = cmdline.split()
+                script = next((Path(t).name for t in tokens[1:] if not t.startswith("-") and ("/" in t or t.endswith((".py", ".js", ".sh", ".dll")))), "")
+                if script:
+                    return script
+            return parts[0]
+    return ""
+
+
+def _explain_compose_failure(output: str, code: int, timed_out: bool, shell: Shell | None = None) -> str:
+    if timed_out:
+        return f"stopped after {START_TIMEOUT // 60} minutes"
+    match = _PORT_CONFLICT.search(output or "")
+    if match:
+        proto = (match.group(1) or match.group(3) or "TCP").upper()
+        if proto.startswith("UDP"):
+            proto = "UDP"
+        elif proto.startswith("TCP"):
+            proto = "TCP"
+        port = int(match.group(2) or match.group(4) or match.group(5))
+        holder = _port_owner(port, proto, shell) if shell is not None else ""
+        by = f" by {holder}" if holder else ""
+        return f"{proto} port {port} is already in use on this computer{by} (another server or relay is already using that port)."
+    tail_line = ((output or "").strip().splitlines() or [""])[-1]
+    return f"docker compose exited with {code}" + (f": {tail_line}" if tail_line else "")
+
+
 def status(server: dict[str, Any], shell: Shell, *, docker: bool | None = None) -> dict[str, Any]:
     """{state, containers, message}. `state` is docker-off, unreachable or one of `summarize`'s values. Read-only."""
     if docker is None:
@@ -336,14 +477,35 @@ def status(server: dict[str, Any], shell: Shell, *, docker: bool | None = None) 
     if not docker:
         return {"state": "docker-off", "containers": [], "message": "Docker isn't running (start Docker Desktop, or use Start)."}
     code, output, timed_out = shell.run(_compose(server, "ps", "-a", "--format", "json"), server["dir"], 30)
-    if timed_out or code != 0:
-        return {"state": "unreachable", "containers": [], "message": (output.strip().splitlines() or ["docker compose didn't answer"])[-1][:200]}
-    containers = parse_ps(output)
-    return {"state": summarize(server["services"], containers), "containers": containers, "message": ""}
+    if not timed_out and code == 0:
+        containers = parse_ps(output)
+        if not containers:
+            labeled = _labeled_containers(server, shell)
+            if labeled:
+                containers = [{k: v for k, v in c.items() if k not in ("container_name", "compose_project")} for c in labeled]
+        return {"state": summarize(server["services"], containers), "containers": containers, "message": ""}
+    if not timed_out and "no configuration file" not in output.lower():
+        labeled = _labeled_containers(server, shell)
+        if labeled:
+            containers = [{k: v for k, v in c.items() if k not in ("container_name", "compose_project")} for c in labeled]
+            return {"state": summarize(server["services"], containers), "containers": containers, "message": ""}
+    return {"state": "unreachable", "containers": [], "message": (output.strip().splitlines() or ["docker compose didn't answer"])[-1][:200]}
 
 
 def logs(server: dict[str, Any], shell: Shell, lines: int = LOG_LINES) -> str:
     code, output, _ = shell.run(_compose(server, "logs", "--tail", str(int(lines)), "--no-color"), server["dir"], 60)
+    if (code != 0 or not output.strip()):
+        labeled = _labeled_containers(server, shell)
+        names = [c["container_name"] for c in labeled if c.get("container_name")]
+        if names:
+            chunks: list[str] = []
+            per_container = max(20, int(lines) // max(1, len(names)))
+            for name in names:
+                c_code, c_out, _ = shell.run(f"docker logs --tail {per_container} {shlex.quote(name)}", ".", 30)
+                if c_out.strip() or c_code == 0:
+                    chunks.append(f"=== {name} ===\n{c_out.rstrip()}")
+            if chunks:
+                return "\n\n".join(chunks)[-60_000:]
     return output[-60_000:] if output else ("(no log output)" if code == 0 else "Couldn't read the logs.")
 
 
@@ -603,12 +765,27 @@ def change(server: dict[str, Any], action: str, shell: Shell, say: Callable[[str
     command = {"start": _compose(server, "up", "-d"), "stop": _compose(server, "stop"), "restart": _compose(server, "restart")}[action]
     say(f"Running: {command}  (in {server['dir']})")
     code, output, timed_out = shell.run(command, server["dir"], START_TIMEOUT)
+    # Parameterized compose stacks started under `-p <project>` with deploy-time env vars can still be started/stopped/restarted
+    # via their existing labeled containers when `docker compose` fails interpolation or misses the `-p` project name.
+    if not timed_out and (code != 0 or action in ("stop", "restart")):
+        needs_fallback = (
+            (code != 0 and _PORT_CONFLICT.search(output or "") is None)
+            or (code == 0 and action in ("stop", "restart") and not output.strip())
+        )
+        if needs_fallback:
+            labeled = _labeled_containers(server, shell)
+            names = [c["container_name"] for c in labeled if c.get("container_name")]
+            services_found = {c["service"] for c in labeled}
+            if names and (action in ("stop", "restart") or set(server.get("services") or ()) <= services_found):
+                docker_verb = {"start": "start", "stop": "stop", "restart": "restart"}[action]
+                fb_cmd = f"docker {docker_verb} " + " ".join(shlex.quote(n) for n in names)
+                say(f"Running: {fb_cmd}")
+                code, output, timed_out = shell.run(fb_cmd, ".", START_TIMEOUT)
     tail = "\n".join(output.strip().splitlines()[-8:])
     if tail:
         say(tail)
     if timed_out or code != 0:
-        reason = f"stopped after {START_TIMEOUT // 60} minutes" if timed_out else f"docker compose exited with {code}"
-        return {"ok": False, "state": "error", "containers": [], "message": reason + (f": {tail.splitlines()[-1]}" if tail else "")}
+        return {"ok": False, "state": "error", "containers": [], "message": _explain_compose_failure(output, code, timed_out, shell)}
     if action == "stop":
         final = status(server, shell, docker=True)
         return {"ok": final["state"] == "stopped", **final}

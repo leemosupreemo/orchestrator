@@ -8702,10 +8702,32 @@ function serverLabel(sv) {
   return sv.file ? `${name} (${sv.file.replace(/\.ya?ml$/, "")})` : name;
 }
 
+function pickDefaultServer(view) {
+  const list = view?.servers || [];
+  if (!list.length) return null;
+  if (serverPick) {
+    const chosen = list.find((x) => x.id === serverPick);
+    if (chosen) return chosen;
+  }
+  const appIds = new Set((view.app || []).filter((a) => a.machine === view.machine).map((a) => a.id));
+  return list.find((x) => appIds.has(x.id) && x.status?.state === "running")
+    || list.find((x) => appIds.has(x.id))
+    || list.find((x) => x.status?.state === "running")
+    || list.find((x) => ["starting", "partial", "unhealthy"].includes(x.status?.state))
+    || list[0];
+}
+
+function serverOptionLabel(x, view) {
+  const base = serverLabel(x);
+  const isApp = (view.app || []).some((a) => a.id === x.id && a.machine === view.machine);
+  const stateTag = view.docker === false ? "" : (x.status?.state === "running" ? " · Online" : x.status?.state === "partial" ? " · Partly online" : "");
+  return `${base}${isApp ? " · App server" : ""}${stateTag}`;
+}
+
 function serverCardHtml(view, canSend, open = false, { homeMode = false } = {}) {
   if (!view?.servers?.length) return "";
   const owner = state.you?.role !== "member";
-  const sv = view.servers.find((x) => x.id === serverPick) || view.servers[0];
+  const sv = pickDefaultServer(view);
   const machines = view.machines || [];
   const dockerOff = view.docker === false;
   const dockerMissing = view.docker_installed === false;
@@ -8728,16 +8750,20 @@ function serverCardHtml(view, canSend, open = false, { homeMode = false } = {}) 
   const livePorts = [...new Set(runningContainers.flatMap((c) => c.ports || []))];
   const portsToShow = livePorts.length ? livePorts : (sv.ports || []);
   const metaParts = [
+    onSend ? "App server" : "",
     ver.ref ? `Version <code class="mono">${esc(ver.ref)}</code>${ver.branch ? ` (${esc(ver.branch)})` : ""}` : "",
     up && images.length ? `Image <code class="mono">${esc(images[0])}${images.length > 1 ? ` +${images.length - 1}` : ""}</code>` : "",
     portsToShow.length ? portsToShow.map((p) => `<code class="mono">localhost:${p}</code>`).join(" ") : "",
     machines.length > 1 ? esc(whereLabel) : "",
   ].filter(Boolean);
+  const otherOnline = !dockerOff ? view.servers.filter((x) => x.id !== sv.id && x.status?.state === "running") : [];
   const hint = dockerMissing
     ? (view.machine === "local" ? "Docker isn't installed on this computer." : "Docker isn't installed on that computer.")
     : dockerOff
       ? (view.machine === "local" ? "No server is online. Docker is off — Launch server opens it first." : "No server is online. Docker is off on that computer.")
-      : (!up ? (st.message || "No server is online right now.") : (st.message || ""));
+      : (!up
+        ? (st.message || (otherOnline.length ? `This server is stopped (${otherOnline.map(serverLabel).join(", ")} is already online).` : "No server is online right now."))
+        : (st.message || ""));
   const actionButtons = owner
     ? (dockerMissing
       ? `<button type="button" class="btn small primary" data-server-action="install_docker">Install Docker</button>`
@@ -8753,7 +8779,7 @@ function serverCardHtml(view, canSend, open = false, { homeMode = false } = {}) 
     <div class="card-b stack gap-12">
       <div class="stack gap-4 server-summary">
         <div class="row gap-8 align-center flex-wrap">
-          ${view.servers.length > 1 ? `<select id="server-pick" class="inline-select" aria-label="Server">${view.servers.map((x) => `<option value="${esc(x.id)}"${x.id === sv.id ? " selected" : ""}>${esc(serverLabel(x))}</option>`).join("")}</select>` : `<strong>${esc(serverLabel(sv))}</strong>`}
+          ${view.servers.length > 1 ? `<select id="server-pick" class="inline-select" aria-label="Server">${view.servers.map((x) => `<option value="${esc(x.id)}"${x.id === sv.id ? " selected" : ""}>${esc(serverOptionLabel(x, view))}</option>`).join("")}</select>` : `<strong>${esc(serverLabel(sv))}</strong>`}
           ${metaParts.length ? `<span class="muted t-secondary server-meta-inline">${metaParts.join(' <span class="sep">·</span> ')}</span>` : ""}
         </div>
         ${hint ? `<p class="muted t-secondary m-0">${esc(hint)}</p>` : ""}
@@ -9038,7 +9064,7 @@ async function loadServerCard(box, canSend = false, onState = () => {}, { homeMo
     box.innerHTML = serverCardHtml(view, canSend, detailsOpen, { homeMode });
     box.querySelector(".server-details")?.addEventListener("toggle", (e) => { detailsOpen = e.target.open; });
     box.hidden = !view?.servers?.length;
-    const picked = view?.servers?.find((x) => x.id === serverPick) || view?.servers?.[0];
+    const picked = pickDefaultServer(view);
     onState(picked ? { required: (view.app || []).some((a) => a.id === picked.id && a.machine === view.machine),
       ready: view.docker !== false && picked.status?.state === "running" } : null);
     box.querySelector("#server-machine")?.addEventListener("change", (e) => load(e.target.value));
