@@ -208,6 +208,37 @@ class GeneralTests(unittest.TestCase):
         self.assertEqual(out["tone"], "bad")
 
 
+class OpenQuestionTests(unittest.TestCase):
+    LOG = ("❓ Debugger needs your input: Should I leave it unverified?\n"
+           "      - Skipped email notification (no recipient emails configured in settings.json).\n")
+    JOB = {"job_id": "job-19", "status": "human-needed", "human_clarification_question": "Should I leave it unverified?"}
+
+    def test_a_run_that_stopped_to_ask_leads_with_the_question_and_offers_to_answer(self):
+        for action in ("resume", "debug", "execute", "answer"):
+            found = rr.summarize(action, self.LOG, 0, job=self.JOB)
+            self.assertEqual((found["headline"], found["tone"]), ("Paused: the job has a question for you", "warn"), action)
+            self.assertEqual(found["details"][0], "Should I leave it unverified?")
+            self.assertEqual(found["next"], {"label": "Answer question", "action": "answer", "params": {"job": "job-19"}})
+
+    def test_the_answer_form_says_a_debugger_question_resumes_the_fix(self):
+        app = (Path(__file__).resolve().parents[1] / "orchestrator/web/static/app.js").read_text()
+        form = app[app.index("  async answer(params) {"):app.index("  async revise(params) {")]
+        self.assertIn('asker === "debugger" ? "The fix attempt resumes with your answer."', form)
+        self.assertIn("<small>${next}</small>", form)
+
+    def test_a_long_question_is_cut_between_words(self):
+        found = rr.summarize("resume", self.LOG, 0, job={**self.JOB, "human_clarification_question": "evidence " * 60})
+        self.assertTrue(found["details"][0].endswith("evidence…"), found["details"][0])
+        self.assertLessEqual(len(found["details"][0]), rr.MAX_LINE)
+
+    def test_failed_runs_other_runs_and_answered_jobs_are_left_to_their_own_summary(self):
+        for action, code, job in (("resume", 1, self.JOB), ("build", 0, self.JOB),
+                                  ("resume", 0, {**self.JOB, "status": "review-ready"}),
+                                  ("resume", 0, {**self.JOB, "human_clarification_question": ""})):
+            found = rr.summarize(action, self.LOG, code, job=job)
+            self.assertNotEqual(found["headline"], "Paused: the job has a question for you", (action, code, job))
+
+
 class TestsJobOutcomeTests(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()

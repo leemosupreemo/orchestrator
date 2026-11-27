@@ -1099,10 +1099,12 @@ const dialogs = {
     }
     const question = job.summary?.question || job.job?.human_clarification_question || "";
     const asker = job.job?.clarification_asker || (String(job.job?.last_error || "").startsWith("Builder clarification needed") ? "builder" : String(job.job?.last_error || "").startsWith("Debugger clarification needed") ? "debugger" : "planner");
+    const next = asker === "debugger" ? "The fix attempt resumes with your answer." // job_actions.answer: only the others re-plan
+      : "The job is re-planned with your answer; you'll approve the new plan before anything is built.";
     const values = await formDialog(`Answer the ${asker}`, `
       <p class="question">${esc(question)}</p>
       <label class="field"><span>Your answer</span><textarea name="answer" required></textarea>
-        <small>The job is re-planned with your answer; you'll approve the new plan before anything is built.</small></label>`, "Send answer");
+        <small>${next}</small></label>`, "Send answer");
     if (values?.answer.trim()) runAction("answer", { job: params.job, answer: values.answer });
   },
   async revise(params) {

@@ -531,6 +531,20 @@ def general(lines: list[str], code: int | None) -> dict[str, Any] | None:
     return _result(plain(lines[-1]), [plain(l) for l in lines[-4:-1]])
 
 
+def question_outcome(job: dict[str, Any], lines: list[str], action: str, code: int | None) -> dict[str, Any] | None:
+    """A run that stopped because the AI asked something. Say so and offer the answer, instead of leading with the log's
+    last line (a note that no email was sent). Planning runs have their own wording (planning_outcome)."""
+    question = " ".join(str(job.get("human_clarification_question") or "").split())
+    if (code or action not in FIX_RUNS | {"answer"} or job.get("status") != "human-needed" or not question
+            or not job.get("job_id") or any("Skipping dispatch" in l for l in lines)):
+        return None
+    if len(question) > MAX_LINE:
+        question = question[:MAX_LINE - 1].rsplit(" ", 1)[0] + "…"  # the whole question is in the answer form
+    result = _result("Paused: the job has a question for you", [question, "The job waits until you answer."], "warn")
+    result["next"] = {"label": "Answer question", "action": "answer", "params": {"job": job["job_id"]}}
+    return result
+
+
 def summarize(action: str, text: str, exit_code: int | None, job_title: str = "", job: dict[str, Any] | None = None,
               root: Path | None = None) -> dict[str, Any] | None:
     """{headline, details, tone} for a finished run, or None when its output says nothing. `job_title` names the job a run made;
@@ -538,6 +552,9 @@ def summarize(action: str, text: str, exit_code: int | None, job_title: str = ""
     lines = clean_lines(text)
     reader = READERS.get(action)
     try:
+        asked = question_outcome(job, lines, action, exit_code) if job else None
+        if asked:
+            return asked
         outcome = job_outcome(job, root) if job and root else None
         if outcome and not exit_code:
             return outcome
