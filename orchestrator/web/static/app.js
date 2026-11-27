@@ -441,7 +441,7 @@ const prdStatusPill = (sections) => {
 const pill = (tone, label) => `<span class="pill ${esc(tone)}">${esc(label)}</span>`;
 // A small turning ring that says "this is running right now" (a job building, or a run in progress).
 const runningMark = `<span class="run-spin" aria-hidden="true"></span>`;
-const jobIsRunning = (j) => Boolean(j.active_run) || j.state?.label === "Building";
+const jobIsRunning = (j) => Boolean(j.active_run) || j.state?.label === "Building" || j.state?.label === "Fixing";
 const jobPill = (j) => j.active_run ? `<span class="pill working">${runningMark}Working</span>`
   : jobIsRunning(j) ? `<span class="pill working">${runningMark}${esc(j.state.label)}</span>` : pill(j.state.tone, j.state.label);
 
@@ -6864,6 +6864,21 @@ pages.job = async ([id]) => {
   const activeRun = runs.find((r) => r.running && !SIDE_RUNS.has(r.action)); // an export or preview isn't work on the job
   const jobRuns = data.job_runs || null, runRel = data.run_relationship || null;
   if (s.status === "backlog") return waitingEpicPage({ id, s, job, runs, docs, links });
+  if (activeRun && !activeRun.waiting && ["debug", "fix", "refine"].includes(activeRun.action) && s.status === "debugging" && s.state?.group !== "working") {
+    const prevLabel = s.state?.label || "";
+    s.state = {
+      ...s.state,
+      group: "working",
+      tone: "working",
+      label: "Fixing",
+      reason: prevLabel === "Build failing"
+        ? "Working on a fix after the previous attempt couldn't build."
+        : prevLabel === "Tests failing"
+          ? "Working on a fix after tests failed on the previous attempt."
+          : "A worker is investigating and testing a fix.",
+      next: null,
+    };
+  }
   const summary = { ...s, active_run: !!activeRun };
 
   const pipeline = {
@@ -6938,7 +6953,7 @@ pages.job = async ([id]) => {
     ? `${plural(localCount, "file")} unsaved (local)`
     : `${plural(allFiles.length, "file")} changed`;
 
-  const problem = s.state.next?.action === "debug" && data.problem ? data.problem : null; // what needs fixing, in words
+  const problem = !activeRun && s.state.next?.action === "debug" && data.problem ? data.problem : null; // what needs fixing, in words
   const next = s.state.next;
   const isStoppingActive = activeRun && (stoppingRuns.has(activeRun.id) || Boolean(activeRun.stopping));
   const signIn = problem?.sign_in || s.state.sign_in; // a failed fix's sign-in, or a blocker that needs one
@@ -7075,7 +7090,7 @@ pages.job = async ([id]) => {
 
   const verifyStep = {
     title: "Verify",
-    subtitle: nothingBuilt ? "Waits for the build" : loopingBack && currentPhaseIndex < 2 ? "Pending re-verify" : isJobComplete || (currentPhaseIndex > 2 && s.state.tone !== "failed") ? "Verified" : status === "debugging" || s.state.tone === "failed" ? "Tests failing" : testSummary?.status === "passed" ? "Passed" : "Automated tests",
+    subtitle: nothingBuilt ? "Waits for the build" : loopingBack && currentPhaseIndex < 2 ? "Pending re-verify" : isJobComplete || (currentPhaseIndex > 2 && s.state.tone !== "failed") ? "Verified" : (!activeRun && (status === "debugging" || s.state.tone === "failed")) ? (s.state.label === "Build failing" ? "Build failing" : "Tests failing") : (activeRun && currentPhase === "verify") ? "Verifying fix" : testSummary?.status === "passed" ? "Passed" : "Automated tests",
     ...getStepState(2),
   };
 
@@ -7399,7 +7414,7 @@ pages.job = async ([id]) => {
     || (jobRuns || []).find((r) => !r.side && r.status === "failed")
     || (jobRuns || []).find((r) => !r.side)
     || null;
-  const hasJobFailure = !job.moved_to && Boolean(
+  const hasJobFailure = !job.moved_to && !activeRun && Boolean(
     heroReasonDetails
     || problem
     || ["debugging", "failed"].includes(status)
@@ -7409,7 +7424,7 @@ pages.job = async ([id]) => {
   const copyFailureBtnHtml = hasJobFailure
     ? `<button type="button" class="btn ghost icon-only hero-copy-log-btn" id="copy-job-failure-log" aria-label="Copy failure details and logs" title="Copy failure details and logs"><svg class="icon" aria-hidden="true"><use href="#i-copy"/></svg></button>`
     : "";
-  const heroTitleHtml = `<h2 class="job-hero-title">${(activeRun && !activeRun.waiting) || s.state.label === "Building" ? runningMark : ""}${esc(s.state.label || s.status)}</h2>`;
+  const heroTitleHtml = `<h2 class="job-hero-title">${(activeRun && !activeRun.waiting) || s.state.label === "Building" || s.state.label === "Fixing" ? runningMark : ""}${esc(s.state.label || s.status)}</h2>`;
 
   const rawClarifyHistory = Array.isArray(job.clarification_history) ? job.clarification_history : [];
   const runById = new Map((jobRuns || []).map((r) => [r.id, r]));
@@ -7644,7 +7659,7 @@ pages.job = async ([id]) => {
           ${toolBlockedSteps.map((step) => `<p class="job-hero-reason muted">${esc(step)}</p>`).join("")}
         </div>
         <div class="job-hero-action">${toolBlockedActions}</div>
-      </section>` : `<section id="job-hero" tabindex="-1" class="job-hero tone-${esc(heroTone)}${(activeRun && !activeRun.waiting) || s.state.label === "Building" ? " is-running" : ""}">
+      </section>` : `<section id="job-hero" tabindex="-1" class="job-hero tone-${esc(heroTone)}${(activeRun && !activeRun.waiting) || s.state.label === "Building" || s.state.label === "Fixing" ? " is-running" : ""}">
         ${copyFailureBtnHtml ? `<div class="job-hero-head">${heroTitleHtml}${copyFailureBtnHtml}</div>` : ""}
         <div class="job-hero-main">
           ${copyFailureBtnHtml ? "" : heroTitleHtml}
@@ -16973,14 +16988,20 @@ function runStatus(r, vc = null) {
   ]);
   const omitModelsActions = new Set([
     "server_start", "server_stop", "server_restart", "server_install_docker", "install_tool", "setup_environment",
+    "build", "test", "test_suite", "test_plan",
+    "git_pull", "git_push", "git_checkout", "stash_checkout", "git_new_branch",
+    "logs_pull", "logs_tail", "logs_setup",
+    "check", "check_config", "wizard", "config_menu", "worker_check", "worker_install",
+    "console", "distribute", "deliver", "package_update",
     "signing_import", "signing_secure", "signing_copy",
-    "update_local", "update_fleet",
+    "update_local", "update_fleet", "sync_fleet", "fleet_llm_check", "test_email",
   ]);
+  const isOmitModels = omitModelsActions.has(r.action) || /^server_|^git_/.test(r.action || "");
 
   const activeModels = p.active_models || [];
   const skippedIds = new Set((Array.isArray(p.failed) ? p.failed : []).map((f) => f.model)); // models that couldn't run are listed under Skipped models
   const recordedModels = (p.models || []).filter((m) => !skippedIds.has(m));
-  const assignedModels = p.assigned_models || [];
+  const assignedModels = isOmitModels ? [] : (p.assigned_models || []);
   const displayModels = activeModels.length ? activeModels
     : recordedModels.length ? recordedModels
     : assignedModels;
@@ -17061,7 +17082,7 @@ function runStatus(r, vc = null) {
     : r.running ? "Assigning a machine…" : "None recorded";
   const machineLabel = machines.length > 1 ? "Machines" : "Machine";
   const machineItem = `<div><dt>${machineLabel}</dt><dd data-run-machines>${esc(machineText)}${machines.length && r.running ? " (active)" : ""}</dd></div>`;
-  const hideModelsRow = omitModelsActions.has(r.action) && !calls.length && !displayModels.length && !(r.running && activeCount > 0);
+  const hideModelsRow = isOmitModels && !calls.length && !displayModels.length && !(r.running && activeCount > 0);
   const modelsItem = hideModelsRow ? "" : `<div><dt>Models</dt><dd>${modelsText}</dd></div>`;
   const summaryItem = r.summary ? `<div><dt>Summary</dt><dd>${esc(r.summary)}</dd></div>` : "";
   const suites = Array.isArray(p.suites) ? p.suites : []; // the new test suites a coverage plan set out to add

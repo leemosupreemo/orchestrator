@@ -6,6 +6,7 @@ import json
 import os
 import re
 import shlex
+import socket
 import sys
 from pathlib import Path
 from typing import Any
@@ -291,21 +292,37 @@ def run_debug_iteration(
 
     job["iteration"] += 1
     iteration = job["iteration"]
-    
-    # 3. Print Iteration Header
-    print("\n" + "="*80)
-    print(f"\033[1;93m🔄 DEBUG ITERATION #{iteration}\033[0m")
-    print("="*80 + "\n")
-    
-    print_phase("debug_loop", subtext=f"Iteration {iteration} (Phase: {job['debug_phase']})")
+    owns_worker_pid = job.get("worker_pid") != os.getpid()
+    if owns_worker_pid:
+        job["worker_pid"] = os.getpid()
+        job["worker_host"] = socket.gethostname()
+        write_json(job_path, job)
 
-    # 3. Handle Phases
-    if job["debug_phase"] == "propose":
-        run_propose(job, job_path, logs, feedback)
-    elif job["debug_phase"] == "implement":
-        run_implement(job, job_path)
-    elif job["debug_phase"] == "verify":
-        run_verify(job, job_path)
+    try:
+        # 3. Print Iteration Header
+        print("\n" + "="*80)
+        print(f"\033[1;93m🔄 DEBUG ITERATION #{iteration}\033[0m")
+        print("="*80 + "\n")
+
+        print_phase("debug_loop", subtext=f"Iteration {iteration} (Phase: {job['debug_phase']})")
+
+        # 3. Handle Phases
+        if job["debug_phase"] == "propose":
+            run_propose(job, job_path, logs, feedback)
+        elif job["debug_phase"] == "implement":
+            run_implement(job, job_path)
+        elif job["debug_phase"] == "verify":
+            run_verify(job, job_path)
+    finally:
+        if owns_worker_pid:
+            try:
+                if job_path.is_file():
+                    latest = read_json(job_path)
+                    if latest.get("worker_pid") == os.getpid():
+                        latest["worker_pid"] = None
+                        write_json(job_path, latest)
+            except Exception:
+                pass
 
 def run_propose(job: dict, job_path: Path, logs_path: str | None, feedback: str | None) -> None:
     print_phase("investigation", subtext="ingesting logs & brief")

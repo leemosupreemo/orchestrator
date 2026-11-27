@@ -132,6 +132,18 @@ OWNER_SOURCES = ("git", "account", "environment")
 OWNER_ONLY_CONFIG = {"keys", "email", "analytics", "webhook", "desktop", "allowed-email", "firebase", "fleet", "role-prompts"}
 OWNER_ONLY_ACTIONS = {"server_start", "server_stop", "server_restart", "server_install_docker", "install_tool", "setup_environment", "signing_import", "signing_secure", "signing_copy", "console", "wizard", "config_menu", "ai_connect", "package_update", "worker_install", "sync_fleet", "fleet_llm_check", "update_local",
                       "update_fleet", "test_email", "logs_setup", "deliver", "distribute", "ai_review_terminal"}  # it bills the owner's Claude account
+NON_AI_SESSION_ACTIONS = {
+    "setup_environment", "install_tool",
+    "server_start", "server_stop", "server_restart", "server_install_docker",
+    "build", "test", "test_suite", "test_plan",
+    "git_pull", "git_push", "git_checkout", "stash_checkout", "git_new_branch",
+    "signing_import", "signing_secure", "signing_copy",
+    "logs_pull", "logs_tail", "logs_setup",
+    "check", "check_config", "wizard", "config_menu", "worker_check", "worker_install",
+    "console", "distribute", "deliver", "package_update",
+    "update_local", "update_fleet", "sync_fleet", "fleet_llm_check", "test_email",
+}
+SIDE_RUN_ACTIONS = {"export_job", "web_preview", "dev_preview"}
 SIGN_IN_TTL_SECONDS = 30 * 24 * 3600
 SNAPSHOT_CHECK_SECONDS = 10  # how soon other computers see a job here change (snapshot_sync)
 ALLOWED_EMAILS_CACHE_SECONDS = 60
@@ -556,7 +568,7 @@ class PtySession:
             progress = self._progress.snapshot(running=self.running)
             task_refs = {job: sorted(ids) for job, ids in self._timeline.task_refs.items()}
             task_attempts = {job: attempts.copy() for job, attempts in self._timeline.task_attempts.items()}
-        if not progress.get("models"):
+        if not progress.get("models") and self.action not in NON_AI_SESSION_ACTIONS and not str(self.action or "").startswith(("server_", "git_")):
             assigned: list[str] = []
             target_job = self.job_id or self.result_job
             if not target_job and self.argv:
@@ -935,7 +947,7 @@ def question_is_blocker(text: Any) -> bool:
         return False
 
 
-def job_state(job: dict[str, Any], root: Path | None = None) -> dict[str, Any]:
+def job_state(job: dict[str, Any], root: Path | None = None, *, active_run: dict[str, Any] | None = None) -> dict[str, Any]:
     """What the job is waiting on, in plain words, and the one action that moves
     it forward. `group` is needs_you | working | done; `tone` drives colour:
     attention (amber) = your move, working (blue), done (green), failed (red)."""
@@ -1083,6 +1095,20 @@ def job_state(job: dict[str, Any], root: Path | None = None) -> dict[str, Any]:
     if status == "debugging":
         from orchestrator import job_problem
         last_res = job_problem.last_debug_entry(job).get("result")
+        last_build_failed = isinstance(last_res, dict) and last_res.get("build_ok") is False
+        last_tests_failed = isinstance(last_res, dict) and last_res.get("tests_ok") is False
+        fixing_now = bool(
+            (active_run and active_run.get("running") and not active_run.get("waiting"))
+            or (job.get("debug_phase") not in (None, "paused") and worker_alive(job) is True)
+        )
+        if fixing_now:
+            if tests == "build-failed" or last_build_failed:
+                reason = "Working on a fix after the previous attempt couldn't build."
+            elif tests in FAILING_TEST_STATUSES or last_tests_failed:
+                reason = "Working on a fix after tests failed on the previous attempt."
+            else:
+                reason = "A worker is investigating and testing a fix."
+            return state("working", "working", "Fixing", reason)
         if job_problem.last_fix_passed(job):
             if pr:
                 return state("needs_you", "attention", "Ready to merge",
@@ -1095,8 +1121,6 @@ def job_state(job: dict[str, Any], root: Path | None = None) -> dict[str, Any]:
             return state("needs_you", "attention", "Ready for review",
                          "The latest fix passed checks. Mark it complete when you're happy, or request another change below.",
                          "complete", "Mark complete")
-        last_build_failed = isinstance(last_res, dict) and last_res.get("build_ok") is False
-        last_tests_failed = isinstance(last_res, dict) and last_res.get("tests_ok") is False
         if job.get("debug_phase") == "paused":
             pause_reason = str(job.get("debug_pause_reason") or "").strip()
             failed_tone = tests in FAILING_TEST_STATUSES or last_build_failed or last_tests_failed
@@ -9372,6 +9396,19 @@ class UIHandler(BaseHTTPRequestHandler):
             detail = job_detail(root, parts[1])
             detail["runs"] = self._sessions_view(job_id=parts[1])
             detail.update(self._job_runs_view(root, parts[1], detail["runs"], detail["job"]))
+            live_run = next(
+                (
+                    r for r in detail["runs"]
+                    if r.get("running")
+                    and not r.get("waiting")
+                    and r.get("action") not in SIDE_RUN_ACTIONS
+                    and r.get("action") not in NON_AI_SESSION_ACTIONS
+                ),
+                None,
+            )
+            if live_run and detail.get("job", {}).get("status") == "debugging":
+                detail["summary"]["state"] = job_state(detail["job"], root, active_run=live_run)
+                detail["problem"] = None
             self._json(detail)
         elif method == "POST" and len(parts) == 3 and parts[0] == "jobs" and parts[2] == "startup-check":
             self._require_owner("refresh this job's startup checks")

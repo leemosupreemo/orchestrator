@@ -233,6 +233,113 @@ console.log(JSON.stringify({{ rendered, short, twoSentencesOut: conciseReasonTex
         self.assertNotIn("Tas…", out["short"])
         self.assertEqual(out["twoSentencesOut"], "The latest fix passed checks and updated PR #12. Review and merge, or request another change below.")
 
+    def test_active_fix_shows_fixing_and_non_ai_actions_omit_parent_job_models(self):
+        import os
+        import socket
+        import subprocess
+        import tempfile
+        from orchestrator.web import server as ui
+
+        job_failed_build = {
+            "status": "debugging",
+            "debug_phase": "propose",
+            "test_status": "build-failed",
+            "debug_history": [{"iteration": 5, "result": {"build_ok": False, "tests_ok": False}}],
+        }
+        # 1. Stopped (no active run, no alive worker_pid): shows 'Build failing' (needs_you / failed)
+        idle_state = ui.job_state(job_failed_build)
+        self.assertEqual((idle_state["label"], idle_state["tone"], idle_state["group"]), ("Build failing", "failed", "needs_you"))
+
+        # 2. Active UI fix run OR live worker_pid: shows 'Fixing' (working / working, no Run fix button)
+        live_state = ui.job_state(job_failed_build, active_run={"running": True, "waiting": False, "action": "debug"})
+        self.assertEqual((live_state["label"], live_state["tone"], live_state["group"], live_state["next"]),
+                         ("Fixing", "working", "working", None))
+        self.assertIn("previous attempt couldn't build", live_state["reason"])
+
+        pid_state = ui.job_state({**job_failed_build, "worker_pid": os.getpid(), "worker_host": socket.gethostname()})
+        self.assertEqual((pid_state["label"], pid_state["tone"], pid_state["group"]), ("Fixing", "working", "working"))
+
+        # 3. Non-AI sessions (setup_environment, install_tool, build, test, server_*, git_*) never inherit assigned_models
+        import threading
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            jobs_dir = root / ".orchestrator" / "jobs"
+            jobs_dir.mkdir(parents=True)
+            (jobs_dir / "j19.json").write_text(
+                json.dumps({"status": "debugging", "builder": "gpt-6.2-astra", "planner": "gpt-6.2-astra", "allowed_models": ["gpt-6.2-astra"]}),
+                encoding="utf-8",
+            )
+
+            def make_session(act_name: str) -> Any:
+                sess = ui.PtySession.__new__(ui.PtySession)
+                sess.id = f"run-{act_name}"
+                sess.action = act_name
+                sess.title = act_name
+                sess.argv = ["echo", "ok"]
+                sess.cwd = root
+                sess.job_id = "j19"
+                sess.job_title = "Job 19"
+                sess.result_job = None
+                sess.started = 1000.0
+                sess.last_output = 1000.0
+                sess.ended = 1002.0
+                sess.exit_code = 0
+                sess.stopped = False
+                sess.result = None
+                sess.transcript_path = None
+                sess._buffer = bytearray()
+                sess._base = 0
+                sess._progress = ui.RunProgress()
+                sess._timeline = ui.RunTimeline()
+                sess._cond = threading.Condition()
+                return sess
+
+            for non_ai_act in ("setup_environment", "install_tool", "build", "test", "server_start", "git_push"):
+                snap = make_session(non_ai_act).summary()
+                self.assertNotIn("assigned_models", snap["progress"], non_ai_act)
+            ai_snap = make_session("debug").summary()
+            self.assertEqual(ai_snap["progress"].get("assigned_models"), ["gpt-6.2-astra"])
+
+        # 4. Frontend runStatus hides Models row for non-AI actions even if legacy saved progress had assigned_models
+        app = (STATIC / "app.js").read_text(encoding="utf-8")
+        html_js = (STATIC / "html.js").read_text(encoding="utf-8")
+        dur_start = app.index("function runDuration(")
+        dur_src = app[dur_start:app.index("function runFailureGuidance(", dur_start)]
+        rs_start = app.index("function runStatus(")
+        rs_src = app[rs_start:app.index("function wireKeychainUnlock(", rs_start)]
+        script = f"""
+{html_js}
+const esc = globalThis.Html.escape;
+const plural = (n, w) => `${{n}} ${{n === 1 ? w : w + "s"}}`;
+const act = (a) => `data-action="${{a}}"`;
+const stoppingRuns = new Set();
+const state = {{}};
+const runFailureGuidance = () => null;
+const pendingUpdate = null;
+{dur_src}
+{rs_src}
+const out = {{}};
+for (const action of ["setup_environment", "install_tool", "build", "test", "server_start", "git_push"]) {{
+  out[action] = runStatus({{
+    id: `r-${{action}}`,
+    action,
+    title: action,
+    job: "j19",
+    running: false,
+    exit_code: 0,
+    started: 1000,
+    ended: 1010,
+    progress: {{ assigned_models: ["gpt-6.2-astra"], machines: ["MacBook-Pro"] }},
+    result: {{ headline: "Environment ready", details: [], tone: "ok" }},
+  }});
+}}
+console.log(JSON.stringify(out));
+"""
+        rendered = json.loads(subprocess.run(["node", "-e", script], capture_output=True, text=True, check=True).stdout)
+        for act_name, html_out in rendered.items():
+            self.assertNotIn("gpt-6.2-astra", html_out, act_name)
+            self.assertNotIn("<dt>Models</dt>", html_out, act_name)
+
 
 if __name__ == "__main__":
     unittest.main()
