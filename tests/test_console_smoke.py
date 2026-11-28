@@ -177,6 +177,15 @@ class AuthTests: XCTestCase {
         self.assertEqual(suites[0]["name"], "AuthTests")
         self.assertEqual(suites[0]["test_count"], 3)
 
+    def test_discovery_skips_tests_shipped_inside_installed_libraries(self):
+        mine = self.temp_root / "tests"
+        theirs = self.temp_root / "functions" / "venv" / "lib" / "python3.12" / "site-packages" / "certifi" / "tests"
+        for folder in (mine, theirs):
+            folder.mkdir(parents=True, exist_ok=True)
+            (folder / "test_core.py").write_text("import unittest\nclass CoreTests(unittest.TestCase):\n    def test_a(self):\n        pass\n")
+        paths = [str(s.get("rel_path")) for s in dev_console.discover_test_suites(self.temp_root)]
+        self.assertEqual(paths, ["tests/test_core.py"])
+
     @patch("dev_console.prompt_input")
     @patch("dev_console.input")
     def test_rename_test_suite(self, mock_input, mock_prompt_input):

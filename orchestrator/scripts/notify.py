@@ -31,6 +31,14 @@ except ImportError:
         with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
 
+def desktop_notifications_off() -> bool:
+    settings_path = PROJECT_CONFIG.config_dir / "settings.json"
+    try:
+        return read_json(settings_path).get("desktop_notifications", True) is False
+    except Exception:
+        return False
+
+
 def notify(title: str, message: str, job_id: str | None = None, summary: str | None = None) -> None:
     if os.environ.get("ORCHESTRATOR_DISABLE_NOTIFICATIONS") == "1":
         print(f"      - Notifications disabled for: {title}")
@@ -38,8 +46,10 @@ def notify(title: str, message: str, job_id: str | None = None, summary: str | N
 
     print(f"      - Sending notifications for: {title}")
     
-    # 1. Desktop Notification (macOS)
+    # 1. Desktop Notification (macOS), unless turned off under Configuration > Alerts
     try:
+        if desktop_notifications_off():
+            raise RuntimeError("turned off in Configuration > Alerts")
         safe_title = title.replace('"', '\\"')
         safe_message = message.replace('"', '\\"')
         subprocess.run(

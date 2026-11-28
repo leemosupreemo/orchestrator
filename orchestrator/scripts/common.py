@@ -20,6 +20,44 @@ if str(PACKAGE_ROOT.parent) not in sys.path:
     sys.path.insert(0, str(PACKAGE_ROOT.parent))
 
 from orchestrator.project_config import PROJECT_CONFIG
+from orchestrator.test_results import parse_dotnet_output
+
+# Runs started from the web app have a pseudo-terminal (so output streams with colours and progress), which makes
+# sys.stdin.isatty() true. Nobody is at that terminal, though: the web app sets this, and every question must then go
+# to the app (a job's Answer card, a form) instead of waiting for keys that will never come.
+NONINTERACTIVE_ENV = "ORCHESTRATOR_NONINTERACTIVE"
+
+
+def web_run() -> bool:
+    """Started from the web app: nobody will type anything, whatever stdin looks like."""
+    return os.environ.get(NONINTERACTIVE_ENV) == "1"
+
+
+def interactive() -> bool:
+    """A person is at a terminal to answer prompts. (Piped input, as tests and scripts use, isn't a person.)"""
+    return not web_run() and sys.stdin.isatty()
+
+
+def _plain(text: object) -> str:
+    return re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", str(text or "")).strip()
+
+
+def no_terminal_answer(prompt: object = "") -> str:
+    """What a prompt gets in a run nobody can type into. "Press Enter to continue" pauses return at once; anything else
+    behaves like closed input (EOFError, which prompts already treat as "pause and ask later"), after saying why."""
+    text = _plain(prompt)
+    if re.search(r"\b(tap|press|hit)\s+enter\b", text, re.I):
+        return ""
+    print(f"\n[{text or 'This step asks for input'}] needs an answer typed in a terminal, which a run started from the "
+          "web app can't give. Questions for you appear on the job's page instead.", flush=True)
+    raise EOFError("no terminal to answer from")
+
+
+if os.environ.get(NONINTERACTIVE_ENV) == "1":  # covers every input()/getpass() in the scripts, including older ones
+    import builtins
+    import getpass as _getpass
+    builtins.input = no_terminal_answer
+    _getpass.getpass = lambda prompt="Password: ", stream=None: no_terminal_answer(prompt)
 
 ROOT = PROJECT_CONFIG.root
 ORCHESTRATOR_DIR = PACKAGE_ROOT
@@ -47,8 +85,19 @@ except:
 for p in [CONFIG_DIR, JOBS_DIR, INBOX_DIR, ARCHIVE_DIR, LOGS_DIR, OUTPUT_DIR, STATE_DIR, MACHINE_STATE_DIR]:
     p.mkdir(parents=True, exist_ok=True)
 
+# Values a secrets file holds before anyone fills it in. Loaded, they'd override a real sign-in: an ANTHROPIC_API_KEY of
+# "your_anthropic_api_key_here" makes Claude refuse its claude.ai login with "Invalid API key".
+_PLACEHOLDER = re.compile(r"(?:your|my)[_-].*|.*[_-]here|change[_-]?me|replace[_-]?me.*|placeholder|todo|x{3,}|<[^>]*>|\.\.\.|null|none", re.I)
+
+
+def secret_value_usable(value: str) -> bool:
+    """False for an empty value, a placeholder, or one only a shell could work out ($(...), ${...}, $NAME, backticks)."""
+    return bool(value) and not _PLACEHOLDER.fullmatch(value) and not re.search(r"\$\(|\$\{|\$[A-Za-z_]|`", value)
+
+
 def load_secrets():
-    """Loads environment variables from .secrets/project-secrets.zsh or .env if present."""
+    """Loads environment variables from .secrets/project-secrets.zsh or .env if present. Placeholders and values that
+    need a shell to expand are left out (see secret_value_usable)."""
     secrets_paths = [
         ROOT / ".secrets" / "project-secrets.zsh",
         ORCHESTRATOR_RUNTIME_DIR / ".env",
@@ -66,7 +115,7 @@ def load_secrets():
                         k, v = line.split("=", 1)
                         k = k.strip()
                         v = v.strip().strip("'\"")
-                        if k and k not in os.environ:
+                        if k and k not in os.environ and secret_value_usable(v):
                             os.environ[k] = v
             except Exception:
                 pass
@@ -109,6 +158,9 @@ def ensure_keychain_unlocked(prompt_if_missing: bool = False) -> tuple[bool, str
     if res.returncode == 0:
         return True, "Keychain is already unlocked."
         
+    if prompt_if_missing and web_run():
+        return False, ("The macOS login keychain is locked. Unlock it on the Mac (log in, or run "
+                       "`security unlock-keychain`), then try again.")
     if prompt_if_missing:
         print("\n\033[1;93m🔑 macOS Login Keychain is locked.\033[0m")
         print("\033[90mTo avoid pausing or failing during build archiving/distribution, please enter your keychain password now:\033[0m")
@@ -165,18 +217,63 @@ def now_iso() -> str:
     return datetime.now().isoformat()
 
 
+# YOLO autoresponses: in a YOLO job nobody is waiting to answer, so when the planner or builder stops to ask, Orchestrator
+# answers for the person (decide from the requirements, the architecture and the code, note the assumption, carry on), up to
+# MAX_AUTO_RESPONSES times a job; after that the job pauses for a person, so a model that keeps asking can't loop. Each one is
+# kept in the job's clarification history marked "auto", and the job page lists them.
+MAX_AUTO_RESPONSES = 3
+AUTO_ANSWER = ("Nobody is available to answer (this job runs in YOLO mode), so decide for yourself. Choose the option that best "
+               "fits the product requirements, the architecture and the existing code; prefer the smallest change that meets the "
+               "goal; write the assumption you made in your summary; and carry on until the task is finished.")
+AUTO_CONTINUE = "Yes, carry on and finish the task. Nobody is available to answer (this job runs in YOLO mode)."
+
+
+def is_yolo_job(job: dict[str, Any]) -> bool:
+    return bool(job.get("yolo") or job.get("is_yolo"))
+
+
+def auto_answer(question: str) -> str:
+    """The answer Orchestrator gives a YOLO job's question: "carry on" to a should-I-continue, otherwise decide and note it."""
+    low = str(question or "").lower()
+    asks_to_continue = re.search(r"\b(?:should i|shall i|do you want me to|would you like me to|may i|can i)\s+(?:continue|proceed|go ahead|keep going|carry on|finish)", low)
+    return AUTO_CONTINUE if asks_to_continue else AUTO_ANSWER
+
+
+def can_autorespond(job: dict[str, Any]) -> bool:
+    """A YOLO job that hasn't used up its autoresponses."""
+    return is_yolo_job(job) and len([e for e in job.get("clarification_history") or [] if isinstance(e, dict) and e.get("auto")]) < MAX_AUTO_RESPONSES
+
+
+def autorespond(job: dict[str, Any], question: str, asker: str) -> str:
+    """Answers a YOLO job's question for the person, records it (marked auto, with who asked) and returns the answer."""
+    answer = auto_answer(question)
+    record_clarification(job, question, answer)
+    job["clarification_history"][-1].update(auto=True, asker=asker)
+    print(f"\n🤖 YOLO autoresponse ({len([e for e in job['clarification_history'] if e.get('auto')])} of {MAX_AUTO_RESPONSES}): "
+          f"the {asker} asked \"{str(question)[:200]}\". Answered: \"{answer}\"\n", flush=True)
+    return answer
+
+
 def record_clarification(job: dict[str, Any], question: str, answer: str) -> dict[str, Any]:
     """Records a clarification Q&A entry into the job's persistent history and clears the active question."""
     if not isinstance(job, dict):
         return job
-    entry = {
+    entry: dict[str, Any] = {
         "question": question.strip() if isinstance(question, str) else str(question),
         "answer": answer.strip() if isinstance(answer, str) else str(answer),
         "timestamp": now_iso(),
     }
+    if job.get("clarification_asked_at"):
+        entry["asked_at"] = job["clarification_asked_at"]
+    if job.get("clarification_run_id"):
+        entry["run_id"] = job["clarification_run_id"]
+    if job.get("clarification_asker"):
+        entry["asker"] = job["clarification_asker"]
     history = job.setdefault("clarification_history", [])
     history.append(entry)
     job["human_clarification_question"] = None
+    job.pop("clarification_asked_at", None)
+    job.pop("clarification_run_id", None)
     job["last_error"] = None
     job["updated_at"] = now_iso()
     return job
@@ -391,6 +488,13 @@ def parse_test_output(test_output_text: str) -> dict[str, Any]:
         total = int(spm_match.group(1))
         failed = int(spm_match.group(2))
 
+    # 1b. dotnet test: 'Failed!  - Failed: 2, Passed: 387, Skipped: 0, Total: 389' (one line per test project)
+    if total == 0:
+        dotnet = parse_dotnet_output(test_output_text)
+        if dotnet:
+            total, failed = dotnet["total_run"], dotnet["failed_count"]
+            failing_tests.extend(dotnet["failing_tests"])
+
     # 2. Python unittest / pytest format: 'Ran 55 tests in 1.845s'
     unit_match = re.search(r"Ran (\d+) tests?", test_output_text)
     if unit_match and total == 0:
@@ -561,8 +665,35 @@ def analyze_debug_loop_convergence(
     Analyzes multi-iteration debug history to detect convergence, stagnation,
     and oscillation/ping-pong loops dynamically without relying solely on a fixed iteration cap.
     """
-    history = job.get("debug_history", []) if isinstance(job, dict) else []
-    completed_trials = [t for t in history if isinstance(t, dict) and t.get("result") not in ("pending", None)]
+    raw_history = job.get("debug_history", []) if isinstance(job, dict) else []
+    if not isinstance(raw_history, list):
+        raw_history = []
+    reset_at = job.get("debug_convergence_reset_at") if isinstance(job, dict) else 0
+    if isinstance(reset_at, int) and not isinstance(reset_at, bool) and 0 < reset_at <= len(raw_history):
+        raw_history = raw_history[reset_at:]
+
+    def _is_aborted(entry: dict[str, Any]) -> bool:
+        res = entry.get("result")
+        return res == "aborted" or (isinstance(res, dict) and bool(res.get("aborted")))
+
+    # Ignore infrastructure-aborted attempts and collapse any corrupted duplicate entries with the same iteration number
+    # (keeping the resolved entry over a stale pending duplicate).
+    history: list[dict[str, Any]] = []
+    seen_iter_pos: dict[int, int] = {}
+    for entry in raw_history:
+        if not isinstance(entry, dict) or _is_aborted(entry):
+            continue
+        it = entry.get("iteration")
+        if isinstance(it, int) and not isinstance(it, bool):
+            if it in seen_iter_pos:
+                prev = history[seen_iter_pos[it]]
+                if prev.get("result") in ("pending", None) and isinstance(entry.get("result"), dict):
+                    history[seen_iter_pos[it]] = entry
+                continue
+            seen_iter_pos[it] = len(history)
+        history.append(entry)
+
+    completed_trials = [t for t in history if t.get("result") not in ("pending", None)]
     
     if not completed_trials and not history:
         return {
@@ -609,8 +740,11 @@ def analyze_debug_loop_convergence(
 
     # 3. Check for Oscillation / Ping-Pong loops (Hypotheses, actions, or diff hashes)
     hypotheses = [
-        (t.get("hypothesis") or "").strip().lower()
-        for t in history
+        (
+            t.get("iteration") if isinstance(t.get("iteration"), int) and not isinstance(t.get("iteration"), bool) else pos,
+            (t.get("hypothesis") or "").strip().lower(),
+        )
+        for pos, t in enumerate(history, 1)
         if t.get("hypothesis")
     ]
     diff_hashes = [
@@ -622,11 +756,15 @@ def analyze_debug_loop_convergence(
     oscillation_detected = False
     oscillation_detail = ""
     if len(hypotheses) >= 2:
-        latest_hyp = hypotheses[-1]
-        for idx, prev_h in enumerate(hypotheses[:-1], 1):
-            if latest_hyp and len(latest_hyp) > 10 and (latest_hyp == prev_h or latest_hyp in prev_h or prev_h in latest_hyp):
+        latest_iter, latest_hyp = hypotheses[-1]
+        for prev_iter, prev_h in hypotheses[:-1]:
+            if not latest_hyp or len(latest_hyp) <= 10:
+                continue
+            shorter, longer = (latest_hyp, prev_h) if len(latest_hyp) <= len(prev_h) else (prev_h, latest_hyp)
+            similar = latest_hyp == prev_h or (shorter in longer and len(shorter) >= 0.75 * len(longer))
+            if similar:
                 oscillation_detected = True
-                oscillation_detail = f"Attempt #{len(hypotheses)} repeated hypothesis from Attempt #{idx}"
+                oscillation_detail = f"Attempt #{latest_iter} repeated hypothesis from Attempt #{prev_iter}"
                 break
 
     if not oscillation_detected and len(diff_hashes) >= 3:
@@ -731,6 +869,10 @@ def append_log(name: str, content: str) -> Path:
 
 def is_disk_full_error(text: str) -> bool:
     """Checks if the given text contains common 'disk full' error indicators."""
+    from orchestrator.disk_space import is_disk_error
+
+    if is_disk_error(text):
+        return True
     patterns = [
         r"No space left on device",
         r"ENOSPC",
@@ -821,31 +963,177 @@ def get_repo_state() -> dict[str, list[str]]:
         return {"modified": modified, "untracked": untracked}
     except: return {"modified": [], "untracked": []}
 
+def dirty_file_hashes(root: Path | None = None) -> dict[str, str]:
+    """Every modified or untracked file in the working tree with a hash of its contents. Comparing two of these shows what
+    a builder changed, including edits to files that were already uncommitted before it ran (which git status alone misses)."""
+    import hashlib
+    base = Path(root or ROOT)
+    out: dict[str, str] = {}
+    try:
+        listing = subprocess.check_output(["git", "status", "--porcelain", "-uall", "-z"], cwd=str(base)).decode("utf-8", "replace")
+    except Exception:
+        return out
+    entries = listing.split("\0")
+    i = 0
+    while i < len(entries):
+        entry = entries[i]
+        i += 1
+        if len(entry) < 4:
+            continue
+        status, rel = entry[:2], entry[3:]
+        if status[0] in "RC":
+            i += 1  # a rename or copy is followed by its old path
+        path = base / rel
+        try:
+            out[rel] = hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else "deleted" if not path.exists() else _directory_marker(base, rel)
+        except OSError:
+            out[rel] = "unreadable"
+    return out
+
+
+def _directory_marker(base: Path, rel: str) -> str:
+    """What stands in for a directory in a `dirty_file_hashes` snapshot. A submodule is a directory git tracks by commit, so
+    moving its pointer (staged) or its checkout must show; a plain directory (an untracked folder) stays "dir"."""
+    def git(*args: str, cwd: Path = base) -> str:
+        try:
+            return subprocess.check_output(["git", *args], cwd=str(cwd), stderr=subprocess.DEVNULL).decode("utf-8", "replace").strip()
+        except Exception:
+            return ""
+    staged = git("ls-files", "-s", "--", rel).split()  # "160000 <sha> 0 <path>" for a submodule
+    if not staged or staged[0] != "160000":
+        return "dir"
+    return f"submodule:{staged[1]}:{git('rev-parse', 'HEAD', cwd=base / rel)}"
+
+
+PROJECT_CONFIG_FILE = ".orchestrator/project.json"
+
+
+def project_config_hash(root: Path | None = None) -> str:
+    """A hash of the project's orchestrator config. `.orchestrator/` is tool state, never swept into a commit, yet a fix that
+    only edits this file (a test command) is still a change the builder made."""
+    import hashlib
+    try:
+        return hashlib.sha256((Path(root or ROOT) / PROJECT_CONFIG_FILE).read_bytes()).hexdigest()
+    except OSError:
+        return ""
+
+
+def files_changed_between(before: dict[str, str], after: dict[str, str]) -> list[str]:
+    """Paths that appeared, changed, or went back to their committed state between two `dirty_file_hashes` snapshots."""
+    return sorted(p for p in set(before) | set(after) if before.get(p) != after.get(p))
+
+
+# Branches Orchestrator creates for jobs: `ai/issue-<n>-…` with GitHub, `ai/job-<ref>-…` with plain git. Only these
+# are deleted when a job is merged or discarded; a branch you named yourself is kept.
+AI_BRANCH_PREFIXES = ("ai/issue-", "ai/job-")
+
+
+def is_ai_branch(branch: str | None) -> bool:
+    return bool(branch) and branch.startswith(AI_BRANCH_PREFIXES)
+
+
+def merge_branch_locally(branch: str, base: str, message: str) -> tuple[bool, str]:
+    """Merge `branch` into `base` in this repository (plain git's Merge & complete). Never pushes.
+    Refuses with uncommitted changes, and leaves the repository as it was when the merge conflicts."""
+    git = lambda *args: subprocess.run(["git", *args], cwd=str(ROOT), capture_output=True, text=True)  # noqa: E731
+    if git("status", "--porcelain").stdout.strip():
+        return False, "There are uncommitted changes in the project. Commit or stash them, then merge again."
+    if git("rev-parse", "--verify", "--quiet", f"refs/heads/{branch}").returncode != 0:
+        return False, f"The branch {branch} isn't in this repository."
+    start = git("rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+    switched = git("checkout", base)
+    if switched.returncode != 0:
+        return False, f"Couldn't switch to {base}: {(switched.stderr or '').strip()}"
+    merged = git("merge", "--no-ff", "-m", message, branch)
+    if merged.returncode != 0:
+        git("merge", "--abort")
+        if start and start != base:
+            git("checkout", start)
+        return False, f"{branch} doesn't merge cleanly into {base} (conflicts). Nothing was changed; resolve it by hand or ask the job to rebase."
+    return True, f"Merged {branch} into {base} on this computer. Push {base} when you're ready: git push origin {base}"
+
+
 def gh_json(*args: str) -> Any:
     return json.loads(run(["gh", *args], cwd=ROOT).stdout)
 
 def gh_text(*args: str) -> str:
     return run(["gh", *args], cwd=ROOT).stdout.strip()
 
-def gh_comment(issue_number: int, body: str) -> None:
-    if not shutil.which("gh"): return
+def gh_comment(issue_number: int | None, body: str) -> None:
+    if not issue_number or not shutil.which("gh"): return  # plain-git jobs have no issue
     run(["gh", "issue", "comment", str(issue_number), "--body", body], cwd=ROOT, check=False)
 
-def update_issue_status(issue_number: int, labels_to_add: str | list[str], labels_to_remove: str | list[str] | None = None) -> None:
-    if not shutil.which("gh"): return
-    
+# The labels Orchestrator puts on a job's issue, by family: (colour, what the family means). A repository that has never had a
+# job lacks them, and GitHub refuses to add a label that doesn't exist.
+LABEL_STYLE = {
+    "status": ("fbca04", "Where an Orchestrator job is"),
+    "job": ("5319e7", "The kind of Orchestrator job"),
+    "source": ("ededed", "Where an Orchestrator job came from"),
+}
+_LABEL_NOT_FOUND = re.compile(r"'([^']+)' not found")
+_labels_ensured: set[str] = set()   # this repository's labels known to exist, so each is checked once per process
+_label_warned: set[str] = set()
+
+
+def missing_label(text: str) -> str | None:
+    """The label GitHub says doesn't exist ("'status:planned' not found"), from a gh command's error text."""
+    match = _LABEL_NOT_FOUND.search(text or "")
+    return match.group(1) if match else None
+
+
+def ensure_labels(names: str | list[str]) -> list[str]:
+    """Create any of these labels the repository lacks, and return the ones that could not be created (no permission, no
+    network). An existing label is never touched, so a colour someone chose stays. Each label is checked once per process."""
+    if isinstance(names, str):
+        names = [names]
+    failed: list[str] = []
+    gh = shutil.which("gh")
+    for name in dict.fromkeys(n for n in names if n):
+        if name in _labels_ensured:
+            continue
+        if not gh:
+            failed.append(name)
+            continue
+        color, description = LABEL_STYLE.get(name.split(":", 1)[0], ("ededed", "Orchestrator"))
+        res = subprocess.run([gh, "label", "create", name, "--color", color, "--description", description],
+                             cwd=str(ROOT), capture_output=True, text=True, check=False)
+        if res.returncode == 0 or "already exists" in f"{res.stderr}\n{res.stdout}".lower():
+            _labels_ensured.add(name)
+        else:
+            failed.append(name)
+    return failed
+
+
+def update_issue_status(issue_number: int | None, labels_to_add: str | list[str], labels_to_remove: str | list[str] | None = None) -> None:
+    if not issue_number or not shutil.which("gh"): return  # plain-git jobs have no issue
+
     cmd = ["gh", "issue", "edit", str(issue_number)]
-    
+
     if isinstance(labels_to_add, str): labels_to_add = [labels_to_add]
     for l in labels_to_add:
         cmd.extend(["--add-label", l])
-        
+
     if labels_to_remove:
         if isinstance(labels_to_remove, str): labels_to_remove = [labels_to_remove]
         for l in labels_to_remove:
             cmd.extend(["--remove-label", l])
-            
-    run(cmd, cwd=ROOT, check=False)
+
+    # A label the repository doesn't have yet is created and the edit retried, instead of failing every status update for the
+    # life of the job. Quiet unless it still fails: then the error is shown once per label, not on every update.
+    for _ in range(len(set(labels_to_add) | set(labels_to_remove or [])) + 1):
+        res = subprocess.run(cmd, cwd=str(ROOT), capture_output=True, text=True, check=False)
+        if res.returncode == 0:
+            return
+        missing = missing_label(f"{res.stderr}\n{res.stdout}")
+        if missing and missing not in _labels_ensured and not ensure_labels(missing):
+            continue
+        key = missing or f"#{issue_number}"
+        if key not in _label_warned:
+            _label_warned.add(key)
+            _print_completed_process(res)
+            if missing:
+                print(f"      - Couldn't create the '{missing}' label on GitHub (it needs permission to manage labels), so the issue's status isn't shown there.", flush=True)
+        return
 
 
 def get_repo_github_base_url() -> str | None:
@@ -1053,16 +1341,69 @@ def _print_completed_process(result: subprocess.CompletedProcess) -> None:
 
 def run(cmd: list[str], cwd: Path | None = None, check: bool = True, capture: bool = True, env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
     full_env = os.environ.copy()
+    if cmd and Path(cmd[0]).name == "git":
+        full_env.setdefault("GIT_TERMINAL_PROMPT", "0")
+        full_env.setdefault("GCM_INTERACTIVE", "never")
     if env: full_env.update(env)
     res = subprocess.run(cmd, cwd=str(cwd or ROOT), capture_output=capture, text=True, check=False, env=full_env)
     if capture: _print_completed_process(res)
     if check and res.returncode != 0: raise subprocess.CalledProcessError(res.returncode, cmd, res.stdout, res.stderr)
     return res
 
-def run_shell(cmd: str, cwd: Path | None = None, check: bool = True, capture: bool = True, env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
+TIMEOUT_EXIT_CODE = 124  # what timeout(1) exits with
+STOP_GRACE_SECONDS = 10
+
+
+def _run_with_timeout(cmd: str, cwd: Path, capture: bool, env: dict[str, str], timeout: int) -> subprocess.CompletedProcess:
+    """Run a shell command, and if it is still going after `timeout` seconds stop it and everything it started (a Unity
+    or xcodebuild run has helper processes): politely first, then for good. The result has `timed_out` set."""
+    import signal
+    pipe = subprocess.PIPE if capture else None
+    process = subprocess.Popen(cmd, cwd=str(cwd), shell=True, executable="/bin/bash", stdout=pipe, stderr=pipe, text=True,
+                               errors="replace", env=env, start_new_session=True)
+    timed_out = False
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        stdout = stderr = None
+        for sig, wait in ((signal.SIGTERM, STOP_GRACE_SECONDS), (signal.SIGKILL, None)):
+            try:
+                os.killpg(process.pid, sig)
+            except ProcessLookupError:
+                break
+            try:
+                stdout, stderr = process.communicate(timeout=wait)
+                break
+            except subprocess.TimeoutExpired:
+                continue
+    result = subprocess.CompletedProcess(cmd, TIMEOUT_EXIT_CODE if timed_out else process.returncode, stdout or "", stderr or "")
+    result.timed_out = timed_out  # type: ignore[attr-defined]
+    return result
+
+
+def timeout_note(timeout: int) -> str:
+    minutes = timeout / 60
+    span = f"{timeout} seconds" if timeout < 60 else f"{int(minutes) if minutes == int(minutes) else round(minutes, 1)} minutes"
+    return f"Stopped after {span} without finishing, so it was ended."
+
+
+def run_shell(cmd: str, cwd: Path | None = None, check: bool = True, capture: bool = True, env: dict[str, str] | None = None,
+              timeout: int | None = None) -> subprocess.CompletedProcess:
+    """Run a shell command. With `timeout` (seconds) a command that doesn't finish is stopped, and the result's
+    `returncode` is 124 and `timed_out` is True; without it the command may run as long as it likes."""
     full_env = os.environ.copy()
     if env: full_env.update(env)
-    res = subprocess.run(cmd, cwd=str(cwd or ROOT), shell=True, executable="/bin/bash", capture_output=capture, text=True, check=False, env=full_env)
+    if timeout:
+        res = _run_with_timeout(cmd, cwd or ROOT, capture, full_env, int(timeout))
+        if res.timed_out:
+            note = timeout_note(int(timeout))
+            if capture:
+                res.stderr = (res.stderr + "\n" if res.stderr else "") + note
+            else:
+                print(f"\n{note}", file=sys.stderr, flush=True)
+    else:
+        res = subprocess.run(cmd, cwd=str(cwd or ROOT), shell=True, executable="/bin/bash", capture_output=capture, text=True, check=False, env=full_env)
     
     if capture: _print_completed_process(res)
 
@@ -1101,6 +1442,8 @@ def _split_option_description(option: str) -> tuple[str, str | None]:
     return title, "; ".join(descriptions)
 
 def prompt_radio(label: str, options: list[str], default: str | None = None, clear_screen: bool = True, status_bar: StatusBar | None = None, description: str | list[str] | None = None) -> str:
+    if web_run():  # nobody to choose: the default, as pressing Enter would
+        return default if default in options else (options[0] if options else "")
     """Displays interactive radio buttons navigated by arrow keys."""
     if not sys.stdin.isatty():
         return default or options[0]
@@ -1227,6 +1570,8 @@ def prompt_radio(label: str, options: list[str], default: str | None = None, cle
     return options[idx]
 
 def prompt_confirm(question: str, default: bool = True, description: str | list[str] | None = None, clear_screen: bool = True) -> bool:
+    if web_run():
+        return default
     """Displays interactive yes/no radio buttons."""
     # Defensive logic for reported UI duplication
     if question.startswith("Would you Would you"):
@@ -1238,6 +1583,8 @@ def prompt_confirm(question: str, default: bool = True, description: str | list[
     return choice == "yes"
 
 def prompt_multiline(prompt: str) -> str:
+    if web_run():
+        no_terminal_answer(prompt)
     flush_stdin()
     title, desc = split_title_description(prompt)
     print_header(title)
@@ -1311,6 +1658,8 @@ def print_wrapped_option(option_str: str, indent_size: int = 4, subsequent_inden
         print(f"{ind}{line}")
 
 def prompt_password(label: str, placeholder: str = "(enter to skip)") -> str:
+    if web_run():
+        return ""
     """Interactive password input that shows asterisks instead of clear text."""
     if not sys.stdin.isatty():
         return ""
@@ -1383,6 +1732,10 @@ def prompt_password(label: str, placeholder: str = "(enter to skip)") -> str:
         sys.stdout.flush()
 
 def prompt_input(label: str, placeholder: str = "", default: str = "", allow_back: bool = False, field_below: bool = False, q_msg: str | None = None) -> str:
+    if web_run():
+        if default:
+            return default
+        no_terminal_answer(label)
     """Interactive text input with styling, backspace handling, and back-out support."""
     if not sys.stdin.isatty():
         return default
@@ -1620,6 +1973,8 @@ def _build_checkbox_hint(allow_bulk_select: bool, extra_keys: list[str], has_fre
     return f"\033[1;90m({', '.join(parts)})\033[0m"
 
 def prompt_checkbox(label: str, options: list[str], defaults: list[str] | None = None, extra_keys: list[str] | None = None, footer: str | None = None, details_map: dict[str, list[str]] | None = None, status_bar: StatusBar | None = None, clear_screen: bool = True, max_selections: int | None = None, footer_actions: list[str] | None = None, details_title: str | None = None, allow_bulk_select: bool = True) -> list[str]:
+    if web_run():  # nobody to choose: what's pre-selected, as confirming would
+        return [o for o in options if o in (defaults or [])]
     """Displays interactive checkboxes navigated by arrow keys, toggled by space (vertical)."""
     if not sys.stdin.isatty():
         return defaults or []
@@ -1867,6 +2222,12 @@ def extract_commands() -> tuple[str, str]:
 
     default_build = PROJECT_CONFIG.build_command or default_xcode_command("build")
     default_test = PROJECT_CONFIG.test_command or default_xcode_command("test")
+    if not default_build or not default_test:
+        from orchestrator.stack_detection import detect_project_stack
+
+        stack = detect_project_stack(ROOT)
+        default_build = default_build or stack.build_command
+        default_test = default_test or stack.test_command
 
     build = default_build
     test = default_test
@@ -2631,6 +2992,17 @@ def print_subtitle(text: str, hint: bool = False) -> None:
 def print_phase(phase: str, subtext: str | None = None):
     p_map = {
         "planning": ("🧠", "PLANNING"),
+        "spec_synthesis": ("📋", "SPEC SYNTHESIS"),
+        "risk_assessment": ("⚖️", "RISK ASSESSMENT"),
+        "intent_gate": ("🚦", "INTENT GATE"),
+        "execution_planning": ("🗺️", "EXECUTION PLANNING"),
+        "plan_gate": ("🛡️", "PLAN GATE"),
+        "replanning": ("🔄", "REPLANNING"),
+        "previewing": ("🎮", "PREVIEWING"),
+        "analyzing_feedback": ("🔍", "ANALYZING FEEDBACK"),
+        "refining": ("✨", "REFINING"),
+        "refactoring": ("🧹", "REFACTORING"),
+        "reverting": ("⏪", "REVERTING"),
         "scheduling": ("📡", "SCHEDULING"),
         "execution": ("🏗️", "EXECUTION"),
         "verification": ("🧪", "VERIFICATION"),
@@ -3295,3 +3667,67 @@ def format_markdown_for_terminal(text: str) -> str:
             formatted_lines.append(f"  {formatted_wl}")
             
     return "\n".join(formatted_lines)
+
+
+_CLARIFICATION_FILLER = frozenset({
+    "none", "null", "nil", "n/a", "na", "no", "nothing",
+    "no clarification needed", "no questions", "no question",
+    "none needed", "not applicable", "false",
+})
+
+_CLARIFICATION_BLOCKING_MARKERS = (
+    "workspace write access",
+    "without write access",
+    "read-only filesystem",
+    "read-only file system",
+    "read-only sandbox",
+    "sandbox prevents",
+    "cannot write to",
+    "permission denied",
+    "missing api key",
+    "invalid api key",
+    "oauth access token has expired",
+    "failed to authenticate",
+    "not logged in",
+    "command not found",
+    "not installed",
+)
+
+_CLARIFICATION_QUESTION_CUES = (
+    "please confirm",
+    "please clarify",
+    "please specify",
+    "please choose",
+    "please provide",
+    "should i ",
+    "should we ",
+    "would you like",
+    "do you want",
+    "do you prefer",
+    "need your input",
+    "let me know",
+)
+
+
+def classify_clarification(raw: Any) -> tuple[str, str]:
+    """Categorize a model's `clarification_needed` string into ('ignore' | 'blocking' | 'question', text).
+
+    - 'ignore': empty, filler ('none', 'N/A'), or advisory note without an actual question -> keep going.
+    - 'blocking': environment/sandbox/auth/tool blocker -> fail with RuntimeError instead of asking the user.
+    - 'question': real question or decision request for the user -> pause and prompt.
+    """
+    if not isinstance(raw, str):
+        text = str(raw).strip() if raw is not None and raw is not False else ""
+    else:
+        text = raw.strip()
+    if not text:
+        return "ignore", ""
+    low = text.lower()
+    normalized = low.rstrip(".! ")
+    if normalized in _CLARIFICATION_FILLER:
+        return "ignore", ""
+    if any(marker in low for marker in _CLARIFICATION_BLOCKING_MARKERS):
+        return "blocking", text
+    if "?" in text or re.search(r"\bwhich\b", low) or any(cue in low for cue in _CLARIFICATION_QUESTION_CUES):
+        return "question", text
+    return "ignore", text

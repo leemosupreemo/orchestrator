@@ -3,16 +3,22 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
+import secrets
 import sys
 from pathlib import Path
 
 from common import (
+    ensure_labels,
+    interactive,
+    web_run,
     ROOT,
     PROMPTS_DIR,
     gh_text,
     make_job_paths,
     now_iso,
+    read_json,
     prompt_multiline,
     prompt_radio,
     print_phase,
@@ -24,32 +30,44 @@ from common import (
     prompt_confirm,
     flush_stdin,
     StatusBar,
+    format_clarification_history,
+    auto_answer,
+    can_autorespond,
 )
-from llm import run_llm, SUPPORTED_MODELS, DEFAULT_FALLBACKS, extract_json_block
-from model_router import ModelRole, get_prioritized_models
+from llm import run_llm, SUPPORTED_MODELS, DEFAULT_FALLBACKS, extract_json_block, free_only_testing
+from model_router import AUTO, ModelRole, auto_assign_roles, get_prioritized_models, profile_job
 from model_registry import get_model, ModelTier
 from probe_machine import load_machines
+from orchestrator.run_check import models_machines_can_run
 from manual_run import capture_logs
+import test_cases as tc
+from orchestrator.project_config import PROJECT_CONFIG
+from orchestrator import architecture, prd, project_docs
+from orchestrator import living_spec, new_job_form, plan_edit, risk_engine
+from orchestrator import model_outcomes, plan_size, slice_check
 
 SCRIPTS_DIR = Path(__file__).resolve().parent
-
-DEFAULTS = {
-    "bug": {"planner": "gemini", "builder": "codex", "reviewer": "gemini"},
-    "feature": {"planner": "gemini", "builder": "codex", "reviewer": "gemini"},
-    "coverage": {"planner": "gemini", "builder": "codex", "reviewer": "gemini"},
-    "quick": {"planner": "gemini-3-flash-preview", "builder": "codex", "reviewer": "gemini-3.1-flash-lite-preview"},
-}
 
 PRESETS = {
     "balanced": {"planner": "gemini", "builder": "codex", "reviewer": "gemini"},
     "hard-bug": {"planner": "gemini", "builder": "claude-opus-4-7", "reviewer": "gemini"},
     "architecture": {"planner": "claude-opus-4-7", "builder": "claude-opus-4-7", "reviewer": "gemini"},
     "fast": {"planner": "gemini-3-flash-preview", "builder": "codex", "reviewer": "gemini-3.1-flash-lite-preview"},
-    "free": {"planner": "opencode/qwen-3.7-max", "builder": "qwen2.5-coder", "reviewer": "opencode/big-pickle"},
+    "free": {"planner": "copilot", "builder": "qwen2.5-coder", "reviewer": "deepseek"},
 }
 
 BRANCH_MODE_CHOICES = ["new", "current", "manual"]
 VERIFICATION_STATUSES = {"approved", "rejected", "concerns"}
+
+
+def team_role_settings() -> dict[str, str]:
+    """The AI tools page's role choices (settings "default_models"); a missing or "auto" role is picked per job."""
+    try:
+        from common import CONFIG_DIR
+        saved = read_json(CONFIG_DIR / "settings.json").get("default_models") if (CONFIG_DIR / "settings.json").exists() else {}
+    except Exception:
+        saved = {}
+    return {role: str(model) for role, model in (saved or {}).items() if isinstance(saved, dict) and model and model != AUTO}
 
 
 def normalize_branch_mode(branch_mode: str | None) -> str:
@@ -86,15 +104,42 @@ def create_issue(title: str, body: str, labels: list[str]) -> int:
             match = re.search(r"could not add label:\s*'([^']+)'\s*not found", stderr)
             if match and labels:
                 missing_label = match.group(1)
-                print(f"⚠️  could not add label: '{missing_label}' not found on repository. Retrying without this label...")
                 if missing_label in labels:
+                    if not ensure_labels(missing_label):  # created it: try again with the label
+                        continue
+                    print(f"⚠️  could not add label: '{missing_label}' not found on repository and it couldn't be created. Retrying without this label...")
                     labels.remove(missing_label)
                     continue
             raise
 
 
 
-def normalize_verification(payload: dict, verifier_model: str) -> dict | None:
+def file_job(title: str, body: str, labels: list[str]) -> tuple[int | None, str]:
+    """Record a new job where the project tracks work: (issue number, the reference that names the job).
+
+    With GitHub (`code_host`), the job is a GitHub issue and its number names the job, its branch and its test cases.
+    With plain git there is no issue: a short random reference names them instead."""
+    if PROJECT_CONFIG.uses_github:
+        print(f"      - Creating GitHub issue: {title}...", flush=True)
+        number = create_issue(title, body, labels)
+        return number, str(number)
+    return None, secrets.token_hex(3)
+
+
+def _list_items(val: Any) -> list[str]:
+    if isinstance(val, list):
+        return [str(x) for x in val if x is not None]
+    if isinstance(val, str) and val.strip():
+        return [val.strip()]
+    return []
+
+
+def normalize_verification(payload: Any, verifier_model: str) -> dict | None:
+    if not isinstance(payload, dict):
+        if isinstance(payload, list) and len(payload) > 0 and isinstance(payload[0], dict):
+            payload = payload[0]
+        else:
+            return None
     status = str(payload.get("status", "")).lower()
     comments = payload.get("comments")
     if status not in VERIFICATION_STATUSES or not isinstance(comments, str):
@@ -108,6 +153,89 @@ def normalize_verification(payload: dict, verifier_model: str) -> dict | None:
     }
 
 
+def normalize_plan_dict(
+    plan: Any,
+    default_title: str = "",
+    default_summary: str = "",
+    job_type: str = "",
+) -> dict:
+    """Ensures plan is a dictionary even if the model returned an array or wrapper."""
+    if not default_title:
+        if job_type == "coverage":
+            default_title = "[Tests] Expand test coverage"
+        elif job_type == "bug":
+            default_title = "[Bug] Fix issue"
+        elif job_type == "design":
+            default_title = "[Design] New design"
+        elif job_type:
+            default_title = f"[{job_type.capitalize()}] New {job_type}"
+        else:
+            default_title = "New Job"
+
+    if isinstance(plan, list):
+        # 1. Check if an item in the list is the plan dictionary
+        plan_dict = next(
+            (item for item in plan if isinstance(item, dict) and any(k in item for k in (
+                "title", "summary", "audit_goals", "tasks", "target_subsystems", "complexity", "test_cases"
+            ))),
+            None,
+        )
+        if plan_dict:
+            plan = plan_dict
+        elif len(plan) == 1 and isinstance(plan[0], dict):
+            plan = plan[0]
+        elif all(isinstance(x, dict) for x in plan):
+            if any("task_id" in x or "description" in x for x in plan):
+                plan = {
+                    "title": default_title,
+                    "summary": default_summary or "Tasks",
+                    "tasks": plan,
+                    "recommended_job_type": "test-audit" if job_type == "coverage" else "feature-plan",
+                }
+            elif any("covers" in x or "expected" in x for x in plan):
+                plan = {
+                    "title": default_title,
+                    "summary": default_summary or "Expand test coverage",
+                    "test_cases": plan,
+                    "audit_goals": [x.get("title", "") for x in plan if x.get("title")],
+                    "recommended_job_type": "test-audit",
+                }
+            else:
+                plan = {
+                    "title": default_title,
+                    "summary": default_summary or "Generated plan",
+                    "tasks": plan,
+                    "recommended_job_type": "test-audit" if job_type == "coverage" else "feature-plan",
+                }
+        elif all(isinstance(x, str) for x in plan):
+            plan = {
+                "title": default_title,
+                "summary": "\n".join(plan),
+                "audit_goals": plan,
+                "recommended_job_type": "test-audit" if job_type == "coverage" else "feature-plan",
+            }
+        else:
+            plan = {
+                "title": default_title,
+                "summary": str(plan),
+                "recommended_job_type": "test-audit" if job_type == "coverage" else "feature-plan",
+            }
+    elif not isinstance(plan, dict):
+        plan = {
+            "title": default_title,
+            "summary": str(plan),
+            "recommended_job_type": "test-audit" if job_type == "coverage" else "feature-plan",
+        }
+
+    if not plan.get("title"):
+        plan["title"] = default_title
+    if default_summary and not plan.get("summary"):
+        plan["summary"] = default_summary
+    if job_type == "coverage" and not plan.get("recommended_job_type"):
+        plan["recommended_job_type"] = "test-audit"
+    return plan
+
+
 def issue_payload_for_job(
     requested_job_type: str,
     plan: dict,
@@ -117,15 +245,15 @@ def issue_payload_for_job(
     yolo: bool = False,
 ) -> tuple[str, str, list[str], str, str]:
     if requested_job_type == "bug":
-        title = plan["title"]
+        title = plan.get("title") or "[Bug] Fix issue"
         body = build_bug_issue_body(plan, verification, yolo)
         labels = ["job:bug", "source:manual", "status:planned"]
         if clarification:
             labels = ["job:bug", "source:manual", "status:human-needed"]
-        return title, body, labels, "bug", plan["recommended_job_type"]
+        return title, body, labels, "bug", plan.get("recommended_job_type") or "bug-fix"
 
     if requested_job_type == "coverage":
-        title = plan["title"]
+        title = plan.get("title") or "[Tests] Expand test coverage"
         body = build_coverage_issue_body(plan, verification, yolo)
         labels = ["job:coverage", "status:planned"]
         if clarification:
@@ -133,25 +261,25 @@ def issue_payload_for_job(
         return title, body, labels, "coverage", "test-audit"
 
     if requested_job_type == "design" or stitch:
-        title = plan["title"]
+        title = plan.get("title") or "[Design] New design"
         body = build_design_issue_body(plan, verification, yolo)
         labels = ["job:design", "status:designing"]
         if clarification:
             labels = ["job:design", "status:human-needed"]
         return title, body, labels, "design", "feature-design"
 
-    title = plan["title"]
+    title = plan.get("title") or "[Feature] New feature"
     body = build_feature_issue_body(plan, verification, yolo)
     labels = ["job:feature", "status:planned"]
     if clarification:
         labels = ["job:feature", "status:human-needed"]
-    return title, body, labels, "feature", "feature-plan"
+    return title, body, labels, "feature", plan.get("recommended_job_type") or "feature-plan"
 
 
 def build_bug_issue_body(plan: dict, verification: dict | None = None, yolo: bool = False) -> str:
     yolo_status = "✅ ON (Automated)" if yolo else "❌ OFF (Manual Step Mode)"
     lines = [
-        f"## Summary\n{plan['summary']}",
+        f"## Summary\n{plan.get('summary', '')}",
         "",
         "## Metadata",
         f"- **YOLO Mode**: {yolo_status}",
@@ -159,21 +287,21 @@ def build_bug_issue_body(plan: dict, verification: dict | None = None, yolo: boo
         f"- **Recommended Job Type**: {plan.get('recommended_job_type', 'bug-fix')}",
         "",
         "## Repro Steps",
-        *[f"- {x}" for x in plan["repro_steps"]],
+        *[f"- {x}" for x in _list_items(plan.get("repro_steps"))],
         "",
-        f"## Expected Behavior\n{plan['expected_behavior']}",
+        f"## Expected Behavior\n{plan.get('expected_behavior', '')}",
         "",
         "## Acceptance Criteria",
-        *[f"- {x}" for x in plan["acceptance_criteria"]],
+        *[f"- {x}" for x in _list_items(plan.get("acceptance_criteria"))],
         "",
         "## Constraints",
-        *[f"- {x}" for x in plan["constraints"]],
+        *[f"- {x}" for x in _list_items(plan.get("constraints"))],
         "",
         "## Likely Files",
-        *[f"- {x}" for x in plan["likely_files"]],
+        *[f"- {x}" for x in _list_items(plan.get("likely_files"))],
         "",
         "## Test Recommendations",
-        *[f"- {x}" for x in plan["test_recommendations"]],
+        *[f"- {x}" for x in _list_items(plan.get("test_recommendations"))],
     ]
 
     if verification:
@@ -195,39 +323,44 @@ def build_bug_issue_body(plan: dict, verification: dict | None = None, yolo: boo
 def build_feature_issue_body(plan: dict, verification: dict | None = None, yolo: bool = False) -> str:
     yolo_status = "✅ ON (Automated)" if yolo else "❌ OFF (Manual Step Mode)"
     lines = [
-        f"## Summary\n{plan['summary']}",
+        f"## Summary\n{plan.get('summary', '')}",
         "",
         "## Metadata",
         f"- **YOLO Mode**: {yolo_status}",
         "",
         "## Assumptions",
-        *[f"- {x}" for x in plan["assumptions"]],
+        *[f"- {x}" for x in _list_items(plan.get("assumptions"))],
         "",
         "## Constraints",
-        *[f"- {x}" for x in plan["constraints"]],
+        *[f"- {x}" for x in _list_items(plan.get("constraints"))],
         "",
         "## Risks",
-        *[f"- {x}" for x in plan["risks"]],
+        *[f"- {x}" for x in _list_items(plan.get("risks"))],
         "",
         "## Task Breakdown",
     ]
-    for i, task in enumerate(plan["tasks"], start=1):
-        lines.extend([
-            f"",
-            f"### Task {i}: {task['title']}",
-            task["description"],
-            "",
-            "Acceptance Criteria:",
-            *[f"- {x}" for x in task["acceptance_criteria"]],
-            "",
-            "Likely Files:",
-            *[f"- {x}" for x in task["likely_files"]],
-            "",
-            "Tests:",
-            *[f"- {x}" for x in task["tests"]],
-            "",
-            f"Complexity: {task['complexity']}",
-        ])
+    tasks = plan.get("tasks")
+    if isinstance(tasks, list):
+        for i, task in enumerate(tasks, start=1):
+            if isinstance(task, dict):
+                lines.extend([
+                    f"",
+                    f"### Task {i}: {task.get('title', f'Task {i}')}",
+                    str(task.get("description", "")),
+                    "",
+                    "Acceptance Criteria:",
+                    *[f"- {x}" for x in _list_items(task.get("acceptance_criteria"))],
+                    "",
+                    "Likely Files:",
+                    *[f"- {x}" for x in _list_items(task.get("likely_files"))],
+                    "",
+                    "Tests:",
+                    *[f"- {x}" for x in _list_items(task.get("tests"))],
+                    "",
+                    f"Complexity: {task.get('complexity', 'medium')}",
+                ])
+            else:
+                lines.extend([f"", f"### Task {i}: {task}"])
         
     if verification:
         lines.extend([
@@ -255,19 +388,19 @@ def build_coverage_issue_body(plan: dict, verification: dict | None = None, yolo
         f"- **Complexity**: {plan.get('complexity', 'simple')}",
         "",
         "## Audit Goals",
-        *[f"- {x}" for x in plan.get("audit_goals", [])],
+        *[f"- {x}" for x in _list_items(plan.get("audit_goals"))],
         "",
         "## Target Subsystems",
-        *[f"- {x}" for x in plan.get("target_subsystems", [])],
+        *[f"- {x}" for x in _list_items(plan.get("target_subsystems"))],
         "",
         "## Expected Test Files",
-        *[f"- {x}" for x in plan.get("expected_test_files", [])],
+        *[f"- {x}" for x in _list_items(plan.get("expected_test_files"))],
         "",
         "## Acceptance Criteria",
-        *[f"- {x}" for x in plan.get("acceptance_criteria", [])],
+        *[f"- {x}" for x in _list_items(plan.get("acceptance_criteria"))],
         "",
         "## Likely Files",
-        *[f"- {x}" for x in plan.get('likely_files', [])],
+        *[f"- {x}" for x in _list_items(plan.get('likely_files'))],
     ]
 
     if verification:
@@ -296,19 +429,19 @@ def build_design_issue_body(plan: dict, verification: dict | None = None, yolo: 
         f"- **Aesthetic Vibe**: {plan.get('vibe', 'modern')}",
         "",
         "## Design System",
-        *[f"- {x}" for x in plan.get("design_system", [])],
+        *[f"- {x}" for x in _list_items(plan.get("design_system"))],
         "",
         "## Visual Components",
-        *[f"- {x}" for x in plan.get("visual_components", [])],
+        *[f"- {x}" for x in _list_items(plan.get("visual_components"))],
         "",
         "## Interaction Flows",
-        *[f"- {x}" for x in plan.get("interaction_flows", [])],
+        *[f"- {x}" for x in _list_items(plan.get("interaction_flows"))],
         "",
         "## Acceptance Criteria (UI/UX)",
-        *[f"- {x}" for x in plan.get("acceptance_criteria", [])],
+        *[f"- {x}" for x in _list_items(plan.get("acceptance_criteria"))],
         "",
         "## Implementation Notes",
-        *[f"- {x}" for x in plan.get('implementation_notes', [])],
+        *[f"- {x}" for x in _list_items(plan.get('implementation_notes'))],
     ]
 
     if verification:
@@ -325,7 +458,60 @@ def build_design_issue_body(plan: dict, verification: dict | None = None, yolo: 
 
 def build_quick_issue_body(plan: dict, yolo: bool = False) -> str:
     yolo_status = "✅ ON (Automated)" if yolo else "❌ OFF (Manual Step Mode)"
-    return f"## Summary\n{plan['summary']}\n\n## Metadata\n- **YOLO Mode**: {yolo_status}\n\n## Instructions\n{plan['instructions']}"
+    body = f"## Summary\n{plan['summary']}\n\n## Metadata\n- **YOLO Mode**: {yolo_status}\n\n## Instructions\n{plan['instructions']}"
+    if plan.get("fast_tracked"):
+        body += "\n\n## Fast-tracked plan\n" + "\n".join(
+            f"{i}. **{t.get('title', f'Task {i}')}**" + (f": {t['description']}" if t.get("description") else "")
+            for i, t in enumerate(plan.get("tasks") or [], start=1))
+        sections = [("Acceptance Criteria", "acceptance_criteria"), ("Assumptions", "assumptions"), ("Likely Files", "likely_files")]
+        for heading, key in sections:
+            if _list_items(plan.get(key)):
+                body += f"\n\n## {heading}\n" + "\n".join(f"- {x}" for x in _list_items(plan.get(key)))
+    return body
+
+
+def fast_track_quick_plan(instructions: str, *, planner: str, allowed_models: list | None) -> tuple[dict | None, str, list[dict], str]:
+    """One planner call for a Quick change: a short plan and its test cases, with no questions, verifier or approval.
+    Returns (fields to merge into the plan, model used, llm sessions, note). Any failure returns (None, ...) so a
+    Quick job still starts from the instruction alone."""
+    template = (PROMPTS_DIR / "planner_quick.md").read_text(encoding="utf-8")
+    context = "\n".join(filter(None, [tc.PLANNER_INSTRUCTIONS, tc.library_index(ROOT), prd.context_block(ROOT),
+                                      architecture.context_block(ROOT, "planner"), project_docs.context_block(ROOT)]))
+    try:
+        raw, used, sid = run_llm(planner, f"{template}\n{context}\n\nThe person's request:\n{instructions}\n",
+                                 cwd=ROOT, allowed_models=allowed_models, role=ModelRole.PLANNER, job_type="quick")
+        found = json.loads(extract_json_block(raw), strict=False)
+    except Exception as exc:  # no plan is never a reason to stop a Quick change
+        return None, "user-prompt", [], f"Fast-track planning failed ({str(exc)[:200]}); building from the instruction alone."
+    if isinstance(found, list):
+        found = next((x for x in found if isinstance(x, dict)), {})
+    tasks = [t for t in (found.get("tasks") or []) if isinstance(t, dict) and str(t.get("title") or "").strip()][:3] \
+        if isinstance(found, dict) else []
+    if not tasks:
+        return None, used, [{"id": sid, "model": used}], "The fast-track planner returned no tasks; building from the instruction alone."
+    fields = {"tasks": tasks, "fast_tracked": True}
+    for key in ("likely_files", "acceptance_criteria", "assumptions", "test_cases"):
+        if isinstance(found.get(key), list) and found[key]:
+            fields[key] = found[key]
+    if str(found.get("summary") or "").strip():
+        fields["plan_summary"] = str(found["summary"]).strip()
+    return fields, used, [{"id": sid, "model": used}], ""
+
+
+def existing_job_raw_input(job: dict | None, fallback_feedback: str = "") -> str:
+    """Recover the saved request text when re-planning an existing job (--update) so it never re-prompts."""
+    if not isinstance(job, dict):
+        return ""
+    raw = str(job.get("raw_input") or "").strip()
+    if raw:
+        return raw
+    spec = job.get("spec") if isinstance(job.get("spec"), dict) else {}
+    plan = job.get("plan") if isinstance(job.get("plan"), dict) else {}
+    for candidate in (spec.get("intent"), plan.get("summary"), plan.get("instructions"), job.get("title"), fallback_feedback):
+        text = str(candidate or "").strip()
+        if text:
+            return text
+    return ""
 
 
 def main(args_override: list[str] | None = None) -> None:
@@ -344,10 +530,33 @@ def main(args_override: list[str] | None = None) -> None:
     parser.add_argument("--spec-file", help="Path to a file containing the feature/bug/coverage spec")
     parser.add_argument("--stitch", action="store_true", help="Enable Google Stitch AI design phase")
     parser.add_argument("--feedback", help="User feedback for design or plan revision")
+    parser.add_argument("--revision-brief-file", type=Path, help="Saved job brief for a plan revision")
     parser.add_argument("--update", help="Path to an existing job JSON to update/re-plan")
     parser.add_argument("--free", action="store_true", help="Restrict allowed models to free models only (cost_factor == 0.0)")
+    parser.add_argument("--feature", help="Put the new job under this feature (its id)")
+    parser.add_argument("--epic", help="This job plans that epic (its id): it takes the place of the epic's waiting job")
+    parser.add_argument("--replaces", help="This job plans that waiting backlog job (its id): it takes its place")
+    parser.add_argument("--freestyle", action="store_true",
+                        help="The request is in the person's own words with no job type chosen: plan it as a feature, and ask first if it's unclear")
+    # Set by "Build the plan" (orchestrator/plan_run.py): the run this job belongs to.
+    parser.add_argument("--plan-run", help=argparse.SUPPRESS)
     parser.add_argument("--summary", help="Summary or area of focus for the job (skips interactive input prompt if provided)")
+    parser.add_argument("--skip-verify", action="store_true", help="Skip the architect's plan verification (used when a person has already accepted the architect's suggestions)")
     args = parser.parse_args(args_override)
+
+    if args.revision_brief_file is not None:
+        if not args.update:
+            parser.error("A revision brief requires an existing job to update.")
+        try:
+            revised_brief = args.revision_brief_file.read_text(encoding="utf-8").strip()
+        except (OSError, UnicodeError):
+            parser.error("Could not read the saved brief for this revision.")
+        if not revised_brief:
+            parser.error("Save the brief before revising the plan.")
+        args.feedback = (
+            "Revise the plan to match the edited job brief below. Use the edited brief as the current "
+            "scope and acceptance criteria where it differs from the previous plan.\n\n" + revised_brief
+        )
 
     existing_job = None
     if args.update:
@@ -356,13 +565,20 @@ def main(args_override: list[str] | None = None) -> None:
             existing_job = read_json(job_path)
             print(f"      - Updating existing job: {existing_job.get('job_id')}")
 
-    # Define defaults for 'quick' job
-    job_type_for_defaults = args.job_type
-    if job_type_for_defaults == "design": job_type_for_defaults = "feature"
-    defaults = PRESETS[args.preset] if args.preset else DEFAULTS[job_type_for_defaults]
-    planner = args.planner or defaults["planner"]
-    builder = args.builder or defaults["builder"]
-    reviewer = args.reviewer or defaults["reviewer"]
+    # A re-plan keeps the job's own choices; only what is passed explicitly changes them.
+    # (Otherwise the first re-plan resets a free-only or restricted job to the paid defaults.)
+    saved = existing_job or {}
+    team = team_role_settings()
+
+    def chosen(role: str) -> str:
+        """Passed in, else the job's own, else a preset, else the AI tools page's choice; "auto" picks per job below."""
+        return (getattr(args, role) or saved.get(role) or (PRESETS[args.preset][role] if args.preset else "")
+                or team.get(role) or AUTO)
+
+    planner, builder, reviewer = chosen("planner"), chosen("builder"), chosen("reviewer")
+    freestyle = bool(args.freestyle or saved.get("freestyle"))  # kept through re-plans
+    yolo_enabled = bool(args.yolo or saved.get("yolo") or saved.get("is_yolo"))
+    existing_raw_input = existing_job_raw_input(existing_job, args.feedback or "")
 
     # Load spec from file or URL if provided
     file_spec_content = ""
@@ -394,21 +610,44 @@ def main(args_override: list[str] | None = None) -> None:
 
     # Model Selection
     all_models = sorted(list(SUPPORTED_MODELS))
+    from orchestrator.project_setup import models_ready_here, refresh_ready_models
+    refresh_ready_models(ROOT)  # the computer set up in the app follows the AI tools ready on it
+    args.free = args.free or free_only_testing()
     if args.free:
         from model_registry import get_free_models
-        free_models = [m.id for m in get_free_models()]
-        if free_models:
-            allowed_models = free_models
-            print(f"      - Free-models-only mode active: Restricted to {len(allowed_models)} free models: {', '.join(allowed_models)}")
-        else:
-            allowed_models = args.allowed_models.split(",") if args.allowed_models else DEFAULT_FALLBACKS
+        ready_here = set(models_ready_here(ROOT))  # installed isn't enough: a signed-out tool would only fail
+        free_models = [m.id for m in get_free_models() if m.id in ready_here]
+        if not free_models:
+            print("\n\033[1;91m⚠️  ERROR: Free models only was chosen, but no free model is set up.\033[0m")
+            print("\033[90m(Install OpenCode for free hosted models, or turn off Free models only.)\033[0m")
+            sys.exit(1)
+        allowed_models = free_models
+        print(f"      - Free-models-only mode active: Restricted to {len(allowed_models)} free models: {', '.join(allowed_models)}")
     elif args.allowed_models:
         allowed_models = args.allowed_models.split(",")
+    elif saved.get("allowed_models"):
+        allowed_models = list(saved["allowed_models"])
     else:
         footer = (
             "[\033[1;96mA\033[0m] Select All  [\033[1;92mF\033[0m] Free Only  [\033[1;93mN\033[0m] Deselect All  [\033[1;91mB\033[0m] Back"
         )
-        allowed_models = prompt_checkbox("select models", all_models, DEFAULT_FALLBACKS, footer=footer)
+        from model_registry import get_all_models, runnable_here
+        usable = [m.id for m in get_all_models() if runnable_here(m)]
+        # A model no machine has switched on would only be refused later; one this computer can't run fails the plan.
+        usable_defaults = [m for m in DEFAULT_FALLBACKS if m in usable]
+        runnable = models_machines_can_run(usable_defaults, load_machines())
+        if not runnable and not interactive():
+            if usable_defaults:
+                print("ℹ️  Planning with models ready on this computer. To schedule the job, enable one of its models on an eligible worker.")
+                runnable = usable_defaults
+            else:
+                print("\n\033[1;91m⚠️  ERROR: No AI tool or API key is ready on this computer right now.\033[0m")
+                print("\033[90m(Sign in to an AI tool under AI tools or add an API key in Settings.)\033[0m")
+                sys.exit(1)
+        if DEFAULT_FALLBACKS and not runnable:
+            print("\033[1;93m⚠️  None of the models you can use is switched on for a machine, so this job will not be able to start.\033[0m")
+            print("\033[90m(Turn a model on for a machine under Machines, then run the job again.)\033[0m")
+        allowed_models = prompt_checkbox("select models", all_models, runnable or DEFAULT_FALLBACKS, footer=footer)
     
     if not allowed_models:
         print("\n\033[1;91m⚠️  ERROR: No AI models selected.\033[0m")
@@ -416,6 +655,23 @@ def main(args_override: list[str] | None = None) -> None:
         print("\033[90m(Run with --allowed-models <ids> or select models in the interactive prompt.)\033[0m")
         sys.exit(1)
         
+    # Auto: the best usable model for each role, for this job's brief and the models it may use.
+    auto_roles = [role for role, value in (("planner", planner), ("builder", builder), ("reviewer", reviewer)) if value == AUTO]
+    auto_assignment = None
+    if auto_roles:
+        profile = profile_job(args.job_type, f"{args.summary or existing_raw_input}\n{file_spec_content}")
+        picks = auto_assign_roles(allowed_models, profile)
+        if not picks and args.free:
+            print("\n\033[1;91m⚠️  ERROR: None of the free models can run on this computer right now.\033[0m")
+            print("\033[90m(Install or sign in to OpenCode, or turn off Free models only.)\033[0m")
+            sys.exit(1)
+        if picks:
+            planner, builder, reviewer = (picks[r] if v == AUTO else v for r, v in
+                                          (("planner", planner), ("builder", builder), ("reviewer", reviewer)))
+            auto_assignment = {"roles": {role: picks[role] for role in auto_roles}, "complexity": profile.complexity,
+                               "reasons": profile.reasons}
+            print(f"      - Auto picked {', '.join(f'{r} {picks[r]}' for r in auto_roles)} ({profile.complexity} job: {'; '.join(profile.reasons)})")
+
     # Ensure initial choices are within allowed set (resolve aliases first)
     p_meta = get_model(planner)
     b_meta = get_model(builder)
@@ -425,9 +681,15 @@ def main(args_override: list[str] | None = None) -> None:
     builder = b_meta.id if b_meta else builder
     reviewer = r_meta.id if r_meta else reviewer
 
-    if planner not in allowed_models: planner = allowed_models[0]
-    if builder not in allowed_models: builder = allowed_models[0]
-    if reviewer not in allowed_models: reviewer = allowed_models[0]
+    if planner not in allowed_models:
+        best_planners = get_prioritized_models(role=ModelRole.PLANNER, allowed_models=allowed_models)
+        planner = best_planners[0] if best_planners else allowed_models[0]
+    if builder not in allowed_models:
+        best_builders = get_prioritized_models(role=ModelRole.BUILDER, allowed_models=allowed_models)
+        builder = best_builders[0] if best_builders else allowed_models[0]
+    if reviewer not in allowed_models:
+        best_reviewers = get_prioritized_models(role=ModelRole.REVIEWER, allowed_models=allowed_models)
+        reviewer = best_reviewers[0] if best_reviewers else allowed_models[0]
 
     # Machine Selection
     machines_config = load_machines()
@@ -440,6 +702,8 @@ def main(args_override: list[str] | None = None) -> None:
     machine_names = sorted([m["name"] for m in machines_config])
     if args.allowed_machines:
         allowed_machines = args.allowed_machines.split(",")
+    elif saved.get("allowed_machines"):
+        allowed_machines = list(saved["allowed_machines"])
     else:
         print("\nMachine Selection (restrict workflow to these computers):")
         initial_machines = [m["name"] for m in machines_config if m.get("enabled", True)]
@@ -451,7 +715,9 @@ def main(args_override: list[str] | None = None) -> None:
         print("\033[90m(Run with --allowed-machines <names> or select machines in the interactive prompt.)\033[0m")
         sys.exit(1)
 
-    branch_mode = args.branch_mode
+    branch_mode = args.branch_mode or saved.get("branch_mode")
+    if not branch_mode and existing_job and saved.get("branch"):
+        branch_mode = "current"
     if not branch_mode:
         if args.job_type == "coverage":
             branch_mode = "current"
@@ -464,7 +730,7 @@ def main(args_override: list[str] | None = None) -> None:
             branch_mode = prompt_radio("Branch selection:", labels, labels[0])
     branch_mode = normalize_branch_mode(branch_mode)
 
-    selected_branch = args.branch
+    selected_branch = args.branch or (saved.get("branch") if branch_mode == "current" else None)
     if branch_mode == "current" and not selected_branch:
         import subprocess
         selected_branch = subprocess.check_output(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=str(ROOT)).decode("utf-8").strip()
@@ -498,9 +764,12 @@ def main(args_override: list[str] | None = None) -> None:
         selected_branch = None
         print("      - No branch will be assigned (Builder will skip Git operations).")
     elif branch_mode == "new":
-        # Keep it None, the scheduler/builder will create one based on the job ID
-        selected_branch = None
-        print("      - A new branch will be created automatically.")
+        # Keep an already-created branch on re-plan; otherwise the scheduler/builder creates one from the job ID.
+        selected_branch = saved.get("branch") if existing_job else None
+        if args.no_dispatch:  # planning only: nothing is checked out or created yet
+            print("      - No branch is created while planning; one is made when the job starts building.")
+        else:
+            print("      - A new branch will be created automatically.")
 
     print("\n" + "="*40)
     print(f"   CREATING NEW {args.job_type.upper()}")
@@ -517,6 +786,8 @@ def main(args_override: list[str] | None = None) -> None:
         
         if args.summary:
             instructions = args.summary
+        elif existing_raw_input:
+            instructions = existing_raw_input
         else:
             flush_stdin()
             instructions = prompt_multiline("What would you like to change or improve?")
@@ -534,25 +805,43 @@ def main(args_override: list[str] | None = None) -> None:
             "acceptance_criteria": ["Implementation matches provided instructions."]
         }
         
+        # Fast track: one planner call turns the instruction into a short plan and test cases, with no questions,
+        # verifier or approval, so the job still starts at once. If it fails, the instruction alone is the plan.
+        print(f"[1/3] Fast-tracking a plan and test cases using {planner}...", flush=True)
+        fast, actual_planner, llm_sessions, fast_note = fast_track_quick_plan(instructions, planner=planner, allowed_models=allowed_models)
+        if fast:
+            fast_summary = fast.pop("plan_summary", "")
+            plan.update(fast)
+            if fast_summary:
+                plan["summary"] = fast_summary
+            problems = tc.plan_problems(plan) if plan.get("test_cases") else []
+            if problems:
+                plan["test_case_problems"] = problems
+            print(f"      - {len(plan['tasks'])} task(s), {len(plan.get('test_cases') or [])} test case(s).", flush=True)
+        else:
+            print(f"      - {fast_note}", flush=True)
+
         title = plan["title"]
-        body = build_quick_issue_body(plan, yolo=args.yolo)
+        body = build_quick_issue_body(plan, yolo=yolo_enabled)
         labels = ["job:quick", "status:planned"]
-        
-        print(f"[1/2] Creating GitHub issue: {title}...", flush=True)
-        issue_number = create_issue(title, body, labels)
-        job_id = f"{timestamp()}-quick-{issue_number}"
-        
-        actual_planner = "user-prompt"
+
+        # No verifier and no approval: the job and its one issue are created below and start right away.
+        job_id_kind = "quick"
         verification = None
         job_type = "quick-fix"
         raw_input_text = instructions
         clarification = None
+        clarification_history = []
+        last_manual_logs = []
+        needs_test_cases = bool(plan.get("test_cases"))
 
     else:
         if file_spec_content:
             print("\nSpec loaded successfully.")
             if args.summary:
                 raw_input_text = f"{file_spec_content}\n\n### ADDITIONAL CONTEXT / OVERRIDES ###\n{args.summary}"
+            elif existing_job or web_run():
+                raw_input_text = file_spec_content
             else:
                 flush_stdin()
                 additional = prompt_multiline("Additional Context / Overrides (optional):")
@@ -569,6 +858,8 @@ def main(args_override: list[str] | None = None) -> None:
                 raw_input_text = f"DESIGN VISION: {args.summary}\nPREFERRED VIBE: minimalist"
             else:
                 raw_input_text = f"VISION: {args.summary}"
+        elif existing_raw_input:
+            raw_input_text = existing_raw_input
         else:
             flush_stdin()
             if args.job_type == "bug":
@@ -623,186 +914,574 @@ def main(args_override: list[str] | None = None) -> None:
         "allowed_machines": allowed_machines or [],
         "actual_planner_used": planner
     }
-    with StatusBar(planning_context, is_processing=True):
-        print_phase("planning")
-        
-        prompt_file = "planner_bug.md"
-        if args.stitch:
-            prompt_file = "designer.md"
-        elif args.job_type == "feature":
-            prompt_file = "planner_feature.md"
-        elif args.job_type == "coverage":
-            prompt_file = "planner_coverage.md"
-        elif args.job_type == "design":
-            prompt_file = "designer.md"
-            
-        prompt_template = (PROMPTS_DIR / prompt_file).read_text(encoding="utf-8")
-        
-        revision_context = ""
-        if existing_job and args.feedback:
-            prev_plan = existing_job.get("plan", {})
-            revision_context = f"\n\n### PREVIOUS DESIGN/PLAN ###\n{json.dumps(prev_plan, indent=2)}\n\n### USER FEEDBACK ###\n{args.feedback}\n"
-        
-        llm_input = f"{prompt_template}\n\nRaw input:\n{raw_input_text}{extra_input}{revision_context}\n"
-        
-        llm_sessions = []
-        
-        print(f"\n[1/3] Planning {args.job_type} (Stitch AI Mode: {'Enabled' if args.stitch else 'Off'}) using {planner}...", flush=True)
-        llm_raw_output, actual_planner, sid = run_llm(planner, llm_input, cwd=ROOT, allowed_models=allowed_models, role=ModelRole.PLANNER)
-        llm_sessions.append({"id": sid, "model": actual_planner})
-
-        llm_output = extract_json_block(llm_raw_output)
-        
-        # Print research findings if present
-        research_part = llm_raw_output.replace(llm_output, "").strip()
-        # Remove markdown noise (fences and leading/trailing markers)
-        research_part = re.sub(r"```(?:json|markdown)?", "", research_part).strip()
-        
-        if research_part:
-            print("\n--- Research & Discovery ---")
-            print(research_part)
-            print("-" * 30 + "\n")
-
+    try:
+        prd_doc = prd.Prd(ROOT, ROOT / ".orchestrator")
+        current_prd_text = prd_doc.read() if prd_doc.exists() else ""
+    except Exception:
+        current_prd_text = ""
+    try:
+        current_arch_record = architecture.read_record(ROOT)
+    except Exception:
+        current_arch_record = None
+    linked_feature_record = None
+    active_feature_id = args.feature or (existing_job or {}).get("feature")
+    if active_feature_id:
         try:
-            plan = json.loads(llm_output)
-        except json.JSONDecodeError:
-            print("\n\033[1;91mFAILED TO PARSE PLANNER OUTPUT AS JSON\033[0m")
-            print("-" * 40)
-            print(llm_output)
-            print("-" * 40)
-            raise
+            from orchestrator import features as feature_store
+            linked_feature_record = feature_store.get(feature_store.load(ROOT / ".orchestrator"), active_feature_id)
+        except Exception:
+            linked_feature_record = None
+    try:
+        from orchestrator import analytics
+        kpi_policy = analytics.resolve_kpi_setup_policy(ROOT / ".orchestrator", consume=not bool(existing_job))
+    except Exception:
+        kpi_policy = None
 
-        # Check for clarification needed from planner
-        clarification = plan.get("clarification_needed")
-        clarification_history = existing_job.get("clarification_history", []) if existing_job else []
-        if clarification:
-            print("\n" + "!"*60)
-            print(f"\033[1;93mPAUSED: Planner needs clarification\033[0m")
-            print(f"\033[1;96mQuestion:\033[0m {clarification}")
-            print("!"*60 + "\n")
-
-            # Inline interactive prompt when running in an interactive terminal
-            if sys.stdin.isatty() and not getattr(args, "non_interactive", False) and not args.yolo:
-                print("\033[97m💡 Answer now to revise the plan immediately, or press Enter to pause.\033[0m")
-                try:
-                    user_ans = input("\033[1;96mYour Answer (or Enter to pause):\033[0m ").strip()
-                except (EOFError, KeyboardInterrupt):
-                    user_ans = ""
-                if user_ans:
-                    clarification_history.append({
-                        "question": clarification,
-                        "answer": user_ans,
-                        "timestamp": now_iso()
-                    })
-                    print(f"\n      - Re-planning with your answer...", flush=True)
-                    clarification_feedback = f"### USER CLARIFICATION ###\nQuestion: {clarification}\nAnswer: {user_ans}\n"
-                    recursive_input = f"{prompt_template}\n\n### ORIGINAL REQUEST ###\n{raw_input_text}\n\n### PREVIOUS PLAN WITH QUESTION ###\n{llm_output}\n\n{clarification_feedback}\nPlease update the plan JSON to address the user's clarification and proceed."
-                    try:
-                        new_llm_raw_output, actual_planner, sid = run_llm(planner, recursive_input, cwd=ROOT, allowed_models=allowed_models, role=ModelRole.PLANNER)
-                        llm_sessions.append({"id": sid, "model": actual_planner})
-                        llm_output = extract_json_block(new_llm_raw_output)
-                        plan = json.loads(llm_output)
-                        clarification = plan.get("clarification_needed")
-                        if not clarification:
-                            print(f"      - Plan revised successfully! Proceeding...")
-                    except Exception as e:
-                        print(f"\033[1;91m      - Re-planning attempt failed: {e}\033[0m")
-
-        # --- VERIFICATION STEP ---
-        verification = None
-        planner_meta = get_model(actual_planner)
+    spec: dict = {}
+    risk_result: dict = {}
+    with StatusBar(planning_context, is_processing=True):
+        if args.job_type == "quick":
+            spec = living_spec.normalize(
+                plan,
+                raw_input=raw_input_text,
+                prd_text=current_prd_text,
+                arch_record=current_arch_record,
+                root=ROOT,
+                feature_record=linked_feature_record,
+                kpi_policy=kpi_policy,
+            )
+            risk_result = risk_engine.evaluate(spec, root=ROOT)
+        else:  # a quick job is its own plan (see above)
+            print_phase("planning")
         
-        # Only verify if the planner used was NOT an Extreme model
-        if planner_meta and planner_meta.tier > ModelTier.EXTREME:
-            # Find available extreme models in allowed_models
-            extreme_options = get_prioritized_models(role=ModelRole.VERIFIER, allowed_models=allowed_models)
-            if extreme_options:
-                verifier_model = extreme_options[0]
-                print(f"      - Plan generated by {actual_planner}. Verifying with Extreme model: {verifier_model}...", flush=True)
-                
-                verifier_prompt = (PROMPTS_DIR / "verifier.md").read_text(encoding="utf-8")
-                verifier_input = f"{verifier_prompt}\n\n### ORIGINAL REQUEST ###\n{raw_input_text}\n\n### GENERATED PLAN ###\n{llm_output}"
-                
-                try:
-                    v_raw_output, actual_verifier, sid = run_llm(verifier_model, verifier_input, cwd=ROOT, allowed_models=allowed_models, role=ModelRole.VERIFIER)
-                    llm_sessions.append({"id": sid, "model": actual_verifier})
-                    
-                    v_output = extract_json_block(v_raw_output)
-                    
-                    # Print verifier thoughts if present
-                    v_thoughts = v_raw_output.replace(v_output, "").strip()
-                    v_thoughts = re.sub(r"```(?:json|markdown)?", "", v_thoughts).strip()
-                    if v_thoughts:
-                        print(f"      - Verifier thoughts: {v_thoughts}")
+            prompt_file = "planner_bug.md"
+            if args.stitch:
+                prompt_file = "designer.md"
+            elif args.job_type == "feature":
+                prompt_file = "planner_feature.md"
+            elif args.job_type == "coverage":
+                prompt_file = "planner_coverage.md"
+            elif args.job_type == "design":
+                prompt_file = "designer.md"
+            
+            prompt_template = (PROMPTS_DIR / prompt_file).read_text(encoding="utf-8")
+        
+            revision_context = ""
+            if existing_job and args.feedback:
+                prev_plan = existing_job.get("plan", {})
+                revision_context = f"\n\n### PREVIOUS DESIGN/PLAN ###\n{json.dumps(prev_plan, indent=2)}\n\n### USER FEEDBACK ###\n{args.feedback}\n"
+        
+            # Feature, bug and coverage plans must specify test cases tied to real tests (enforced below).
+            needs_test_cases = args.job_type in ("feature", "bug", "coverage") and not args.stitch
+            test_case_context = ""
+            if needs_test_cases:
+                test_case_context = tc.PLANNER_INSTRUCTIONS + "\n" + tc.library_index(ROOT, query=raw_input_text)
+                prompt_template = f"{prompt_template}\n{test_case_context}"
+            # The product's own documents (brief, use cases and non-goals, journey, screens, decisions, plan) come first,
+            # so each plan is judged against what the product is for. It is part of the template, so retries keep it.
+            product_context = prd.context_block(ROOT)
+            if product_context:
+                prompt_template = f"{prompt_template}\n{product_context}"
+            # The approved architecture is a constraint on every plan; an undecided new project gets a warning instead of a silent pick.
+            arch_context = architecture.context_block(ROOT, "planner")
+            if arch_context:
+                prompt_template = f"{prompt_template}\n{arch_context}"
+            docs_context = project_docs.context_block(ROOT)
+            if docs_context:
+                prompt_template = f"{prompt_template}\n{docs_context}"
+            try:
+                from orchestrator import parallel_mece
+                peer_lanes = parallel_mece.lane_context(
+                    parallel_mece.load_active_peers(
+                        PROJECT_CONFIG.runtime_dir / "jobs",
+                        current_job_id=(existing_job or {}).get("job_id"),
+                        current_job=existing_job,
+                    ),
+                    role="planner",
+                )
+            except Exception:
+                peer_lanes = ""
+            if peer_lanes:
+                prompt_template = f"{prompt_template}\n{peer_lanes}"
+            # Every question asked and answered so far, so a re-plan (and a follow-up question) builds on all of them.
+            asked_so_far = (existing_job or {}).get("clarification_history") or []
+            if asked_so_far:
+                revision_context += f"\n\n{format_clarification_history(asked_so_far)}\n"
+            if freestyle:
+                revision_context += new_job_form.freestyle_note(len(asked_so_far))
 
-                    verification = normalize_verification(json.loads(v_output), actual_verifier)
-                    if not verification:
-                        raise ValueError("Verifier output missing required status/comments fields")
-                    print(f"      - Verification complete: {verification['status'].upper()}")
-                    
-                    if verification["status"] in ["rejected", "concerns"]:
-                        status_str = "rejected" if verification["status"] == "rejected" else "raised concerns"
-                        print(f"\n\033[1;93mSenior Architect {status_str}.\033[0m")
-                        
-                        if args.yolo:
-                            print(f"\n\033[1;92mYOLO MODE: Automatically integrating Architect suggestions...\033[0m")
-                            # Construct feedback for recursive planning
-                            yolo_feedback = f"### ARCHITECT FEEDBACK ({verification['status'].upper()}) ###\n"
-                            yolo_feedback += f"Comments: {verification['comments']}\n"
-                            if verification.get("suggested_additions"):
-                                yolo_feedback += "Suggested Additions:\n- " + "\n- ".join(verification["suggested_additions"])
-                            
-                            recursive_input = f"{prompt_template}\n\n### PREVIOUS PLAN ###\n{llm_output}\n\n{yolo_feedback}\n\n"
-                            recursive_input += "Please update the plan JSON to address the architect's feedback while fulfilling the original request."
-                            
-                            print(f"      - Re-planning with {actual_planner}...", flush=True)
-                            new_llm_raw_output, actual_planner, sid = run_llm(planner, recursive_input, cwd=ROOT, allowed_models=allowed_models, role=ModelRole.PLANNER)
+            use_two_pass = args.job_type == "feature" and not args.stitch
+            spec_prompt_template = ""
+            pass_b_prompt_template = prompt_template
+            if use_two_pass:
+                spec_prompt_template = (PROMPTS_DIR / "planner_spec.md").read_text(encoding="utf-8")
+                for ctx_block in (test_case_context, product_context, arch_context, docs_context, peer_lanes):
+                    if ctx_block:
+                        spec_prompt_template = f"{spec_prompt_template}\n{ctx_block}"
+                # Pass B already receives the distilled LivingFeatureSpec in pass_b_block; avoid re-sending full project_docs.
+                pass_b_base = (PROMPTS_DIR / prompt_file).read_text(encoding="utf-8")
+                for ctx_block in (test_case_context, product_context, arch_context, peer_lanes):
+                    if ctx_block:
+                        pass_b_base = f"{pass_b_base}\n{ctx_block}"
+                pass_b_prompt_template = pass_b_base
+
+            # If re-planning purely to incorporate Senior Architect verification suggestions on Pass B tasks, reuse Pass A spec.
+            reuse_existing_spec = bool(use_two_pass and existing_job and args.skip_verify and isinstance(existing_job.get("spec"), dict))
+            if reuse_existing_spec:
+                spec = dict(existing_job["spec"])
+                risk_result = risk_engine.evaluate(spec, root=ROOT)
+                pass_b_block = living_spec.pass_b_context(spec, risk_result)
+                llm_input = f"{pass_b_prompt_template}\n{pass_b_block}\nRaw input:\n{raw_input_text}{extra_input}{revision_context}\n"
+            elif use_two_pass:
+                llm_input = living_spec.pass_a_prompt(spec_prompt_template, raw_input_text, extra_input=extra_input, revision_context=revision_context)
+            else:
+                llm_input = f"{prompt_template}\n\nRaw input:\n{raw_input_text}{extra_input}{revision_context}\n"
+        
+            llm_sessions = []
+        
+            print(f"\n[1/3] Planning {args.job_type} (Stitch AI Mode: {'Enabled' if args.stitch else 'Off'}) using {planner}...", flush=True)
+            if reuse_existing_spec:
+                print("[spec] " + json.dumps({"stage": "Pass B · Execution planning", "depth": spec.get("planning_depth", ""), "label": "Planning execution tasks"}), flush=True)
+            elif use_two_pass:
+                print("[spec] " + json.dumps({"stage": "Pass A · Spec synthesis", "label": "Synthesizing feature spec"}), flush=True)
+            llm_raw_output, actual_planner, sid = run_llm(planner, llm_input, cwd=ROOT, allowed_models=allowed_models, role=ModelRole.PLANNER, job_type=args.job_type)
+            llm_sessions.append({"id": sid, "model": actual_planner})
+
+            llm_output = extract_json_block(llm_raw_output)
+        
+            # Print research findings if present
+            research_part = llm_raw_output.replace(llm_output, "").strip()
+            # Remove markdown noise (fences and leading/trailing markers)
+            research_part = re.sub(r"```(?:json|markdown)?", "", research_part).strip()
+        
+            if research_part:
+                print("\n--- Research & Discovery ---")
+                print(research_part)
+                print("-" * 30 + "\n")
+
+            try:
+                raw_parsed = json.loads(llm_output, strict=False)
+                plan = normalize_plan_dict(
+                    raw_parsed,
+                    default_title=title_input,
+                    default_summary=raw_input_text.splitlines()[0] if raw_input_text else "",
+                    job_type=args.job_type,
+                )
+            except json.JSONDecodeError:
+                print("\n\033[1;91mFAILED TO PARSE PLANNER OUTPUT AS JSON\033[0m")
+                print("-" * 40)
+                print(llm_output)
+                print("-" * 40)
+                raise
+
+            has_tasks = isinstance(raw_parsed, dict) and isinstance(raw_parsed.get("tasks"), list) and len(raw_parsed.get("tasks")) > 0
+            is_pass_a_only = bool(
+                use_two_pass
+                and not reuse_existing_spec
+                and isinstance(raw_parsed, dict)
+                and not has_tasks
+                and (raw_parsed.get("pass") == "spec" or "tasks" not in raw_parsed)
+            )
+            if not reuse_existing_spec:
+                spec = living_spec.normalize(
+                    raw_parsed if isinstance(raw_parsed, dict) else plan,
+                    raw_input=raw_input_text,
+                    prd_text=current_prd_text,
+                    arch_record=current_arch_record,
+                    root=ROOT,
+                    feature_record=linked_feature_record,
+                    kpi_policy=kpi_policy,
+                )
+                km = spec.get("kpi_metrics") if isinstance(spec.get("kpi_metrics"), dict) else {}
+                if km.get("status") == "recommend_setup_once" and km.get("recommendation"):
+                    print(f"      - KPI setup tip (shown once): {km['recommendation']}", flush=True)
+                print("[spec] " + json.dumps({"stage": "Pass A · Risk & ambiguity assessment", "depth": spec.get("planning_depth", ""), "label": "Assessing ambiguity & risk"}), flush=True)
+                risk_result = risk_engine.evaluate(spec, root=ROOT)
+
+            # Check for clarification needed from planner or Risk Engine (Intent Gate)
+            from common import classify_clarification
+            clar_kind, clarification = classify_clarification(plan.get("clarification_needed"))
+            if clar_kind == "blocking":
+                raise RuntimeError(f"Planner blocked: {clarification}")
+            if clar_kind == "ignore":
+                if clarification:
+                    print(f"      - Ignoring non-question planner note: {clarification}")
+                clarification = ""
+            if not clarification and not risk_result.get("intent_gate_passed") and risk_result.get("clarification_question"):
+                # In freestyle mode, respect FREESTYLE_MAX_ROUNDS cap unless there is an explicit conflict
+                at_round_cap = freestyle and len(asked_so_far) >= new_job_form.FREESTYLE_MAX_ROUNDS and not risk_result.get("conflicts")
+                if not at_round_cap:
+                    clarification = risk_result["clarification_question"]
+
+            if clarification:
+                intent_state = "Intent gate · conflicting requirements" if risk_result.get("conflicts") else "Intent gate · waiting for clarification"
+            else:
+                intent_state = f"Intent gate · passed ({risk_result.get('behavior', 'proceed')})"
+            print("[gate] " + json.dumps({"state": intent_state, "label": "Evaluating intent gate"}), flush=True)
+
+            clarification_history = existing_job.get("clarification_history", []) if existing_job else []
+            if clarification:
+                print("\n" + "!"*60)
+                print(f"\033[1;93mPAUSED: Planner needs clarification\033[0m")
+                print(f"\033[1;96mQuestion:\033[0m {clarification}")
+                print("!"*60 + "\n")
+
+                # Inline interactive prompt when running in an interactive terminal; in YOLO mode nobody is waiting, so
+                # Orchestrator answers for the person (common.autorespond), up to MAX_AUTO_RESPONSES times a job.
+                ask_person = interactive() and not getattr(args, "non_interactive", False) and not args.yolo
+                yolo_on = bool(args.yolo or (existing_job or {}).get("yolo") or (existing_job or {}).get("is_yolo"))
+                auto = not ask_person and can_autorespond({"yolo": yolo_on, "clarification_history": clarification_history})
+                if ask_person or auto:
+                    if auto:
+                        user_ans = auto_answer(clarification)
+                        print(f"\n🤖 YOLO autoresponse: the planner asked \"{clarification[:200]}\". Answered: \"{user_ans}\"\n", flush=True)
+                    else:
+                        print("\033[97m💡 Answer now to revise the plan immediately, or press Enter to pause.\033[0m")
+                        try:
+                            user_ans = input("\033[1;96mYour Answer (or Enter to pause):\033[0m ").strip()
+                        except (EOFError, KeyboardInterrupt):
+                            user_ans = ""
+                    if user_ans:
+                        clarification_history.append({
+                            "question": clarification,
+                            "answer": user_ans,
+                            "timestamp": now_iso(),
+                            **({"auto": True, "asker": "planner"} if auto else {}),
+                        })
+                        print(f"\n      - Re-planning with your answer...", flush=True)
+                        clarification_feedback = f"### USER CLARIFICATION ###\nQuestion: {clarification}\nAnswer: {user_ans}\n"
+                        active_template = spec_prompt_template if is_pass_a_only else prompt_template
+                        recursive_input = f"{active_template}\n\n### ORIGINAL REQUEST ###\n{raw_input_text}\n\n### PREVIOUS PLAN WITH QUESTION ###\n{llm_output}\n\n{clarification_feedback}\nPlease update the plan JSON to address the user's clarification and proceed."
+                        try:
+                            new_llm_raw_output, actual_planner, sid = run_llm(planner, recursive_input, cwd=ROOT, allowed_models=allowed_models, role=ModelRole.PLANNER, job_type=args.job_type)
                             llm_sessions.append({"id": sid, "model": actual_planner})
+                            llm_output = extract_json_block(new_llm_raw_output)
+                            raw_parsed = json.loads(llm_output, strict=False)
+                            plan = normalize_plan_dict(
+                                raw_parsed,
+                                default_title=title_input,
+                                default_summary=raw_input_text.splitlines()[0] if raw_input_text else "",
+                                job_type=args.job_type,
+                            )
+                            has_tasks = isinstance(raw_parsed, dict) and isinstance(raw_parsed.get("tasks"), list) and len(raw_parsed.get("tasks")) > 0
+                            is_pass_a_only = bool(
+                                use_two_pass
+                                and isinstance(raw_parsed, dict)
+                                and not has_tasks
+                                and (raw_parsed.get("pass") == "spec" or "tasks" not in raw_parsed)
+                            )
+                            spec = living_spec.normalize(
+                                raw_parsed if isinstance(raw_parsed, dict) else plan,
+                                raw_input=raw_input_text,
+                                prd_text=current_prd_text,
+                                arch_record=current_arch_record,
+                                root=ROOT,
+                                feature_record=linked_feature_record,
+                                kpi_policy=kpi_policy,
+                            )
+                            risk_result = risk_engine.evaluate(spec, root=ROOT)
+                            clar_kind, clarification = classify_clarification(plan.get("clarification_needed"))
+                            if clar_kind == "blocking":
+                                raise RuntimeError(f"Planner blocked: {clarification}")
+                            if clar_kind == "ignore":
+                                clarification = ""
+                            if not clarification:
+                                print(f"      - Plan revised successfully! Proceeding...")
+                        except Exception as e:
+                            print(f"\033[1;91m      - Re-planning attempt failed: {e}\033[0m")
+
+            # --- PASS B: REPOSITORY-AWARE EXECUTION PLANNING ---
+            # Runs when Pass A produced a Living Feature Spec without tasks and the Intent Gate passed (no blocking clarification).
+            if use_two_pass and not reuse_existing_spec and not is_pass_a_only and not clarification:
+                print(f"      - Single-pass fast-track: Pass A synthesized both Living Feature Spec and execution tasks (skipping Pass B).", flush=True)
+            if is_pass_a_only and not clarification:
+                print("[spec] " + json.dumps({"stage": "Pass B · Execution planning", "depth": spec.get("planning_depth", ""), "label": "Planning execution tasks"}), flush=True)
+                print(f"      - Pass A Intent Gate passed ({risk_result.get('behavior', 'proceed')}). Running Pass B execution planner with {planner}...", flush=True)
+                pass_b_block = living_spec.pass_b_context(spec, risk_result)
+                pass_b_revision = revision_context
+                if clarification_history and not asked_so_far:
+                    pass_b_revision += f"\n\n{format_clarification_history(clarification_history)}\n"
+                pass_b_input = f"{pass_b_prompt_template}\n{pass_b_block}\nRaw input:\n{raw_input_text}{extra_input}{pass_b_revision}\n"
+                llm_raw_output, actual_planner, sid = run_llm(planner, pass_b_input, cwd=ROOT, allowed_models=allowed_models, role=ModelRole.PLANNER, job_type=args.job_type)
+                llm_sessions.append({"id": sid, "model": actual_planner})
+                llm_output = extract_json_block(llm_raw_output)
+                try:
+                    plan = normalize_plan_dict(
+                        json.loads(llm_output, strict=False),
+                        default_title=spec.get("title") or title_input,
+                        default_summary=spec.get("intent") or (raw_input_text.splitlines()[0] if raw_input_text else ""),
+                        job_type=args.job_type,
+                    )
+                except json.JSONDecodeError:
+                    print("\n\033[1;91mFAILED TO PARSE PASS B PLANNER OUTPUT AS JSON\033[0m")
+                    print("-" * 40)
+                    print(llm_output)
+                    print("-" * 40)
+                    raise
+                clar_kind, pass_b_clar = classify_clarification(plan.get("clarification_needed"))
+                if clar_kind == "blocking":
+                    raise RuntimeError(f"Planner blocked: {pass_b_clar}")
+                if clar_kind == "question" and pass_b_clar:
+                    clarification = pass_b_clar
+
+            plan = living_spec.merge_spec_into_plan(plan, spec, risk_result)
+
+            slices_matter = args.job_type == "feature" and not args.stitch
+
+            def enforce_plan_quality(
+                plan: dict,
+                llm_output: str,
+                actual_planner: str,
+                *,
+                check_size: bool = True,
+            ) -> tuple[dict, str, str]:
+                """Consolidates test-case coverage, job size budget, and vertical-slice checks into a single combined
+                re-plan round-trip (at most 1 LLM call instead of up to 4 sequential retries)."""
+                tc_problems = tc.plan_problems(plan) if needs_test_cases else []
+                size_reasons = plan_size.measure(plan)["reasons"] if (slices_matter and check_size) else []
+                slice_problems = slice_check.problems(plan) if slices_matter else []
+
+                replan_blocks: list[str] = []
+                if tc_problems:
+                    print("      - Test cases incomplete; asking the planner to fix them...", flush=True)
+                    for problem in tc_problems:
+                        print(f"        · {problem.splitlines()[0]}")
+                    replan_blocks.append(tc.replan_request(tc_problems))
+                if size_reasons:
+                    print("      - The plan is too big for one job; asking the planner to cut it down...", flush=True)
+                    for reason in size_reasons:
+                        print(f"        · {reason}")
+                    replan_blocks.append(plan_size.replan_request(size_reasons))
+                if slice_problems:
+                    print("      - The plan looks layered; asking the planner to cut it into working slices...", flush=True)
+                    for problem in slice_problems:
+                        print(f"        · {problem}")
+                    replan_blocks.append(slice_check.replan_request(slice_problems))
+
+                if replan_blocks:
+                    combined_feedback = "\n\n".join(replan_blocks)
+                    retry_input = (
+                        f"{prompt_template}\n\n### ORIGINAL REQUEST ###\n{raw_input_text}{extra_input}\n\n"
+                        f"### YOUR PREVIOUS PLAN ###\n{llm_output}\n\n{combined_feedback}"
+                    )
+                    try:
+                        retry_raw, actual_planner, retry_sid = run_llm(
+                            planner, retry_input, cwd=ROOT, allowed_models=allowed_models, role=ModelRole.PLANNER,
+                            job_type=args.job_type,
+                        )
+                        llm_sessions.append({"id": retry_sid, "model": actual_planner})
+                        llm_output = extract_json_block(retry_raw)
+                        plan = normalize_plan_dict(
+                            json.loads(llm_output, strict=False),
+                            default_title=title_input,
+                            default_summary=raw_input_text.splitlines()[0] if raw_input_text else "",
+                            job_type=args.job_type,
+                        )
+                        plan = living_spec.merge_spec_into_plan(plan, spec, risk_result)
+                    except Exception as e:
+                        print(f"\033[1;91m      - Plan quality re-plan failed: {e}\033[0m")
+
+                if needs_test_cases:
+                    remaining_tc = tc.plan_problems(plan)
+                    if remaining_tc:
+                        print("\033[1;93m      - Plan still lacks adequate test cases; flagging it for your review.\033[0m")
+                        plan["test_case_problems"] = remaining_tc
+                    else:
+                        plan.pop("test_case_problems", None)
+                if slices_matter:
+                    if check_size and plan_size.measure(plan)["too_large"]:
+                        print("\033[1;93m      - Plan is still too big for one job; it will be offered as a split.\033[0m")
+                    remaining_slices = slice_check.problems(plan)
+                    if remaining_slices:
+                        print("\033[1;93m      - Plan still looks layered; flagging it for your review.\033[0m")
+                        plan["slice_warnings"] = remaining_slices
+                    else:
+                        plan.pop("slice_warnings", None)
+                return plan, llm_output, actual_planner
+
+            if (needs_test_cases or slices_matter) and not clarification:
+                plan, llm_output, actual_planner = enforce_plan_quality(plan, llm_output, actual_planner, check_size=True)
+
+            # --- VERIFICATION STEP ---
+            verification = None
+            planner_meta = get_model(actual_planner)
+            should_verify = not args.skip_verify and risk_engine.should_run_architect_verifier(spec, risk_result, plan, planner_meta)
+            if planner_meta and planner_meta.tier > ModelTier.EXTREME and not args.skip_verify and not should_verify:
+                print("      - Deterministic Plan Gate auto-passed for grounded single-slice plan; skipping redundant Senior Architect LLM call.", flush=True)
+
+            # Only verify when should_run_architect_verifier determines Senior Architect verification adds value
+            if should_verify:
+                # Find available verifier models in allowed_models
+                extreme_options = get_prioritized_models(role=ModelRole.VERIFIER, allowed_models=allowed_models)
+                if extreme_options:
+                    verifier_model = extreme_options[0]
+                    print(f"      - Plan generated by {actual_planner}. Verifying with Extreme model: {verifier_model}...", flush=True)
+                
+                    verifier_prompt = (PROMPTS_DIR / "verifier.md").read_text(encoding="utf-8")
+                    if needs_test_cases:
+                        verifier_prompt = f"{verifier_prompt}\n{tc.VERIFIER_INSTRUCTIONS}"
+                    verifier_prompt = f"{verifier_prompt}\n{prd.context_block(ROOT, 'verifier')}{architecture.context_block(ROOT, 'verifier')}"
+                    verifier_input = f"{verifier_prompt}\n\n### ORIGINAL REQUEST ###\n{raw_input_text}\n\n### GENERATED PLAN ###\n{llm_output}"
+                
+                    try:
+                        v_raw_output, actual_verifier, sid = run_llm(verifier_model, verifier_input, cwd=ROOT, allowed_models=allowed_models, role=ModelRole.VERIFIER, job_type=args.job_type)
+                        llm_sessions.append({"id": sid, "model": actual_verifier})
+                    
+                        v_output = extract_json_block(v_raw_output)
+                    
+                        # Print verifier thoughts if present
+                        v_thoughts = v_raw_output.replace(v_output, "").strip()
+                        v_thoughts = re.sub(r"```(?:json|markdown)?", "", v_thoughts).strip()
+                        if v_thoughts:
+                            print(f"      - Verifier thoughts: {v_thoughts}")
+
+                        verification = normalize_verification(json.loads(v_output, strict=False), actual_verifier)
+                        if not verification:
+                            raise ValueError("Verifier output missing required status/comments fields")
+                        print(f"      - Verification complete: {verification['status'].upper()}")
+                    
+                        if verification["status"] in ["rejected", "concerns"]:
+                            status_str = "rejected" if verification["status"] == "rejected" else "raised concerns"
+                            print(f"\n\033[1;93mSenior Architect {status_str}.\033[0m")
+                        
+                            if yolo_enabled:
+                                print(f"\n\033[1;92mYOLO MODE: Automatically integrating Architect suggestions...\033[0m")
+                                # Construct feedback for recursive planning
+                                yolo_feedback = f"### ARCHITECT FEEDBACK ({verification['status'].upper()}) ###\n"
+                                yolo_feedback += f"Comments: {verification['comments']}\n"
+                                if verification.get("suggested_additions"):
+                                    yolo_feedback += "Suggested Additions:\n- " + "\n- ".join(verification["suggested_additions"])
                             
-                            try:
-                                llm_output = extract_json_block(new_llm_raw_output)
-                                plan = json.loads(llm_output)
-                                print(f"      - Plan revised successfully. Proceeding...")
-                                # Clear clarification so status stays 'planned'
-                                clarification = None
-                            except:
-                                print(f"\033[1;91m      - Failed to parse revised plan. Falling back to human-needed.\033[0m")
+                                recursive_input = f"{prompt_template}\n\n### PREVIOUS PLAN ###\n{llm_output}\n\n{yolo_feedback}\n\n"
+                                recursive_input += "Please update the plan JSON to address the architect's feedback while fulfilling the original request."
+                            
+                                print(f"      - Re-planning with {actual_planner}...", flush=True)
+                                new_llm_raw_output, actual_planner, sid = run_llm(planner, recursive_input, cwd=ROOT, allowed_models=allowed_models, role=ModelRole.PLANNER, job_type=args.job_type)
+                                llm_sessions.append({"id": sid, "model": actual_planner})
+                            
+                                try:
+                                    llm_output = extract_json_block(new_llm_raw_output)
+                                    plan = normalize_plan_dict(
+                                        json.loads(llm_output, strict=False),
+                                        default_title=title_input,
+                                        default_summary=raw_input_text.splitlines()[0] if raw_input_text else "",
+                                        job_type=args.job_type,
+                                    )
+                                    print(f"      - Plan revised successfully. Proceeding...")
+                                    if needs_test_cases or slices_matter:
+                                        plan, llm_output, actual_planner = enforce_plan_quality(plan, llm_output, actual_planner, check_size=False)
+                                    # Clear clarification so status stays 'planned'
+                                    clarification = None
+                                except:
+                                    print(f"\033[1;91m      - Failed to parse revised plan. Falling back to human-needed.\033[0m")
+                                    clarification = clarification or f"Architect {status_str}: {verification['comments']}"
+                            else:
+                                # Force human intervention
                                 clarification = clarification or f"Architect {status_str}: {verification['comments']}"
-                        else:
-                            # Force human intervention
-                            clarification = clarification or f"Architect {status_str}: {verification['comments']}"
-                except Exception as e:
-                    print(f"⚠️  Verification failed: {e}. Proceeding with unverified plan.")
-                    verification = None
+                    except Exception as e:
+                        print(f"⚠️  Verification failed: {e}. The plan needs your review before work continues.")
+                        verification = None
+                        clarification = clarification or (
+                            "Plan verification failed, so this plan needs human review before implementation. "
+                            "Review the plan and approve it or revise it before continuing."
+                        )
+                else:
+                    print("⚠️  No eligible verifier is available. The plan needs your review before work continues.")
+                    clarification = clarification or (
+                        "No eligible plan verifier is available, so this plan needs human review before implementation. "
+                        "Review the plan and approve it or revise it before continuing."
+                    )
 
-        last_manual_logs = [] # Initialized but handled inside bug block above if needed
+            last_manual_logs = [] # Initialized but handled inside bug block above if needed
 
-        title, body, labels, job_id_kind, job_type = issue_payload_for_job(
-            args.job_type,
-            plan,
-            verification,
-            clarification,
-            args.stitch,
-            yolo=args.yolo,
-        )
+            # Mid-execution adaptive replanning: protect completed tasks and explicitly approved requirements
+            if existing_job:
+                done_indices = sorted(plan_edit._done(existing_job))
+                if done_indices:
+                    print("[spec] " + json.dumps({"stage": "Mid-run replanning", "depth": spec.get("planning_depth", ""), "label": "Replanning remaining tasks"}), flush=True)
+                prev_tasks = (existing_job.get("plan") or {}).get("tasks") or []
+                if done_indices and isinstance(plan.get("tasks"), list):
+                    kept_done = [prev_tasks[i] for i in done_indices if 0 <= i < len(prev_tasks)]
+                    done_titles = {(t.get("title", "") if isinstance(t, dict) else str(t)).strip().lower() for t in kept_done}
+                    remaining_new = [
+                        t for t in plan["tasks"]
+                        if (t.get("title", "") if isinstance(t, dict) else str(t)).strip().lower() not in done_titles
+                    ]
+                    plan["tasks"] = kept_done + remaining_new
+                if existing_job.get("spec") and (done_indices or existing_job.get("approved")):
+                    violations = living_spec.validate_replan_invariants(existing_job.get("spec"), plan)
+                    if violations and not clarification:
+                        plan["replan_violations"] = violations
+                        clarification = (
+                            "Mid-execution replan cannot silently alter approved product requirements:\n- "
+                            + "\n- ".join(violations)
+                            + "\nConfirm whether to change these requirements or keep the original acceptance criteria."
+                        )
+
+            title, body, labels, job_id_kind, job_type = issue_payload_for_job(
+                args.job_type,
+                plan,
+                verification,
+                clarification,
+                args.stitch,
+                yolo=args.yolo,
+            )
 
         if existing_job:
             job_id = existing_job["job_id"]
-            issue_number = existing_job["issue_number"]
+            issue_number = existing_job.get("issue_number")
+            job_ref = existing_job.get("job_ref") or str(issue_number)
             paths = make_job_paths(job_id)
-            
-            # Update GitHub issue body
-            print(f"[2/3] Updating GitHub issue: #{issue_number}...", flush=True)
-            gh_text("issue", "edit", str(issue_number), "--body", body)
+
+            if issue_number:
+                print(f"[2/3] Updating GitHub issue: #{issue_number}...", flush=True)
+                gh_text("issue", "edit", str(issue_number), "--body", body)
         else:
-            print(f"[2/3] Creating GitHub issue: {title}...", flush=True)
-            issue_number = create_issue(title, body, labels)
-            job_id = f"{timestamp()}-{job_id_kind}-{issue_number}"
+            print(f"[2/3] Creating job: {title}...", flush=True)
+            issue_number, job_ref = file_job(title, body, labels)
+            job_id = f"{timestamp()}-{job_id_kind}-{job_ref}"
             paths = make_job_paths(job_id)
 
         status = "planned"
         if clarification:
             status = "human-needed"
+
+        if needs_test_cases and isinstance(plan.get("test_cases"), list):
+            previous = (existing_job or {}).get("plan", {}).get("test_cases") or []
+            try:
+                plan["test_cases"] = tc.normalize_cases(plan["test_cases"], issue_number or job_ref, job_id, existing=previous)
+            except tc.TestCaseError as e:
+                plan.setdefault("test_case_problems", []).append(f"`test_cases` is malformed: {e}.")
+                plan["test_cases"] = []
+            section = tc.issue_section(plan["test_cases"])
+            if plan.get("test_case_problems"):
+                section += ["", "> ⚠️ **Test cases need attention:** " + " ".join(p.splitlines()[0] for p in plan["test_case_problems"])]
+            if section:
+                body = body + "\n" + "\n".join(section)
+            if section and issue_number:
+                try:
+                    gh_text("issue", "edit", str(issue_number), "--body", body)
+                except Exception as e:
+                    print(f"      - Note: could not add test cases to issue #{issue_number}: {e}")
+
+        gate_result = risk_engine.evaluate_plan_gate(spec, risk_result, plan, verification)
+        plan["gate_policy"] = gate_result.get("gate_policy", "human_approval")
+        if clarification:
+            if plan.get("replan_violations"):
+                final_gate_state = "Plan gate · replan invariant violation"
+            elif risk_result.get("conflicts"):
+                final_gate_state = "Intent gate · conflicting requirements"
+            elif verification and verification.get("status") in ("rejected", "concerns"):
+                final_gate_state = "Plan gate · architect review needs attention"
+            else:
+                final_gate_state = "Intent gate · waiting for clarification"
+        elif gate_result.get("auto_pass"):
+            final_gate_state = "Plan gate · auto-passed"
+        elif gate_result.get("plan_gate_passed"):
+            final_gate_state = "Plan gate · ready for review"
+        else:
+            final_gate_state = "Plan gate · needs attention"
+        print("[gate] " + json.dumps({"state": final_gate_state}), flush=True)
 
         job = existing_job or {}
         job.update({
@@ -810,6 +1489,8 @@ def main(args_override: list[str] | None = None) -> None:
             "type": job_type if not existing_job else job.get("type", job_type),
             "source": "manual" if args.job_type == "bug" else "planned_feature",
             "issue_number": issue_number,
+            "job_ref": job_ref,
+            "code_host": "github" if issue_number else "git",
             "title": title if not existing_job else job.get("title", title),
             "status": status,
             "planner": planner,
@@ -817,7 +1498,8 @@ def main(args_override: list[str] | None = None) -> None:
             "verification": verification,
             "builder": builder,
             "reviewer": reviewer,
-            "yolo": args.yolo,
+            "auto_assignment": auto_assignment or job.get("auto_assignment"),
+            "yolo": yolo_enabled,
             "branch_mode": branch_mode,
             "branch": selected_branch,
             "allowed_models": allowed_models,
@@ -828,12 +1510,31 @@ def main(args_override: list[str] | None = None) -> None:
             "created_at": job.get("created_at", now_iso()),
             "updated_at": now_iso(),
             "raw_input": raw_input_text,
+            "spec": spec,
+            "risk_assessment": gate_result,
+            "auto_passed_gates": bool(gate_result.get("auto_pass") and not clarification),
             "plan": plan,
             "llm_sessions": llm_sessions,
             "clarification_history": clarification_history if clarification_history else job.get("clarification_history", []),
             "interactive_investigations": existing_job.get("interactive_investigations", []) if existing_job else job.get("interactive_investigations", []),
             "investigation_notes": existing_job.get("investigation_notes", []) if existing_job else job.get("investigation_notes", []),
         })
+        # Recorded as the job is created, so jobs created at the same time each know their own feature.
+        if args.feature:
+            job["feature"] = args.feature
+            try:
+                from orchestrator import features as feature_store
+                feature_store.note_work_attached(PROJECT_CONFIG.runtime_dir, args.feature, "working")
+            except Exception:
+                pass  # a feature deleted meanwhile: the job still exists, unassigned work shows up on the page
+        if args.plan_run:
+            job["plan_run"] = args.plan_run
+        if args.epic:
+            job["epic"] = args.epic
+        if freestyle:
+            job["freestyle"] = True
+        if args.revision_brief_file is not None:
+            job["approved"] = False
         
         # Special override for design-to-feature transition
         if existing_job and args.job_type == "feature":
@@ -841,11 +1542,47 @@ def main(args_override: list[str] | None = None) -> None:
         
         if clarification:
             job["human_clarification_question"] = clarification
+            job["clarification_asked_at"] = now_iso()
+            job["clarification_run_id"] = os.environ.get("ORCHESTRATOR_RUN_ID") or job.get("clarification_run_id")
+            if verification and verification.get("status") in ("rejected", "concerns"):
+                job["clarification_asker"] = "architect"
+            else:
+                job["clarification_asker"] = "planner"
         else:
             job["human_clarification_question"] = None
-        
+            job.pop("clarification_asked_at", None)
+            job.pop("clarification_run_id", None)
+            job.pop("clarification_asker", None)
+            if job.get("auto_passed_gates") and not args.no_dispatch:
+                job["approved"] = True
+                try:
+                    living_spec.create_deferred_backlog_jobs(PROJECT_CONFIG.runtime_dir, job)
+                except Exception:
+                    pass
+
+        if isinstance(plan.get("tasks"), list):
+            from orchestrator import job_runs
+            job_runs.ensure_task_ids([t for t in plan["tasks"] if isinstance(t, dict)])
+        job["run_breakdown"] = __import__("orchestrator.job_runs", fromlist=["breakdown"]).breakdown(job)
+
+        if not clarification and gate_result.get("plan_gate_passed") and llm_sessions:
+            model_outcomes.record(job, "planner", planner, actual_planner, "plan_gate_passed")
         write_json(paths.job_file, job)
         write_text(paths.brief_file, body)
+        # Only once the planned job is safely on disk does the waiting one go.
+        if args.replaces and not existing_job and living_spec.replace_waiting_job(PROJECT_CONFIG.runtime_dir, args.replaces, job):
+            write_json(paths.job_file, job)
+        try:
+            write_json(paths.output_dir / "spec.json", spec)
+            write_text(paths.output_dir / "spec.md", living_spec.to_markdown(spec, gate_result))
+        except Exception:
+            pass
+        if args.epic and not existing_job:
+            try:
+                from orchestrator import epics as epic_store
+                epic_store.attach_job(PROJECT_CONFIG.runtime_dir, args.epic, job_id)
+            except Exception:
+                pass  # the epic was removed meanwhile: the job still exists
 
     # --- DESIGN PREVIEW ---
     if (args.stitch or args.job_type == "design") and not clarification:
@@ -879,6 +1616,8 @@ def main(args_override: list[str] | None = None) -> None:
             sub_name = ', '.join(subsystems) if subsystems else 'core application modules'
             user_benefit = f"Eliminates regressions, ensures reliable error recovery, and prevents unexpected crashes across {sub_name}."
 
+        if suites:
+            print("[suites] " + json.dumps([str(x) for x in suites]))  # the live run status counts these
         print("\n" + "\033[1;92m=" * 58 + "\033[0m")
         print(f"   \033[1;92m🧪 TEST COVERAGE EXPANSION REPORT\033[0m")
         print("\033[1;92m=" * 58 + "\033[0m")
@@ -900,8 +1639,10 @@ def main(args_override: list[str] | None = None) -> None:
     except ValueError:
         job_file_display = str(paths.job_file)
 
-    print(f"      - Created job file: {job_file_display}")
-    print(f"      - Created issue: #{issue_number}")
+    verb = "Updated" if existing_job else "Created"
+    print(f"      - {verb} job file: {job_file_display}")
+    if issue_number:
+        print(f"      - {verb} issue: #{issue_number}")
 
     if not args.no_dispatch and status == "planned":
         print(f"[3/3] Scheduling job {job_id}...", flush=True)

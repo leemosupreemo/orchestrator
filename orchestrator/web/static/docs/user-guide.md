@@ -1,0 +1,953 @@
+# Orchestrator User Guide
+
+This guide covers using Orchestrator with supported project stacks. Swift and Xcode support is the most mature; support for additional languages is in beta.
+
+If you are new to Orchestrator, start with [Getting Started](getting-started.md) for the short overview and first-run path.
+
+## Install
+
+Quickest, on a Mac: one command installs what's missing, installs Orchestrator, adds the computer to your account and starts it at login (see [Web UI](#web-ui) for what that gives you):
+
+```bash
+curl -fsSL https://swift-orch-web-20260923.web.app/install.sh | sh
+```
+
+It needs Python 3.11+, Git, pipx and cloudflared, and installs the ones that are missing (on a Mac through Homebrew). Add `--no-service` to skip the start at login, or `--dry-run` to only print what it would do. On Windows, run it from a WSL terminal.
+
+To install by hand instead, the CLI install is:
+
+```bash
+brew install pipx
+pipx ensurepath
+pipx install "git+https://github.com/leemosupreemo/orchestrator.git@web-ui"
+```
+
+Upgrade later with:
+
+```bash
+pipx install --force "git+https://github.com/leemosupreemo/orchestrator.git@web-ui"
+```
+
+Restart Orchestrator after the update, once its jobs finish. The hosted site currently uses the `web-ui` branch; installing the default branch does not provide the same features.
+
+For local development from this repository:
+
+```bash
+cd /path/to/swift_orchestrator
+python3 -m pip install -e .
+```
+
+Verify the command is available:
+
+```bash
+orchestrator --help
+```
+
+The package has no Python runtime dependencies outside the standard library. Some workflows require external command-line tools:
+
+- Xcode project build/test: `xcodebuild`, `xcrun`
+- GitHub issue and pull request workflow: `gh` (not needed for GitLab, Bitbucket or plain git; see [Code hosts](code-hosts.md))
+- Remote workers: `ssh`, `scp`, `rsync`
+- AI providers: at least one of `codex`, `antigravity`, `claude`, `opencode`, `ollama`, or matching API key configuration
+- Firebase delivery: `firebase` plus a project-local distribution script
+
+Optional Codex-side MCP servers and plugins can improve repo, GitHub, iOS Simulator, Sentry, and browser inspection workflows. See [Recommended MCP Servers, Plugins, and Extensions](recommended-mcp-plugins.md).
+
+## First-Run Wizard
+
+For a new project, prefer the wizard:
+
+```bash
+orchestrator wizard
+```
+
+The interactive wizard has five stages:
+
+1. **Project:** review detected settings together. Press Enter to accept them, or choose a field number to edit.
+2. **AI setup:** keep available models, select models by number, log in to a provider, or enter an API key. At least one model is required.
+3. **Optional tools:** select GitHub integration, SSH workers, custom role prompts, or (for Apple projects) Firebase delivery and signing. Enter skips optional setup; existing settings are retained.
+4. **Review and apply:** review the proposed settings and actions. Edit project fields or models, cancel without writing project files, or press Enter to save. Project configuration, API keys, prompt copies, and generated files are written only after applying. CLI logins/account switches happen immediately when selected; keychain setup and worker installation run after saving.
+5. **Verify and finish:** validate the saved configuration and index the project. Xcode projects can also check build settings; this does not compile the app. Completion appears only after all requested checks pass, with `orchestrator console` as the next step.
+
+Text fields accept ordinary letters and spaces, including `s` and `q`. The prompt labels optional fields and explains whether Enter keeps a default, skips that field, or continues. Use Ctrl-S to **skip the current section** where offered and Ctrl-Q to quit. Yes/no menus also accept S/Q; arrow-key selectors use B to return. Enter keeps the displayed default. Failed checks leave the applied configuration in place and show a command for retrying.
+
+Applying initializes the project if needed and creates missing starter docs and the helper script. `--force` replaces generated configuration and starter docs; the review screen calls this out before applying. Non-interactive runs keep their flag-driven flow without review prompts.
+
+Scriptable example:
+
+```bash
+orchestrator wizard \
+  --models codex,antigravity \
+  --copy-prompt-overrides \
+  --ssh-machine mac2=mac2:/Users/me/Documents/MyApp \
+  --firebase \
+  --distribution-script-path scripts/distribute_ios.sh \
+  --firebase-plist-path MyApp/GoogleService-Info.plist \
+  --team-id YOUR_TEAM_ID \
+  --method ad-hoc \
+  --verify \
+  --non-interactive
+```
+
+After the wizard, review:
+
+```text
+AGENTS.md
+docs/build-test-commands.md
+docs/ai-workflow.md
+.orchestrator/project.json
+.orchestrator/config/machines.json
+.orchestrator/config/settings.json
+.orchestrator/prompts/*.md
+```
+
+The files in `.orchestrator/prompts/` are project-local role prompt overrides. They are copied only when requested, and they should be checked for project-specific assumptions before jobs are created.
+
+Use `--verify` to run setup/config checks before the wizard exits. Use `--install-workers` when the wizard adds SSH machines and should immediately run package install/check for those workers.
+
+## Project Selection
+
+The easiest path is to run commands from the project root:
+
+```bash
+cd /path/to/MyApp
+orchestrator wizard
+orchestrator console
+```
+
+You can also point commands at a project explicitly:
+
+```bash
+orchestrator wizard --project /path/to/MyApp
+orchestrator check-config --project /path/to/MyApp
+orchestrator console --project /path/to/MyApp
+```
+
+Initialized projects are remembered in:
+
+```text
+~/.orchestrator/projects.json
+```
+
+List recent projects:
+
+```bash
+orchestrator projects
+```
+
+Set the active project:
+
+```bash
+orchestrator use MyApp
+```
+
+Then commands can run from outside the repo and use the active project when no project is found from the current directory:
+
+```bash
+orchestrator console
+```
+
+Explicit project selection still wins:
+
+```bash
+orchestrator console --project MyApp
+```
+
+## Manual Initialization
+
+From the target Swift repository:
+
+```bash
+orchestrator init
+orchestrator check
+orchestrator check-config
+```
+
+Or initialize a specific path:
+
+```bash
+orchestrator init --root /path/to/MyApp --project-name MyApp
+orchestrator init --project /path/to/MyApp --project-name MyApp
+```
+
+Optional starter files:
+
+```bash
+orchestrator init --with-starter-docs --with-helper-script
+```
+
+`init` creates `.orchestrator/` in the target repository. It detects the first `.xcworkspace` or `.xcodeproj`, then asks `xcodebuild -list -json` for schemes and targets when possible.
+
+Generated files:
+
+```text
+.orchestrator/
+  .gitignore
+  project.json
+  config/
+    machines.json
+    settings.json
+  jobs/
+  logs/
+  output/
+  state/
+```
+
+Commit `.orchestrator/.gitignore`, `.orchestrator/project.json`, and `.orchestrator/config/*.json` if the team should share the same orchestrator setup. The generated `.orchestrator/.gitignore` excludes runtime `jobs/`, `logs/`, `output/`, and `state/` contents by default.
+
+With `--with-starter-docs`, `init` also creates:
+
+```text
+AGENTS.md
+docs/build-test-commands.md
+docs/ai-workflow.md
+```
+
+With `--with-helper-script`, `init` creates:
+
+```text
+scripts/orchestrator
+```
+
+The helper script runs `orchestrator "$@"`, which gives the project a stable repo-local command wrapper.
+
+## Configure Project Behavior
+
+Edit `.orchestrator/project.json` after initialization. Common fields:
+
+```json
+{
+  "project_name": "MyApp",
+  "base_branch": "main",
+  "pr_base_branch": "main",
+  "branch_prefix": "ai/issue",
+  "xcode_project": "MyApp.xcodeproj",
+  "xcode_workspace": null,
+  "scheme": "MyApp",
+  "test_target": "MyAppTests",
+  "derived_data_path": "/tmp/myapp_orchestrator_dd",
+  "build_command": null,
+  "test_command": null,
+  "backend_test_command": null,
+  "app_bundle_id": null,
+  "visual_app_path": null,
+  "delivery_provider": null,
+  "distribution_script_path": null,
+  "firebase_plist_path": null,
+  "remote_package_install_path": "~/.orchestrator/package",
+  "firebase_distribution": false
+}
+```
+
+Use `build_command` and `test_command` when a project needs custom build/test commands instead of the generated `xcodebuild` defaults. Projects that aren't built with Xcode get defaults from what's in the folder: an Android Gradle project builds with `./gradlew assembleDebug` and tests with `./gradlew testDebugUnitTest` (`gradle` when there's no wrapper), a plain Java or Kotlin Gradle project with `./gradlew build -x test` and `./gradlew test`, and a `package.json` project with its package manager's `build` and `test` scripts. A web app with an `android/` or `ios/` folder (Capacitor, React Native) counts as a phone app.
+
+Swift Package example:
+
+```json
+{
+  "xcode_project": null,
+  "xcode_workspace": null,
+  "scheme": "MyPackage",
+  "test_target": "MyPackageTests",
+  "build_command": "swift build",
+  "test_command": "swift test"
+}
+```
+
+### When a build or test hangs
+
+The main build and test commands that run for a job are stopped if they don't finish: after **90 minutes** for the build and **60 minutes** for the tests, with everything they started (a Unity or Xcode run has helper processes). The job then says so in plain words: what ran, how long it was allowed, the last output, and the usual causes, such as a test waiting on a server or Docker that isn't running, or a Unity project that is open in the editor. A build that times out is not run a second time to capture its output, and a hang isn't sent to an AI to analyze. Change the limits in `.orchestrator/project.json`, in seconds, where `0` means no limit:
+
+```json
+{ "build_timeout": 7200, "test_timeout": 1800 }
+```
+
+`check-config` reports a value that isn't a whole number. Tests you start yourself from the Tests page run until you stop them, and extra test commands have their own `timeout` (below).
+
+### More than one test command
+
+`test_command` is the main test run. When a project's tests live in several places (a game's protocol library, its server and its client), add the others as `test_commands`. They run after `test_command` passes, in the order listed:
+
+```json
+{
+  "test_command": "dotnet test tests/Protocol.Tests -c Release --nologo",
+  "test_commands": [
+    { "name": "mutation", "command": "python3 tools/check-test-mutations.py", "timeout": 600 },
+    { "name": "server", "command": "python3 tools/test-profile-server.py --skip-baseline",
+      "tier": "manual", "requires": ["docker", "container:my-server", "path:.local/staging"] }
+  ]
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `name` | Required and unique (letters, digits, `.`, `_`, `-`). Names the log, `test_<name>.log`, in the job's output folder. |
+| `command` | Required. Runs in a shell. |
+| `cwd` | Folder to run in, inside the project. Default: the project folder. |
+| `timeout` | Seconds before the command is stopped, with everything it started. Default: 1800. |
+| `retries` | Extra attempts after a failure, 0 to 5. A command that passes on a retry is reported as flaky. Default: 0. |
+| `tier` | `per-job` (default) runs with every job. `nightly` and `manual` never run with a job; they are for people and schedules. |
+| `requires` | What must be there: `docker` (the daemon answers), `container:<name>` (a running Docker container), `command:<name>` (on PATH), `path:<file or folder>` or `env:<NAME>`. |
+| `results` | A TRX or JUnit XML file, or a glob of them inside the project (`TestResults/*.trx`), read for the test counts. Without it, counts come from `dotnet test` output when the command prints it. Point it at a folder the command clears, since every match counts. |
+
+A command whose `requires` aren't met is **blocked**, not failed: the result says what is missing (for example "Docker isn't running") and the job carries on. A failed or timed-out command fails the job's tests, and its output goes to `test.log` for the fix step. Every command reports; one failure doesn't skip the rest. `test_commands.json` in the job's output folder lists each result.
+
+In the web app, the **Tests** page lists them under **Extra test commands**: each shows when it runs, what is missing right now (such as Docker not running), and its latest result with test counts. **Run** starts one by hand, **Check again** looks at Docker and files again, and **Add command** and **Edit** change `test_commands` for you. The **App delivery** page has **Where builds go** for the Android and web options below.
+
+**Test coverage by platform.** The top of the **Tests** page shows each part of your project (the client app, the server, shared code, tooling) with how much of its code has a test pointing at it, how many tests that is, and the biggest files with no test at all, each with an **Add tests** button. Platforms are found from your folders: a Unity or Xcode app is the client, `server/`, `functions/` and `api/` are the server, a `Protocol` or `Shared` library is shared code, `tools/` and `scripts/` are tooling, and another repository cloned inside your project is its own platform (labelled a server or client when it looks like one). If a guess is wrong (a cloned repository labelled as a client, say), choose **Change how it's split** under the platforms: give each platform a name, say what it is and which folders it covers (separated by commas), clear a name to remove a row, or tick the box to go back to automatic detection. This only changes how the test numbers are grouped; it doesn't change your code or how tests run. The card shows **Automatic** or **Custom** beside its title. Two platforms can't claim the identical folder, though one may cover a sub-folder of another, and every folder must exist; `check-config` reports the same problems. Behind the dialog it is just `platforms` in `.orchestrator/project.json`, which you can edit by hand:
+
+```json
+"platforms": [
+  { "name": "Game client", "kind": "client", "paths": ["DaocUnity"] },
+  { "name": "Game server", "kind": "server", "paths": ["OpenDAoC-Core"] }
+]
+```
+
+A file counts as having a test when a test mentions one of its types or its name (a Python import counts, however short the module's name); names that many files share are ignored. This shows where tests exist and where none do, but it isn't line coverage, and nothing is run to work it out.
+
+**Calculate** in the **Coverage** card at the top of the page (or `orchestrator script job_actions.py coverage`) is the one coverage button. It runs your tests under a coverage tool and shows, for each platform, how many lines really ran: `dotnet test` with the `coverlet.collector` package for .NET test projects, `coverage.py` for Python tests, Jest or Vitest (with an lcov report) for JavaScript packages, and Gradle's own coverage report for Android unit tests. Your project's overall figure is still measured the usual way for its language (Swift/Xcode, Go, Rust), and for a Python, JavaScript or Gradle project it is added up from the platform run, so the tests aren't run twice. The figure per platform is the share of lines in the files the tests load, shown beside how many files the platform has, and the biggest gaps become the files with the most lines no test runs. Groups that a **Check** found can't run here are skipped, and other languages aren't measured per platform yet. For Android, the module's build has to write the report: set `enableUnitTestCoverage = true` in the debug build type (or, for a plain JVM module, apply the `jacoco` plugin), and Orchestrator says so when it isn't set. Vitest needs a coverage provider (`npm i -D @vitest/coverage-v8`), nothing is downloaded for you, and tests that run on an emulator or phone aren't measured. A platform no measured test loads says so instead of showing a number. Where both exist, trust the measured one: for example a file can be mentioned by a test and still have most of its lines never run.
+
+**Suites by framework.** The **Suites** section groups your tests by the framework they're written with (xUnit, NUnit, unittest, pytest, Android's JUnit tests, Jest or Vitest, and so on) and folder. Each group says in plain words what the framework is, how many tests and suites it holds, and lists every test by name under **Show the tests**. A test framework is simply the library the tests are written with.
+
+For .NET test projects (xUnit, NUnit, MSTest), Python test folders (unittest, pytest), Gradle modules and JavaScript packages, each group has an **Every job / By hand** switch, and there's one for all of them. An Android module gives two groups: **Android unit tests** (run on your computer through Gradle, as `./gradlew :app:testDebugUnitTest`) and **Android instrumented tests** (they need an emulator or phone, so you'll usually keep them **By hand**). A JavaScript package gives one group that runs its `test` script once (a script that would sit watching for changes is run once instead):
+
+- **Every job:** the group runs after the main tests pass on each job. If it fails, the job is sent back to be fixed.
+- **By hand:** it only runs when you press **Run**, or with `orchestrator run-tests`.
+- **Not added yet:** the tests exist but nothing runs them as a group yet. Turning it on adds a command to `test_commands` in `project.json`.
+
+**Check.** The number next to a group starts as an estimate ("about 179 tests"), because it is worked out by reading the files, and that misses tests that run once per set of inputs. **Check** (or **Check all**, or `orchestrator script job_actions.py probe`) asks the framework itself: `dotnet test --list-tests` for .NET, `pytest --collect-only` for pytest, and unittest's own loader for unittest. For an Android module it asks Gradle to plan the test task without running it (`--dry-run`), which fails with Gradle's own message when the Android SDK or a JDK is missing, and for a JavaScript package it checks that Node and the installed packages are there. It runs no tests, but it builds .NET projects and imports Python test files, so it only runs when you press it. Gradle and JavaScript groups keep the file scan's count, because those tools don't list tests. The group then shows the exact count in green, with every test listed, and the time it was checked. If the tool can't list the tests, the group says **Needs setup** with the reason the tool gave (for example, a .NET project that needs something prepared first, or a test file that imports a missing module). Such a group can still be set to **By hand**, but **Every job** is disabled for it until a check succeeds, because a group that can't run would fail every job.
+
+Switching a group that is part of your main test command to **By hand** takes just that part out of the command (your flags are kept) and saves it as its own by-hand command. If you turn off the last automatic group, the main command becomes a short message saying no automatic tests are selected, so jobs finish without running tests until you turn one back on. A group that has never been run from here asks you to try it first, because one that always fails would fail every job. Groups for other frameworks (Xcode, Unity, Go, Rust and others) are listed with their tests, and run through your main test command. Tests inside another repository cloned into your project aren't shown.
+
+**Suggested test setup.** When a project is added, Orchestrator looks through it (it never runs anything) for tests it can use: .NET test projects anywhere in the repository (a Unity client with its protocol tests next to it), and scripts in `tools/`, `scripts/` or `ci/` named like tests or checks (`test-*`, `check-*`, `verify-*`). The **Tests** page shows them under **Set up testing for this project**, in plain words: what each one is (an automated unit test, a data check, or a server test), what it says it does in its own description, and whether it is safe. The main command and the safe scripts are ticked; if you're not sure, leave the ticks and press **Add what's ticked**. **Use selected** saves them, or use `orchestrator suggest-tests` and `orchestrator suggest-tests --accept all`. `orchestrator check-config` also points at the tests it found when no test command is set.
+
+- Found .NET tests become the main test command, which runs after every job.
+- Scripts only ever become **By hand** commands, and any that use Docker get `docker` as a requirement.
+- A script that looks like it connects to a server (it names an address and opens a connection, or has "live" in its name) is shown under **Needs care**, is not ticked, and is never included in `--accept all`. Make sure it points at a test server before you accept it.
+- **Unity batch checks** are found too: static no-argument methods in a Unity project's `Editor` folders that exit the editor themselves (`EditorApplication.Exit`) and are named like a check (`Validate`, `Verify`, `Check`, `RunBatch`, in a class named like a verification). They are suggested as **By hand** commands marked **Needs care**: a Unity batch run takes a while, can change project files, and needs the project closed in the editor, so "accept all" never includes them. Methods that build or import things aren't offered.
+- Skipped: Unity's `Assets` folder, build output, and other repositories cloned inside yours.
+
+Run the ones that don't run with a job by hand with `orchestrator run-tests` (the `manual` tier), `orchestrator run-tests --tier nightly`, or by name: `orchestrator run-tests server`. Logs go to `output/manual-tests/<time>/`. The exit code is 0 when everything passed, 1 when something failed or timed out, and 2 when nothing could run (blocked, unknown name, or none configured).
+
+`backend_test_command` is the same thing for a single command, named `backend`. Never point a `test_commands` entry at a live server or a shared database: a job may run it at any time.
+
+Run validation after edits:
+
+```bash
+orchestrator check-config
+```
+
+## Configure AI Providers
+
+The orchestrator can use model provider CLIs or API keys. The setup check looks for common CLIs and environment keys:
+
+```bash
+orchestrator check
+```
+
+Model definitions are bundled with the installed package. Registry sync is optional and only refreshes those defaults when a remote registry is available.
+Live discovery can also query provider APIs from environment keys and can query Antigravity through the signed-in `agy` CLI; no `GEMINI_API_KEY` is required for that Antigravity path.
+
+Practical options:
+
+- Install and authenticate a CLI, such as `codex login`, `claude auth login`, or the equivalent command for your provider.
+- If a CLI's OAuth session expires during a run (for example `401 OAuth access token has expired`), the failure card offers an on-the-spot **Sign in to Claude / Codex / Antigravity / Pool** button (whichever tool the job used) and a **Rerun job** button so you can re-authenticate and continue immediately. The sign-in opens as a dialog over the job (not a new job): it shows the full sign-in link to open or copy, and a box to paste the code the browser gives back. No terminal is involved.
+- Export API keys in the shell where the console runs, such as `OPENAI_API_KEY`, `GEMINI_API_KEY`, or `ANTHROPIC_API_KEY` (API keys also avoid OAuth expirations, and configuring a second provider gives automatic fallback if one fails).
+- Store non-secret project settings in `.orchestrator/config/settings.json`.
+
+Do not commit secrets.
+
+## Configure Workers
+
+Local worker config is generated automatically in `.orchestrator/config/machines.json`.
+
+Example local machine:
+
+```json
+{
+  "name": "local",
+  "enabled": true,
+  "execution_mode": "local",
+  "ssh_target": null,
+  "repo_path": "/Users/me/Documents/MyApp",
+  "roles": ["planner", "reviewer", "worker", "build", "test"],
+  "models": ["antigravity", "codex", "claude"],
+  "priority": 100,
+  "max_concurrent_jobs": 1,
+  "max_heavy_jobs": 1,
+  "supports_xcode": true,
+  "supports_simulator": true,
+  "supports_backend_tests": false,
+  "interactive_reserved": true,
+  "tags": ["interactive", "primary"]
+}
+```
+
+Example SSH worker:
+
+```json
+{
+  "name": "mac2",
+  "enabled": true,
+  "execution_mode": "ssh",
+  "ssh_target": "mac2",
+  "repo_path": "/Users/me/Documents/MyApp",
+  "orchestrator_package_path": "~/.orchestrator/package",
+  "orchestrator_runtime_dir": ".orchestrator",
+  "roles": ["worker", "build", "test"],
+  "models": ["codex", "antigravity"],
+  "priority": 90,
+  "max_concurrent_jobs": 1,
+  "max_heavy_jobs": 1,
+  "supports_xcode": true,
+  "supports_simulator": true,
+  "supports_backend_tests": false,
+  "interactive_reserved": false,
+  "tags": ["remote"]
+}
+```
+
+Check worker readiness:
+
+```bash
+orchestrator worker-check
+orchestrator worker-check --machine mac2
+```
+
+Install or refresh the package on an SSH worker:
+
+```bash
+orchestrator worker-install --machine mac2
+```
+
+`worker-install` copies the installed package source to the worker's `orchestrator_package_path` and verifies that the remote machine can import `orchestrator.scripts.worker_run`. Remote dispatch stops before syncing jobs if the package is missing.
+
+## Prompt Instructions
+
+Default role prompts live in the package:
+
+```text
+orchestrator/prompts/
+```
+
+The prompt files are role-specific rather than model-specific:
+
+```text
+planner_bug.md
+planner_feature.md
+planner_coverage.md
+builder_bug.md
+builder_feature_task.md
+builder_infra.md
+debug_agent.md
+reviewer.md
+verifier.md
+build_checker.md
+designer.md
+```
+
+To customize them per project, run the wizard with `--copy-prompt-overrides` or manually create:
+
+```text
+.orchestrator/prompts/
+```
+
+Project-local prompt files with matching names take precedence over package defaults, one file at a time: a prompt you haven't customised keeps using the built-in one.
+
+In the Web UI, **Configuration → Instructions for AI helpers** lists the four roles you are most likely to tune. **Customize** opens the built-in instructions as the starting point, so you edit rather than write from nothing; **Reset** goes back to them, and saving the built-in text unchanged doesn't count as a customisation.
+
+| Role | File | What it does |
+|---|---|---|
+| Architect | `verifier.md` | Reviews each plan before it is built (the "Senior Architect Review" on a job). |
+| Planner | `planner_feature.md` | Researches the project and turns a request into tasks with acceptance criteria. |
+| Builder | `builder_feature_task.md` | Writes the failing test, then the code, and reports what changed. |
+| Reviewer | `reviewer.md` | Reviews the diff against the brief: blockers, medium-risk concerns, minor suggestions, verdict. |
+
+Jobs read the Architect's, Planner's and Builder's replies as JSON, so their instructions must keep asking for those fields (`status` and `comments`; `tasks` and `acceptance_criteria`; `files_changed`, `test_command` and `summary`). Saving instructions that drop them is refused, with the missing fields named. The Reviewer replies in free text and has no such rule. The same instructions apply to every job in the project.
+
+## Run The Console
+
+From the Swift project root:
+
+```bash
+orchestrator console
+```
+
+The console stores runtime data under `.orchestrator/` by default. To run from another directory, set the project root:
+
+```bash
+SWIFT_ORCHESTRATOR_PROJECT_ROOT=/path/to/MyApp orchestrator console
+```
+
+## Create And Run Jobs
+
+Use the console for normal job creation. For direct script access:
+
+```bash
+orchestrator script new_job.py bug
+orchestrator script new_job.py feature
+orchestrator script schedule_job.py .orchestrator/jobs/JOB.json
+```
+
+Generated job files are written under `.orchestrator/jobs/`. Logs and review output are written under `.orchestrator/logs/` and `.orchestrator/output/`.
+
+### Jobs and runs
+
+A **job** is a whole piece of work and its five stages: Plan, Build, Verify, Document and Finalize. A **run** is one go at part of it, started from the app: planning, a build, one fix attempt, a merge. A small job is often a single run from start to finish; a larger one has a run per stage and perhaps several fix attempts.
+
+- **On the job page**, the run working now sits at the top, labelled as this job's run ("Fix attempt 2 · run in progress") with its latest steps. The **Runs** card lists every run of the job, newest first, with what it did, how it ended and how long it took. A job done in one go says so.
+- **The job's stages show its runs.** The stage a run is working on says so ("Fix attempt 2 running"), a stage that took several runs shows how many, and the hero says which step the run is on. If a run fails before it can update the job, the job page says so and links to that run's log.
+- **On a run's page**, the line under the title says which job it belongs to and where it sits ("Run 3 of 5 of the job …", or "The only run of the job …"), with links to the runs before and after it. Back returns to the job.
+- Runs are remembered after they end and after Orchestrator restarts, so a job keeps its full list.
+
+### When the build changes nothing
+
+The Build step only counts as done when the builder changed files. If it finishes without changing any, the job stops as **Nothing was built**: it doesn't go on to test unchanged code or start fix attempts. The timeline marks Build with "No files changed", and **Run the build again** retries it. The usual cause is an AI tool that refused to edit files; the message says so when the builder reported it. Claude, when building or fixing, is allowed to edit files in the project (its other roles stay read-only). A fix attempt that changes nothing stops the same way, and an investigation may change nothing.
+
+## Visual Simulator Checks
+
+Visual checks require an app bundle and bundle identifier. Configure:
+
+```json
+{
+  "app_bundle_id": "com.example.MyApp",
+  "visual_app_path": "/absolute/path/to/MyApp.app"
+}
+```
+
+If `visual_app_path` is omitted, the visual check flow searches the configured derived data path for a built `.app`.
+
+## UX And Design Review
+
+A checklist review of your product's screens, in two parts: **UX** (how it works: status, wording, one primary action,
+progressive disclosure, navigation and a way back from every detail page, empty states, errors, forms, short action
+labels, long content behind "Show more") and **Design** (how it looks: hierarchy, tokens, spacing, alignment, sizes,
+section headers that read as titles, one header layout, consistent field labels, no unstyled browser controls,
+overlap, responsiveness, contrast, dark mode, focus). The checklist is
+`orchestrator/prompts/ux_reviewer.md`; your own UI conventions file, if you have one, takes precedence over it.
+
+- **Product pass.** Web UI > UX review > Run a pass, or `orchestrator script ux_review_run.py pass`. It captures every
+  configured screen, runs a UX pass and a design pass (two model calls), and writes one report with findings ranked by
+  severity, the checklist, and the screenshots, under `.orchestrator/output/ux-pass/<when>/`. "Create a job to fix"
+  turns the findings into a job. A pass that couldn't capture screenshots finishes as "Completed with notes" (yellow)
+  and says only the code was read; in a project with no interface files it skips the model calls and reports
+  "Nothing to review".
+- **Change check.** After the code review, every job whose diff touches interface files (HTML, CSS, JSX/TSX, Vue,
+  Svelte, SwiftUI views, storyboards, scripts in UI folders, or anything matching `ui_review.paths`) gets the same
+  checklist on just what it changed. The job page shows a "UX and design check" card, and the hero warns before you
+  merge when something major was found. It is a prompt to look, never a gate.
+
+Screens come from `ui_review` in `.orchestrator/project.json` (or Web UI > UX review > Screens):
+
+```json
+"ui_review": {
+  "url": "http://localhost:3000",
+  "routes": ["/", "/settings"],
+  "widths": [390, 1440],
+  "dark_mode": true,
+  "start_command": "npm run dev",
+  "simulator": false,
+  "review_changes": true,
+  "conventions": "docs/ui-conventions.md",
+  "paths": ["lib/theme/**"]
+}
+```
+
+Web screens are captured with a headless Chrome, Chromium or Edge (set `ORCHESTRATOR_BROWSER` to choose one) using
+device emulation, so 390 px is a real phone viewport, and dark mode through `prefers-color-scheme`. `$VARIABLES` in the
+URL are read from the environment, so a sign-in token needn't be written into the file. `start_command` runs only if
+the URL isn't answering, and is stopped afterwards. `simulator: true` adds the iOS simulator check's screenshots.
+Without screens, the review works from the code and says what it couldn't judge. Screens are first-load views: no
+scrolling, signing in or interaction.
+
+Native apps need no URL. Set up any of these (together with, or instead of, `url`):
+
+```json
+"ui_review": {
+  "simulator": true,
+  "simulator_screens": ["myapp://settings", "myapp://profile"],
+  "android": {
+    "package": "com.example.app",
+    "apk": "app/build/outputs/apk/debug/app-debug.apk",
+    "build_command": "./gradlew assembleDebug",
+    "avd": "Pixel_8_API_34",
+    "screens": ["myapp://settings"]
+  },
+  "macos": { "app": "build/Debug/MyApp.app", "build_command": "xcodebuild -scheme MyApp build" }
+}
+```
+
+- **iOS:** the simulator check launches the app, then opens each `simulator_screens` link (a URL scheme or universal
+  link your app handles) and captures it, in light and dark.
+- **Android:** needs `adb` (Android platform-tools, found on your PATH, in `ANDROID_HOME`, or in
+  `~/Library/Android/sdk`). It uses a running emulator or device, or starts `avd`; installs `apk` (after
+  `build_command`, if set), launches `package`, opens each link in `screens`, and captures light and dark.
+- **Mac:** launches the built `.app` and captures its window in light mode. The app running Orchestrator needs Screen
+  Recording permission (System Settings > Privacy & Security), or the capture is refused and the report says so.
+
+Anything that fails is listed in the review's capture limits, and the review carries on from the code.
+
+**Your own capture command.** For anything Orchestrator can't screenshot itself (a game engine, a desktop toolkit, a
+hardware rig), give it a command that writes the pictures:
+
+```json
+"ui_review": {
+  "capture": {
+    "command": "python3 tools/capture_review.py --output \"$ORCHESTRATOR_CAPTURE_DIR\"",
+    "timeout": 900
+  }
+}
+```
+
+The command runs through `bash` in the project folder, after any other targets, and must exit 0. Orchestrator sets:
+
+| Variable | Value |
+|---|---|
+| `ORCHESTRATOR_CAPTURE_DIR` | an empty folder to write into (removed afterwards) |
+| `ORCHESTRATOR_CAPTURE_JOB` | the job being checked, empty for a product pass |
+| `ORCHESTRATOR_CAPTURE_DARK` | `1` when dark screens were asked for, else `0` |
+
+Every `.png`, `.jpg` or `.webp` it writes there (subfolders included) becomes a screen: up to 20 images, 15 MB each.
+Screens are named from the file name, or from a `captions.json` beside them (`{"eye-level.png": "Eye level, forest"}`); a
+file ending in `-dark` or `_dark` counts as a dark screen. Files that aren't images are ignored. `timeout` is seconds
+(10 to 3600, default 900); a command that runs over is stopped together with everything it started. If it fails, runs
+out of time or writes nothing, the review's capture limits say so (with the command's last line of output) and
+the review carries on from the code. Its images are not used if it exits with an error. The command comes from your own
+`project.json`, like `build_command`, and runs with your permissions. Saving the **Screens** form in the Web UI leaves `capture` and `paths` alone, so they live in the file.
+
+Models see the screenshots as attachments (Codex, opencode) or through their file tools (Claude, Gemini, agy); a model
+that can't open images says so in the report's limits.
+
+## Source control
+
+The **Git setup** page (under *Build & ship*) starts with a **Source control** card. It opens with one line on why source control matters, then a dropdown of where your code can be kept:
+GitHub, GitLab, Bitbucket, Azure DevOps, another Git host, or on this computer only.
+
+- **Nothing chosen yet:** the dropdown says "Choose one…". Pick an option to see what it's good at, what to watch out for, how Orchestrator works with it, and the
+  steps to set it up, with the buttons for those steps right there (Initialize repository, Sign in to GitHub, Create a GitHub repository, Connect a repository,
+  Use this computer only).
+- **Already connected:** the dropdown shows the current one. Pick another to see the steps to switch. Switching changes where jobs push; your history comes with you.
+- **Help me set this up with AI** is optional. A model reads where the project is now (a repository or not, commits, remote, GitHub sign-in) and writes steps from there.
+- GitHub gets the fullest workflow (an issue and a draft pull request per job). The others use plain Git: jobs work on branches and merge on this computer, with a link
+  to open a review request.
+
+## Architecture
+
+Every project has one approved architecture: the language, frameworks, structure and packages it is built with, and why. It lives in a section of the **Product** page, above History, and it is saved in the project as `docs/architecture.json` (the record) and `docs/architecture.md` (the same decision written out, with a diagram). Every plan, plan review and build reads it as a constraint, so jobs stop re-guessing the stack.
+
+**New projects.** After **Start a new project**, the next step is **Choose the architecture**. A model reads the product requirements, the platforms you picked and the build tools on this Mac, then suggests two or three options in plain words. Each option shows:
+
+- **Best for:** the kind of product it suits, in one sentence.
+- **Fit for your product:** a score out of 100 against your requirements.
+- **A simple diagram:** who uses it, what they open, what runs behind it, where data lives, and outside services.
+- **Good and Watch out:** everyday pros and cons.
+- **Style mix:** weighted percentages in three fixed categories (system shape, code organisation and UI pattern), because real architectures are mixtures.
+
+The recommended option is selected. Pick another if you prefer, adjust the language, framework or build and test commands under **Stack and commands**, or **Ask for changes** with a note. **Approve architecture** saves it and commits just those two files, leaving any other changes alone. None of this is required: every step can be skipped.
+
+**Imported projects.** For a project that already has code, **Describe the architecture** reads a digest of the repository (languages, folders, manifests, packages, entry points and the README) and describes the architecture as it is now, with an approximate diagram and style mix. Nothing in the code changes. Confirm the description, and jobs follow it from then on.
+
+**Tied to the product requirements.** Each decision lists the requirements it serves, and **How it serves your product requirements** maps each core need to the part of the architecture that meets it. **Not covered yet** lists needs it doesn't meet. When the requirements change after approval, the section and the Home card say so. **Check it against the requirements** then proposes only the adjustments the new requirements need.
+
+**Skipping it.** **Skip for now** (or **Decide later** on a proposal) never leaves the project without an architecture. Orchestrator keeps a *working assumption*. With a proposal, that is the recommended option. Without one, it is read from the code, with no model involved. Working assumptions are versioned 0.1, 0.2 and so on, are saved and committed like an approved decision, and jobs follow them unless a request clearly needs otherwise. **Approve as it is** makes the assumption the chosen architecture, version 1.0, and so does approving any proposal. **Refresh from the code** updates an inferred assumption after the code changes, and Home flags when that has happened. A new project with nothing recorded at all only gets a note in its plans not to pick a stack silently.
+
+**Changing it later.** Most changes are small and frequent; a few are large and rare:
+
+- **Add or adjust (tweak):** a package, a module, a storage choice. The language, framework and overall shape stay. The version goes from 1.3 to 1.4.
+- **Rethink the architecture (overhaul):** new options are weighed against staying with what you have. The version goes from 1.3 to 2.0, and the page warns that existing code may need rebuilding.
+
+Orchestrator decides which kind a proposal is from what it changes, not from what the model calls it. A change to the primary language, the framework, the chosen option or the dominant system shape is an overhaul. Before you approve, **What would change** lists every difference, and **History** keeps each version with its changes.
+
+The complete reference, including the style catalog, file formats and API, is `docs/architecture-step.md` in the Orchestrator repository.
+
+## Packages
+
+The **Packages** page (under *Build & ship*) lists the libraries and plugins this project uses, and ones worth adding. It's per project.
+
+- **In this project** is read from the project's manifests: `package.json`, `requirements.txt`, `pyproject.toml`, `Package.swift`, `Cargo.toml`,
+  `go.mod`, `Gemfile`, `Podfile`, `build.gradle`, Unity's `Packages/manifest.json` and `pubspec.yaml`. Nothing is run, and vendored folders are skipped.
+- **Suggested packages appear on their own.** When your product requirements are set or change in a meaningful way (about a paragraph of new content, left unchanged for a minute or so; small tweaks and one-line additions don't count by themselves, but add up), a model reads them
+  and your features, searches the web where it can, and suggests packages the project doesn't have yet, each tied to the feature it helps. Each is one line with a
+  link: **Accept** it or **Reject** it. A rejected package isn't suggested again. The sidebar shows how many are waiting. The first time a project is looked at it only
+  notes the requirements it has, so existing projects aren't reviewed until they change. Turn the automatic review off with the checkbox on the page, or run one any
+  time with **Recommend packages**. It uses Claude Code or the Gemini CLI for the search; with any other model it answers from what it knows, and the page says
+  versions may be out of date.
+- **Accepted** packages are yours to manage: add your own with **Add package** (paste a link from npm, PyPI, crates.io, pub.dev, RubyGems, CocoaPods, pkg.go.dev, Maven or GitHub, and the name and ecosystem are filled in), edit, reject or remove. These are notes about the
+  project; they never change your code.
+- **Update** on an installed package uses its native package manager, then runs the project's configured test command. It makes no AI call. If either step fails, **Fix with AI** opens a repair job with the failed command and error filled in. Changes are kept for review.
+- Direct updates support npm, pnpm, Bun, standalone Yarn, SwiftPM, Cargo, Go, uv, Poetry, simple pip requirements, CocoaPods, Bundler, Dart and Flutter. Poetry and pip require an existing isolated project-local `.venv`; pip requirements with includes, options, extras, markers or URLs need a planned update. Updates respect declared constraints and may adjust necessary transitive lock entries. Modern Yarn workspaces, Gradle and Unity offer **Update with AI** in the menu before any change. A missing test command prevents native updates until it is configured.
+- **Add to project** and **Remove** open a prefilled New job because they can require code changes. Once a job installs a package, it appears under **In this project**.
+
+## Firebase Delivery
+
+### Send to my phone
+
+Open **App delivery**. If a project can't send builds yet, the **Send to my phone** card works out the setup from your project's own files and asks you to confirm it, instead of giving you a form to fill in. It reads, without running anything:
+
+- the Firebase project, app ID and tester group, from a past upload receipt or build log, the app's `GoogleService-Info.plist` or `google-services.json`, `.firebaserc`, and your `AGENTS.md`, `CLAUDE.md`, README or docs;
+- the script that builds the app (`tools/package_ios.sh`, a Gradle wrapper, or a Firebase Hosting setup), and the file it writes, from where the script says its output goes or from an earlier build.
+
+Each value shows where it was found. Check it, fill in anything marked **needed**, and press **Use this setup**. After that the card is a single **Send build** button. Automatic delivery is never turned on for you; if your `AGENTS.md` says uploads must be requested explicitly, the card says so. An Xcode project uses the setup wizard's signing flow instead, and every individual option stays under **Advanced delivery settings**, collapsed.
+
+### Signing keys
+
+**App delivery** has a **Signing** card that checks, for this computer, the secret that signs your builds. It shows one line per platform: **Ready**, **Not set up**, **Not on this computer**, or **Not needed**. Signing keys are secrets: they stay on the computer that builds and are never put in the project's files.
+
+- **iOS.** Builds are signed with an App Store Connect key (a `.p8` file) kept in `~/.private_keys/`. **Set up…** walks you through it: open App Store Connect → Keys and create a key with the Developer role (Apple only lets you download it once; that step is yours), then pick the downloaded file (Orchestrator only looks in Downloads and on the Desktop when you press **Set up…**, and macOS may ask you to allow that the first time) and paste the Issuer ID (shown above the keys; if another project already has it you can reuse it). Orchestrator copies the key into `~/.private_keys/` as owner-only, fills in the key id and location, and leaves your download where it was so you can delete it once a build works. One key covers all your apps. You can also skip the key and sign in to Xcode with your Apple ID on this Mac.
+- **Android.** If the project signs releases, the card checks that the keystore and the settings file that names it (such as `key.properties`) are here. Tester builds signed with the debug key need nothing, and the card says so. If the signing is read from environment variables it says that too, since Orchestrator can't check them.
+- **The key is on another computer.** **Get it here…** offers two ways: use that computer (open Orchestrator there and send the build from it, nothing moves), or copy it here. Copying finds it on your computers that are set up for SSH, shows a warning (it makes a second copy of a secret that can sign as your team, so only copy between computers you own, never a shared or work one), and needs a tick before it goes. It travels over SSH between the two computers: not through the browser, Orchestrator's servers or GitHub. It's saved owner-only and checked afterwards, a different file already there is never replaced, and a file inside the project is only written to a git-ignored path. From a terminal: `orchestrator signing status`, `import-ios`, and `copy --platform ios|android --from <computer> --to local --i-understand`.
+- **Who can do this.** Only the owner. A member sees the state but no buttons.
+
+### Servers
+
+If your project has a Docker compose file (`docker-compose.yml`, or one like `compose.profile.yml`, including a server repository cloned inside your project), the **Server** card at the top of **App delivery** shows each server, whether it is running, the ports it uses, and its services. **Start**, **Stop** and **Restart** ask first, naming the exact command and folder (`docker compose up -d`, `stop`, `restart`), and run it as a normal run with its output. **Start** also starts Docker Desktop on this Mac if it isn't running, then waits until every service is up and healthy and tells you if one is unhealthy. **Logs** shows the end of the server's output.
+
+It only starts and stops containers. It never removes containers, networks or volumes (no `down`, no `-v`, no `prune`), so data stays. Environment values in compose files, such as passwords, are never read or shown. The card shows one server at a time: its name, one status, and one button. If the project has more than one, a menu picks which. Ports, services, the logs, the computer and the tick-box for starting it when you send a build are under **Details**, which stays open once you open it. If your `AGENTS.md` or `CLAUDE.md` has a rule about a live, baseline or production server, Details quotes it. The tick-box only appears once sending a build is set up.
+
+**Start it when I send a build.** Tick **Start it before I send a build to my phone** on a server and **Send build** will make sure it is running first: it starts it if needed, waits until it is healthy, and only then builds and sends. If the server won't come up, nothing is sent. Nothing is ever started for a build unless you ticked it (you may not want a live server touched), the Send form says which servers it will start, and the confirmation names both steps. From a terminal: `orchestrator distribute --with-servers`. The choice is saved as `servers_for_app` in `.orchestrator/project.json`.
+
+Pick another computer from the card's menu to manage its copy of the project over SSH. It lists the machines in `machines.json` that have an SSH address and a project folder; the SSH login must work without a password prompt. The same thing from a terminal: `orchestrator server status`, `orchestrator server start <id> --machine <name>`, `stop`, `restart`, `logs`. With more than one server in the project, `start` asks you to name it instead of guessing.
+
+### The options behind it
+
+Firebase delivery is opt-in:
+
+```json
+{
+  "delivery_provider": "firebase",
+  "firebase_distribution": true,
+  "distribution_script_path": "scripts/distribute_ios.sh",
+  "firebase_plist_path": "MyApp/GoogleService-Info.plist",
+  "firebase_groups": "internal-testers"
+}
+```
+
+`check-config` fails early if Firebase delivery is enabled but the distribution script or plist path is missing.
+
+The delivery workflow archives and signs the iOS app, uploads the IPA to Firebase App Distribution, and releases it to configured tester emails or groups. If no recipients are configured, Orchestrator uses the `internal-testers` group. Each successful delivery writes a receipt under `.orchestrator/output/delivery/` with the app version, build number, IPA path, recipients, and SHA-256 checksum.
+
+### Android and web projects
+
+You can set this up on the **App delivery** page, under **Where builds go**, or in `project.json`.
+
+`delivery_platform` picks where a finished build goes: `ios` (the default, described above), `android` or `web`. The Android and web options need the `firebase` command installed and signed in (`npm install -g firebase-tools`, then `firebase login`, or set `FIREBASE_TOKEN`). Neither needs a distribution script or a plist.
+
+```json
+{
+  "firebase_distribution": true,
+  "delivery_platform": "android",
+  "delivery_build_command": "./gradlew assembleDebug",
+  "delivery_artifact": "app/build/outputs/apk/debug/*.apk",
+  "firebase_app_id": "1:1234567890:android:abc123",
+  "firebase_groups": "internal-testers"
+}
+```
+
+- **Android** runs `delivery_build_command` (optional), takes the newest `.apk` or `.aab` that matches `delivery_artifact` and was written by that build, and uploads it to App Distribution with `firebase_app_id`. Find the app ID in the Firebase console under Project settings. Recipients are `firebase_groups` and `firebase_testers`, as for iOS. A Unity project can use the same fields, with a command that runs its batch-mode Android build.
+- **Web** runs `delivery_build_command` (optional), then deploys a Firebase Hosting preview channel named after the job, which expires after 7 days. The receipt and the console show the preview URL. It needs a `firebase.json` in the project; set `firebase_project_id` or `firebase_hosting_target` when the project has more than one.
+- Both write a receipt under `.orchestrator/output/delivery/`, like iOS, and `check-config` reports what is missing. Verified jobs deliver automatically, the same as iOS jobs that change iOS files. Delivery is confirmed only when Firebase exits cleanly; the log, `distribution_<job>.log`, leaves out release notes and tester emails.
+- **A file your own script builds** (`"delivery_platform": "file"`) uploads an `.ipa`, `.apk` or `.aab` that your own script makes, to Firebase App Distribution. It is for projects Orchestrator can't build itself, such as a Unity project with its own iOS script. `delivery_build_command` is your script (`tools/package_ios.sh`), `delivery_artifact` is the file it writes (`.local/release-*/ios/*.ipa`), and `firebase_app_id` is the Firebase app it goes to (use the iOS app's ID for an `.ipa`). Orchestrator doesn't build or sign the app: your script does, and Orchestrator uploads the file it wrote.
+- **Automatic delivery is optional.** Leave **Deliver automatically** off if each upload has to be asked for. **Send build** on the App delivery page then sends one build per press, and nothing is sent after a job on its own.
+- Not covered: Steam, desktop installers, TestFlight and Google Play. Firebase has no desktop option.
+
+In the console, use **Quick Build & Distribution** to deliver the current branch. The live delivery test under **Firebase App Distro** also publishes a real release; it is not a dry run. A delivery job targeting another branch stops and asks you to switch explicitly so local changes are never discarded.
+
+For an end-to-end workflow from iPhone or iPad, use [Secure ShellFish](https://secureshellfish.app/) to connect over SSH to the machine running Orchestrator. You can manage the coding workflow remotely, run builds and tests, and trigger Firebase delivery from the same terminal session.
+
+## Web UI
+
+The Web UI is how most people use Orchestrator. The work runs on your own computer; you reach it from a browser at **https://swift-orch-web-20260923.web.app**, which never changes. Your code, files and assets stay on your computer, never on our servers: the hosted site only knows your account, which computers are on it, and where to reach them (see [Control plane](control-plane.md)). Home starts with a short setup checklist until the basics are done, then shows what needs you next.
+
+> **Setup checklist.** Four things make a computer ready: a project (with build & test commands), Git (including non-interactive remote authentication so `git fetch`/`pull` never hang waiting for a username or password), an AI model (a provider whose CLI login or API key is ready and not expired, **and** overlaps with the local computer's enabled `models` list in `machines.json`), and an enabled machine. Beyond those basics, Orchestrator checks five layers of build and test dependencies before spending AI tokens: host toolchains and pinned versions (`global.json`, `.nvmrc`, `.python-version`, `go.mod`, `rust-toolchain.toml`), unhydrated project lockfiles (`npm`, `pnpm`, `yarn`, `bun`, `uv`, `CocoaPods`, `Flutter`/`Dart`), platform SDKs and build modules (Xcode/Simulator, Unity license and iOS/Android playback modules, Android JDK/SDK), declarative `"requires"` in `project.json` (`docker`, `container:<name>`, `command:<name>`, `path:<path>`, `env:<NAME>`, `device:ios`), and peer machine capabilities. Missing dependencies surface one consolidated **Set up environment…** button (installing Homebrew toolchains, Unity Hub editors/modules, locked project packages, and Docker servers in a single pass) alongside capability-checked **Run on `<Peer>`** failover. Each setup row has one button that opens the right place, and preflight job checks block runs before start if `origin` cannot authenticate non-interactively; if credentials or an OAuth session still fail mid-run, the failure card offers an inline GitHub credential prompt or an on-the-spot AI sign-in button. Non-interactive re-plans also fall back to ready local models if `machines.json` has no overlap, and jobs missing `"builder"` fall back via `resolve_builder_model()`. The rest, such as role instructions and screens to review, is optional.
+
+> **Product requirements.** Each project has one short document, `docs/product/prd.md`, that every planner, builder and reviewer reads first. You can write it, import one you already have (it is summarised into the sections, and the full file stays attached for jobs to read), or have it drafted from an existing project, and it is kept up to date as jobs finish, with a history you can undo. Every section is optional. Once there is something in it, **Break down** splits it into epics to approve or decline. Your computers share the document by default, through the project's own repository (a hidden ref, not Orchestrator's servers), so anyone who can read that repository can read it. You choose when you set the project up (a public repository asks first), and can change it on the Product page (**Stop sharing**). An edit on one computer appears on the others within seconds, as a version in each one's history, announced like an automatic update and undoable; designs and source documents travel too, and so do jobs (with their own **Stop sharing jobs**). If you changed the same section on two computers, both texts are kept (the other computer's marked **Also written on** its name) for you to tidy. A project with no Git remote stays on its computer. See [Sharing project state between computers](state-sync.md). **Home** shows a **Product** card in every state: until anything is written it offers the ways to start (Draft with AI, Write it, Import PRD, Reverse engineer); once some sections are written it shows how far along you are (**Partially completed**, with what is still to fill in and a **Finish it** button); and when all six are written it shows **Completed** with the pitch. Every card says when the document was **last updated** and by whom: you, AI help you accepted, a draft, an import, or **by AI after** the job that updated it automatically. A change made in another editor shows as **edited outside Orchestrator**. Hover the date for the exact time. See [Epics](#epics) and [Product requirements](product-requirements.md).
+
+> **Ask AI.** The chat button on **Home** asks one question about the whole project without starting a job, with **Free**, **Balanced** or **Complex** AI. Its composer starts as a single row (expanding as you type, without a header clear button). The model can't open files or change anything, so every question carries what is known about the project: the product requirements (when they are written), attached documents, the README and notes, what it is built with (language mix, `package.json`, Gradle, Swift package and similar), the folder structure, the start of the main source files, recent commits and jobs. A project whose requirements aren't written is described by its README, documents and code instead, and the answer says so. **Free** tries the best free model first, judged by what it really is: a model installed on your computer is rated by its actual size (a 1-billion-parameter model comes last, whatever its label says), and a decent one on your computer is tried before a hosted free one, so your question and project text stay on this computer when a local model is good enough. Local models (Ollama) have a fixed window, so the context is sized to fit it, and a prompt longer than Ollama's default window is sent through its API with a bigger one rather than being cut off at the start. What is sent goes to the model you pick, hosted ones included: keys, `.env` files, certificates and anything that looks like a token are never included. When a model can't answer, the message says why in its own words, and the tier moves on to its next model.
+
+> **New project.** The wizard asks for a name and platforms, then one question for each section of the product requirements (pitch, who it's for, core features, look and feel, what to exclude). Everything after the name and platforms can be skipped. For new projects, an architecture proposal step (`.orchestrator/architecture-proposal.json`) weighs candidate stacks against the requirements and machine capabilities; once approved, `docs/architecture.json` and `docs/architecture.md` steer planning, building, and verification. Its last step offers **Break it down** into epics, and can be skipped.
+
+> **Documentation.** There is no Docs page. Orchestrator's own guides are on the **Help** page. A job's page, written from the live project (what it is, what was decided, what was built, how it was tested, what the review said), is under **Documentation** in the job's More menu, and the PRD's Markdown file is linked from the Product page. See [Product requirements](product-requirements.md) for the PRD.
+
+`orchestrator ui` is the part that runs on your computer. With the one-command install it starts at login and keeps a tunnel open, so you rarely run it yourself. To run it by hand, or to use it only on this computer, start it for the current project:
+
+```bash
+orchestrator ui                  # http://127.0.0.1:8765/?token=...
+orchestrator ui --project Thirteen --port 9000 --no-open
+```
+
+- **Home** shows what **needs you**: a question from the planner, a plan to approve, failing tests to fix, or a PR ready to merge. Each item has the one button that moves it forward. Below that are jobs in progress and recently finished ones. **New job** is always one tap away, and less frequent actions (pull device logs, build, test, distribute the current branch, setup check, full console) sit under **More**.
+- **Jobs** filters by Needs you / In progress / Done. A job page states what it's waiting on (surfacing the primary problem first—expired sign-in, blocked writes, `No tests ran`, failing tests, or build errors—before running a fix), shows one primary action for its status (Start, Run now, Answer, Run fix, Merge & complete), and puts everything else under More. Clicking **Resume** (or any action) shows **Starting…** immediately and opens the live run view, where **Timeline** (with animated rail extension and step pop-in) and **Terminal** tabs sit in the streaming container's header, and completed run banners omit redundant **Back to job** buttons. On jobs with an error, **Attempt fix** runs a debug/fix iteration directly (hidden while waiting on **Answer**). Builder verification (`builder_check`) also stops if writes were blocked or a test command targets missing files / runs zero tests. **Answer** prompts only pause for real questions (`?` or decision requests): empty/advisory notes are ignored so execution continues, and environment/sandbox/auth blockers (such as missing write access) fail immediately with an error instead of asking for an answer (Codex builder/debugger runs receive `--full-auto` workspace write access automatically). The job's **Changes** card shows workspace uncommitted status with an **Open Git setup** link (replacing the separate Scope check card). **Deliver to testers** builds *that job's* branch. **Merge & complete** merges the PR, deletes the AI branch and archives the job, the same as in the console.
+- **Device logs** lists recent app launches from the log store, with Pull and Follow buttons (see [Device Logs](#device-logs)).
+- A job page also has the approvals the planning loop needs (**Approve plan**, **Approve design**, **Accept suggestions** from the architect review), **Revise plan** to re-plan with requested changes, the job's **Changes** (why, the files it touched, uncommitted workspace status, and a diffstat against the base branch), its **Brief** / builder summary / investigations, and links to its issue and PR on GitHub.
+- **Tests** (under Tools, or Home → More) lists test plans and suites with a Run button each, runs everything, and measures coverage. A coverage number is marked *Estimate* when measuring failed and the console fell back to an estimate from the test count.
+- **Git** shows branch controls (Pull, Push with confirmation, Switch branch, New branch, Fetch updates) and uncommitted changes directly on the Git setup page (alongside connection, Source control, and workflow integration). Home's branch name links here.
+- **Home → More** also has Setup check, Config check, Worker check and the Setup wizard.
+- **Activity** lists every command started from the UI. Runs started from a job are named after it and appear on that job's page. When a run finishes, it offers the next step, such as **Open job** after creating one.
+
+Pages refresh themselves every few seconds, but never while you're typing, have a menu open, or have a dialog up. Leaving a page closes any dialog that was open on it.
+
+Every action runs the same CLI command you would type, inside a real terminal that is shown in the page. Prompts that need you (y/n, menus, pasted logs, passwords) appear there, and you answer them by typing into the terminal. On a phone, use the key bar under it (Enter, Esc, arrows, y/n/q, Ctrl-C, Ctrl-D). **Open full console** runs the regular `orchestrator console` in the browser for what has no page of its own: Ask AI about changes, reset & rerun, discard & revert, export context, model and API-key settings, the machine fleet, email recipients, Xcode Cloud and archived jobs. Each run's output is also saved to `.orchestrator/logs/ui/`.
+
+Use it from anywhere:
+
+Quickest on a Mac: run `curl -fsSL https://swift-orch-web-20260923.web.app/install.sh | sh`. It installs what's missing (Python 3.11+, Git, pipx, cloudflared), installs Orchestrator, shows the code to confirm, and starts Orchestrator at login. Add `--no-service` to skip the login start, or `--dry-run` to only print what it would do. The steps below do the same by hand.
+
+1. On the computer with your projects, run `orchestrator connect`. It shows a code and a link.
+2. Open the link (or go to https://swift-orch-web-20260923.web.app and enter the code), sign in with Google, and confirm. The computer is now on your account.
+3. Start `orchestrator ui --tunnel` on it. Signing in to the hosted app from any browser opens your remembered computer first and automatically fails over down the list of reachable computers unless you click **Cancel** (or opens a saved snapshot if offline, where **Try live connection** shows **Connecting…** progress). The computer picker marks reachable machines with `🟢` and offline ones with `🔴`. If a connected computer runs an older Orchestrator, the UI shows a background update notice (with **View progress**) and automatically runs `update_local` and restarts when idle (or waits until active jobs finish). **Configuration → Your computers** switches between them.
+
+`orchestrator connect --status` shows which account the computer is on, and `orchestrator disconnect` removes it. See [Control plane](control-plane.md) for how it works.
+
+Access and security:
+
+- The server listens on `127.0.0.1` only. The printed URL carries the access token, kept in `~/.orchestrator/ui_token` (delete the file and restart to change it). Opening the URL once stores the token in a cookie, and every API call needs it. The access token is the owner's key: anyone holding it can do everything, so don't share it.
+- On the hosted app, a link can never supply a backend address or an access token: it only talks to computers your account vouches for, and the sign-in token for your account goes only to those. A link with `?backend=` or `?token=` in it is ignored there. (On a computer's own address, `?token=` still works, as above.)
+- Signing in with Google, Apple, GitHub or email works for the emails listed under **Configuration → Who can sign in**: your git `user.email`, `ORCHESTRATOR_ALLOWED_EMAILS`, `allowed_emails` in `project.json`, and emails added on that page. Each sign-in gets its own token, never the access token. It lasts 30 days, is listed on that page, and stops working as soon as its email is no longer allowed. Only a hash of each is stored, in `~/.orchestrator/ui_sign_ins.json`.
+- Browsers can call the server only from its own pages, pages on this computer, and the hosted app. Add other origins (a custom domain, say) with `ORCHESTRATOR_ALLOWED_ORIGINS`, comma-separated.
+- The browser can only start a fixed set of actions. It never sends a command line, and file reads are limited to `.orchestrator/`.
+- **One address from anywhere:** connect this computer to your account once (`orchestrator connect`, or the install
+  command above) and run `orchestrator ui --tunnel`. Then https://swift-orch-web-20260923.web.app is the address to use
+  on any device: it never changes, and after you sign in it finds this computer, because the computer reports its
+  current tunnel address every 60 seconds. The tunnel's own `trycloudflare.com` link changes on every restart. When the
+  page loses the computer it keeps retrying quietly and looks the computer up again by account, so a changed tunnel
+  address needs nothing from you; a notice appears only if the computer stays unreachable. The startup output no longer
+  prints a link with your token in it.
+- **Starting at login:** `orchestrator service install` runs `orchestrator ui --tunnel` as a background service, and
+  `orchestrator service uninstall` removes it. `orchestrator service status` shows whether it is running.
+- From a phone without an account, either tunnel over SSH: `ssh -L 8765:127.0.0.1:8765 <mac>`, then open the printed URL on the phone. Or bind to a private network address such as Tailscale: `orchestrator ui --host 100.x.y.z`. Don't bind to a public interface.
+- Stopping the server (Ctrl-C) also stops the commands it started.
+
+## Epics
+
+**Epics** (the second half of the Product page, below the requirements) breaks the product requirements down into epics, the big pieces of the product, for you to approve or decline. It is offered once, the first time the requirements have something in them, as the last step of the new project wizard, and is always there at the bottom of the Product page.
+
+- **Break down from the PRD** uses the technique that fits what you've written (a story map for the flows people follow, a top-down work breakdown for technical products, a short list when there's little to go on), or the one you pick in the Technique menu. A short PRD gets a few broad epics and questions; a detailed one gets a finer breakdown with requirements.
+- **Approve** the ones you want (ticking one ticks what it builds on). Each approved epic becomes a feature and a **job marked Epic** that waits in the Backlog filter on Home. **Make a plan** runs the usual planning for it; nothing runs, and nothing is asked of you, until you do. Once the plan is written the epic says **Plan ready**, and **Review plan** opens it for your approval. Declined epics are kept and can be brought back.
+- **Jira.** With Jira connected and a project key set, **Send approved epics to Jira** creates them there (a Jira icon and key then appear on the epic and its job), and **Import epics from Jira** brings the project's open epics in as approved epics with waiting jobs. Only the owner of the computer can do either, and nothing is sent until you press the button. See [Product requirements](product-requirements.md#jira).
+
+## Device Logs
+
+Builds running on a phone (Firebase App Distribution, TestFlight) can't be read over a cable from an SSH session, so the app ships its logs to a central store and Orchestrator pulls them back. Sentry Logs is the supported store: the app sends each log entry with a per-launch `app_session` attribute, plus one `remote_log.session_start` entry per launch carrying its build channel, version and build.
+
+One-time setup, from the project root:
+
+```bash
+orchestrator logs setup
+```
+
+This finds the Sentry DSN in the repo, writes a `remote_logs` block to `.orchestrator/project.json`, asks for a read token and saves it to `.orchestrator/.env` (chmod 600), then makes a live query to confirm access. Create the token under Sentry **User Settings → Personal Tokens** with scopes `org:read`, `project:read` and `event:read`. It is stored as `SENTRY_LOGS_TOKEN` because `SENTRY_AUTH_TOKEN` is usually an upload-only token for dSYMs.
+
+```json
+{
+  "remote_logs": {
+    "provider": "sentry",
+    "api_base": "https://us.sentry.io",
+    "org": "4510342215434240",
+    "project": "4510342216941568",
+    "token_env": "SENTRY_LOGS_TOKEN",
+    "session_attribute": "app_session"
+  }
+}
+```
+
+Day to day:
+
+```bash
+orchestrator logs sessions                        # recent app launches: id, time, channel, version, device
+orchestrator logs pull --latest                   # newest launch -> .orchestrator/output/cloud_logs/<ts>-<session>/cloud.log
+orchestrator logs pull --session 1a2b3c4d --level warn --query 'category:LobbyViewModel'
+orchestrator logs tail                            # follow the newest launch live (polls every 5s)
+```
+
+In the console, **Link Logs → Pull Device Logs (cloud)...** lists recent launches and links the pulled logs to the job. Choosing **Always newest launch** links `cloud:latest` instead, which re-pulls the newest launch on every debug iteration — reproduce on the phone, then rerun the debug loop without relinking. `cloud:latest` and `cloud:<session>` also work anywhere `debug_job.py --logs` takes a path.
+
+Logs reach Sentry within about 5 seconds, and immediately when the app is backgrounded. Sentry keeps them for 30 days.
+
+## Adaptive Planning & Prototype-First Experience Loop (`Build → Experience → Refine`)
+
+Orchestrator combines an **Adaptive Specification & Planning Pipeline** with a **Prototype-First Experience Loop**:
+
+1. **Say It Your Way (Default Entry Point)**:
+   - The **New job** page defaults to **Freestyle ("Say it your way")**, accepting anything from a one-sentence idea to a complete PRD with attachments, code examples, and design links.
+2. **Adaptive Rolling-Wave Planning (Single-Pass Fast-Track + Two-Pass Epics)**:
+   - **Pass A (Living Feature Spec & Ambiguity Assessment)**: Synthesizes a versioned `LivingFeatureSpec` (`.orchestrator/output/<job_id>/spec.json` and `spec.md`) with provenance tags (`[explicit]`, `[code_derived]`, `[inferred]`), checks for outdated/renamed repository paths, and evaluates uncertain decisions across **Confidence**, **Impact**, and **Reversibility**. For single-slice requests ($\le 3$ tasks, no deferred stories, no blocking ambiguity), Pass A collapses into a **single-pass fast-track** (`"pass": "combined"`) and generates tasks and test cases directly without a second Pass B LLM call.
+   - **Time to First Experience (TTFE) Optimization**: Unsafe or irreversible choices (privacy/PII, security/auth, billing, destructive data loss, or costly schema changes) pause at the **Intent Gate**, whereas reversible product-behavior defaults (such as initial scoring or tie-breaker rules) are recorded as v0.1 **Product Hypotheses** (`spec.product_hypotheses`) so the first playable slice builds immediately.
+   - **Pass B (Repository-Aware Execution Planning)**: Runs for multi-story epics or post-clarification plans to plan tasks and automated test cases for only the first ready vertical story slice, while turning remaining `deferred` stories into waiting `status: "backlog"` jobs linked to the same feature.
+   - **Auto-Passing Lightweight Gates**: Small, low-risk, reversible slices with clean test cases and no manifest changes automatically pass the Intent and Plan gates (`auto_passed_gates: true`).
+3. **Success Criteria, KPIs & Guardrail / Counter-KPI Metrics**:
+   - Every feature spec includes explicit or implied `success_criteria`.
+   - When an analytics or monitoring app (Mixpanel, Amplitude, PostHog, Sentry, Datadog, New Relic) is connected, `spec.kpi_metrics` ties those success criteria to a **Primary KPI** and at least one **Guardrail / Counter-KPI** metric (e.g., error rate, latency, or abandonment counter-KPI).
+   - When no analytics app is connected, Orchestrator recommends setting up analytics/KPIs **once** and then stays silent on KPIs until analytics is connected in setup.
+4. **Experience & Refine (`v0.1 → v0.2 → v0.3`)**:
+   - When a build reaches `review-needed`, the Job page folds **Version history** (with clickable **Assumed defaults** chips and **Undo last iteration**) into the top lifecycle stepper, paired with a natural feedback prompt in the hero card.
+   - Every reaction runs through a 5-way **Change-Impact Classifier** (`visual_or_copy`, `behavior_change`, `new_capability`, `fundamental_rethink`, `undo`), locks previously accepted criteria against regression (`locked_behaviors`), and triggers an **Architectural Refactor Guardrail** when the same files are patched $\ge 3$ times across iterations.
+   - The **Analytics** page tracks the 5 **Intent-Convergence Metrics**: **Time to first experience (TTFE)**, **Time per feedback iteration**, **Iterations to acceptance**, **Rework & regression rate**, and **User interaction burden**.
+5. **Lean LLM Execution & Prompt Guardrails**:
+   - Plan quality checks (test cases, size budget, and vertical slicing) run together with at most **1 combined self-correction retry**.
+   - Grounded, single-slice plans from high-tier planners that auto-pass the deterministic Plan Gate skip the redundant Senior Architect verification LLM call.
+   - Small cohesive tasks touching overlapping files ($\le 4$ unique files) batch into a single builder pass; failed builds capture output on the first run and extract compiler/test errors deterministically (including MSBuild `error :` diagnostics, ignoring `Passed! - Failed: 0` lines); UI screenshot instructions only appear for UI-touching tasks or configured `ui_review` projects; and visual/copy or undo refinements skip redundant post-job PRD update LLM calls.
+6. **Resilient AI Sign-In Fallback & Streamlined Workspace**:
+   - When a job's configured AI CLI rejects authentication (e.g., expired OAuth token) and the job is not restricted to free-only models, Orchestrator automatically falls back to ready signed-in models on this computer — including Antigravity-hosted Claude models (`claude-sonnet-*`, `claude-opus-*` routed via `agy`) — and marks the expired CLI rejected until re-authenticated. The order is **cheapest adequate first**, not strongest first: a model is adequate when it is no weaker than the one that failed and meets the role's own minimum tier (planner, builder and debugger need a high-tier model; verifier and architect need the top tier). Among those, hosted Claude comes first when Claude was the tool that failed, then the lowest cost, so a Sonnet that loses its sign-in falls back to a hosted Sonnet before any Opus. Weaker models are tried only after every adequate one has failed, and the tool whose sign-in failed is never a fallback.
+   - `.NET` test auto-detection (`dotnet_test_projects`) skips projects that enforce external MSBuild `-p:` properties so bare `dotnet test` commands stay green.
+   - Failure heroes include a one-click top-right log-copy icon (`#i-log`), Run pages place rerun (`#i-refresh`) and share-log (`#i-share`) icons in the upper-right header, Documentation **Gaps** offer a **Fix** modal (Use AI, Write manually, or Import file), and AI Tools starts fully collapsed with background-only capability scanning.
+
+## Troubleshooting
+
+Run both checks first:
+
+```bash
+orchestrator check
+orchestrator check-config
+```
+
+Common issues:
+
+- `orchestrator: command not found`: install the package in the active Python environment or use the virtualenv's `bin/orchestrator`.
+- `orchestrator: command not found` after `pipx install`: run `pipx ensurepath`, open a new terminal, then retry.
+- `Configure xcode_project, xcode_workspace, or build_command`: run `init` from the Swift project root or set `build_command`.
+- `scheme is required`: set `scheme` in `.orchestrator/project.json`.
+- `No AI providers found`: authenticate a provider CLI or export a supported API key.
+- SSH worker is `NOT READY`: run `orchestrator worker-install --machine NAME`, then rerun `worker-check`.
+- Remote worker imports fail after package changes: rerun `worker-install` to refresh the source copy.
+- GitHub actions fail: install `gh` and run `gh auth login`, or set `"code_host": "git"` to work without GitHub ([Code hosts](code-hosts.md)).
+- `orchestrator logs` reports `Sentry refused the token (403)`: the token lacks `org:read`, `project:read` or `event:read`. Create a new one and rerun `orchestrator logs setup`.
+- `No app sessions found`: the build predates remote logging, the app was never opened, or it is an App Store build (errors only). Open the app, wait a few seconds, and retry.
+
+## Generated Ignore Rules
+
+`orchestrator init` writes `.orchestrator/.gitignore`:
+
+```gitignore
+jobs/
+logs/
+output/
+state/
+*.pyc
+__pycache__/
+```
+
+This lets the project commit orchestrator config while keeping runtime output local.
+
+## Suggested Project Docs
+
+The setup checker looks for grounding docs that help AI agents work consistently:
+
+```text
+AGENTS.md
+docs/architecture.md
+docs/coding-standards.md
+docs/build-test-commands.md
+```
+
+You don't write `docs/architecture.md` by hand: the Architecture section of the Product page writes it when you approve or skip. The setup checklist's recommended **Choose or describe the architecture** item takes you there, and counts as done once the project has an approved architecture or a working assumption.
+
+Minimal `AGENTS.md` snippet:
+
+```md
+# AGENTS.md
+
+Use `docs/build-test-commands.md` for canonical validation commands.
+Prefer minimal, reviewable diffs.
+Do not commit secrets, generated runtime logs, or unrelated changes.
+Run `orchestrator check-config` after changing `.orchestrator/project.json`.
+```

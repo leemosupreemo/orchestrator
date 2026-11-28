@@ -2,14 +2,18 @@
 from __future__ import annotations
 
 import argparse
+import os
+import shlex
 import subprocess
 import sys
+import time
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
-from common import CONFIG_DIR, ROOT, now_iso, read_json, run, write_json, print_phase
+from common import CONFIG_DIR, ROOT, is_disk_full_error, now_iso, read_json, run, write_json, print_phase
 from model_registry import get_model
+from orchestrator.run_check import MIN_DISK_GB, equivalent_model_names, model_names_overlap  # noqa: F401
 from probe_machine import load_machines, probe_machine
 from worker_tools import remote_env_prefix, remote_import_check_command
 
@@ -25,8 +29,12 @@ RESOURCE_PROFILES = {
 
 
 def load_machines() -> list[dict[str, Any]]:
+    from orchestrator.project_setup import update_ready_models
+
     config = read_json(CONFIG_DIR / "machines.json")
-    return [machine for machine in config["machines"] if machine.get("enabled", True)]
+    machines = [machine for machine in config["machines"] if machine.get("enabled", True)]
+    update_ready_models(ROOT, machines)
+    return machines
 
 
 def load_job(job_path: Path) -> dict[str, Any]:
@@ -116,17 +124,6 @@ def ready_groups(job: dict[str, Any]) -> list[dict[str, Any]]:
     return ready
 
 
-def equivalent_model_names(model_name: str) -> set[str]:
-    model = get_model(model_name)
-    if not model:
-        return {model_name}
-    return {model.id, *model.aliases}
-
-
-def model_names_overlap(left: str, right: str) -> bool:
-    return bool(equivalent_model_names(left).intersection(equivalent_model_names(right)))
-
-
 def machine_supports_model(machine: dict[str, Any], candidate: str) -> bool:
     return any(model_names_overlap(candidate, machine_model) for machine_model in machine.get("models", []))
 
@@ -187,7 +184,6 @@ def format_ineligible_machines(ineligible: list[tuple[dict[str, Any], str]]) -> 
 
 
 STICKINESS_BONUS = 150.0  # Strong preference for remaining on previous machine to preserve state
-MIN_DISK_GB = 15  # Minimum required to start a build
 LOW_DISK_THRESHOLD = 30 # Threshold for applying penalties
 
 def score_machine(machine: dict[str, Any], probe: dict[str, Any], group: dict[str, Any], previously_assigned: str | None = None) -> tuple[float, list[str]]:
@@ -298,9 +294,13 @@ def choose_machine_and_model(job: dict[str, Any], group: dict[str, Any], machine
     # Restrict to allowed machines if specified in job
     allowed_names = job.get("allowed_machines")
     
+    out_of_space = {str(i.get("machine")): i for i in job.get("machine_issues") or [] if isinstance(i, dict)}
     for machine in machines:
         if allowed_names and machine["name"] not in allowed_names:
             ineligible.append((machine, "Not in allowed set for this job"))
+            continue
+        if machine["name"] in out_of_space:
+            ineligible.append((machine, "Ran out of disk space earlier on this job"))
             continue
             
         probe = probe_machine(machine)
@@ -389,6 +389,11 @@ def schedule_ready_group(
     job: dict[str, Any],
     machines: list[dict[str, Any]],
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], str, dict[str, Any]]:
+    from orchestrator.job_scope import NONPRODUCTION_TYPES
+    if job.get("type") in NONPRODUCTION_TYPES:
+        machines = [machine for machine in machines if machine.get("execution_mode") == "local"]
+        if not machines:
+            raise RuntimeError("Design and Tests jobs require a local worker.")
     groups = ready_groups(job)
 
     if not groups:
@@ -412,6 +417,49 @@ def get_local_git_state() -> dict[str, Any]:
     except:
         return {"branch": "unknown", "hash": "unknown", "dirty": False}
 
+def _local_paths(*args: str) -> list[str] | None:
+    """File names from a `git ... -z` command in the project folder, or None when git can't answer."""
+    result = subprocess.run(["git", *args], cwd=str(ROOT), capture_output=True, text=True, check=False)
+    return [name for name in result.stdout.split("\0") if name] if result.returncode == 0 else None
+
+
+def mirror_uncommitted(ssh_target: str, remote_repo: str, remote_hash: str | None) -> None:
+    """Puts this folder's files, uncommitted ones included, on the other computer without destroying anything there:
+    its own uncommitted work is stashed first, only files git tracks or would add are sent (plus the project's settings),
+    and the only files removed are ones its commit tracks that are gone here. Raises RuntimeError if its work can't be
+    set aside, before anything there is touched."""
+    repo = shlex.quote(remote_repo)
+    label = f"orchestrator-kept-before-sync-{int(time.time())}"
+    stash = f"git stash push --include-untracked -m {label}"
+    # Orchestrator's own folder stays put either way. Git refuses to be told to exclude a folder it already ignores.
+    keep = f"cd {repo} && if git check-ignore -q .orchestrator/; then {stash}; else {stash} -- . ':(exclude).orchestrator'; fi"
+    kept = subprocess.run(["ssh", ssh_target, keep], capture_output=True, text=True, check=False)
+    if kept.returncode != 0:
+        raise RuntimeError("Its uncommitted changes couldn't be set aside, so nothing there was changed: "
+                           f"{(kept.stderr or kept.stdout).strip()[-300:]}")
+    if label in kept.stdout:
+        print(f"      - Its own uncommitted changes are kept in a git stash named {label} (`git stash list` there).")
+
+    names = _local_paths("ls-files", "-z", "--cached", "--others", "--exclude-standard")
+    if names is None:
+        raise OSError("git couldn't list the project's files")
+    # Folders are submodules: their contents are left alone, since the stash above doesn't cover them.
+    files = [n for n in names if not n.startswith(".orchestrator/") and ((ROOT / n).is_symlink() or (ROOT / n).is_file())]
+    if (ROOT / ".orchestrator" / "project.json").is_file():
+        files.append(".orchestrator/project.json")
+    subprocess.run(["rsync", "-az", "--from0", "--files-from=-", f"{ROOT}/", f"{ssh_target}:{remote_repo}/"],
+                   input="\0".join(files), check=True, capture_output=True, text=True)
+
+    gone_since = ["diff", "-z", "--name-only", "--no-renames", "--diff-filter=D"]
+    gone = _local_paths(*gone_since, remote_hash) if remote_hash and remote_hash != "unknown" else None
+    if gone is None:  # its commit isn't known here: only what was deleted since this folder's own commit
+        gone = _local_paths(*gone_since, "HEAD") or []
+    if gone:
+        names = " ".join(shlex.quote(n) for n in gone)
+        subprocess.run(["ssh", ssh_target, f"cd {repo} && for f in {names}; do [ -d \"$f\" ] || rm -f -- \"$f\"; done"],
+                       check=True, capture_output=True, text=True)
+
+
 def sync_code_to_remote(machine: dict[str, Any], local_state: dict[str, Any], remote_probe: dict[str, Any]) -> bool:
     """Ensures remote machine is synced with local code state."""
     ssh_target = remote_probe.get("active_ssh_target") or machine.get("ssh_target")
@@ -429,25 +477,25 @@ def sync_code_to_remote(machine: dict[str, Any], local_state: dict[str, Any], re
 
     print(f"      - Synchronizing code to {machine['name']}...")
     
-    # 1. If local is dirty, we use rsync to mirror the changes (fastest for uncommitted work)
+    # 1. If local is dirty, we copy the files across (the only way uncommitted work travels)
     if local_state["dirty"]:
-        print(f"      - Local changes detected. Using rsync to mirror state...")
-        # Exclude common large folders
-        excludes = ["--exclude", ".git/", "--exclude", "build/", "--exclude", "DerivedData/", "--exclude", "node_modules/", "--exclude", ".aider*"]
-        cmd = ["rsync", "-avz", "--delete"] + excludes + [f"{ROOT}/", f"{ssh_target}:{remote_repo}/"]
+        print(f"      - Local changes detected. Copying them across...")
         try:
-            subprocess.run(cmd, check=True, capture_output=True)
-            print(f"      - rsync successful.")
+            mirror_uncommitted(ssh_target, remote_repo, remote_hash)
+            print(f"      - Files copied.")
             return True
+        except RuntimeError as e:
+            print(f"      - ❌ {e}")
+            return False
         except Exception as e:
-            print(f"      - rsync failed: {e}. Falling back to git...")
+            print(f"      - Copying failed: {e}. Falling back to git...")
 
     # 2. Git-based sync (Push/Pull)
     print(f"      - Pushing local branch '{local_state['branch']}' to origin...")
     try:
         subprocess.run(["git", "push", "origin", local_state["branch"]], check=True, capture_output=True)
         print(f"      - Pulling on {machine['name']}...")
-        remote_cmd = f"cd '{remote_repo}' && git fetch origin && git checkout -f '{local_state['branch']}' && git pull origin '{local_state['branch']}'"
+        remote_cmd = f"cd '{remote_repo}' && git fetch origin && git checkout '{local_state['branch']}' && git pull origin '{local_state['branch']}'"
         subprocess.run(["ssh", ssh_target, remote_cmd], check=True, capture_output=True)
         print(f"      - Git sync successful.")
         return True
@@ -479,10 +527,16 @@ def dispatch_job(job_path: Path, machine: dict[str, Any], remote_probe: dict[str
         return
 
     if machine["execution_mode"] == "local":
-        from worker_run import execute_job
-        execute_job(job_path, resume=resume)
+        # Through the same door as the worker: its own worktree when it builds alongside another job, else the project
+        # folder once it's free. Calling execute_job here skipped that, so two jobs could build in one folder at once.
+        from worker_run import run_local
+        if code := run_local(job_path, resume=resume):
+            raise RuntimeError(f"The job's worker ended with exit code {code}.")
         return
 
+    from orchestrator.job_scope import NONPRODUCTION_TYPES
+    if read_json(job_path).get("type") in NONPRODUCTION_TYPES:
+        raise RuntimeError("Design and Tests jobs require a local worker.")
     remote_repo = machine["repo_path"]
     job_basename = job_path.name
     ssh_target = remote_probe.get("active_ssh_target") or machine.get("ssh_target")
@@ -533,6 +587,21 @@ def dispatch_job(job_path: Path, machine: dict[str, Any], remote_probe: dict[str
             print(f"      - Warning: Could not download updated job state from {machine['name']}.")
 
 
+def ran_out_of_disk(job: dict[str, Any]) -> bool:
+    """The job stopped because the machine it was on ran out of disk space."""
+    return job.get("status") == "human-needed" and is_disk_full_error(str(job.get("last_error") or ""))
+
+
+def skip_full_machine(job_path: Path, job: dict[str, Any], machine_name: str) -> dict[str, Any]:
+    """Remember that `machine_name` ran out of disk space for this job, so the next scheduling passes over it."""
+    issues = [i for i in job.get("machine_issues") or [] if isinstance(i, dict) and i.get("machine") != machine_name]
+    issues.append({"machine": machine_name, "reason": "ran out of disk space", "at": now_iso()})
+    job["machine_issues"] = issues
+    job["updated_at"] = now_iso()
+    write_json(job_path, job)
+    return job
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("job_file")
@@ -544,19 +613,38 @@ def main() -> None:
     job_path = Path(args.job_file)
     job = normalize_job(load_job(job_path))
     machines = load_machines()
-    
-    group, machine, _probe, _model, assignment = schedule_ready_group(job, machines)
-    
-    if not args.dry_run:
-        write_json(job_path, job)
 
-    action = "Would schedule" if args.dry_run else "Scheduled"
-    print(
-        f"{action} {job['job_id']} group {group['group_id']} "
-        f"to {assignment['machine']} using {assignment['model']}"
-    )
+    while True:
+        try:
+            group, machine, _probe, _model, assignment = schedule_ready_group(job, machines)
+        except RuntimeError as exc:
+            if job.get("machine_issues"):  # every machine is full or unavailable: say so on the job, not just in the log
+                job["last_error"] = f"{exc}\nMachines that ran out of disk space: {', '.join(i['machine'] for i in job['machine_issues'])}."
+                write_json(job_path, job)
+            raise
 
-    dispatch_job(job_path, machine, _probe, dry_run=args.dry_run, resume=args.resume)
+        if not args.dry_run:
+            write_json(job_path, job)
+
+        action = "Would schedule" if args.dry_run else "Scheduled"
+        print(
+            f"{action} {job['job_id']} group {group['group_id']} "
+            f"to {assignment['machine']} using {assignment['model']}"
+        )
+
+        try:
+            dispatch_job(job_path, machine, _probe, dry_run=args.dry_run, resume=args.resume)
+        except Exception:
+            # A remote run that ran out of space exits with an error; anything else is still an error.
+            if args.dry_run or not ran_out_of_disk(load_job(job_path)):
+                raise
+        if args.dry_run:
+            return
+        job = normalize_job(load_job(job_path))
+        if not ran_out_of_disk(job):
+            return
+        print(f"\n\033[1;93m⚠️  {machine['name']} ran out of disk space. Trying another machine...\033[0m")
+        job = skip_full_machine(job_path, job, machine["name"])
 
 
 if __name__ == "__main__":

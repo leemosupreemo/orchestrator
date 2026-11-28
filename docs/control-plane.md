@@ -1,0 +1,111 @@
+# Control plane
+
+Orchestrator does the work on each person's own computer. The hosted app (`https://swift-orch-web-20260923.web.app`) is how they reach it from anywhere: they sign in with Google, pick one of their computers, and use it as if it were local. The control plane is the small service behind that. It knows which computers belong to which account, whether each is online, and where browsers reach it. It never sees code, model subscriptions or integration tokens.
+
+```
+Browser ── hosted app (static UI + Firebase sign-in)
+   │          └─ /cp/** ── Cloud Function `cp` ── Firestore (machines, pairings, machine secrets)
+   │                                   ▲
+   │                                   │ pairing, heartbeat every 60 s
+   └── https ──► the computer's address ── `orchestrator ui` (the runner)
+```
+
+## Pieces
+
+| Where | What |
+|---|---|
+| `cloud/functions/control_plane.py` | All the logic, over a small storage interface (tested in `tests/test_control_plane.py`). |
+| `cloud/functions/main.py` | The Cloud Function: Firestore storage and Firebase ID token checks. |
+| `firestore.rules` | Deny everything: browsers only reach Firestore through the function. |
+| `firebase.json` | Hosting rewrites `/cp/**` to the function, so the hosted page calls it on its own origin. |
+| `orchestrator/account.py` | The computer's side: `orchestrator connect`, the heartbeat, checking tickets. Standard library only. |
+| `orchestrator/web/static/account.js` | The hosted app's screens: your computers, adding one, opening one. |
+
+## Adding a computer
+
+1. `orchestrator connect` asks the control plane for an 8-character code and prints it with a link (`/#/connect?code=…`).
+2. The person opens the link (or types the code), signs in, sees the computer's name and confirms.
+3. The computer, polling with a secret only it has, receives its **machine secret** once, saved to `~/.orchestrator/machine.json` (mode 600). The account's email is now allowed to sign in to it (shown as *account* under **Configuration → Who can sign in**).
+
+Codes expire after 10 minutes and can be claimed once. An account can have up to 20 computers.
+
+## Opening a computer
+
+1. The hosted app lists the account's computers (`GET /cp/machines`). One is online when it reported in the last 3 minutes, and reachable when it also has an `https://` address.
+2. It asks for a **ticket** for one of them. The ticket names the computer, the person and a nonce, expires in 2 minutes, and is signed (HMAC-SHA256) with that computer's secret.
+3. It sends the ticket to the computer's `/api/auth`. The computer checks the signature, that the ticket is for it, the expiry, and that the nonce hasn't been used, then issues its own sign-in (see [user guide](user-guide.md#web-ui)).
+
+A ticket for one computer is useless on another. This is why the hosted app doesn't hand the computer the Firebase ID token: an ID token is valid for an hour on any computer that accepts it.
+
+## Heartbeat
+
+While `orchestrator ui` runs on a paired computer, it reports every 60 seconds with its version and its `https://` address (from `--tunnel`, `--tunnel-token` with `--public-url`, or `--public-url`). If the account removed the computer, the reply says so and the computer forgets its pairing.
+
+## Jobs across computers
+
+With the heartbeat, each computer sends a snapshot of its recent jobs (`machine/sync`), carrying each job's state as its own job page shows it and the run working on it now. It is rebuilt every 10 seconds and sent when it changes, so other computers see a job pause, finish or move on within seconds. The snapshot is a read-only copy: the computer running a job is its only source of truth, and **Continue here** moves a job rather than copying it. See [Job recovery and ownership](job-recovery.md). When a snapshot shows a job imported from another of the owner's computers, the control plane records the move on that computer (`moved_jobs`) and returns it in its heartbeat reply, so it stops working on its copy.
+
+What the account keeps so a computer can continue a job while the one that has it is offline (details in
+[Job recovery and ownership](job-recovery.md#when-the-computer-that-has-the-job-is-offline)):
+
+| Collection | Document | Written by | Read by |
+|---|---|---|---|
+| `job_owners` | one per account: `{job id: {machine_id, name, epoch, at}}` | `machine/sync` (`_record_owners`): the highest `owner_epoch` wins; a lower or equal copy elsewhere gets a `moved_jobs` entry with `epoch` | the owner registry itself |
+| `account_jobs` | one per job (`<uid>__<sha256(job id)[:32]>`) | `machine/sync`'s `job_updates` (`_record_jobs`), only from the same computer or a higher `owner_epoch` (the fencing token) | `machine/snapshot` adds the computer's unfinished jobs its snapshot doesn't list |
+| `job_archives` | one per account: `{job id: {archived, at, by}}` | `machine/sync`'s `job_archives` (`_record_archives`), newest per job | every heartbeat reply (`job_archives`) |
+
+Heartbeat replies can carry `moved_jobs` (jobs another computer owns now, with `epoch`) and `job_archives`. A computer
+applies them to its own copies (`apply_moved_jobs`, `apply_job_archives`). Uncommitted work never goes through the account:
+it is pushed to `refs/orchestrator/wip/<job id>` on the project's own origin (`orchestrator/wip_backup.py`).
+
+## What the account stores, and where that is going
+
+Today the control plane holds identity and rendezvous (computers, secrets, pairings, tickets, online status, update commands,
+push tokens, rate limits, primaries) **and** some project content: job records and snapshots (`account_jobs`,
+`machine_snapshots`, `job_owners`, `job_archives`) and setup profiles (`master_configs`, `machine_setups`). Removing a computer
+deletes its own records, not the account's.
+
+It also passes on, with every heartbeat, which shared-state commit is newest for each project (`state_heads`: a hash of the
+repository's name and a commit hash per project, no content), so computers fetch from the project's repository at once
+([details](state-sync.md#what-changes-for-speed)).
+
+The plan is that it keeps only identity and rendezvous: project content moves to the project's own repository
+(`refs/orchestrator/state`), in phases, starting with the product requirements document, which never went through the control
+plane. See [Sharing project state between computers](state-sync.md). New features should not add project content here.
+
+## Notifications
+
+Alerts reach a person's phones and browsers even with Orchestrator closed. They turn them on with **Notify me when done** in the hosted app (on iPhone and iPad, after adding it to the Home Screen: iOS only allows web push for home-screen apps).
+
+- **From the computer.** The UI server already notices when something starts waiting on you or a run finishes or fails (`notifier.Tracker`). On a paired computer it also sends those events to `/cp/machine/events`, and the control plane pushes them through Firebase Cloud Messaging to every device the owner turned alerts on in. Tapping one opens the hosted app on that computer (`?machine=…`) at the page it is about.
+- **From the control plane.** The heartbeat includes how many runs are going. A scheduled function (`sweep`, every 5 minutes) alerts the owner once when a computer stops reporting while runs were going. An idle computer going to sleep is not news.
+- **What passes through.** The event's title (with the project name) and one line of text, on their way to the push service. Only each device's push token is stored, and tokens a push service reports as gone are dropped.
+- Pushes are data-only and shown by the app's service worker (`firebase-messaging-sw.js`). Each carries the same tag as the alert an open tab shows for that event, so the two replace each other instead of doubling up.
+- Slack webhooks are still sent by the computer itself (Connections → Slack & chat alerts).
+
+## Deploying
+
+Needs the Blaze plan (Cloud Functions) and Firestore enabled on the project.
+
+```bash
+cd cloud/functions && python3.12 -m venv venv && ./venv/bin/pip install -r requirements.txt && cd ../..
+firebase deploy --only firestore:rules,functions:control-plane,hosting
+```
+
+The Python venv must be built with Python 3.12 (the function's runtime): the CLI runs `python3.12` from it.
+
+To update only the hosted web app, use `python3 scripts/republish.py` rather than `firebase deploy --only hosting`: it checks that the shipped files are committed and that no new test fails first (see `build-test-commands.md`).
+
+```bash
+# once per project: delete old function images so they don't accrue storage charges
+firebase functions:artifacts:setpolicy --location us-central1 --days 1 --force
+```
+
+Optional: Firestore TTL policies on the `pairings`, `enrollments` and `rate_limits` collections' `expire_at` field sweep old codes, enrollment tokens and counters. Expired ones are refused (or ignored) either way.
+
+`pair/start` is limited to 10 codes per hour from one address (`PAIR_START_LIMIT`), read from Fastly's `Fastly-Client-IP` header, else the first `X-Forwarded-For`. Counting is best effort, enough to stop a flood of writes.
+
+## Not yet
+
+- Computers are reachable only with an `https://` address the person sets up (`--tunnel`). Next: the control plane provisions a stable tunnel for each computer during pairing.
+- Only the owner can open a computer from the hosted app. Sharing one with teammates comes later.

@@ -6,10 +6,13 @@ Read the brief first.
 USE YOUR TOOLS (read_file, grep_search, replace, write_file) to inspect the code, implement the changes, and verify your work.
 Follow existing patterns and naming conventions.
 
+When the brief names KPI events, implement them through the project's existing analytics layer. Add or update an automated test for each required event, then report each event, its verifying test, and whether that test passed in your completion summary. A test result only confirms the tested instrumentation path; do not claim it proves product adoption or that a KPI target was reached.
+
 ### MANDATORY TEST-DRIVEN DEVELOPMENT (TDD)
 1. **Red:** Use your tools to implement a failing unit or integration test FIRST. Use the repository's existing test framework and conventions.
-2. **Green:** Implement the minimal production code to pass that test.
+2. **Green:** Implement the minimal production code to pass that test, ensuring every new helper, method, or property is wired to live runtime callers.
 3. **Refactor:** Clean up code, maintaining passing tests.
+4. **No test theater:** Tests must compile/execute real behavior. NEVER write tests that simply open source/shader files and assert substrings (`assertIn` / regex), and never use `test_command` to bypass the repository's real suite; if no automated test harness exists for that layer, report `"n/a"` or run the configured test suite.
 
 Once you have successfully implemented and verified the changes, your final response must be a single JSON object with the following fields:
 {
@@ -18,8 +21,8 @@ Once you have successfully implemented and verified the changes, your final resp
   "files_changed": ["list of files to change"],
   "test_command": "complete repository test command, or Xcode test selection flags for an Xcode project",
   "risks": "short list of risks",
-  "summary": "final summary of changes",
-  "clarification_needed": "string (OPTIONAL: if you encounter uncertainty that requires human guidance)"
+  "summary": "2-4 succinct bullet points ('- ...', max ~12 words each) stating only what changed and where — no prose paragraphs",
+  "clarification_needed": "string (OPTIONAL: if you encounter uncertainty that requires human guidance. Under 80 words: your recommendation, why you are blocked, and what each answer changes.)"
 }
 
 Be careful with:
@@ -32,3 +35,4 @@ Use the provided 'Available Tests' list and inspect the repository's tests to ch
 ALWAYS include relevant tests to prevent regressions.
 Use the configured test executable and its native filtering syntax (for example, cargo test parser or npm test -- --runInBand).
 For Xcode projects only, you may provide multiple -only-testing flags; the runner supplies the project, scheme, and destination.
+Update relevant repository documentation (such as `README.md` or `docs/` files) when your change alters user-facing behavior, APIs, CLI commands, configuration, or setup.

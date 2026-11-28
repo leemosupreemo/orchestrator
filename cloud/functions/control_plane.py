@@ -1,0 +1,1134 @@
+"""The control plane: which computers belong to which account, and the one-time tickets that let a signed-in
+person into one of them. It never sees code, model subscriptions or integration tokens: those stay on the computer.
+
+Pure logic over a small Store interface so it can be tested without Firebase; main.py wires it to Firestore and
+Firebase Auth. Routes (all JSON, under /cp on the hosted app):
+
+  POST /cp/pair/start      computer       {name, os, version}        -> {code, machine_id, poll_secret, expires_in}
+  POST /cp/pair/poll       computer       {code, poll_secret}        -> {status: waiting} | {status: claimed, machine_secret, owner_email}
+  POST /cp/pair/preview    signed-in user {code}                     -> {name, os, created}
+  POST /cp/pair/claim      signed-in user {code}                     -> {machine}
+  POST /cp/machine/heartbeat  computer (Authorization: Machine <id>:<secret>) {endpoint, version, name} -> {ok, owner_email}
+  POST /cp/machine/leave      computer (same)                        -> {ok}
+  GET  /cp/machines        signed-in user                            -> {machines: [...]}
+  POST /cp/machines/remove signed-in user {machine_id}               -> {ok}
+  POST /cp/machine/ticket  signed-in user {machine_id}               -> {ticket, endpoint}
+  POST /cp/machine/events  computer (same) {events: [{key, title, body, path}]} -> {sent}
+  POST /cp/push/register   signed-in user {token, label}             -> {ok}
+  POST /cp/push/unregister signed-in user {token}                    -> {ok}
+  POST /cp/push/test       signed-in user                            -> {sent}
+  POST /cp/enroll/create   signed-in user                            -> {token, expires_in}
+  POST /cp/machines/update signed-in user {machine_id}               -> {ok}   (the next heartbeat reply asks it to update)
+  POST /cp/machines/repair-connection signed-in owner {machine_id, action} -> {ok, connection_command} (API 4+)
+  POST /cp/enroll/redeem   computer       {token, name, os, version} -> {machine_id, machine_secret, owner_email}
+
+Enrollment is pairing for a computer nobody is sitting at: the owner makes a one-time token in the hosted app and runs
+`orchestrator enroll` with it over SSH. Only the token's hash is stored, it works once, and the owner is told.
+
+Notifications: a computer forwards what its UI server noticed (something needs you, a run ended) and the control plane
+pushes it to every browser and phone the owner turned alerts on in. The scheduled sweep() adds what only the control
+plane can see: a computer that stopped reporting while work was running on it. Nothing is stored but the push tokens.
+
+A ticket is `<payload>.<signature>`: payload is base64url JSON {v, mid, uid, email, exp, nonce}, signature is
+base64url HMAC-SHA256 of the payload text keyed with the machine's secret. The computer checks it (orchestrator/account.py),
+so a ticket for one computer is useless on another, and it expires in two minutes.
+"""
+from __future__ import annotations
+
+import base64
+import hashlib
+import hmac
+import json
+import math
+import os
+import re
+import secrets
+import time
+import threading
+import urllib.request
+
+import update_recovery
+from typing import Any, Callable, Protocol
+
+PAIRING_TTL = 600         # seconds a pairing code stays valid
+ENROLLMENT_TTL = 900      # seconds an enrollment token stays valid
+ADDED_MARK_SECONDS = 86400  # how long a computer added with a token is marked so in the list
+# A Mac's readiness to run unattended (orchestrator/mac_readiness.py keeps the same names; a test checks they agree).
+READINESS_CHECKS = ("auto_login", "sleep", "power_restart", "xcode_license", "login_item")
+READINESS_STATES = {"ok", "off", "on", "not_accepted", "needs_approval", "not_installed", "unknown"}
+UPDATE_STATES = {"requested", "checking", "waiting_for_work", "updating", "current", "failed", "unavailable"}
+TICKET_TTL = 120          # seconds a sign-in ticket stays valid
+CONNECTION_COMMAND_TTL = 900
+CONNECTION_COMMAND_COOLDOWN = 60
+CONNECTION_STATES = {"checking", "repairing", "needs_setup", "connected", "failed"}
+CONNECTION_PROVIDERS = {"cloudflare", "funnel", "external"}
+CONNECTION_ACTIONS = {"repair", "setup_funnel"}
+ONLINE_WINDOW = 180       # a computer is online if it reported within this many seconds
+CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"  # no 0/O, 1/I/L
+CODE_LENGTH = 8
+SETUP_PROFILE_LIMIT = 200_000  # characters of settings and prompts one computer may share per project
+MAX_MACHINES_PER_USER = 20
+MAX_MOVED_JOBS = 200  # jobs another computer took over, kept per computer for its heartbeat reply
+MAX_JOB_UPDATES = 60  # changed jobs one computer sends per sync (account_jobs: one record per job)
+DONE_STATUSES = {"completed", "archived", "discarded", "done"}
+MAX_JOB_OWNERS = 500  # which computer owns each job (highest ownership number), per account
+MAX_STATE_HEADS = 200  # projects per account whose shared-state commit is passed on (a key and a commit hash, no content)
+STATE_KEY_RE = re.compile(r"^[0-9a-f]{32}$")
+STATE_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+MAX_JOB_ARCHIVES = 300  # the newest archive or restore of each job, per account, for every computer's heartbeat reply
+MAX_DEVICES_PER_USER = 20
+MAX_EVENTS_PER_CALL = 10
+PAIR_START_LIMIT = (10, 3600)  # at most this many pairing codes (count, seconds) from one address
+TELEMETRY_LIMIT = (120, 60)    # at most this many central telemetry events per minute from one address
+EVENT_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{1,63}$")
+ANON_ID_RE = re.compile(r"^[A-Za-z0-9_-]{8,80}$")
+
+
+def send_mixpanel_event(event: str, distinct_id: str, properties: dict[str, Any] | None = None) -> bool:
+    """Send one event to Mixpanel when MIXPANEL_TOKEN is configured in the environment. Never raises."""
+    token = os.environ.get("MIXPANEL_TOKEN", "").strip()
+    if not token:
+        return False
+    host = (os.environ.get("MIXPANEL_HOST") or "https://api.mixpanel.com").strip().rstrip("/")
+    props = {"token": token, "distinct_id": distinct_id, "time": int(time.time()), **(properties or {})}
+    payload = json.dumps([{"event": event, "properties": props}]).encode("utf-8")
+    req = urllib.request.Request(
+        f"{host}/track?verbose=1",
+        data=payload,
+        headers={"Content-Type": "application/json", "Accept": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            return bool(resp and getattr(resp, "status", 200) < 400)
+    except Exception:
+        return False
+HOSTED_APP_URL = "https://swift-orch-web-20260923.web.app"
+
+
+class ControlError(Exception):
+    def __init__(self, message: str, status: int = 400):
+        super().__init__(message)
+        self.status = status
+
+
+class Store(Protocol):
+    def mutate(self, collection: str, doc_id: str, transform: Callable) -> Any: ...
+    def get(self, collection: str, doc_id: str) -> dict[str, Any] | None: ...
+    def set(self, collection: str, doc_id: str, data: dict[str, Any]) -> None: ...
+    def update(self, collection: str, doc_id: str, fields: dict[str, Any]) -> None: ...
+    def delete(self, collection: str, doc_id: str) -> None: ...
+    def where(self, collection: str, field: str, value: Any) -> list[tuple[str, dict[str, Any]]]: ...
+
+
+class Pusher(Protocol):
+    def send(self, tokens: list[str], message: dict[str, str]) -> list[str]:
+        """Deliver to each token; return the tokens that are gone for good (uninstalled, revoked) so they can be dropped."""
+        ...
+
+
+class MemoryStore:
+    """A Store in a dict, for tests and the local emulator-free dev server."""
+
+    def __init__(self) -> None:
+        self.data: dict[str, dict[str, dict[str, Any]]] = {}
+        self._mutation_lock = threading.RLock()
+
+    def mutate(self, collection, doc_id, transform):
+        """Atomically transform a document and return the callback result."""
+        with self._mutation_lock:
+            document, result = transform(self.get(collection, doc_id))
+            if document is not None:
+                self.set(collection, doc_id, document)
+            return result
+
+    def get(self, collection, doc_id):
+        doc = self.data.get(collection, {}).get(doc_id)
+        return dict(doc) if doc is not None else None
+
+    def set(self, collection, doc_id, data):
+        self.data.setdefault(collection, {})[doc_id] = dict(data)
+
+    def update(self, collection, doc_id, fields):
+        self.data.setdefault(collection, {}).setdefault(doc_id, {}).update(fields)
+
+    def delete(self, collection, doc_id):
+        self.data.get(collection, {}).pop(doc_id, None)
+
+    def where(self, collection, field, value):
+        return [(k, dict(v)) for k, v in self.data.get(collection, {}).items() if v.get(field) == value]
+
+
+def _b64(raw: bytes) -> str:
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def _hash(secret: str) -> str:
+    return hashlib.sha256(secret.encode("utf-8")).hexdigest()
+
+
+def sign_ticket(secret: str, claims: dict[str, Any]) -> str:
+    payload = _b64(json.dumps(claims, separators=(",", ":"), sort_keys=True).encode("utf-8"))
+    signature = _b64(hmac.new(secret.encode("utf-8"), payload.encode("ascii"), hashlib.sha256).digest())
+    return f"{payload}.{signature}"
+
+
+def normalize_code(code: Any) -> str:
+    return re.sub(r"[^A-Z0-9]", "", str(code or "").upper())
+
+
+def _clean(value: Any, limit: int) -> str:
+    return re.sub(r"[\x00-\x1f\x7f]", "", str(value or "")).strip()[:limit]
+
+
+def _endpoint(value: Any) -> str:
+    """Where browsers reach the computer: an https:// origin (the hosted app is https, so http would be blocked), or nothing yet."""
+    url = _clean(value, 300).rstrip("/")
+    if not url:
+        return ""
+    if not re.fullmatch(r"https://[A-Za-z0-9.-]+(:\d{1,5})?", url):
+        raise ControlError("The address must be an https:// origin with no path.")
+    return url
+
+
+def _connection_status(value: Any, now: float) -> dict[str, Any] | None:
+    """Keep only the public connection contract, never stringify private runner objects."""
+    if not isinstance(value, dict) or not isinstance(value.get("state"), str) or value["state"] not in CONNECTION_STATES:
+        return None
+    result: dict[str, Any] = {"state": value["state"]}
+    provider = value.get("provider")
+    if isinstance(provider, str) and provider in CONNECTION_PROVIDERS:
+        result["provider"] = provider
+    detail = value.get("detail")
+    if isinstance(detail, str) and detail:
+        result["detail"] = _clean(detail, 400)
+    endpoint = value.get("endpoint")
+    if isinstance(endpoint, str) and endpoint:
+        try:
+            result["endpoint"] = _endpoint(endpoint)
+        except ControlError:
+            pass
+    checked = value.get("checked_at")
+    if type(checked) in (int, float) and 0 <= checked <= now + 300 and math.isfinite(checked):
+        result["checked_at"] = checked
+    url = value.get("setup_url")
+    # Exact scheme, authority, path and single node parameter. No credentials, extra queries or fragments.
+    if isinstance(url, str) and len(url) <= 500 and re.fullmatch(
+            r"https://login\.tailscale\.com/f/funnel\?node=[A-Za-z0-9_-]{1,200}", url):
+        result["setup_url"] = url
+    return result
+
+
+class ControlPlane:
+    def __init__(self, store: Store, now: Callable[[], float] = time.time, pusher: Pusher | None = None,
+                 telemetry: Callable[[str, str, dict[str, Any]], Any] | None = None):
+        self.store = store
+        self.now = now
+        self.pusher = pusher
+        self.telemetry = telemetry
+
+    def _emit(self, event: str, distinct_id: str, properties: dict[str, Any] | None = None) -> None:
+        if not self.telemetry:
+            return
+        try:
+            self.telemetry(event, distinct_id, dict(properties or {}))
+        except Exception:
+            pass
+
+    def _rate_limit(self, scope: str, client: str, limit: tuple[int, int]) -> None:
+        """Count calls per address in fixed windows; best effort (no transaction), enough to stop a flood of writes.
+        An unknown address isn't limited: behind the hosted app there is always one."""
+        count, window = limit
+        if not client:
+            return
+        now = self.now()
+        start = int(now // window) * window
+        doc_id = _hash(f"{scope}:{client}:{start}")[:40]
+        used = (self.store.get("rate_limits", doc_id) or {}).get("count", 0)
+        if used >= count:
+            raise ControlError("Too many attempts from this network. Try again later.", 429)
+        self.store.set("rate_limits", doc_id, {"count": used + 1, "expires": start + window + 60})
+
+    # -- pairing, from the computer
+
+    def start_pairing(self, body: dict[str, Any]) -> dict[str, Any]:
+        poll_secret = secrets.token_urlsafe(24)
+        for _ in range(10):
+            code = "".join(secrets.choice(CODE_ALPHABET) for _ in range(CODE_LENGTH))
+            if self.store.get("pairings", code) is None:
+                break
+        else:  # pragma: no cover - 31^8 codes
+            raise ControlError("Couldn't make a pairing code. Try again.", 503)
+        now = self.now()
+        machine_id = "m_" + secrets.token_hex(8)
+        self.store.set("pairings", code, {
+            "machine_id": machine_id, "name": _clean(body.get("name"), 80) or "My computer",
+            "os": _clean(body.get("os"), 40), "version": _clean(body.get("version"), 40),
+            "created": now, "expires": now + PAIRING_TTL, "poll_hash": _hash(poll_secret), "status": "waiting",
+        })
+        return {"code": code, "machine_id": machine_id, "poll_secret": poll_secret, "expires_in": PAIRING_TTL}
+
+    def poll_pairing(self, body: dict[str, Any]) -> dict[str, Any]:
+        code = normalize_code(body.get("code"))
+        pairing = self.store.get("pairings", code) if code else None
+        if pairing is None or not hmac.compare_digest(_hash(str(body.get("poll_secret") or "")), pairing["poll_hash"]):
+            raise ControlError("That pairing isn't known.", 404)
+        if pairing["status"] == "claimed":
+            self.store.delete("pairings", code)  # the secret is handed over exactly once
+            return {"status": "claimed", "machine_id": pairing["machine_id"], "machine_secret": pairing["machine_secret"],
+                    "owner_email": pairing["owner_email"]}
+        if pairing["expires"] <= self.now():
+            self.store.delete("pairings", code)
+            raise ControlError("The pairing code expired. Run `orchestrator connect` again.", 410)
+        return {"status": "waiting"}
+
+    # -- pairing, from the person
+
+    def _waiting_pairing(self, code: Any) -> tuple[str, dict[str, Any]]:
+        code = normalize_code(code)
+        pairing = self.store.get("pairings", code) if len(code) == CODE_LENGTH else None
+        if pairing is None or pairing["status"] != "waiting" or pairing["expires"] <= self.now():
+            raise ControlError("That code isn't valid or has expired. Run `orchestrator connect` again for a new one.", 404)
+        return code, pairing
+
+    def preview_pairing(self, user: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
+        _require_email(user)
+        _, pairing = self._waiting_pairing(body.get("code"))
+        return {"name": pairing["name"], "os": pairing["os"], "version": pairing["version"], "created": pairing["created"]}
+
+    def claim_pairing(self, user: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
+        email = _require_email(user)
+        code, pairing = self._waiting_pairing(body.get("code"))
+        machine_id, machine, secret = self._create_machine(user["uid"], email, pairing, pairing["machine_id"])
+        self.store.update("pairings", code, {"status": "claimed", "owner_email": email, "machine_secret": secret})
+        self._emit("cp_machine_paired", user["uid"], {"os": pairing.get("os", "")})
+        return {"machine": self._view(machine_id, machine)}
+
+    def _create_machine(self, uid: str, email: str, details: dict[str, Any], machine_id: str,
+                        enrolled: bool = False) -> tuple[str, dict[str, Any], str]:
+        if len(self.store.where("machines", "owner_uid", uid)) >= MAX_MACHINES_PER_USER:
+            raise ControlError(f"An account can have up to {MAX_MACHINES_PER_USER} computers. Remove one first.", 409)
+        secret, now = secrets.token_urlsafe(32), self.now()
+        machine = {"owner_uid": uid, "owner_email": email, "name": details["name"], "os": details["os"],
+                   "version": details["version"], "endpoint": "", "created": now, "last_seen": 0}
+        if enrolled:
+            machine["enrolled"] = now
+        self.store.set("machines", machine_id, machine)
+        self.store.set("machine_secrets", machine_id, {"secret": secret, "created": now})
+        return machine_id, machine, secret
+
+    # -- enrollment: pairing for a computer nobody is sitting at
+
+    def create_enrollment(self, user: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
+        email = _require_email(user)
+        token = "enroll_" + secrets.token_urlsafe(24)
+        now = self.now()
+        self.store.set("enrollments", _hash(token), {"owner_uid": user["uid"], "owner_email": email,
+                                                     "created": now, "expires": now + ENROLLMENT_TTL})
+        return {"token": token, "expires_in": ENROLLMENT_TTL}
+
+    def redeem_enrollment(self, body: dict[str, Any]) -> dict[str, Any]:
+        token = str(body.get("token") or "")
+        doc_id = _hash(token)
+        enrollment = self.store.get("enrollments", doc_id) if token.startswith("enroll_") else None
+        if enrollment is None or enrollment["expires"] <= self.now():
+            raise ControlError("That enrollment command isn't valid or has expired. Make a new one with Add a Mac.", 404)
+        details = {"name": _clean(body.get("name"), 80) or "My Mac", "os": _clean(body.get("os"), 40),
+                   "version": _clean(body.get("version"), 40)}
+        machine_id, machine, secret = self._create_machine(enrollment["owner_uid"], enrollment["owner_email"], details,
+                                                           "m_" + secrets.token_hex(8), enrolled=True)
+        self.store.delete("enrollments", doc_id)  # works once
+        self._push(enrollment["owner_uid"], [_message(
+            f"enrolled:{machine_id}", f"{machine['name']} was added to your account",
+            "It was added with an Add a Mac command. If that wasn't you, remove it from your computers.",
+            _link(machine_id, "#/"))])
+        return {"machine_id": machine_id, "machine_secret": secret, "owner_email": enrollment["owner_email"]}
+
+    # -- the computer, once paired
+
+    def _machine_from_header(self, header: str) -> tuple[str, dict[str, Any]]:
+        match = re.fullmatch(r"Machine (m_[0-9a-f]{16}):(\S+)", header or "")
+        if not match:
+            raise ControlError("This computer isn't signed in to the control plane.", 401)
+        machine_id, secret = match.groups()
+        stored = self.store.get("machine_secrets", machine_id)
+        machine = self.store.get("machines", machine_id)
+        if stored is None or machine is None:
+            raise ControlError("This computer was removed from its account.", 410)
+        if not hmac.compare_digest(secret, stored["secret"]):
+            raise ControlError("This computer isn't signed in to the control plane.", 401)
+        return machine_id, machine
+
+    def heartbeat(self, auth_header: str, body: dict[str, Any]) -> dict[str, Any]:
+        machine_id, machine = self._machine_from_header(auth_header)
+        try:
+            running = max(0, min(int(body.get("running") or 0), 999))
+        except (TypeError, ValueError):
+            running = 0
+        try:
+            api_version = max(0, min(int(body.get("api_version") or 0), 9999))
+        except (TypeError, ValueError):
+            api_version = 0
+        fields: dict[str, Any] = {"last_seen": self.now(), "endpoint": _endpoint(body.get("endpoint")),
+                                  "running": running, "busy": running > 0, "offline_notified": False,
+                                  "api_version": api_version, "updatable": body.get("packaged") is True,
+                                  "update_control": 1 if body.get("packaged") is True and type(body.get("update_control")) is int and body["update_control"] == 1 else 0,
+                                  "capabilities": self._capabilities(body.get("capabilities"))}
+        for key, limit in (("version", 40), ("name", 80), ("os", 40)):
+            if body.get(key):
+                fields[key] = _clean(body[key], limit)
+        if isinstance(body.get("readiness"), dict):
+            fields["readiness"] = {name: body["readiness"][name] for name in READINESS_CHECKS
+                                   if body["readiness"].get(name) in READINESS_STATES}
+        update_requested = bool(machine.get("update_requested"))
+        if update_requested:
+            fields["update_requested"] = False  # delivered with this reply; the Mac reports progress from now on
+        elif "update_state" in body:
+            reported = body["update_state"]
+            fields["update_state"] = reported if reported in UPDATE_STATES - {"requested"} else ""
+        connection = _connection_status(body.get("connection"), self.now())
+        if connection is not None:
+            fields["connection"] = connection
+        command = self._pending_connection_command(machine)
+        ack = body.get("connection_ack")
+        if command and isinstance(ack, str) and len(ack) <= 64 and ack.isascii() and hmac.compare_digest(ack, command["id"]):
+            command = None
+        if machine.get("connection_command") and command is None:
+            fields["connection_command"] = None
+        reset_tunnel_requested = bool(machine.get("reset_tunnel_requested"))
+        if reset_tunnel_requested and api_version >= 4:
+            # A reset queued by an older frontend before this runner upgraded uses the new manager.
+            if command is None:
+                command = self._new_connection_command("repair")
+                fields["connection_command"] = command
+                fields["connection_command_requested_at"] = self.now()
+            reset_tunnel_requested = False
+            fields["reset_tunnel_requested"] = False
+        if reset_tunnel_requested:
+            fields["reset_tunnel_requested"] = False
+        self.store.update("machines", machine_id, fields)
+        reply = {"ok": True, "owner_email": machine["owner_email"], "update_requested": update_requested,
+                 "reset_tunnel": reset_tunnel_requested}
+        if isinstance(machine.get("moved_jobs"), dict) and machine["moved_jobs"]:
+            reply["moved_jobs"] = machine["moved_jobs"]  # jobs another computer took over: this one stops working on them
+        heads = self._record_state_heads(machine_id, machine, body.get("state_heads"))
+        if heads:
+            reply["state_heads"] = heads  # the newest shared-state commit per project: a computer behind fetches now
+        archives = (self.store.get("job_archives", machine["owner_uid"]) or {}).get("jobs")
+        if isinstance(archives, dict) and archives:
+            reply["job_archives"] = {k: {"archived": v.get("archived"), "at": v.get("at")} for k, v in archives.items()}
+        if command is not None and api_version >= 4:
+            reply["connection_command"] = command
+        operation = self._update_operation(machine_id, ack=body.get("update_ack"), delivery=True)
+        if operation is not None:
+            reply["update_operation"] = operation
+        return reply
+
+    def _record_state_heads(self, machine_id: str, machine: dict[str, Any], reported: Any) -> dict[str, str]:
+        """The account's newest shared-state commit per project, after taking this computer's report. Projects travel through
+        their own repositories (docs/state-sync.md); this only passes on which commit is newest, so a computer that is behind
+        fetches at once. Keys are a hash of the project's repository name; nothing of the project itself is stored."""
+        clean: dict[str, dict[str, Any]] = {}
+        if isinstance(reported, dict):
+            for key, value in list(reported.items())[:MAX_STATE_HEADS]:
+                if not (isinstance(key, str) and STATE_KEY_RE.match(key) and isinstance(value, dict)):
+                    continue
+                sha, at = value.get("sha"), value.get("at")
+                if isinstance(sha, str) and STATE_SHA_RE.match(sha) and isinstance(at, (int, float)) and not isinstance(at, bool):
+                    clean[key] = {"sha": sha, "at": float(at), "machine_id": machine_id}
+
+        def transform(doc):
+            heads = dict((doc or {}).get("heads") or {})
+            changed = False
+            for key, value in clean.items():
+                if float((heads.get(key) or {}).get("at") or 0) < value["at"] and (heads.get(key) or {}).get("sha") != value["sha"]:
+                    heads[key] = value
+                    changed = True
+            if len(heads) > MAX_STATE_HEADS:
+                heads = dict(sorted(heads.items(), key=lambda kv: kv[1].get("at") or 0)[-MAX_STATE_HEADS:])
+                changed = True
+            return ({"owner_uid": machine["owner_uid"], "heads": heads} if changed else None), heads
+
+        heads = self.store.mutate("state_heads", machine["owner_uid"], transform) if clean else \
+            ((self.store.get("state_heads", machine["owner_uid"]) or {}).get("heads") or {})
+        return {key: value["sha"] for key, value in heads.items() if isinstance(value, dict) and value.get("sha")}
+
+    def _new_connection_command(self, action: str) -> dict[str, Any]:
+        now = self.now()
+        return {"id": secrets.token_urlsafe(24), "action": action, "created": now,
+                "expires": now + CONNECTION_COMMAND_TTL}
+
+    def _pending_connection_command(self, machine: dict[str, Any]) -> dict[str, Any] | None:
+        command = machine.get("connection_command")
+        if isinstance(command, dict) and command.get("expires", 0) > self.now():
+            return command
+        return None
+
+    def request_connection_repair(self, user: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
+        machine_id, machine = self._owned(user, body.get("machine_id"))
+        if machine.get("api_version", 0) < 4:
+            raise ControlError("Update Orchestrator on this computer to repair its connection from the web.", 409)
+        action = body.get("action")
+        if not isinstance(action, str) or action not in CONNECTION_ACTIONS:
+            raise ControlError("Choose repair or setup_funnel.")
+        pending = self._pending_connection_command(machine)
+        if pending is not None:
+            return {"ok": True, "connection_command": pending}
+        requested_at = machine.get("connection_command_requested_at")
+        if requested_at is not None and self.now() - requested_at < CONNECTION_COMMAND_COOLDOWN:
+            raise ControlError("Connection repair was just requested. Wait a minute before trying again.", 429)
+        command = self._new_connection_command(action)
+        self.store.update("machines", machine_id, {"connection_command": command,
+                                                  "connection_command_requested_at": self.now()})
+        return {"ok": True, "connection_command": command}
+
+    def request_reset_tunnel(self, user: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
+        machine_id, machine = self._owned(user, body.get("machine_id"))
+        if machine.get("api_version", 0) >= 4:
+            return self.request_connection_repair(user, {"machine_id": machine_id, "action": "repair"})
+        self.store.update("machines", machine_id, {"reset_tunnel_requested": True})
+        return {"ok": True}
+
+    def request_update(self, user: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
+        machine_id, machine = self._owned(user, body.get("machine_id"))
+        if not machine.get("updatable"):
+            raise ControlError(f"{machine['name']} wasn't set up with the Orchestrator app; update it there with `orchestrator update`.", 409)
+        self.store.update("machines", machine_id, {"update_requested": True, "update_state": "requested"})
+        return {"ok": True}
+
+    @staticmethod
+    def _capabilities(value: Any) -> dict[str, bool]:
+        if not isinstance(value, dict):
+            return {}
+        return {key: value[key] for key in ("preview_remote",) if type(value.get(key)) is bool}
+
+    def _update_operation(self, machine_id: str, ack: Any = None, delivery: bool = False):
+        def transform(operation):
+            operation = update_recovery.expire(operation, self.now())
+            if operation and operation["state"] in update_recovery.TERMINAL and ack == operation["id"]:
+                operation = {**operation, "acknowledged": True}
+            shown = None if delivery and operation and operation.get("acknowledged") else update_recovery.public(operation)
+            return operation, shown
+        return self.store.mutate("machine_updates", machine_id, transform)
+
+    def request_update_recovery(self, user: dict[str, Any], body: dict[str, Any]):
+        machine_id, machine = self._owned(user, body.get("machine_id"))
+        if not machine.get("updatable") or machine.get("update_control") != 1:
+            raise ControlError("Upgrade the signed Orchestrator Mac app once to enable cancellable updates.", 409)
+        operation_id = secrets.token_urlsafe(24)
+        def transform(operation):
+            operation = update_recovery.start(operation, self.now(), operation_id)
+            return operation, update_recovery.public(operation)
+        operation = self.store.mutate("machine_updates", machine_id, transform)
+        return {"ok": True, "update_operation": operation}
+
+    def cancel_update(self, user: dict[str, Any], body: dict[str, Any]):
+        machine_id, _ = self._owned(user, body.get("machine_id"))
+        def transform(operation):
+            operation, accepted = update_recovery.cancel(operation, body.get("operation_id"), self.now())
+            return operation, (accepted, update_recovery.public(operation))
+        accepted, operation = self.store.mutate("machine_updates", machine_id, transform)
+        if not accepted:
+            raise ControlError("Installation has started or that update is no longer active.", 409)
+        return {"ok": True, "update_operation": operation}
+
+    def update_progress(self, auth_header: str, body: dict[str, Any]):
+        machine_id, _ = self._machine_from_header(auth_header)
+        state = body.get("state")
+        if not isinstance(state, str) or state not in update_recovery.STATES:
+            raise ControlError("Unknown update state.")
+        def transform(operation):
+            operation, accepted = update_recovery.progress(operation, body.get("operation_id"), state, self.now())
+            return operation, {"accepted": accepted, "update_operation": update_recovery.public(operation)}
+        return self.store.mutate("machine_updates", machine_id, transform)
+
+    def leave(self, auth_header: str) -> dict[str, Any]:
+        machine_id, _ = self._machine_from_header(auth_header)
+        self._remove(machine_id)
+        return {"ok": True}
+
+    def sync_snapshot(self, auth_header: str, body: dict[str, Any]) -> dict[str, Any]:
+        machine_id, machine = self._machine_from_header(auth_header)
+        projects = body.get("projects") if isinstance(body.get("projects"), list) else []
+        recent_jobs = body.get("recent_jobs") if isinstance(body.get("recent_jobs"), list) else []
+        now = self.now()
+        snapshot = {
+            "machine_id": machine_id,
+            "machine_name": machine["name"],
+            "owner_uid": machine["owner_uid"],
+            "synced_at": now,
+            "projects": projects[:50],
+            "recent_jobs": recent_jobs[:100],
+            "metadata": body.get("metadata") or {},
+        }
+        self.store.set("machine_snapshots", machine_id, snapshot)
+        self.store.update("machines", machine_id, {"has_snapshot": True, "snapshot_synced_at": now})
+        self._record_moves(machine_id, machine, recent_jobs)
+        self._record_archives(machine, body.get("job_archives"))
+        updates = [j for j in (body.get("job_updates") if isinstance(body.get("job_updates"), list) else [])[:MAX_JOB_UPDATES]
+                   if isinstance(j, dict)]
+        self._record_owners(machine_id, machine, recent_jobs + [j for j in updates if j.get("status") not in DONE_STATUSES])
+        self._record_jobs(machine_id, machine, updates)
+        return {"ok": True, "synced_at": now}
+
+    def _record_archives(self, machine: dict[str, Any], events: Any) -> None:
+        """Jobs archived or restored on this computer ({job id: {archived, at}}): the account keeps the newest per job, and
+        every one of the owner's computers applies it to its own copy (heartbeat reply), so a job archived on one computer
+        doesn't come back from a copy on another."""
+        if not isinstance(events, dict) or not events:
+            return
+        clean: dict[str, dict[str, Any]] = {}
+        for job_id, event in list(events.items())[:MAX_JOB_ARCHIVES]:
+            at = event.get("at") if isinstance(event, dict) else None
+            if (isinstance(job_id, str) and 0 < len(job_id) <= 120 and isinstance(event.get("archived"), bool)
+                    and isinstance(at, (int, float)) and not isinstance(at, bool) and 0 < at <= self.now() + 300):
+                clean[job_id] = {"archived": event["archived"], "at": float(at), "by": _clean(machine.get("name") or "", 80)}
+        if not clean:
+            return
+
+        def transform(doc):
+            current = (doc or {}).get("jobs") if isinstance((doc or {}).get("jobs"), dict) else {}
+            merged = dict(current)
+            for job_id, event in clean.items():
+                if float((current.get(job_id) or {}).get("at") or 0) < event["at"]:
+                    merged[job_id] = event
+            if merged == current:
+                return None, None
+            newest = sorted(merged.items(), key=lambda kv: kv[1].get("at") or 0, reverse=True)[:MAX_JOB_ARCHIVES]
+            return {"owner_uid": machine["owner_uid"], "jobs": dict(newest)}, None
+
+        self.store.mutate("job_archives", machine["owner_uid"], transform)
+
+    def _record_moves(self, machine_id: str, machine: dict[str, Any], recent_jobs: list[Any]) -> None:
+        """A job this computer continued from another of the owner's computers (Continue here) is owned here now. Tell the
+        computer it came from, through its next heartbeat reply, so it stops working on its copy even with no browser open."""
+        by_source: dict[str, dict[str, dict[str, Any]]] = {}
+        for job in recent_jobs[:100]:
+            if not isinstance(job, dict) or job.get("moved_to"):
+                continue
+            job_id, source, at = job.get("job_id"), job.get("imported_from_machine"), job.get("imported_at")
+            if (isinstance(job_id, str) and 0 < len(job_id) <= 120 and isinstance(source, str) and source
+                    and isinstance(at, (int, float)) and not isinstance(at, bool) and source != machine.get("name")):
+                by_source.setdefault(source[:80], {})[job_id] = {"to": _clean(machine.get("name") or "another computer", 80),
+                                                                "imported_at": float(at)}
+        if not by_source:
+            return
+        for other_id, other in self.store.where("machines", "owner_uid", machine["owner_uid"]):
+            moves = by_source.get(str(other.get("name") or ""))
+            if other_id == machine_id or not moves:
+                continue
+            current = other.get("moved_jobs") if isinstance(other.get("moved_jobs"), dict) else {}
+            merged = dict(current)
+            for job_id, move in moves.items():
+                if float((current.get(job_id) or {}).get("imported_at") or 0) < move["imported_at"]:
+                    merged[job_id] = move
+            if merged != current:
+                newest = sorted(merged.items(), key=lambda kv: kv[1].get("imported_at") or 0, reverse=True)[:MAX_MOVED_JOBS]
+                self.store.update("machines", other_id, {"moved_jobs": dict(newest)})
+
+    @staticmethod
+    def _job_doc_id(owner_uid: str, job_id: str) -> str:
+        return f"{owner_uid}__{hashlib.sha256(job_id.encode()).hexdigest()[:32]}"
+
+    def _record_jobs(self, machine_id: str, machine: dict[str, Any], updates: list[dict[str, Any]]) -> None:
+        """One record per job on the account (account_jobs), so any of the owner's computers can pick up any job while the
+        one that holds it is offline. A record is only replaced by the same computer or one with a higher ownership number
+        (the fencing token): a computer that comes back late with an older copy can't overwrite the newer one."""
+        for entry in updates:
+            job_id, epoch = entry.get("job_id"), entry.get("owner_epoch")
+            if not (isinstance(job_id, str) and 0 < len(job_id) <= 120 and isinstance(epoch, int) and not isinstance(epoch, bool)):
+                continue
+            job = {k: v for k, v in entry.items() if k != "_digest"}
+            if len(json.dumps(job, default=str)) > 200_000:
+                continue  # far beyond a job's usual size: not stored rather than fail the whole sync
+
+            def transform(doc, job=job, job_id=job_id, epoch=epoch):
+                if doc and doc.get("machine_id") != machine_id and int(doc.get("epoch") or 0) >= epoch:
+                    return None, None  # another computer holds a copy at least as new
+                return {"owner_uid": machine["owner_uid"], "machine_id": machine_id, "machine_name": _clean(machine.get("name") or "", 80),
+                        "job_id": job_id, "epoch": epoch, "updated_at": self.now(), "job": job}, None
+
+            self.store.mutate("account_jobs", self._job_doc_id(machine["owner_uid"], job_id), transform)
+
+    def _jobs_held_by(self, machine_id: str, owner_uid: str) -> list[dict[str, Any]]:
+        """The unfinished jobs this computer holds on the account, beyond what its snapshot lists."""
+        return [doc["job"] for _, doc in self.store.where("account_jobs", "machine_id", machine_id)
+                if doc.get("owner_uid") == owner_uid and isinstance(doc.get("job"), dict)
+                and doc["job"].get("status") not in DONE_STATUSES and not doc["job"].get("moved_to")]
+
+    def _record_owners(self, machine_id: str, machine: dict[str, Any], recent_jobs: list[Any]) -> None:
+        """One owner per job, by its ownership number (owner_epoch; Continue here raises it). The account remembers the
+        computer with the highest number; a copy elsewhere with a lower or equal number is stale (a computer that was offline
+        while the job moved on, or a copy from an old project download), and that computer is told, through its heartbeat,
+        that the job moved. The number is the fencing token: a returning computer can't take a job back by syncing late."""
+        seen: dict[str, int] = {}
+        for job in recent_jobs[:100]:
+            if not isinstance(job, dict) or job.get("moved_to"):
+                continue
+            job_id, epoch = job.get("job_id"), job.get("owner_epoch")
+            if isinstance(job_id, str) and 0 < len(job_id) <= 120 and isinstance(epoch, int) and not isinstance(epoch, bool) and 0 <= epoch < 10**6:
+                seen[job_id] = epoch
+        if not seen:
+            return
+        name = _clean(machine.get("name") or "another computer", 80)
+        now = self.now()
+        notices: dict[str, dict[str, dict[str, Any]]] = {}  # machine id -> {job id: move}
+
+        def transform(doc):
+            current = (doc or {}).get("jobs") if isinstance((doc or {}).get("jobs"), dict) else {}
+            merged = dict(current)
+            for job_id, epoch in seen.items():
+                held = current.get(job_id) or {}
+                owner, held_epoch = held.get("machine_id"), int(held.get("epoch") or 0)
+                if not owner or owner == machine_id or epoch > held_epoch:
+                    if owner and owner != machine_id:  # taken over here: the old owner's copy is stale
+                        notices.setdefault(owner, {})[job_id] = {"to": name, "epoch": epoch}
+                    merged[job_id] = {"machine_id": machine_id, "name": name, "epoch": max(epoch, held_epoch if owner == machine_id else 0), "at": now}
+                else:  # this copy is behind the owner's (or a tie with the first one seen): it moved there
+                    notices.setdefault(machine_id, {})[job_id] = {"to": _clean(held.get("name") or "another computer", 80), "epoch": held_epoch}
+            if merged == current:
+                return None, None
+            newest = sorted(merged.items(), key=lambda kv: kv[1].get("at") or 0, reverse=True)[:MAX_JOB_OWNERS]
+            return {"owner_uid": machine["owner_uid"], "jobs": dict(newest)}, None
+
+        self.store.mutate("job_owners", machine["owner_uid"], transform)
+        for other_id, moves in notices.items():
+            other = machine if other_id == machine_id else self.store.get("machines", other_id)
+            if not other or other.get("owner_uid") != machine["owner_uid"]:
+                continue
+            current = other.get("moved_jobs") if isinstance(other.get("moved_jobs"), dict) else {}
+            merged = dict(current)
+            for job_id, move in moves.items():
+                if int((current.get(job_id) or {}).get("epoch") or -1) < move["epoch"] or (current.get(job_id) or {}).get("to") != move["to"]:
+                    merged[job_id] = {**(current.get(job_id) or {}), **move}
+            if merged != current:
+                newest = sorted(merged.items(), key=lambda kv: (kv[1].get("epoch") or 0, kv[1].get("imported_at") or 0), reverse=True)[:MAX_MOVED_JOBS]
+                self.store.update("machines", other_id, {"moved_jobs": dict(newest)})
+
+    # -- setup profiles: what a computer has set up for a project, so a computer that is further behind can copy it
+    # (orchestrator/setup_copy.py decides what is shared: settings only, never keys). Only the same account's computers see them.
+
+    def _setup_project(self, machine: dict[str, Any], body: dict[str, Any]) -> str:
+        return self._primary_doc(machine["owner_uid"], body)[1]
+
+    @staticmethod
+    def _setup_doc(machine_id: str, project: str) -> str:
+        return f"{machine_id}_{hashlib.sha256(project.encode()).hexdigest()[:24]}"
+
+    @staticmethod
+    def _setup_progress(value: Any) -> dict[str, Any]:
+        value = value if isinstance(value, dict) else {}
+
+        def count(key: str) -> int:
+            try:
+                return max(0, min(int(value.get(key) or 0), 99))
+            except (TypeError, ValueError):
+                return 0
+        items = [{"id": _clean(i.get("id"), 40), "title": _clean(i.get("title"), 80), "required": i.get("required") is True,
+                  "done": i.get("done") is True}
+                 for i in (value.get("items") if isinstance(value.get("items"), list) else [])[:40] if isinstance(i, dict) and i.get("id")]
+        return {"required_done": count("required_done"), "required_total": count("required_total"),
+                "complete": value.get("complete") is True, "items": items}
+
+    @staticmethod
+    def _master_meta(master: dict[str, Any] | None) -> dict[str, Any] | None:
+        if not isinstance(master, dict) or not master.get("hash"):
+            return None
+        return {
+            "machine_id": master.get("machine_id", ""),
+            "machine_name": master.get("machine_name", ""),
+            "updated_at": master.get("updated_at", 0),
+            "hash": master.get("hash", ""),
+        }
+
+    def sync_setup(self, auth_header: str, body: dict[str, Any]) -> dict[str, Any]:
+        machine_id, machine = self._machine_from_header(auth_header)
+        master_doc_id, project = self._primary_doc(machine["owner_uid"], body)
+        profile = body.get("profile") if isinstance(body.get("profile"), dict) else {}
+        if len(json.dumps(profile)) > SETUP_PROFILE_LIMIT:
+            raise ControlError("That setup is too large to share.", 413)
+        now = self.now()
+        progress = self._setup_progress(body.get("progress"))
+        self.store.set("machine_setups", self._setup_doc(machine_id, project), {
+            "machine_id": machine_id, "owner_uid": machine["owner_uid"], "project": project, "synced_at": now,
+            "progress": progress, "profile": profile})
+        master = self.store.get("master_configs", master_doc_id)
+        profile_hash = hashlib.sha256(json.dumps(profile, sort_keys=True).encode()).hexdigest()[:16] if any(profile.values()) else ""
+        if profile_hash and (
+            body.get("push_master") is True
+            or master is None
+            or (master.get("machine_id") == machine_id and master.get("hash") != profile_hash)
+        ):
+            master = {
+                "owner_uid": machine["owner_uid"],
+                "project": project,
+                "machine_id": machine_id,
+                "machine_name": machine["name"],
+                "updated_at": now,
+                "hash": profile_hash,
+                "progress": progress,
+                "profile": profile,
+            }
+            self.store.set("master_configs", master_doc_id, master)
+        return {"ok": True, "synced_at": now, "master": self._master_meta(master)}
+
+    def get_master_setup(self, auth_header: str, body: dict[str, Any]) -> dict[str, Any]:
+        """Return the account's shared master config for this project, if one has been published."""
+        _machine_id, machine = self._machine_from_header(auth_header)
+        master_doc_id, _project = self._primary_doc(machine["owner_uid"], body)
+        master = self.store.get("master_configs", master_doc_id)
+        if master is None or master.get("owner_uid") != machine["owner_uid"]:
+            return {"master": None}
+        return {"master": {
+            "machine_id": master.get("machine_id", ""),
+            "machine_name": master.get("machine_name", ""),
+            "updated_at": master.get("updated_at", 0),
+            "hash": master.get("hash", ""),
+            "progress": master.get("progress") or {},
+            "profile": master.get("profile") or {},
+        }}
+
+    def list_setups(self, auth_header: str, body: dict[str, Any]) -> dict[str, Any]:
+        """The account's other computers that have shared a setup for this project, without the settings themselves."""
+        machine_id, machine = self._machine_from_header(auth_header)
+        project = self._setup_project(machine, body)
+        found = []
+        for _doc, record in self.store.where("machine_setups", "owner_uid", machine["owner_uid"]):
+            other = self.store.get("machines", record["machine_id"])
+            if record.get("project") != project or record["machine_id"] == machine_id or other is None:
+                continue
+            found.append({"machine_id": record["machine_id"], "name": other["name"], "synced_at": record.get("synced_at", 0),
+                          "online": self.now() - (other.get("last_seen") or 0) < ONLINE_WINDOW,
+                          "progress": record.get("progress") or {}, "has_config": any((record.get("profile") or {}).values())})
+        found.sort(key=lambda s: (-s["progress"].get("required_done", 0), -s["synced_at"]))
+        return {"setups": found}
+
+    def get_setup(self, auth_header: str, body: dict[str, Any]) -> dict[str, Any]:
+        machine_id, machine = self._machine_from_header(auth_header)
+        project = self._setup_project(machine, body)
+        source_id = str(body.get("machine_id") or "")
+        record = self.store.get("machine_setups", self._setup_doc(source_id, project)) if source_id and source_id != machine_id else None
+        source = self.store.get("machines", source_id) if record else None
+        if record is None or source is None or record.get("owner_uid") != machine["owner_uid"]:
+            raise ControlError("That computer hasn't shared its setup for this project.", 404)
+        return {"machine_id": source_id, "name": source["name"], "progress": record.get("progress") or {},
+                "profile": record.get("profile") or {}}
+
+    # -- the person, once paired
+
+    # -- the primary computer for each project: the one that starts its jobs and hands work to supporting computers.
+    # Only one at a time, so two computers never overwrite each other's code on the same worker.
+
+    def _primary_doc(self, uid: str, body: dict[str, Any]) -> tuple[str, str]:
+        project = _clean(body.get("project"), 200).lower()
+        if not re.fullmatch(r"[a-z0-9][a-z0-9._/:@ -]{0,199}", project):
+            raise ControlError("Say which project (its repository address or name).")
+        return f"{uid}_{hashlib.sha256(project.encode()).hexdigest()[:32]}", project
+
+    def _primary_view(self, record: dict[str, Any], asking: str) -> dict[str, Any]:
+        holder = self.store.get("machines", record["machine_id"]) or {}
+        return {"you": record["machine_id"] == asking,
+                "primary": {"machine_id": record["machine_id"], "name": holder.get("name", ""), "since": record.get("since", 0),
+                            "online": self.now() - (holder.get("last_seen") or 0) < ONLINE_WINDOW, "running": holder.get("running", 0)}}
+
+    def primary(self, auth_header: str, body: dict[str, Any]) -> dict[str, Any]:
+        """Which computer is primary for a project. The first computer to ask becomes it, and so does any computer asking
+        after the primary was removed from the account."""
+        machine_id, machine = self._machine_from_header(auth_header)
+        doc_id, project = self._primary_doc(machine["owner_uid"], body)
+        record = self.store.get("primaries", doc_id)
+        if record is None or self.store.get("machines", record["machine_id"]) is None:
+            record = {"owner_uid": machine["owner_uid"], "project": project, "label": _clean(body.get("label"), 120),
+                      "machine_id": machine_id, "since": self.now()}
+            self.store.set("primaries", doc_id, record)
+        return self._primary_view(record, machine_id)
+
+    def claim_primary(self, auth_header: str, body: dict[str, Any]) -> dict[str, Any]:
+        """Make the asking computer primary. Refused while the current primary is online with work running, so nothing it
+        started is left half done."""
+        machine_id, machine = self._machine_from_header(auth_header)
+        doc_id, project = self._primary_doc(machine["owner_uid"], body)
+        record = self.store.get("primaries", doc_id)
+        if record and record["machine_id"] != machine_id:
+            holder = self.store.get("machines", record["machine_id"])
+            if holder and self.now() - (holder.get("last_seen") or 0) < ONLINE_WINDOW and holder.get("running", 0) > 0:
+                raise ControlError(f"{holder['name']} is still running {holder['running']} job{'s' if holder['running'] != 1 else ''}. "
+                                   "Let them finish or stop them there, then make this computer primary.", 409)
+        record = {"owner_uid": machine["owner_uid"], "project": project, "label": _clean(body.get("label"), 120) or (record or {}).get("label", ""),
+                  "machine_id": machine_id, "since": self.now()}
+        self.store.set("primaries", doc_id, record)
+        return self._primary_view(record, machine_id)
+
+    def _view(self, machine_id: str, machine: dict[str, Any]) -> dict[str, Any]:
+        online = self.now() - (machine.get("last_seen") or 0) < ONLINE_WINDOW
+        connection = _connection_status(machine.get("connection"), self.now())
+        return {"id": machine_id, "name": machine["name"], "os": machine.get("os", ""), "version": machine.get("version", ""),
+                "api_version": machine.get("api_version", 0),
+                "endpoint": machine.get("endpoint", ""), "last_seen": machine.get("last_seen") or 0, "online": online,
+                "reachable": online and bool(machine.get("endpoint")) and
+                             (connection or {}).get("state") not in {"failed", "needs_setup"},
+                "connection": connection or {},
+                "connection_command_pending": self._pending_connection_command(machine) is not None,
+                "has_snapshot": bool(machine.get("has_snapshot")),
+                "snapshot_synced_at": machine.get("snapshot_synced_at"),
+                "added_with_command": self.now() - (machine.get("enrolled") or -ADDED_MARK_SECONDS) < ADDED_MARK_SECONDS,
+                "updatable": bool(machine.get("updatable")), "update_state": machine.get("update_state", ""),
+                "update_control": machine.get("update_control", 0),
+                "capabilities": self._capabilities(machine.get("capabilities")),
+                "update_operation": self._update_operation(machine_id),
+                "readiness": machine.get("readiness") or {}}
+
+    def _owned(self, user: dict[str, Any], machine_id: Any) -> tuple[str, dict[str, Any]]:
+        machine_id = str(machine_id or "")
+        machine = self.store.get("machines", machine_id) if machine_id else None
+        if machine is None or machine["owner_uid"] != user["uid"]:
+            raise ControlError("That computer isn't on your account.", 404)
+        return machine_id, machine
+
+    def list_machines(self, user: dict[str, Any]) -> dict[str, Any]:
+        machines = [self._view(mid, m) for mid, m in self.store.where("machines", "owner_uid", user["uid"])]
+        machines.sort(key=lambda m: (not m["reachable"], -m["last_seen"], m["name"]))
+        return {"machines": machines}
+
+    def remove_machine(self, user: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
+        machine_id, _ = self._owned(user, body.get("machine_id"))
+        self._remove(machine_id)
+        return {"ok": True}
+
+    def _remove(self, machine_id: str) -> None:
+        self.store.delete("machine_secrets", machine_id)
+        self.store.delete("machines", machine_id)
+        self.store.delete("machine_snapshots", machine_id)
+        self.store.delete("machine_updates", machine_id)
+        for doc_id, _record in self.store.where("machine_setups", "machine_id", machine_id):
+            self.store.delete("machine_setups", doc_id)
+
+    def get_snapshot(self, user: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
+        machine_id, machine = self._owned(user, body.get("machine_id"))
+        snapshot = self.store.get("machine_snapshots", machine_id)
+        if snapshot is not None:  # every unfinished job it holds, not only the newest the snapshot carries
+            listed = {j.get("job_id") for j in snapshot.get("recent_jobs") or [] if isinstance(j, dict)}
+            extra = [j for j in self._jobs_held_by(machine_id, machine["owner_uid"]) if j.get("job_id") not in listed]
+            snapshot = {**snapshot, "recent_jobs": list(snapshot.get("recent_jobs") or []) + extra}
+        return {"snapshot": snapshot, "machine": self._view(machine_id, machine)}
+
+    def issue_ticket(self, user: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
+        email = _require_email(user)
+        machine_id, machine = self._owned(user, body.get("machine_id"))
+        view = self._view(machine_id, machine)
+        if not view["online"]:
+            raise ControlError(f"{machine['name']} is offline. Start Orchestrator on it (`orchestrator ui`).", 409)
+        if not view["endpoint"]:
+            raise ControlError(f"{machine['name']} is online but can't be reached from the web yet.", 409)
+        stored = self.store.get("machine_secrets", machine_id)
+        if stored is None:
+            raise ControlError("That computer isn't on your account.", 404)
+        claims = {"v": 1, "mid": machine_id, "uid": user["uid"], "email": email,
+                  "exp": int(self.now()) + TICKET_TTL, "nonce": secrets.token_urlsafe(12)}
+        self._emit("key_action", user["uid"], {"category": "multi_machine", "action": "open_remote_computer"})
+        return {"ticket": sign_ticket(stored["secret"], claims), "endpoint": view["endpoint"]}
+
+    # -- notifications
+
+    def _devices(self, uid: str) -> list[tuple[str, dict[str, Any]]]:
+        return self.store.where("push_tokens", "uid", uid)
+
+    def _push(self, uid: str, messages: list[dict[str, str]]) -> int:
+        devices = self._devices(uid)
+        if not devices or not messages or self.pusher is None:
+            return 0
+        tokens = [d["token"] for _, d in devices]
+        gone: set[str] = set()
+        for message in messages:
+            gone.update(self.pusher.send([t for t in tokens if t not in gone], message))
+        for doc_id, device in devices:
+            if device["token"] in gone:
+                self.store.delete("push_tokens", doc_id)
+        return len(messages)
+
+    def register_device(self, user: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
+        token = _clean(body.get("token"), 4096)
+        if len(token) < 20:
+            raise ControlError("That browser didn't give a notification token.")
+        doc_id = _hash(token)
+        if self.store.get("push_tokens", doc_id) is None and len(self._devices(user["uid"])) >= MAX_DEVICES_PER_USER:
+            raise ControlError(f"Alerts are on in {MAX_DEVICES_PER_USER} browsers already. Turn them off in one first.", 409)
+        self.store.set("push_tokens", doc_id, {"uid": user["uid"], "token": token, "label": _clean(body.get("label"), 80),
+                                               "created": self.now()})
+        return {"ok": True}
+
+    def unregister_device(self, user: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
+        doc_id = _hash(_clean(body.get("token"), 4096))
+        device = self.store.get("push_tokens", doc_id)
+        if device is not None and device["uid"] == user["uid"]:
+            self.store.delete("push_tokens", doc_id)
+        return {"ok": True}
+
+    def test_push(self, user: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
+        if not self._devices(user["uid"]):
+            raise ControlError("Alerts aren't on in any browser yet.", 409)
+        return {"sent": self._push(user["uid"], [_message("test", "Alerts are on", "You'll hear from Orchestrator here.", "")])}
+
+    def machine_events(self, auth_header: str, body: dict[str, Any]) -> dict[str, Any]:
+        machine_id, machine = self._machine_from_header(auth_header)
+        raw = body.get("events")
+        if not isinstance(raw, list):
+            raise ControlError("events must be a list")
+        messages = [_message(_clean(e.get("key"), 120), _clean(e.get("title"), 120) or "Orchestrator", _clean(e.get("body"), 400),
+                             _link(machine_id, e.get("path")))
+                    for e in raw[:MAX_EVENTS_PER_CALL] if isinstance(e, dict)]
+        return {"sent": self._push(machine["owner_uid"], messages)}
+
+    def sweep(self) -> int:
+        """Alert owners whose computer stopped reporting while work was running on it. Once per disappearance."""
+        cutoff = self.now() - ONLINE_WINDOW
+        alerted = 0
+        for machine_id, machine in self.store.where("machines", "busy", True):
+            if machine.get("offline_notified") or (machine.get("last_seen") or 0) >= cutoff:
+                continue
+            running = int(machine.get("running") or 0)
+            work = f"{running} run{'s' if running != 1 else ''}" if running else "work"
+            self._push(machine["owner_uid"], [_message(
+                f"offline:{machine_id}", f"{machine['name']} went offline",
+                f"It stopped responding while {work} {'were' if running > 1 else 'was'} in progress. "
+                "It may be asleep or have lost its connection; work continues when it's back.",
+                _link(machine_id, "#/"))])
+            self.store.update("machines", machine_id, {"offline_notified": True})
+            alerted += 1
+        return alerted
+
+    def record_telemetry(self, user: dict[str, Any] | None, body: dict[str, Any]) -> dict[str, Any]:
+        event = str(body.get("event") or "").strip()
+        if not EVENT_NAME_RE.fullmatch(event):
+            raise ControlError("Invalid event name.", 400)
+        raw_anon = str(body.get("anon_id") or "").strip()
+        anon_id = raw_anon if ANON_ID_RE.fullmatch(raw_anon) else ""
+        if user and user.get("uid"):
+            distinct_id = str(user["uid"])
+        elif anon_id:
+            distinct_id = f"anon:{anon_id}"
+        else:
+            raise ControlError("Missing user or anon_id.", 400)
+        props: dict[str, Any] = {"signed_in": bool(user and user.get("uid"))}
+        if user and user.get("uid"):
+            uid = str(user["uid"])
+            seen = self.store.get("telemetry_users", uid)
+            if seen is None:
+                first_seen = self.now()
+                self.store.set("telemetry_users", uid, {"first_seen_at": first_seen})
+                props["is_first_use"] = True
+                if event != "first_use":
+                    self._emit("first_use", uid, {"first_seen_at": first_seen, "signed_in": True})
+            else:
+                props["is_first_use"] = False
+                if seen.get("first_seen_at") is not None:
+                    props["first_seen_at"] = seen["first_seen_at"]
+        if user and user.get("uid") and anon_id:
+            props["anon_id"] = anon_id
+        raw_props = body.get("properties")
+        if isinstance(raw_props, dict):
+            for k, v in list(raw_props.items())[:20]:
+                if not isinstance(k, str) or not re.fullmatch(r"[A-Za-z0-9_.$ -]{1,40}", k) or k in ("token", "distinct_id"):
+                    continue
+                if isinstance(v, (bool, int, float)):
+                    props[k] = v
+                elif isinstance(v, str):
+                    props[k] = _clean(v, 200)
+        self._emit(event, distinct_id, props)
+        return {"ok": True}
+
+    # -- routing
+
+    def handle(self, method: str, path: str, headers: dict[str, str], body: dict[str, Any],
+               verify_user: Callable[[str], dict[str, Any]]) -> tuple[int, dict[str, Any]]:
+        """Route one request. `verify_user` turns a Firebase ID token into {uid, email, email_verified} or raises."""
+        route = "/" + "/".join(p for p in path.split("/") if p and p != "cp")
+        try:
+            if (method, route) == ("POST", "/telemetry"):
+                self._rate_limit("telemetry", _client_address(headers), TELEMETRY_LIMIT)
+                auth = headers.get("authorization", "")
+                user = None
+                if auth.startswith("Bearer "):
+                    try:
+                        user = verify_user(auth[7:])
+                    except Exception:
+                        user = None
+                return 200, self.record_telemetry(user, body)
+            computer = {
+                ("POST", "/pair/start"): lambda: (self._rate_limit("pair-start", _client_address(headers), PAIR_START_LIMIT),
+                                                  self.start_pairing(body))[1],
+                ("POST", "/pair/poll"): lambda: self.poll_pairing(body),
+                ("POST", "/machine/update-progress"): lambda: self.update_progress(headers.get("authorization", ""), body),
+                ("POST", "/machine/heartbeat"): lambda: self.heartbeat(headers.get("authorization", ""), body),
+                ("POST", "/machine/leave"): lambda: self.leave(headers.get("authorization", "")),
+                ("POST", "/machine/events"): lambda: self.machine_events(headers.get("authorization", ""), body),
+                ("POST", "/machine/sync"): lambda: self.sync_snapshot(headers.get("authorization", ""), body),
+                ("POST", "/machine/setup"): lambda: self.sync_setup(headers.get("authorization", ""), body),
+                ("POST", "/machine/setups"): lambda: self.list_setups(headers.get("authorization", ""), body),
+                ("POST", "/machine/setup/get"): lambda: self.get_setup(headers.get("authorization", ""), body),
+                ("POST", "/machine/setup/master"): lambda: self.get_master_setup(headers.get("authorization", ""), body),
+                ("POST", "/machine/primary"): lambda: self.primary(headers.get("authorization", ""), body),
+                ("POST", "/machine/primary/claim"): lambda: self.claim_primary(headers.get("authorization", ""), body),
+                ("POST", "/enroll/redeem"): lambda: self.redeem_enrollment(body),
+            }.get((method, route))
+            if computer:
+                return 200, computer()
+            person = {
+                ("POST", "/pair/preview"): self.preview_pairing,
+                ("POST", "/pair/claim"): self.claim_pairing,
+                ("GET", "/machines"): lambda user, _body: self.list_machines(user),
+                ("POST", "/machines/remove"): self.remove_machine,
+                ("POST", "/machine/ticket"): self.issue_ticket,
+                ("POST", "/machine/snapshot"): self.get_snapshot,
+                ("POST", "/push/register"): self.register_device,
+                ("POST", "/push/unregister"): self.unregister_device,
+                ("POST", "/push/test"): self.test_push,
+                ("POST", "/enroll/create"): self.create_enrollment,
+                ("POST", "/machines/update"): self.request_update,
+                ("POST", "/machines/update-recovery"): self.request_update_recovery,
+                ("POST", "/machines/cancel-update"): self.cancel_update,
+                ("POST", "/machines/reset-tunnel"): self.request_reset_tunnel,
+                ("POST", "/machines/repair-connection"): self.request_connection_repair,
+            }.get((method, route))
+            if person is None:
+                raise ControlError("Not found", 404)
+            auth = headers.get("authorization", "")
+            if not auth.startswith("Bearer "):
+                raise ControlError("Sign in first.", 401)
+            try:
+                user = verify_user(auth[7:])
+            except ControlError:
+                raise
+            except Exception:
+                raise ControlError("Your sign-in has expired. Sign in again.", 401)
+            return 200, person(user, body)
+        except ControlError as exc:
+            return exc.status, {"error": str(exc)}
+
+
+def _client_address(headers: dict[str, str]) -> str:
+    """The caller's address as the hosting layer saw it: Fastly's own header, else the first forwarded address."""
+    return (headers.get("fastly-client-ip") or headers.get("x-forwarded-for", "").split(",")[0]).strip()[:64]
+
+
+def _message(key: str, title: str, body: str, link: str) -> dict[str, str]:
+    """A push, as data only: the app's service worker shows it, so it looks the same in every browser. The tag matches
+    the alert an open tab shows for the same event, so the two replace each other instead of doubling up."""
+    return {"tag": key or "orchestrator", "title": title, "body": body, "link": link or HOSTED_APP_URL + "/"}
+
+
+def _link(machine_id: str, path: Any) -> str:
+    """Opens the hosted app on that computer, at the page the event is about (a hash route like #/jobs/<id>)."""
+    route = str(path or "")
+    if not re.fullmatch(r"#/[A-Za-z0-9_./?=&%-]*", route):
+        route = "#/"
+    return f"{HOSTED_APP_URL}/?machine={machine_id}{route}"
+
+
+def _require_email(user: dict[str, Any]) -> str:
+    email = str(user.get("email") or "").strip().lower()
+    if not email:
+        raise ControlError("This account didn't share an email address.", 403)
+    if not user.get("email_verified"):
+        raise ControlError(f"The email {email} isn't verified with that provider.", 403)
+    return email

@@ -14,7 +14,7 @@ Once you have successfully implemented and verified the fix, your final response
   "files_changed": ["list of files to change"],
   "test_command": "complete repository test command, or Xcode test selection flags for an Xcode project",
   "risks": "short list of risks",
-  "summary": "final summary of changes"
+  "summary": "2-4 succinct bullet points ('- ...', max ~12 words each) stating only what changed and where — no prose paragraphs"
 }
 
 Be careful with:
@@ -27,3 +27,4 @@ Use the provided 'Available Tests' list and inspect the repository's tests to ch
 ALWAYS include relevant tests to prevent regressions.
 Use the configured test executable and its native filtering syntax (for example, cargo test parser or npm test -- --runInBand).
 For Xcode projects only, you may provide multiple -only-testing flags; the runner supplies the project, scheme, and destination.
+Update relevant repository documentation (such as `README.md` or `docs/` files) if the fix changes documented behavior, commands, configuration, or troubleshooting notes.

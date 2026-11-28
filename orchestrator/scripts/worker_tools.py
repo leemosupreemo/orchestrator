@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import argparse
+import os
 import shlex
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -137,6 +139,21 @@ def install_remote(machine: dict[str, Any]) -> int:
     return check_remote(machine)
 
 
+def paint(text: str, code: str) -> str:
+    """Colour text for a terminal (green 92, yellow 93, red 91); plain when piped or NO_COLOR is set."""
+    return f"\033[{code}m{text}\033[0m" if sys.stdout.isatty() and not os.environ.get("NO_COLOR") else text
+
+
+def summary_line(ready: int, total: int, not_ready: list[str]) -> str:
+    """One line for the whole check: how many machines can take work, and which can't."""
+    if not total:
+        return paint("No machines are enabled. Add one under Configuration → Machines.", "93")
+    count = f"{ready} of {total} {'machine' if total == 1 else 'machines'} ready"
+    if not not_ready:
+        return paint(f"✅ {count}", "92")
+    return paint(f"{'❌' if not ready else '⚠️'} {count}. Not ready: {', '.join(not_ready)}", "91" if not ready else "93")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("action", choices=["check", "install"])
@@ -144,21 +161,27 @@ def main() -> int:
     args = parser.parse_args()
 
     failures = 0
-    for machine in selected_machines(args.machine):
+    machines = selected_machines(args.machine)
+    not_ready: list[str] = []
+    for machine in machines:
         if machine["execution_mode"] == "local":
             if args.action == "install":
                 print(f"\n[{machine['name']}] local machine does not need remote install")
                 continue
-            failures += check_local(machine)
+            failed = check_local(machine)
         elif machine["execution_mode"] == "ssh":
-            failures += check_remote(machine) if args.action == "check" else install_remote(machine)
+            failed = check_remote(machine) if args.action == "check" else install_remote(machine)
         else:
             print(f"\n[{machine['name']}] unsupported execution mode: {machine['execution_mode']}")
-            failures += 1
+            failed = 1
+        failures += failed
+        if failed:
+            not_ready.append(machine["name"])
 
+    if args.action == "check":
+        print(f"\n{summary_line(len(machines) - len(not_ready), len(machines), not_ready)}")
     return 1 if failures else 0
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

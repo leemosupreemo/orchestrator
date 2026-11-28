@@ -10,8 +10,8 @@ Your output must be a single JSON object with the following fields:
   "files_changed": ["list of files to change"],
   "test_command": "command to run tests (e.g. python3 ai/tests/test_something.py)",
   "risks": "short list of risks",
-  "summary": "final summary of changes",
-  "clarification_needed": "string (OPTIONAL: if you encounter uncertainty that requires human guidance)"
+  "summary": "2-4 succinct bullet points ('- ...', max ~12 words each) stating only what changed and where — no prose paragraphs",
+  "clarification_needed": "string (OPTIONAL: if you encounter uncertainty that requires human guidance. Under 80 words: your recommendation, why you are blocked, and what each answer changes.)"
 }
 
 Be careful with:
@@ -22,3 +22,4 @@ Be careful with:
 
 Use the provided 'Available Tests' list to choose the most relevant tests to run. 
 ALWAYS include relevant tests to prevent regressions.
+Update relevant repository documentation (such as `README.md` or `docs/` files) when infrastructure, build/test commands, configuration, or workflows change.

@@ -1,0 +1,4 @@
+# Tests that fail today, so that `scripts/republish.py` blocks on NEW failures instead of on every deploy.
+# One test id per line, then `#` and why. Remove a line when its test passes again (the script says when). Do not add a line
+# to get a deploy through unless the failure is understood and acceptable: say why.
+#

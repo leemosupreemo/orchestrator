@@ -74,9 +74,12 @@ class GenericExecutionTests(unittest.TestCase):
                                ("uv run pytest", "uv run pytest tests/test_parser.py")]:
             with self.subTest(override=override), tempfile.TemporaryDirectory() as tmp, \
                  patch.object(runner, "OUTPUT_DIR", Path(tmp)), \
+                 patch.object(runner, "ROOT", Path(tmp)), \
                  patch.object(runner, "extract_commands", return_value=("custom-build", base)), \
                  patch.object(runner, "run_shell", return_value=subprocess.CompletedProcess([], 0, "", "")) as run, \
                  patch.object(runner, "get_best_simulator_destination") as simulator:
+                (Path(tmp) / "tests").mkdir()
+                (Path(tmp) / "tests" / "test_parser.py").write_text("")  # an override naming a missing file isn't run
                 result = runner.run_build_and_tests(
                     {"job_id": "generic", "test_command_override": override,
                      "plan": {"likely_files": ["scripts/parser.py"]}}, Path(tmp) / "summary.md")
