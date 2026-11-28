@@ -106,6 +106,12 @@ class WorkerRunTests(unittest.TestCase):
             self.assertFalse(lock.exists())
             self.assertIn('0', job['task_commits'])
 
+    def test_the_web_apps_git_status_checks_never_leave_a_lock(self):
+        from orchestrator.web import server as ui
+        with patch.object(ui.subprocess, 'run') as run:
+            ui.git(Path('/tmp'), 'status', '--porcelain', timeout=0.3)
+        self.assertEqual(run.call_args.kwargs['env']['GIT_OPTIONAL_LOCKS'], '0')  # a killed status can't strand index.lock
+
     def test_completed_feature_tasks_do_not_require_a_builder_result(self):
         task = {'title': 'Finished', 'description': 'done', 'acceptance_criteria': [], 'likely_files': []}
         with self.pipeline({'type': 'feature-plan', 'approved': True, 'plan': {'tasks': [task]}, 'completed_task_indices': [0]}) as (path, calls):

@@ -805,8 +805,11 @@ def read_json_file(path: Path) -> dict[str, Any]:
 
 
 def git(root: Path, *args: str, timeout: float = 5.0) -> str:
+    # GIT_OPTIONAL_LOCKS=0: `git status` otherwise takes .git/index.lock to refresh the index, and one killed at its timeout
+    # (the project list allows 0.3 s) leaves the lock behind, so the next commit in that project fails.
+    env = {**os.environ, "GIT_OPTIONAL_LOCKS": "0"}
     try:
-        return subprocess.run(["git", *args], cwd=root, capture_output=True, text=True, timeout=timeout).stdout.strip()
+        return subprocess.run(["git", *args], cwd=root, capture_output=True, text=True, timeout=timeout, env=env).stdout.strip()
     except Exception:
         return ""
 
