@@ -64,6 +64,13 @@ assert.strictEqual(outputPicturesCard([{path: 'output/job-1/test.log'}]), '');
              patch.dict(os.environ, {}, clear=False):
             rbt.run_build_and_tests({"job_id": "job-1"}, Path(tmp) / "summary.md")
             self.assertEqual(os.environ[rbt.OUTPUT_DIR_ENV], str((Path(tmp) / "job-1").resolve()))
+            rbt.run_build_and_tests({"job_id": "job-1_task_2", "task_of": "job-1"}, Path(tmp) / "summary.md")
+            self.assertEqual(os.environ[rbt.OUTPUT_DIR_ENV], str((Path(tmp) / "job-1").resolve()))  # a task's pictures are its job's
+
+    def test_a_tasks_view_knows_its_job(self):
+        source = (PACKAGE_ROOT / "orchestrator" / "scripts" / "worker_run.py").read_text()
+        self.assertIn("task_job['task_of'] = job['job_id']", source)
+        self.assertIn('t_job["task_of"] = job["job_id"]', source)
 
 
 if __name__ == "__main__":

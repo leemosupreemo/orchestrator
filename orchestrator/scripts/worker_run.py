@@ -1277,6 +1277,7 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
                 # Create a temporary, task-specific job object for the builder
                 task_job = copy.deepcopy(job)
                 task_job['job_id'] = f"{job['job_id']}_task_{i+1}" # Unique ID per task
+                task_job['task_of'] = job['job_id']  # its pictures and reports belong on the job's page
                 task_job['title'] = f"{job['title']} (Task {i+1}: {active_task['title']})"
                 task_builder = builder_for_task(active_task, job)
                 if task_builder:
@@ -2203,6 +2204,7 @@ def checkpoint_task(job: dict, index: int, total: int, title: str, files: list[s
         return
     indices = batch_indices or [index]
     label = f"{indices[0] + 1}-{indices[-1] + 1}/{total}" if len(indices) > 1 else f"{index + 1}/{total}"
+    _try_clear_stale_index_lock(ROOT)  # a git command killed earlier in the run (an AI tool's) leaves one behind
     try:
         for f in files:
             subprocess.run(["git", "add", "--", f], cwd=str(ROOT), check=True, capture_output=True)
@@ -2354,6 +2356,7 @@ def execute_parallel_task_wave(
         })
         t_job = copy.deepcopy(job)
         t_job["job_id"] = f"{job['job_id']}_task_{idx + 1}"
+        t_job["task_of"] = job["job_id"]
         t_job["title"] = f"{job['title']} (Task {idx + 1}: {task.get('title', f'Task {idx + 1}')})"
         t_builder = builder_for_task(task, job)
         if t_builder:

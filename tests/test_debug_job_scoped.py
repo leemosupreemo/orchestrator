@@ -293,5 +293,22 @@ class ScopedDebugTests(unittest.TestCase):
         self.assertEqual(saved["clarification_asker"], "debugger")
 
 
+
+
+class PausedAttemptTests(unittest.TestCase):
+    def test_a_fix_attempt_that_ended_paused_is_not_left_pending(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "job.json"
+            for status, expected in (("human-needed", True), ("debugging", False)):
+                path.write_text(json.dumps({"status": status, "last_error": "Task 2 paused for clarification",
+                                            "debug_history": [{"iteration": 1, "result": "pending"}]}))
+                debug_job._close_paused_attempt(path)
+                result = json.loads(path.read_text())["debug_history"][-1]["result"]
+                with self.subTest(status=status):
+                    if expected:
+                        self.assertEqual((result["paused"], result["notes"]), (True, "Task 2 paused for clarification"))
+                    else:
+                        self.assertEqual(result, "pending")  # still running, or the worker records the outcome itself
+
 if __name__ == "__main__":
     unittest.main()

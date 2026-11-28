@@ -4,6 +4,7 @@ import contextlib
 import io
 import json
 import os
+import time
 from pathlib import Path
 import runpy
 import sys
@@ -87,6 +88,23 @@ class WorkerRunTests(unittest.TestCase):
             worker.execute_job(path)
             staged = [c.args[0] for c in calls['run_shell'].call_args_list if c.args[0].startswith('git add')]
             self.assertEqual(sorted(staged), ['git add -- app.py', 'git add -- earlier.py'])  # never user.py: not the job's
+
+    def test_a_task_commit_clears_a_lock_a_killed_git_command_left(self):
+        import subprocess as sp
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            git = lambda *a: sp.run(['git', '-c', 'user.email=t@t', '-c', 'user.name=t', *a], cwd=root, check=True, capture_output=True, text=True)  # noqa: E731
+            git('init', '-q'); (root / 'a.txt').write_text('a'); git('add', '.'); git('commit', '-qm', 'base')
+            (root / 'a.txt').write_text('changed')
+            lock = root / '.git' / 'index.lock'
+            lock.write_text('')
+            os.utime(lock, (time.time() - 3600, time.time() - 3600))  # an hour old, and nothing holds it
+            job = {}
+            with patch.object(worker, 'ROOT', root), patch.dict(os.environ, {'GIT_AUTHOR_NAME': 't', 'GIT_AUTHOR_EMAIL': 't@t',
+                                                                            'GIT_COMMITTER_NAME': 't', 'GIT_COMMITTER_EMAIL': 't@t'}):
+                worker.checkpoint_task(job, 0, 1, 'Task', ['a.txt'])
+            self.assertFalse(lock.exists())
+            self.assertIn('0', job['task_commits'])
 
     def test_completed_feature_tasks_do_not_require_a_builder_result(self):
         task = {'title': 'Finished', 'description': 'done', 'acceptance_criteria': [], 'likely_files': []}

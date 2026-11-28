@@ -561,6 +561,22 @@ def run_propose(job: dict, job_path: Path, logs_path: str | None, feedback: str 
     # Move to implementation
     run_implement(job, job_path)
 
+def _close_paused_attempt(job_path: Path) -> None:
+    """A fix attempt whose run ended paused (a question, or a task not done) is no longer pending: record where it stopped,
+    so the job's history doesn't show it as still running."""
+    try:
+        fresh = read_json(job_path)
+    except Exception:
+        return
+    hist = fresh.get("debug_history")
+    if fresh.get("status") == "human-needed" and isinstance(hist, list) and hist and isinstance(hist[-1], dict) \
+            and hist[-1].get("result") == "pending":
+        hist[-1]["result"] = {"build_ok": None, "tests_ok": None, "paused": True,
+                              "notes": str(fresh.get("last_error") or "Paused for your answer")[:300]}
+        fresh["updated_at"] = now_iso()
+        write_json(job_path, fresh)
+
+
 def run_implement(job: dict, job_path: Path) -> None:
     print(f"      - Implementing debug step...")
     try:
@@ -571,6 +587,7 @@ def run_implement(job: dict, job_path: Path) -> None:
             capture=False,
             env={"AI_DEBUG_CHILD": "1"},
         )
+        _close_paused_attempt(job_path)
     except Exception as exc:
         # Don't leave a dangling `result: "pending"` entry when worker_run aborts early (e.g. DiskFullError / quota).
         try:
