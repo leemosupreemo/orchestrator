@@ -337,53 +337,39 @@ class WorkerRunTests(unittest.TestCase):
                 self.assertIsNone(worker.check_task_growth(job, 1, task))  # no commit recorded: nothing to measure
                 self.assertIsNone(worker.check_task_growth({'task_commits': {'0': 'deadbeef'}}, 0, task))  # not in this repository
 
-    def test_feature_validation_refuses_phantom_or_unrelated_test_success(self):
+    def test_a_task_is_done_when_the_projects_tests_pass_and_code_was_written(self):
+        # The plan's file and test lists guide the builder; they no longer decide whether passing work counts.
         cases = [
-            ({'action': 'patch'}, ['other.py'], True, 'expected files'),
-            ({'action': 'patch', 'test_command': 'unrelated'}, ['app.py'], True, 'unrelated tests'),
+            ({'action': 'patch'}, ['other.py'], True, 'passed'),
+            ({'action': 'patch', 'test_command': 'unrelated'}, ['app.py'], True, 'passed'),
             ({'action': 'investigate'}, [], True, 'not implemented'),
-            ({'action': 'patch'}, ['app.py'], False, None),
+            ({'action': 'patch'}, ['app.py'], False, 'failed'),
         ]
-        for output, files, success, error in cases:
+        for output, files, success, outcome in cases:
             with self.subTest(output=output, success=success), \
                  self.pipeline(self.feature_job(), results=[(success, success, Path('summary'), output)],
                                states=[{'modified': [], 'untracked': []}, {'modified': files, 'untracked': []},
-                                       {'modified': [], 'untracked': []}]) as (path, calls):
+                                       {'modified': [], 'untracked': []}]) as (path, calls), \
+                 patch.object(worker, 'checkpoint_task'):
                 worker.execute_job(path)
                 job = worker.read_json(path)
-                self.assertEqual(job['completed_task_indices'], [])
-                if error:
-                    self.assertIn(error, job['last_error'])
-                if success:  # nothing failed: say so and wait, rather than "fixing" passing code
-                    self.assertEqual((job['status'], job['unverified_task']['label']), ('human-needed', 'Task 1'))
+                if outcome == 'passed':
+                    self.assertEqual(job['completed_task_indices'], [0])
                     calls['debug'].assert_not_called()
-                    calls['push_branch_for_review'].assert_not_called()
+                elif outcome == 'not implemented':  # nothing failed: say so and wait, rather than "fixing" passing code
+                    self.assertEqual((job['completed_task_indices'], job['status']), ([], 'human-needed'))
+                    self.assertIn(outcome, job['last_error'])
+                    self.assertEqual(job['unverified_task']['label'], 'Task 1')
+                    calls['debug'].assert_not_called()
                     self.assertIn('Nothing failed, so no fix attempt is started', self.output.getvalue())
-                    self.assertNotIn('Build did not pass', self.output.getvalue())
                 else:
+                    self.assertEqual(job['completed_task_indices'], [])
                     calls['debug'].assert_called_once_with(path)
                     self.assertNotIn('unverified_task', job)
-                calls['run_build_and_tests'].assert_not_called()
+                calls['run_build_and_tests'].assert_not_called()  # the AI's run had no narrower test command to make up for
 
-    def test_a_fix_attempt_that_passes_without_the_planned_tests_is_recorded_as_passing(self):
-        feature = {**self.feature_job(), 'status': 'debugging', 'debug_history': [{'result': 'pending'}]}
-        feature['plan']['tasks'][0]['tests'] = ['test_screen']
-        command = 'pytest test_other'
-        output = {'action': 'patch', '_test_execution': {'command': command, 'full_suite': False}}
-        with self.pipeline(feature, results=[(True, True, Path('summary'), output)], states=self.EDITED) as (path, calls), \
-             patch.dict(os.environ, {'AI_DEBUG_CHILD': '1'}):
-            worker.execute_job(path)
-            job = worker.read_json(path)
-            self.assertEqual(job['status'], 'human-needed')
-            result = job['debug_history'][-1]['result']
-            self.assertEqual((result['build_ok'], result['tests_ok']), (True, True))
-            self.assertIn('test_screen', result['notes'])
-            self.assertNotIn('tests still fail', self.output.getvalue())
-
-    def test_planned_tests_left_out_by_the_ai_are_confirmed_by_the_projects_own_tests(self):
+    def test_when_the_ai_ran_fewer_tests_the_projects_own_tests_decide(self):
         for passing in (True, False):
-            feature = self.feature_job()
-            feature['plan']['tasks'][0]['tests'] = ['test_screen']
             command = 'pytest test_other'
             output = {'action': 'patch', 'test_command': command, '_test_execution': {'command': command, 'full_suite': False}}
 
@@ -393,83 +379,47 @@ class WorkerRunTests(unittest.TestCase):
                 return True, passing
 
             with self.subTest(passing=passing), \
-                 self.pipeline(feature, results=[(True, True, Path('summary'), output)], states=self.EDITED) as (path, calls), \
+                 self.pipeline(self.feature_job(), results=[(True, True, Path('summary'), output)], states=self.EDITED) as (path, calls), \
                  patch.object(worker, 'checkpoint_task'):
                 calls['run_build_and_tests'].side_effect = project_tests
                 worker.execute_job(path)
                 job = worker.read_json(path)
                 calls['run_build_and_tests'].assert_called_once()
+                self.assertNotIn('unverified_task', job)
                 if passing:
-                    self.assertNotIn('unverified_task', job)
                     self.assertEqual(job['completed_task_indices'], [0])
                     calls['debug'].assert_not_called()
-                else:  # it may have failed before this job: pause and show it, don't set the AI on it
-                    self.assertEqual((job['completed_task_indices'], job['status']), ([], 'human-needed'))
-                    self.assertTrue(job['unverified_task']['project_tests_failed'])
-                    self.assertIn("project's own tests, run to check this, failed", job['unverified_task']['detail'])
-                    self.assertIn("the project's own tests failed", self.output.getvalue())
-                    self.assertNotIn('Nothing failed', self.output.getvalue())
-                    calls['debug'].assert_not_called()
-                    calls['push_branch_for_review'].assert_not_called()
+                else:  # a real failure: that is what a fix attempt is for
+                    self.assertEqual((job['completed_task_indices'], job['status']), ([], 'debugging'))
+                    calls['debug'].assert_called_once_with(path)
 
-    def test_planned_tests_chained_with_and_count_but_other_joins_do_not(self):
-        task = {'title': 't', 'likely_files': ['app.py'], 'tests': ['pytest test_a', 'test ! -e old && ! grep -q gone notes']}
-        def status(command):
-            output = {'action': 'patch', '_test_execution': {'command': command, 'full_suite': False}}
-            return worker.task_validation(task, [], ['app.py'], output, True, True)[0]
-        self.assertEqual(status('pytest test_a && test ! -e old && ! grep -q gone notes'), 'passed')
-        for joined in ('||', ';', '|', '&'):
-            with self.subTest(joined=joined):
-                self.assertEqual(status(f'pytest test_a {joined} test ! -e old && ! grep -q gone notes'), 'incomplete')
+    def test_a_fix_attempt_that_passes_the_projects_tests_is_recorded_as_passing(self):
+        feature = {**self.feature_job(), 'status': 'debugging', 'iteration': 1, 'debug_history': [{'result': 'pending'}]}
+        output = {'action': 'patch', '_test_execution': {'command': 'pytest test_other', 'full_suite': False}}
+        with self.pipeline(feature, results=[(True, True, Path('summary'), output)], states=self.EDITED) as (path, calls), \
+             patch.object(worker, 'checkpoint_task'), patch.dict(os.environ, {'AI_DEBUG_CHILD': '1'}):
+            worker.execute_job(path)
+            result = worker.read_json(path)['debug_history'][-1]['result']
+            self.assertEqual((result['build_ok'], result['tests_ok']), (True, True))
+            self.assertNotIn('tests still fail', self.output.getvalue())
 
-    def test_batch_keeps_verified_task_and_resumes_only_the_unfinished_one(self):
-        from orchestrator.web.run_timeline import RunTimeline
+    def test_task_validation_needs_only_passing_tests_and_written_code(self):
+        ran = {'action': 'patch', '_test_execution': {'command': 'pytest', 'full_suite': True}}
+        self.assertEqual(worker.task_validation(['app.py'], ran, True, True), ('passed', 'Project tests passed · Changed app.py'))
+        self.assertEqual(worker.task_validation(['app.py'], ran, True, False)[0], 'failed')
+        self.assertEqual(worker.task_validation([], {'action': 'investigate'}, True, True)[0], 'incomplete')
 
+    def test_a_batch_of_small_tasks_passes_or_fails_as_one(self):
         feature = self.two_task_job()
-        first, second = feature['plan']['tasks']
-        first.update(complexity='small', tests=['test_first'])
-        second.update(complexity='small', likely_files=['app.py', 'second.py'],
-                      tests=['test_second', 'test_edge'])
-        selected = 'pytest -k "test_first or test_second"'
-        results = [(True, True, Path('summary'), {'test_command': selected,
-                                                 '_test_execution': {'command': selected, 'full_suite': False}}),
-                   (True, True, Path('summary'), {'test_command': 'all tests'})]
-        with self.pipeline(feature, results=results, states=self.EDITED) as (path, calls), \
+        for task in feature['plan']['tasks']:
+            task.update(complexity='small', tests=['test_only_this_one'])
+        with self.pipeline(feature, results=[self.PATCHED], states=self.EDITED) as (path, calls), \
              patch.object(worker, 'checkpoint_task'):
             worker.execute_job(path)
             job = worker.read_json(path)
-            self.assertEqual(job['completed_task_indices'], [0])
-            self.assertEqual(job['status'], 'human-needed')
-            calls['debug'].assert_not_called()
-            calls['push_branch_for_review'].assert_not_called()
-            timeline = RunTimeline()
-            timeline.feed(self.output.getvalue().encode())
-            first_id, second_id = [task['run_history_id'] for task in job['plan']['tasks']]
-            attempts = timeline.task_attempts['job-1']
-            self.assertEqual(attempts[first_id]['status'], 'passed')
-            self.assertEqual(attempts[second_id]['status'], 'incomplete')
-            self.assertIn('test_edge', attempts[second_id]['detail'])
-            self.assertEqual(job['unverified_task']['label'], 'Task 2')
-
-            states = [{'modified': [], 'untracked': []}, {'modified': ['second.py'], 'untracked': []},
-                      {'modified': [], 'untracked': []}]
-            calls['get_repo_state'].side_effect = states
-            worker.execute_job(path, resume=True)
-            self.assertEqual(calls['run_builder'].call_count, 2)
-            self.assertTrue(calls['run_builder'].call_args.args[0].stem.endswith('_task_2'))
-            self.assertEqual(worker.read_json(path)['completed_task_indices'], [0, 1])
-            self.assertNotIn('unverified_task', worker.read_json(path))  # confirmed now
-
-    def test_shared_files_and_a_green_suite_cannot_verify_two_tasks(self):
-        first, second = self.two_task_job()['plan']['tasks']
-        output = {'_test_execution': {'command': 'pytest', 'full_suite': True}}
-        status, detail = worker.task_validation(first, [second], ['app.py'], output, True, True)
-        self.assertEqual(status, 'incomplete')
-        self.assertIn('shared evidence', detail)
-        output['_test_execution']['fell_back'] = True
-        status, detail = worker.task_validation(first, [], ['app.py'], output, True, True)
-        self.assertEqual(status, 'incomplete')
-        self.assertIn('selected tests could not be used', detail)
+            self.assertEqual(calls['run_builder'].call_count, 1)
+            self.assertEqual(job['completed_task_indices'], [0, 1])
+            self.assertNotIn('unverified_task', job)
 
     def test_feature_builder_infers_changes_accepts_named_tests_and_handles_missing_metadata(self):
         for output in ({'test_command': 'pytest test_screen'}, {'action': 'add_logging'}, {}):

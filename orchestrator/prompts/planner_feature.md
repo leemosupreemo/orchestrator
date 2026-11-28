@@ -37,7 +37,7 @@ Required JSON schema:
       "description": "string",
       "acceptance_criteria": ["string"],
       "likely_files": ["string (VERIFIED PATHS ONLY)"],
-      "tests": ["string (Names of existing or new tests to run)"],
+      "tests": ["string (Tests the builder should add or run; a guide only: the job is done when the project's own build and tests pass)"],
       "complexity": "small|medium|large",
       "depends_on": [1]
     }
@@ -52,10 +52,11 @@ For each task, set complexity from the work itself, not the size of the parent j
 - **Groundedness**: Every file in `likely_files` must have been verified to exist or its parent directory confirmed for new files. Verified code, manifests, and asset files always take precedence over stale labels in `README.md` or comments—record the verified path in `assumptions` rather than asking the user to resolve a README mismatch.
 - **TDD Integration**: Ensure tasks include clear instructions for writing tests before production code.
 - **Vertical slices, not layers**: Order the tasks so that after the FIRST task something real runs end to end, even if it is the simplest version of the feature. Never plan "build the data layer, then the API, then the UI". Each later task adds one capability on top of something that already works, and each one ends with the build and tests passing.
+- **One task by default**: Plan a single task unless the work has clearly separate parts that each need their own build-and-test checkpoint (roughly more than 6 files, or two capabilities where the second builds on the first). Tuning, polish and fixes are one task.
 - **One job stays small**: At most 5 tasks and about 12 files in total. If the request needs more, plan only the first working slices that fit, and put the rest in a top-level `deferred` array, one short line each, as follow-up jobs. Keep `assumptions` and `risks` to the 3 that matter most each; a person reads this plan to approve it.
 - **Serve the product**: If a "Product context" section is present, say in `summary` which of its core features this serves, keep inside what it says under "Not this", match the look and feel it describes, and note in `assumptions` or `risks` anything that would contradict it.
 - **Plain, scannable writing**: Write `title`, `description`, and `acceptance_criteria` in plain English for a human reviewer, never dense walls of text. Keep each task `description` to 1–2 short sentences (under ~30 words) explaining what changes and why—put file paths in `likely_files` and test commands in `tests`, not in the prose. Keep each `acceptance_criteria` item to one short, observable sentence.
-- **Minimalism (YAGNI)**: Build only what directly delivers the requested user value. Prefer 1–3 small, surgical vertical-slice tasks over broad refactors; do not add speculative helpers, configuration flags, or "just in case" abstractions unless explicitly requested. Put nice-to-haves in `deferred`.
+- **Minimalism (YAGNI)**: Build only what directly delivers the requested user value. Prefer one surgical task over broad refactors; do not add speculative helpers, configuration flags, or "just in case" abstractions unless explicitly requested. Put nice-to-haves in `deferred`.
 - **No Hallucinations**: If you don't find a file, don't invent one. Use your tools to find it.
 
 Follow the schema EXACTLY. Balance all braces and quotes.

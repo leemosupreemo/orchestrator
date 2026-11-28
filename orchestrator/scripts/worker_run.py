@@ -1035,98 +1035,52 @@ def link_run_to_tasks(job_path: Path, job: dict, tasks: list, indices: list[int]
     print(job_runs.task_marker(job["job_id"], members), flush=True)
 
 
-MISSING_TESTS = "The run used unrelated tests or omitted planned tests"  # the project's own tests can settle this one
-PROJECT_TESTS_FAILED = ("The project's own tests, run to check this, failed. The failure may not come from this job: "
-                        "see the test log in the job's output.")
-
-
-def task_validation(task: dict, peers: list[dict], files: list[str], output: dict,
-                    build_ok: bool, test_ok: bool) -> tuple[str, str]:
+def task_validation(files: list[str], output: dict, build_ok: bool, test_ok: bool) -> tuple[str, str]:
+    """A task is done when the build and the project's own tests pass and the AI wrote code. The plan's file and test lists
+    guide the builder; they don't decide whether the work counts."""
     if not build_ok or not test_ok:
         return "failed", "The build or tests failed. See the run log."
     action = output.get("action")
     if action not in ("patch", "add_logging") and (action or not files):
         return "incomplete", "AI did not write code. The task was not implemented."
+    execution = output.get("_test_execution") or {}
+    evidence = "Project tests passed" if execution.get("full_suite") else "Tests passed" if execution.get("command") else "Build passed"
+    return "passed", evidence + (" · Changed " + ", ".join(files[:8]) + (" …" if len(files) > 8 else "") if files else "")
 
-    def matches(path: str, planned: str) -> bool:
-        planned = planned.removeprefix("./")
-        return path == planned or path.endswith("/" + planned)
 
-    expected_files = task.get("likely_files") or []
-    matched = [f for f in files if any(matches(f, name) for name in expected_files)]
-    if expected_files and not matched:
-        return "incomplete", "None of the expected files changed."
-
-    expected_tests = task.get("tests") or []
-    requested = " ".join((output.get("test_command") or "").split())
-    execution = output.get("_test_execution")
-    if expected_tests and execution and execution.get("fell_back"):
-        return "incomplete", "The selected tests could not be used. The configured suite ran instead."
-    configured = " ".join((PROJECT_CONFIG.test_command or "").split())
-    command = execution.get("command", "") if execution is not None else requested
-    full_suite = execution.get("full_suite", False) if execution is not None else not requested or requested == configured
-    # A selected test name must stand on its own. Exclusion selectors cannot prove coverage. Steps chained with && do count:
-    # the run passed, so every one of them did. Other joins (;, ||, |, &) can hide a step that failed or never ran.
-    excluded = re.search(r"\bnot\b|--(?:skip|exclude|ignore)|-skip-testing|[#;&|]", command.replace("&&", " "), re.IGNORECASE)
-
-    def selected(test: str) -> bool:
-        return not excluded and bool(re.search(r"(?<![\w-])" + re.escape(test) + r"(?![\w-])", command))
-
-    missing = [test for test in expected_tests if not full_suite and not selected(test)]
-    if missing:
-        return "incomplete", f"{MISSING_TESTS}: " + ", ".join(missing)
-
-    if peers:
-        peer_files = [name for peer in peers for name in (peer.get("likely_files") or [])]
-        peer_tests = {test for peer in peers for test in (peer.get("tests") or [])}
-        own_files = [f for f in matched if not any(matches(f, name) for name in peer_files)]
-        own_test = any(test not in peer_tests and selected(test) for test in expected_tests)
-        if not own_files and not own_test:
-            return "incomplete", "The batch produced shared evidence only. Verify this task separately."
-        if own_files:
-            matched = own_files
-
-    evidence = "Configured tests passed" if full_suite else "Selected tests passed" if command else "Build passed"
-    if matched:
-        evidence += " · Changed " + ", ".join(matched)
-    if command and not full_suite and expected_tests:
-        evidence += " · " + ", ".join(expected_tests)
-    return "passed", evidence
+def needs_project_tests(output: dict) -> bool:
+    """The AI ran a narrower test command than the project's own: a task only counts once the project's tests pass."""
+    execution = (output or {}).get("_test_execution")
+    return bool(PROJECT_CONFIG.test_command and execution and not execution.get("full_suite"))
 
 
 def confirm_with_project_tests(task_job: dict, summary_file: Path, output: dict) -> tuple[bool, bool, dict]:
-    """The AI's test command left out planned tests: run the project's own test command over the same work instead of
-    asking anyone. Returns the new build and test results, and the output describing what ran."""
-    print("\n      - The AI's test command left out some of this task's planned tests. Running the project's own tests to confirm it...",
-          flush=True)
+    """Run the project's own test command over the work the AI just did. Returns the build and test results, and the output
+    describing what ran."""
+    print("\n      - The AI ran a narrower set of tests. Running the project's own tests...", flush=True)
     check = {**task_job, "test_command_override": None}
     build_ok, test_ok = run_build_and_tests(check, summary_file)
     return build_ok, test_ok, {**output, "_test_execution": check.get("_test_execution") or {}}
 
 
 def note_unconfirmed(job: dict, outcomes: dict[int, tuple[str, str]]) -> None:
-    """Marks the job when its build and tests passed but tasks still lack evidence (nothing failed, so nothing to fix)."""
+    """Marks the job when its build and tests passed but a task wasn't done (nothing failed, so nothing to fix)."""
     open_tasks = {index: detail for index, (status, detail) in outcomes.items() if status != "passed"}
     if not open_tasks or any(status == "failed" for status, _ in outcomes.values()):
         return
     numbers = [str(index + 1) for index in sorted(open_tasks)]
-    detail = " ".join(dict.fromkeys(open_tasks.values()))
     job["unverified_task"] = {"label": ("Task " if len(numbers) == 1 else "Tasks ") + ", ".join(numbers),
-                              "detail": detail, "error": job.get("last_error")}
-    if PROJECT_TESTS_FAILED in detail:
-        job["unverified_task"]["project_tests_failed"] = True
+                              "detail": " ".join(dict.fromkeys(open_tasks.values())), "error": job.get("last_error")}
 
 
 def pause_unconfirmed(job_path: Path, job: dict, issue_number: Optional[int]) -> None:
     note = job["unverified_task"]
-    unconfirmed = f"{note['label']} {'are' if note['label'].startswith('Tasks') else 'is'} not confirmed"
-    failed = bool(note.get("project_tests_failed"))
-    said = f"{unconfirmed}: the project's own tests failed." if failed else f"The build and tests passed, but {unconfirmed}."
-    why = "No fix attempt is started on a failure that may not be this job's." if failed else "Nothing failed, so no fix attempt is started."
-    print(f"\n⏸️  {said} {note['detail']}\n      - {why} The changes are kept; the job waits for you.")
+    said = f"The build and tests passed, but {note['label']} {'are' if note['label'].startswith('Tasks') else 'is'} not done."
+    print(f"\n⏸️  {said} {note['detail']}\n      - Nothing failed, so no fix attempt is started. The changes are kept; "
+          "the job waits for you.")
     history = job.get("debug_history")
     if history and history[-1].get("result") == "pending":
-        history[-1]["result"] = {"build_ok": True, "tests_ok": not failed, "notes": f"{said} {note['detail']}"}
+        history[-1]["result"] = {"build_ok": True, "tests_ok": True, "notes": f"{said} {note['detail']}"}
     job.update(status="human-needed", worker_pid=None, updated_at=now_iso())
     write_json(job_path, job)
     update_issue_status(issue_number, "status:human-needed", ["status:executing"])
@@ -1457,42 +1411,11 @@ def execute_job(job_path: Path, resume: bool = False) -> None:
                 except Exception:
                     pass
 
-                outcomes = {
-                    idx: task_validation(tasks[idx], [tasks[other] for other in active_indices if other != idx],
-                                         files_touched, task_output, build_ok, test_ok)
-                    for idx in active_indices
-                }
-                if (not is_batched and PROJECT_CONFIG.test_command and (task_output or {}).get("_test_execution")
-                        and outcomes[i][1].startswith(MISSING_TESTS)):
-                    confirmed_build, confirmed_tests, confirmed_output = confirm_with_project_tests(task_job, _summary_path, task_output)
-                    if confirmed_build and confirmed_tests:
-                        task_output = confirmed_output
-                        outcomes = {i: task_validation(tasks[i], [], files_touched, task_output, build_ok, test_ok)}
-                    else:  # it may have been failing before this job: show it and wait, don't set the AI on it
-                        outcomes = {i: ("incomplete", f"{outcomes[i][1]}. {PROJECT_TESTS_FAILED}")}
+                if build_ok and test_ok and needs_project_tests(task_output):
+                    build_ok, test_ok, task_output = confirm_with_project_tests(task_job, _summary_path, task_output)
+                outcome = task_validation(files_touched, task_output or {}, build_ok, test_ok)
+                outcomes = {idx: outcome for idx in active_indices}
                 passed = [idx for idx, (status, _) in outcomes.items() if status == "passed"]
-
-                if is_batched and build_ok and test_ok and len(passed) < len(active_indices):
-                    # Preserve the combined patch, including any work still being verified. A partial
-                    # batch has no independently revertible task checkpoint.
-                    if files_touched:
-                        commit_job_files(files_touched, f"feat: {job['title']} (partial task batch)")
-                    job["completed_task_indices"].extend(passed)
-                    job["retry_tasks_individually"] = True
-                    job["ai_modified_files"] = sorted(set(job.get("ai_modified_files") or []) | set(files_touched))
-                    pending = ", ".join(str(idx + 1) for idx in active_indices if idx not in passed)
-                    job.update(status="human-needed", worker_pid=None, updated_at=now_iso(),
-                               last_error=f"Task evidence is incomplete for {pending}. Resume to check the remaining work individually.")
-                    note_unconfirmed(job, outcomes)
-                    write_json(job_path, job)
-                    print(f"      - {job['last_error']}")
-                    for idx, (status, detail) in outcomes.items():
-                        report_task_attempt(job, tasks[idx], status, detail)
-                    if files_touched:
-                        backup_push(job)
-                    remove_task_views(job_path)
-                    update_issue_status(issue_number, "status:human-needed", ["status:executing"])
-                    return
 
                 if len(passed) == len(active_indices):
                     job["completed_task_indices"].extend(passed)
@@ -2620,7 +2543,7 @@ def execute_parallel_task_wave(
             ]
             task_files = matched_planned or list(shared_touched)
 
-        status, detail = task_validation(task, [], task_files, t_out, b_ok, t_ok)
+        status, detail = task_validation(task_files, t_out or {}, b_ok, t_ok)
         outcomes[idx] = (status, detail)
         if status == "passed":
             if idx not in job["completed_task_indices"]:

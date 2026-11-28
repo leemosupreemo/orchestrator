@@ -214,16 +214,9 @@ class UnconfirmedTaskTests(unittest.TestCase):
 
     def test_a_paused_unconfirmed_task_says_the_tests_passed_and_offers_resume(self):
         found = rr.summarize("debug", "      - Tests passed.\n", 0, job=self.JOB)
-        self.assertEqual(found["headline"], "Tests passed, but Task 1 is not confirmed")
+        self.assertEqual(found["headline"], "Tests passed, but Task 1 is not done")
         self.assertIn("test_a", found["details"][0])
         self.assertEqual(found["next"], {"label": "Resume", "action": "resume", "params": {"job": "job-1"}})
-
-    def test_failed_project_tests_are_not_reported_as_passing(self):
-        note = {**self.JOB["unverified_task"], "project_tests_failed": True}
-        found = rr.summarize("debug", "!!! Tests failed.\n", 0, job={**self.JOB, "unverified_task": note})
-        self.assertEqual(found["headline"], "Paused: the project's own tests failed, so Task 1 is not confirmed")
-        self.assertIn("may not come from this job", found["details"][1])
-        self.assertEqual(found["next"]["action"], "resume")
 
     def test_the_marker_stops_counting_once_the_job_moves_on(self):
         for change in ({"status": "debugging"}, {"last_error": "something newer"}, {"human_clarification_question": "Which?"}):
@@ -233,7 +226,7 @@ class UnconfirmedTaskTests(unittest.TestCase):
     def test_the_job_page_says_the_same(self):
         from orchestrator.web import server
         state = server.job_state({**self.JOB, "plan": {"tasks": [{"title": "t"}]}})
-        self.assertEqual((state["label"], state["next"]["action"]), ("Tests passed, task not confirmed", "resume"))
+        self.assertEqual((state["label"], state["next"]["action"]), ("Tests passed, task not done", "resume"))
 
 
 class OpenQuestionTests(unittest.TestCase):
