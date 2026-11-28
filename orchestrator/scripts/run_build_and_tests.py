@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import re
 import shlex
@@ -205,6 +206,7 @@ def uses_configured_test_tool(command: str, base_command: str) -> bool:
     return bool(command_parts and base_parts and command_parts[0] == base_parts[0])
 
 
+OUTPUT_DIR_ENV = "ORCHESTRATOR_OUTPUT_DIR"
 NO_TESTS_NEEDED = {"n/a", "none", "no tests", "no specific tests", "skipped", "validated"}
 
 
@@ -213,6 +215,9 @@ def run_build_and_tests(
 ) -> tuple[bool, bool]:
     """Build and run the project's tests: the main `test_command`, then the extra `test_commands` once it passes."""
     job.pop("_test_execution", None)
+    # Where a project's own checks can leave pictures and reports for this job; the job page shows them.
+    if job.get("job_id"):
+        os.environ[OUTPUT_DIR_ENV] = str((OUTPUT_DIR / job["job_id"]).resolve())
     build_ok, test_ok = run_main_build_and_tests(job, summary_file)
     if not (build_ok and test_ok):
         return build_ok, test_ok

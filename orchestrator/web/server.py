@@ -2992,7 +2992,9 @@ def job_detail(root: Path, job_id: str) -> dict[str, Any]:
         for f in sorted(out_dir.rglob("*"), key=lambda p: p.stat().st_mtime, reverse=True)[:60]:
             if f.is_file() and "ux-review" not in f.relative_to(out_dir).parts:  # shown in its own card
                 outputs.append({"path": str(f.relative_to(runtime_dir(root))), "size": f.stat().st_size,
-                                "mtime": f.stat().st_mtime})
+                                "mtime": f.stat().st_mtime,
+                                # pictures a check saved: the page shows them (job_image serves output files by this path)
+                                **({"image": str(f.relative_to(root))} if f.suffix.lower() in IMAGE_SUFFIXES else {})})
 
     test_summary = None
     try:

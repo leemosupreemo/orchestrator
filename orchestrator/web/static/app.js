@@ -7745,6 +7745,8 @@ pages.job = async ([id]) => {
 
       ${uxReviewCard(s, data.ux_review, visualChecks)}
 
+      ${outputPicturesCard(outputs)}
+
       ${jobDocsOutlineHtml({ s, featureName, docFilesChanged, otherDocs, docsIndex, relatedDocs: data.related_docs || [] })}
 
       <!-- Jobs this one was split into (if any) -->
@@ -16250,6 +16252,24 @@ function openImageModal({ title, src, authSrc, fullUrl }) {
     $("#dialog-close")?.blur?.();
   }
   dlg?.focus?.({ preventScroll: true });
+}
+
+// The newest set of pictures a job's checks saved in its output folder (a before/after pair per view sits side by side).
+function outputPicturesCard(outputs) {
+  const images = (outputs || []).filter((o) => o.image); // newest first
+  if (!images.length) return "";
+  const folder = (o) => { const parts = o.path.split("/").slice(0, -1); if (/^(before|after)$/.test(parts.at(-1))) parts.pop(); return parts.join("/"); };
+  const side = (o) => (/\/before\//.test(o.path) ? 0 : /\/after\//.test(o.path) ? 1 : 2);
+  const latest = images.filter((o) => folder(o) === folder(images[0]))
+    .sort((a, b) => a.path.split("/").pop().localeCompare(b.path.split("/").pop()) || side(a) - side(b));
+  return `<section class="card mb-16" id="job-pictures"><div class="card-h"><h2>Pictures</h2><span class="count">${latest.length}</span></div>
+    <div class="card-b"><div class="ux-screens output-pictures">${latest.map((o) => {
+      const parts = o.path.split("/");
+      const title = [["Before", "After", ""][side(o)], parts.at(-1).replace(/\.[a-z]+$/i, "").replace(/[-_]/g, " ")].filter(Boolean).join(" · ");
+      const endpoint = `job-image?path=${encodeURIComponent(o.image)}`;
+      return `<figure class="ux-screen"><button type="button" class="ux-screen-preview" data-preview-img="" data-preview-auth="${esc(endpoint)}" data-preview-title="${esc(title)}" aria-label="View picture: ${esc(title)}"><img alt="${esc(title)}" data-auth-src="${esc(endpoint)}"></button>
+        <figcaption>${esc(title)}</figcaption></figure>`;
+    }).join("")}</div></div></section>`;
 }
 
 function wireImagePreviews(root = document) {
