@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import argparse
 import os
+import shlex
 import subprocess
 import sys
+import time
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
@@ -415,6 +417,49 @@ def get_local_git_state() -> dict[str, Any]:
     except:
         return {"branch": "unknown", "hash": "unknown", "dirty": False}
 
+def _local_paths(*args: str) -> list[str] | None:
+    """File names from a `git ... -z` command in the project folder, or None when git can't answer."""
+    result = subprocess.run(["git", *args], cwd=str(ROOT), capture_output=True, text=True, check=False)
+    return [name for name in result.stdout.split("\0") if name] if result.returncode == 0 else None
+
+
+def mirror_uncommitted(ssh_target: str, remote_repo: str, remote_hash: str | None) -> None:
+    """Puts this folder's files, uncommitted ones included, on the other computer without destroying anything there:
+    its own uncommitted work is stashed first, only files git tracks or would add are sent (plus the project's settings),
+    and the only files removed are ones its commit tracks that are gone here. Raises RuntimeError if its work can't be
+    set aside, before anything there is touched."""
+    repo = shlex.quote(remote_repo)
+    label = f"orchestrator-kept-before-sync-{int(time.time())}"
+    stash = f"git stash push --include-untracked -m {label}"
+    # Orchestrator's own folder stays put either way. Git refuses to be told to exclude a folder it already ignores.
+    keep = f"cd {repo} && if git check-ignore -q .orchestrator/; then {stash}; else {stash} -- . ':(exclude).orchestrator'; fi"
+    kept = subprocess.run(["ssh", ssh_target, keep], capture_output=True, text=True, check=False)
+    if kept.returncode != 0:
+        raise RuntimeError("Its uncommitted changes couldn't be set aside, so nothing there was changed: "
+                           f"{(kept.stderr or kept.stdout).strip()[-300:]}")
+    if label in kept.stdout:
+        print(f"      - Its own uncommitted changes are kept in a git stash named {label} (`git stash list` there).")
+
+    names = _local_paths("ls-files", "-z", "--cached", "--others", "--exclude-standard")
+    if names is None:
+        raise OSError("git couldn't list the project's files")
+    # Folders are submodules: their contents are left alone, since the stash above doesn't cover them.
+    files = [n for n in names if not n.startswith(".orchestrator/") and ((ROOT / n).is_symlink() or (ROOT / n).is_file())]
+    if (ROOT / ".orchestrator" / "project.json").is_file():
+        files.append(".orchestrator/project.json")
+    subprocess.run(["rsync", "-az", "--from0", "--files-from=-", f"{ROOT}/", f"{ssh_target}:{remote_repo}/"],
+                   input="\0".join(files), check=True, capture_output=True, text=True)
+
+    gone_since = ["diff", "-z", "--name-only", "--no-renames", "--diff-filter=D"]
+    gone = _local_paths(*gone_since, remote_hash) if remote_hash and remote_hash != "unknown" else None
+    if gone is None:  # its commit isn't known here: only what was deleted since this folder's own commit
+        gone = _local_paths(*gone_since, "HEAD") or []
+    if gone:
+        names = " ".join(shlex.quote(n) for n in gone)
+        subprocess.run(["ssh", ssh_target, f"cd {repo} && for f in {names}; do [ -d \"$f\" ] || rm -f -- \"$f\"; done"],
+                       check=True, capture_output=True, text=True)
+
+
 def sync_code_to_remote(machine: dict[str, Any], local_state: dict[str, Any], remote_probe: dict[str, Any]) -> bool:
     """Ensures remote machine is synced with local code state."""
     ssh_target = remote_probe.get("active_ssh_target") or machine.get("ssh_target")
@@ -432,18 +477,18 @@ def sync_code_to_remote(machine: dict[str, Any], local_state: dict[str, Any], re
 
     print(f"      - Synchronizing code to {machine['name']}...")
     
-    # 1. If local is dirty, we use rsync to mirror the changes (fastest for uncommitted work)
+    # 1. If local is dirty, we copy the files across (the only way uncommitted work travels)
     if local_state["dirty"]:
-        print(f"      - Local changes detected. Using rsync to mirror state...")
-        # Exclude common large folders
-        excludes = ["--exclude", ".git/", "--exclude", "build/", "--exclude", "DerivedData/", "--exclude", "node_modules/", "--exclude", ".aider*"]
-        cmd = ["rsync", "-avz", "--delete"] + excludes + [f"{ROOT}/", f"{ssh_target}:{remote_repo}/"]
+        print(f"      - Local changes detected. Copying them across...")
         try:
-            subprocess.run(cmd, check=True, capture_output=True)
-            print(f"      - rsync successful.")
+            mirror_uncommitted(ssh_target, remote_repo, remote_hash)
+            print(f"      - Files copied.")
             return True
+        except RuntimeError as e:
+            print(f"      - ❌ {e}")
+            return False
         except Exception as e:
-            print(f"      - rsync failed: {e}. Falling back to git...")
+            print(f"      - Copying failed: {e}. Falling back to git...")
 
     # 2. Git-based sync (Push/Pull)
     print(f"      - Pushing local branch '{local_state['branch']}' to origin...")

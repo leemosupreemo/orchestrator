@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import runpy
 import sys
+import subprocess
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -154,13 +155,59 @@ class SchedulerTests(unittest.TestCase):
         with patch.object(scheduler.subprocess, 'run') as run:
             self.assertTrue(scheduler.sync_code_to_remote(machine, state, {'git_branch': 'main', 'git_head_hash': 'abc'}))
             run.assert_not_called()
+        with patch.object(scheduler, 'mirror_uncommitted') as mirror:
+            self.assertTrue(scheduler.sync_code_to_remote(machine, {**state, 'dirty': True}, {'git_head_hash': 'old'}))
+            mirror.assert_called_once_with('host', '/repo', 'old')
+        with patch.object(scheduler, 'mirror_uncommitted', side_effect=OSError('rsync failed')), \
+             patch.object(scheduler.subprocess, 'run', side_effect=[None, None]) as run:
             self.assertTrue(scheduler.sync_code_to_remote(machine, {**state, 'dirty': True}, {}))
-            self.assertEqual(run.call_args.args[0][0], 'rsync')
-        with patch.object(scheduler.subprocess, 'run', side_effect=[OSError('rsync failed'), None, None]) as run:
-            self.assertTrue(scheduler.sync_code_to_remote(machine, {**state, 'dirty': True}, {}))
-            self.assertEqual(run.call_count, 3)
+            self.assertEqual(run.call_count, 2)
+        with patch.object(scheduler, 'mirror_uncommitted', side_effect=RuntimeError('could not be set aside')), \
+             patch.object(scheduler.subprocess, 'run') as run:
+            self.assertFalse(scheduler.sync_code_to_remote(machine, {**state, 'dirty': True}, {}))
+            run.assert_not_called()  # nothing else is tried on a computer whose work couldn't be kept
         with patch.object(scheduler.subprocess, 'run', side_effect=OSError('git failed')):
             self.assertFalse(scheduler.sync_code_to_remote({**machine, 'ssh_target': 'host'}, state, {}))
+
+    def test_copying_uncommitted_work_never_destroys_the_other_computers_work(self):
+        real = subprocess.run
+
+        def over_ssh(command, *args, **kwargs):  # the "other computer" is a folder here
+            if command[0] == 'ssh':
+                command = ['bash', '-c', command[2]]
+            elif command[0] == 'rsync':
+                command = [part.replace('other:', '') for part in command]
+            return real(command, *args, **kwargs)
+
+        for ignored in (True, False):  # the project may or may not ignore .orchestrator
+            with self.subTest(ignored=ignored), tempfile.TemporaryDirectory() as tmp:
+                here, there = Path(tmp) / 'here', Path(tmp) / 'the other one'
+                git = lambda repo, *a: real(['git', '-c', 'user.email=t@t', '-c', 'user.name=t', *a], cwd=repo, check=True,  # noqa: E731
+                                            capture_output=True, text=True).stdout.strip()
+                real(['git', 'init', '-q', '-b', 'main', str(here)], check=True)
+                for name, text in (('app.py', 'one\n'), ('old.py', 'old\n'), ('.gitignore', 'secret.env\n' + ('.orchestrator/\n' if ignored else ''))):
+                    (here / name).write_text(text)
+                git(here, 'add', '.'); git(here, 'commit', '-qm', 'base')
+                real(['git', 'clone', '-q', str(here), str(there)], check=True, capture_output=True)
+                git(there, 'config', 'user.email', 't@t'); git(there, 'config', 'user.name', 't')
+                (there / 'app.py').write_text('their unfinished edit\n')
+                (there / 'their-notes.txt').write_text('only there\n')
+                (there / 'secret.env').write_text('theirs\n')
+                (there / '.orchestrator' / 'jobs').mkdir(parents=True)
+                (there / '.orchestrator' / 'jobs' / 'job.json').write_text('{}')
+                (here / 'app.py').write_text('my edit\n'); (here / 'new.py').write_text('new\n'); (here / 'old.py').unlink()
+                (here / 'secret.env').write_text('mine\n')
+                (here / '.orchestrator').mkdir(); (here / '.orchestrator' / 'project.json').write_text('{"a": 1}')
+                with patch.object(scheduler, 'ROOT', here), patch.object(scheduler.subprocess, 'run', side_effect=over_ssh):
+                    scheduler.mirror_uncommitted('other', str(there), git(there, 'rev-parse', 'HEAD'))
+                self.assertEqual(((there / 'app.py').read_text(), (there / 'new.py').read_text()), ('my edit\n', 'new\n'))
+                self.assertFalse((there / 'old.py').exists())  # deleted here, and still in git there
+                self.assertEqual((there / 'secret.env').read_text(), 'theirs\n')  # ignored files aren't sent over theirs
+                self.assertEqual((there / '.orchestrator' / 'jobs' / 'job.json').read_text(), '{}')
+                self.assertEqual((there / '.orchestrator' / 'project.json').read_text(), '{"a": 1}')
+                self.assertIn('orchestrator-kept-before-sync', git(there, 'stash', 'list'))
+                self.assertEqual(git(there, 'show', 'stash@{0}:app.py'), 'their unfinished edit')
+                self.assertEqual(git(there, 'show', 'stash@{0}^3:their-notes.txt'), 'only there')
 
     def test_remote_dispatch_and_failure_cleanup(self):
         machine = {'name': 'remote', 'repo_path': '/repo', 'ssh_target': ['host'], 'execution_mode': 'ssh'}
