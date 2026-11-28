@@ -33,6 +33,23 @@ def action(project: DummyProject, name: str, *args: str):
     return project.orchestrator("script", "job_actions.py", name, str(project.jobs()[-1]), *args)
 
 
+class LeftForLaterTests(unittest.TestCase):
+    def test_planning_a_left_for_later_job_replaces_it(self):
+        project = DummyProject([FREE]).create().fake_models("")
+        self.addCleanup(project.cleanup)
+        self.assertEqual(plan_job(project).returncode, 0)
+        waiting = project.jobs()[-1].with_name("20000101-000000-slice-later.json")
+        waiting.write_text(json.dumps({"job_id": waiting.stem, "type": "epic", "status": "backlog", "title": "Later",
+                                       "deferred_from": "first"}), encoding="utf-8")
+        result = project.orchestrator("script", "new_job.py", "feature", "--summary", SUMMARY, "--replaces", waiting.stem,
+                                      "--branch-mode", "new", "--no-dispatch", "--planner", FREE, "--builder", FREE,
+                                      "--reviewer", FREE, "--allowed-models", FREE, "--allowed-machines", "local")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse(waiting.exists())
+        planned = [json.loads(p.read_text(encoding="utf-8")) for p in project.jobs()]
+        self.assertEqual([(j["replaces"], j["deferred_from"]) for j in planned if j.get("replaces")], [(waiting.stem, "first")])
+
+
 class BriefRevisionTests(unittest.TestCase):
     def test_saved_brief_reaches_planner_and_requires_fresh_approval(self):
         project = DummyProject([FREE]).create().fake_models("")

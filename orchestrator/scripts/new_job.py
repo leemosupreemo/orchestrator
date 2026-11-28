@@ -535,6 +535,7 @@ def main(args_override: list[str] | None = None) -> None:
     parser.add_argument("--free", action="store_true", help="Restrict allowed models to free models only (cost_factor == 0.0)")
     parser.add_argument("--feature", help="Put the new job under this feature (its id)")
     parser.add_argument("--epic", help="This job plans that epic (its id): it takes the place of the epic's waiting job")
+    parser.add_argument("--replaces", help="This job plans that waiting backlog job (its id): it takes its place")
     parser.add_argument("--freestyle", action="store_true",
                         help="The request is in the person's own words with no job type chosen: plan it as a feature, and ask first if it's unclear")
     # Set by "Build the plan" (orchestrator/plan_run.py): the run this job belongs to.
@@ -1568,6 +1569,9 @@ def main(args_override: list[str] | None = None) -> None:
             model_outcomes.record(job, "planner", planner, actual_planner, "plan_gate_passed")
         write_json(paths.job_file, job)
         write_text(paths.brief_file, body)
+        # Only once the planned job is safely on disk does the waiting one go.
+        if args.replaces and not existing_job and living_spec.replace_waiting_job(PROJECT_CONFIG.runtime_dir, args.replaces, job):
+            write_json(paths.job_file, job)
         try:
             write_json(paths.output_dir / "spec.json", spec)
             write_text(paths.output_dir / "spec.md", living_spec.to_markdown(spec, gate_result))

@@ -1201,6 +1201,25 @@ def to_markdown(spec: dict[str, Any], risk_result: dict[str, Any] | None = None)
     return "\n".join(lines).strip() + "\n"
 
 
+def replace_waiting_job(runtime: Path, waiting_id: str, planned: dict[str, Any]) -> bool:
+    """A waiting backlog job was planned as `planned`: the new job notes what it came from and the waiting one is removed.
+    The caller saves `planned`. False when there's no such waiting job, so anything else is left alone."""
+    path = Path(runtime) / "jobs" / f"{waiting_id}.json"
+    try:
+        waiting = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    if not isinstance(waiting, dict) or waiting.get("status") != "backlog":
+        return False
+    planned["replaces"] = waiting_id
+    if waiting.get("deferred_from"):
+        planned["deferred_from"] = waiting["deferred_from"]
+    if waiting.get("external_links"):
+        planned["external_links"] = waiting["external_links"]
+    path.unlink(missing_ok=True)
+    return True
+
+
 def create_deferred_backlog_jobs(runtime: Path, parent_job: dict[str, Any]) -> list[str]:
     """Turn a job's `plan["deferred"]` slices into waiting backlog jobs (`status: "backlog"`).
 

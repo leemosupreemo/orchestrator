@@ -817,6 +817,45 @@ class EpicsJiraTests(ServerTestCase):
         with self.assertRaises(ui.UIError):
             ui.build_plan_epic({"epic": "ep-gone"}, self.root)
 
+    def test_make_a_plan_works_for_work_left_for_later(self):
+        jobs = ui.runtime_dir(self.root) / "jobs"
+        (jobs / "archive").mkdir(parents=True, exist_ok=True)
+        (jobs / "archive" / "20990101-000000-feature-1.json").write_text(json.dumps({"branch_mode": "current"}))
+        slice_id, new = "20990101-000000-slice-timings", "20990101-000000-feature-2"
+        waiting = {"job_id": slice_id, "type": "epic", "status": "backlog", "title": "Measure frame time",
+                   "description": "Time the route on a named iPhone.", "deferred_from": "20990101-000000-feature-1"}
+        (jobs / f"{slice_id}.json").write_text(json.dumps(waiting))
+        argv = ui.build_plan_epic({"job": slice_id}, self.root)
+        self.assertEqual(argv[argv.index("--replaces") + 1], slice_id)
+        self.assertEqual(argv[argv.index("--summary") + 1], "Measure frame time")
+        self.assertEqual(argv[argv.index("--branch-mode") + 1], "current")  # as the job it was left over from
+        self.assertIn("Time the route on a named iPhone.", Path(argv[argv.index("--spec-file") + 1]).read_text())
+        self.assertIn("--no-dispatch", argv)
+        # What new_job.py --replaces does once the plan is saved; the run then belongs to the planned job
+        stand_in = (f"import json, sys; sys.path.insert(0, {str(PACKAGE_ROOT)!r}); from pathlib import Path; "
+                    f"from orchestrator import living_spec; rt = Path({str(jobs.parent)!r}); "
+                    f"job = {{'job_id': '{new}', 'title': 'Planned timings', 'type': 'feature-plan', 'status': 'planned'}}; "
+                    f"assert living_spec.replace_waiting_job(rt, sys.argv[2], job); "
+                    f"(rt / 'jobs' / '{new}.json').write_text(json.dumps(job)); print('Skipping dispatch')")
+        real = self.server.sessions.start
+        with patch.object(self.server.sessions, "start", side_effect=lambda action, title, argv, *a, **k: real(
+                action, title, [sys.executable, "-c", stand_in, "--replaces", slice_id], *a, **k)):
+            res, data = self.request("POST", "/api/runs", {"action": "plan_epic", "params": {"job": slice_id}}, headers=UI_HEADERS)
+        self.assertEqual(res.status, 201, data)
+        session = self.server.sessions.get(data["run"]["id"])
+        for _ in range(200):
+            if not session.running and any(r["id"] == session.id for r in ui.job_runs.recorded(jobs.parent)):
+                break
+            time.sleep(0.05)
+        run = session.summary()
+        self.assertEqual((run["job"], run["replaced_job"]), (new, slice_id))
+        planned = json.loads((jobs / f"{new}.json").read_text())
+        self.assertEqual((planned["replaces"], planned["deferred_from"]), (slice_id, waiting["deferred_from"]))
+        self.assertFalse((jobs / f"{slice_id}.json").exists())
+        (jobs / f"{slice_id}.json").write_text(json.dumps({**waiting, "status": "planned"}))
+        with self.assertRaisesRegex(ui.UIError, "already planned"):
+            ui.build_plan_epic({"job": slice_id}, self.root)
+
     def test_a_planning_run_moves_to_the_planned_job_and_cannot_plan_it_twice(self):
         rt, old, new = ui.runtime_dir(self.root), self.approved["job"], "20990101-000000-feature-9"
         stand_in = (  # what new_job.py --epic does: write the planned job, then take the waiting one's place

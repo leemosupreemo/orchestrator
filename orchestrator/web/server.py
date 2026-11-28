@@ -567,15 +567,19 @@ class PtySession:
     replaced_job: str | None = None  # also a class default: tests build sessions without __init__
 
     def _follow_planned_epic(self) -> None:
-        """Planning an epic replaces the waiting job its run was started on with the planned one (epics.attach_job). The run
-        belongs to the planned job from then on; otherwise its links and saved history point at a job that is gone."""
-        if (self.action != "plan_epic" or not self.job_id or "--epic" not in self.argv
-                or (jobs_dir(self.cwd) / f"{self.job_id}.json").exists()):
+        """Planning an epic or a left-for-later job replaces the waiting job its run was started on with the planned one. The
+        run belongs to the planned job from then on; otherwise its links and saved history point at a job that is gone."""
+        if self.action != "plan_epic" or not self.job_id or (jobs_dir(self.cwd) / f"{self.job_id}.json").exists():
             return
-        try:
-            epic_id = self.argv[self.argv.index("--epic") + 1]
-            planned = str(epic_store.get(runtime_dir(self.cwd), epic_id).get("job") or "")
-        except (IndexError, epic_store.EpicError):
+        if "--epic" in self.argv:
+            try:
+                epic_id = self.argv[self.argv.index("--epic") + 1]
+                planned = str(epic_store.get(runtime_dir(self.cwd), epic_id).get("job") or "")
+            except (IndexError, epic_store.EpicError):
+                return
+        elif "--replaces" in self.argv:
+            planned = next((p.stem for p in jobs_dir(self.cwd).glob("*.json") if read_json_file(p).get("replaces") == self.job_id), "")
+        else:
             return
         path = jobs_dir(self.cwd) / f"{planned}.json"
         if planned and planned != self.job_id and path.is_file():
@@ -5022,10 +5026,14 @@ def build_new_job(params: dict[str, Any], root: Path) -> list[str]:
 
 
 def build_plan_epic(params: dict[str, Any], root: Path) -> list[str]:
-    """Plan an approved epic as a feature job. It takes the place of the epic's waiting job (new_job.py --epic)."""
+    """Plan an approved epic, or work an earlier job left for later, as a feature job. It takes the place of the waiting job
+    (new_job.py --epic or --replaces)."""
     epic_id = str(params.get("epic") or "").strip()
     if not epic_id and params.get("job"):
-        epic_id = str(read_json_file(resolve_job_path(root, str(params["job"]))).get("epic") or "")
+        waiting = read_json_file(resolve_job_path(root, str(params["job"])))
+        epic_id = str(waiting.get("epic") or "")
+        if not epic_id and waiting.get("deferred_from"):
+            return _plan_deferred_slice(str(params["job"]), waiting, root)
     try:
         epic = epic_store.get(runtime_dir(root), epic_id)
     except epic_store.EpicError as exc:
@@ -5042,6 +5050,24 @@ def build_plan_epic(params: dict[str, Any], root: Path) -> list[str]:
     summary = epic["name"] + (f": {epic['summary']}" if epic.get("summary") else "")
     return build_new_job({"type": "feature", "summary": summary[:500], "feature": epic.get("feature") or "", "epic": epic["id"],
                           "branch_mode": "new", "no_dispatch": True}, root)
+
+
+def _plan_deferred_slice(job_id: str, waiting: dict[str, Any], root: Path) -> list[str]:
+    """Plan work an earlier job left for later. It follows that job's branch choice: work that builds on commits made on the
+    current branch can't start from the base branch."""
+    if waiting.get("status") != "backlog":
+        raise UIError("This job is already planned. Open it to review the plan.", HTTPStatus.CONFLICT)
+    parent_name = f"{waiting.get('deferred_from')}.json"
+    parent: dict[str, Any] = {}
+    for folder in (jobs_dir(root), jobs_dir(root) / "archive"):
+        if re.fullmatch(r"[A-Za-z0-9._-]+", parent_name) and (folder / parent_name).is_file():
+            parent = read_json_file(folder / parent_name)
+            break
+    argv = build_new_job({"type": "feature", "summary": str(waiting.get("title") or waiting.get("summary") or "")[:500],
+                          "spec": str(waiting.get("description") or waiting.get("summary") or ""),
+                          "feature": waiting.get("feature") or "", "no_dispatch": True,
+                          "branch_mode": "current" if parent.get("branch_mode") == "current" else "new"}, root)
+    return argv + ["--replaces", job_id]
 
 
 RECENT_LOG_ACTIONS = {"test": "Test run", "build": "Build", "distribute": "Tester build", "fix": "Fix attempt", "debug": "Fix attempt",
